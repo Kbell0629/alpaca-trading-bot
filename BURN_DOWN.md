@@ -125,6 +125,7 @@ The explicit decisions the user has made:
 - [x] **#10 Market-breadth div/0** — verified already safe (false positive from agent).
 - [x] **#11 Dashboard TZ (addLog)** — now renders ET explicitly.
 - [x] **Bonus: SIGTERM handler fixed** — `stop_scheduler` was never imported; SIGTERM silently swallowed the NameError for months.
+- [x] **Screener scoring tune** (`e70bcf2` → `b5348e1`, 2026-04-16) — live dashboard showed all top-12 picks were thin-float breakouts. Two guards shipped: `MIN_VOLUME` 100k → 300k (middle ground between original too-permissive and 500k too-strict), plus `breakout_score *= 0.5` when intraday volatility > 25%. 4 regression tests.
 - [x] Market breadth filter
 - [x] Volume profile breakouts
 - [x] Partial profit taking
