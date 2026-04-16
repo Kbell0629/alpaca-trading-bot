@@ -30,6 +30,12 @@ except ImportError:
     class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
         pass
 
+try:
+    from cloud_scheduler import start_scheduler, get_scheduler_status
+    SCHEDULER_AVAILABLE = True
+except ImportError:
+    SCHEDULER_AVAILABLE = False
+
 # Load .env file for local development
 def load_dotenv():
     env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -729,6 +735,20 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
 .session-open { background: rgba(16,185,129,0.2); color: var(--green); }
 .session-after { background: rgba(245,158,11,0.2); color: var(--orange); }
 .session-closed { background: rgba(148,163,184,0.15); color: var(--text-dim); }
+
+/* Cloud Scheduler Badge */
+.scheduler-badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 12px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
+    background: rgba(16,185,129,0.15); color: var(--green);
+}
+.scheduler-badge.off { background: rgba(148,163,184,0.15); color: var(--text-dim); }
+.scheduler-pulse {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: currentColor; animation: schedPulse 2s infinite;
+}
+@keyframes schedPulse { 0%,100%{opacity:1;transform:scale(1);} 50%{opacity:0.4;transform:scale(0.7);} }
 
 /* Readiness Mini Bar */
 .readiness-mini { display: flex; align-items: center; gap: 8px; }
@@ -2159,6 +2179,7 @@ function renderDashboard() {
             '</div>' +
             '<div class="header-right">' +
                 '<span class="session-badge ' + sessionClass + '">' + sessionLabel + '</span>' +
+                '<span id="schedulerBadge" class="scheduler-badge" title="Loading..."><span class="scheduler-pulse"></span>...</span>' +
                 '<div class="readiness-mini">' +
                     '<span class="readiness-label">Ready: ' + readinessScore + '/100</span>' +
                     '<div class="readiness-bar-bg"><div class="readiness-bar-fill" style="width:' + readinessScore + '%;background:' + readBarColor + '"></div></div>' +
@@ -2386,6 +2407,26 @@ function renderDashboard() {
             }
         }
     }, 300);
+
+    // Fetch cloud scheduler status and update header badge
+    fetch(API_BASE + '/api/scheduler-status', {credentials: 'same-origin'})
+        .then(function(r){ return r.json(); })
+        .then(function(s){
+            var el = document.getElementById('schedulerBadge');
+            if (!el) return;
+            if (s.running) {
+                el.className = 'scheduler-badge';
+                el.innerHTML = '<span class="scheduler-pulse"></span>24/7 CLOUD';
+                el.title = 'Scheduler is running autonomously on Railway. Market: ' + (s.market_open ? 'open' : 'closed');
+            } else {
+                el.className = 'scheduler-badge off';
+                el.innerHTML = 'SCHEDULER OFF';
+                el.title = 'Cloud scheduler not running — tasks depend on Claude Code';
+            }
+        }).catch(function(){
+            var el = document.getElementById('schedulerBadge');
+            if (el) { el.className = 'scheduler-badge off'; el.innerHTML = '—'; }
+        });
 }
 
 var _backtestChart = null;
@@ -2839,6 +2880,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             guardrails_path = os.path.join(BASE_DIR, "guardrails.json")
             guardrails = load_json(guardrails_path)
             self.send_json(guardrails if guardrails else {"kill_switch": False})
+
+        elif path == "/api/scheduler-status":
+            if SCHEDULER_AVAILABLE:
+                self.send_json(get_scheduler_status())
+            else:
+                self.send_json({"running": False, "error": "Scheduler module not loaded"})
 
         elif path == "/manifest.json":
             manifest_path = os.path.join(BASE_DIR, "manifest.json")
@@ -3583,6 +3630,15 @@ def main():
     server = ThreadingHTTPServer(("0.0.0.0", port), DashboardHandler)
     print(f"Dashboard running at http://localhost:{port}")
     print("Press Ctrl+C to stop")
+
+    # Start cloud scheduler (makes bot autonomous 24/7 on Railway)
+    if SCHEDULER_AVAILABLE and os.environ.get("ENABLE_CLOUD_SCHEDULER", "true").lower() == "true":
+        try:
+            start_scheduler()
+            print("[INFO] Cloud scheduler started — bot running autonomously", flush=True)
+        except Exception as e:
+            print(f"[WARN] Could not start cloud scheduler: {e}", flush=True)
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:

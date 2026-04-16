@@ -1,232 +1,271 @@
 # Alpaca Stock Trading Bot
 
-Autonomous stock trading bot using Alpaca paper trading API, managed by Claude Code scheduled tasks. Self-learning, auto-deploying, with kill switch and capital management.
+Autonomous stock trading bot using Alpaca paper trading API. Self-learning, auto-deploying, with kill switch and capital management. 6 strategies, 40+ features.
 
+**Dashboard:** https://stockbott.up.railway.app (login: Kbell0629 / We360you45$$)
 **GitHub:** https://github.com/Kbell0629/alpaca-trading-bot
+**Local:** `python3 server.py` → http://localhost:8888
 
-## Quick Start
+---
 
-```bash
-# Start the interactive dashboard
-cd "/Users/kevinbell/Alpaca Trading"
-python3 server.py
-# Open http://localhost:8888
+## Quick Resume (New Session)
 
-# Refresh stock screener data (runs automatically via scheduled tasks)
-python3 update_dashboard.py
-```
+1. Read this file first
+2. Local dashboard: `cd "/Users/kevinbell/Alpaca Trading" && python3 server.py` → http://localhost:8888
+3. Refresh screener: `python3 update_dashboard.py`
+4. To make changes: edit, commit, push to GitHub → Railway auto-deploys
+
+---
 
 ## Environment Variables
 
-All secrets are in environment variables (not hardcoded). Local dev uses `.env` file (gitignored).
+All secrets in `.env` (gitignored) and Railway variables. No hardcoded defaults.
 
-| Variable | Value | Where |
-|----------|-------|-------|
-| `ALPACA_API_KEY` | Paper trading key | `.env` locally, Railway vars in cloud |
-| `ALPACA_API_SECRET` | Paper trading secret | `.env` locally, Railway vars in cloud |
-| `ALPACA_ENDPOINT` | `https://paper-api.alpaca.markets/v2` | Change to `https://api.alpaca.markets/v2` for live |
-| `ALPACA_DATA_ENDPOINT` | `https://data.alpaca.markets/v2` | Same for paper and live |
-| `NTFY_TOPIC` | `alpaca-trading-bot-kevin` | Push notification topic |
-| `NOTIFICATION_EMAIL` | `se2login@gmail.com` | Email alerts for important events |
-| `PORT` | `8888` | Dashboard server port (Railway sets automatically) |
+| Variable | Purpose |
+|----------|---------|
+| `ALPACA_API_KEY` / `ALPACA_API_SECRET` | Alpaca API credentials |
+| `ALPACA_ENDPOINT` | `https://paper-api.alpaca.markets/v2` (paper) |
+| `ALPACA_DATA_ENDPOINT` | `https://data.alpaca.markets/v2` |
+| `NTFY_TOPIC` | `alpaca-trading-bot-kevin` (push notifications) |
+| `NOTIFICATION_EMAIL` | `se2login@gmail.com` |
+| `DASHBOARD_USER` / `DASHBOARD_PASS` | Basic auth for dashboard |
+| `PORT` | `8888` (Railway sets automatically) |
 
-**Account:** PA3N3JCNBP02 ($100k paper cash, 2x margin)
+**Account:** PA3N3JCNBP02 ($100k paper, 2x margin)
+**Paper trading start:** 2026-04-15
 
-## Files
+---
 
-| File | Purpose |
-|------|---------|
-| `server.py` | Web server + interactive dashboard (localhost:8888 or Railway) |
-| `update_dashboard.py` | Full market screener (12k+ stocks), 10 scoring improvements, generates dashboard_data.json |
-| `update_scorecard.py` | Performance metrics: win rate, Sharpe/Sortino ratios, readiness score |
-| `error_recovery.py` | Finds orphan positions, missing stop-losses, stale strategies — auto-fixes |
-| `capital_check.py` | Capital sustainability: can we afford more trades? Are we overextended? |
-| `learn.py` | Self-learning engine: analyzes trade journal, adjusts strategy weights weekly |
-| `notify.py` | Push notifications (ntfy.sh) + email queue (se2login@gmail.com) |
-| `auto_deployer_config.json` | Auto-deployer ON/OFF toggle + risk settings |
-| `guardrails.json` | Kill switch, daily loss limit, max drawdown, position limits |
-| `scorecard.json` | Running performance metrics + paper-to-live readiness score |
-| `trade_journal.json` | Every trade with full reasoning + daily portfolio snapshots |
-| `learned_weights.json` | Strategy multipliers + signal boosts from self-learning |
-| `capital_status.json` | Latest capital sustainability check results |
-| `strategies/*.json` | Per-strategy state files (created by auto-deployer) |
+## File Structure
 
-## 5 Strategies
+### Core
+- `server.py` — Dashboard server (localhost:8888 + Railway)
+- `update_dashboard.py` — Full market screener (12k+ stocks)
+- `PROJECT.md` — This file
 
-| # | Strategy | Signal | Stop-Loss | Best For |
-|---|----------|--------|-----------|----------|
+### Analysis Modules
+- `indicators.py` — RSI, MACD, Bollinger, ATR, Stochastic, VWAP, OBV
+- `economic_calendar.py` — FOMC, opex, news events
+- `social_sentiment.py` — StockTwits sentiment (free)
+- `correlation.py` — Portfolio correlation matrix
+- `options_analysis.py` — Options chain for wheel strategy
+- `extended_hours.py` — Pre-market / after-hours trading logic
+- `short_strategy.py` — Short selling candidate identification
+
+### Management Modules
+- `capital_check.py` — Capital sustainability
+- `tax_harvesting.py` — Tax-loss harvesting scanner
+- `error_recovery.py` — Orphan position detection + auto-fix
+- `notify.py` — Push notifications (ntfy.sh) + email queue
+- `learn.py` — Self-learning engine (weekly weight adjustment)
+- `update_scorecard.py` — Performance metrics (Sharpe/Sortino)
+- `realtime.py` — Fast price poller (10s, for local use)
+
+### Config Files
+- `.env` — Local secrets (gitignored)
+- `guardrails.json` — Kill switch, daily loss limit, drawdown, cooldowns
+- `auto_deployer_config.json` — Auto-deployer settings + short selling toggle
+- `accounts.json` — Paper + live account configs
+- `strategies/trailing_stop.json` — Base trailing stop template
+- `strategies/copy_trading.json` — Copy trading state
+- `strategies/wheel_strategy.json` — Wheel strategy state
+- `strategies/<strategy>_<SYMBOL>.json` — Per-position files (auto-created)
+
+### Runtime State (gitignored)
+- `dashboard_data.json` — Latest screener output
+- `scorecard.json` — Running performance metrics
+- `trade_journal.json` — Every trade with reasoning
+- `learned_weights.json` — Strategy multipliers from learning engine
+- `capital_status.json` — Latest capital check
+- `notification_log.json` — Notification history
+- `email_queue.json` — Pending email notifications
+
+### Infrastructure
+- `Procfile` — Railway startup command
+- `railway.json` — Railway deploy config
+- `requirements.txt` — Empty (stdlib only)
+- `manifest.json` — PWA manifest
+- `icon-192.png` / `icon-512.png` — PWA icons
+
+---
+
+## 6 Strategies
+
+| # | Strategy | Signal | Stop | Best For |
+|---|----------|--------|------|----------|
 | 1 | **Trailing Stop** | Strong uptrend + momentum | 10%, trails 5% below peak | Riding trends |
-| 2 | **Copy Trading** | Politician trade disclosures | 10% per position | Insider edge |
+| 2 | **Copy Trading** | Politician disclosures (Capitol Trades) | 10% per position | Insider edge |
 | 3 | **Wheel** | High volatility, $10-$50 price | Built into options | Premium income |
 | 4 | **Mean Reversion** | 15%+ drop on no bad news | 10%, targets 20-day avg | Oversold bounces |
 | 5 | **Breakout** | 20-day high on 2x+ volume | Tight 5% | Explosive moves |
+| 6 | **Short Selling** | Bear market only (SPY 20d < -3%) | 8% tight | Bear plays |
 
-## Scheduled Tasks
+---
 
-| Task ID | Schedule | What It Does |
-|---------|----------|-------------|
-| `auto-deployer` | 9:35 AM ET weekdays | Brain: capital check → screen 12k stocks → pick top 2 → deploy → log to journal → notify |
-| `strategy-monitor` | Every 5 min, market hours | Universal: manages ALL active positions (stops, ladders, profit takes) across any stock |
-| `copy-trading-monitor` | 9:35 AM ET weekdays | Scans Capitol Trades, copies politician trades |
-| `wheel-strategy-monitor` | Every 15 min, market hours | Auto-picks affordable stocks, manages put/call selling |
-| `daily-close-summary` | 4:05 PM ET weekdays | Updates scorecard, takes daily snapshot, runs error recovery, sends summary |
-| `weekly-learning` | Friday 2 PM PT | Self-learning: analyzes trade journal, adjusts strategy weights |
+## Scheduled Tasks (Claude Code)
 
-## 10 Scoring Improvements
+| Task ID | Schedule | Purpose |
+|---------|----------|---------|
+| `auto-deployer` | 9:35 AM ET weekdays | Brain: screen, pick, deploy top 2 stocks |
+| `strategy-monitor` | Every 5 min, market hours | Universal monitor for all positions |
+| `copy-trading-monitor` | 9:35 AM ET weekdays | Scan Capitol Trades, copy politician moves |
+| `wheel-strategy-monitor` | Every 15 min, market hours | Manage put/call selling cycle |
+| `daily-close-summary` | 4:05 PM ET weekdays | Update scorecard, snapshot, recovery |
+| `weekly-learning` | Friday 2 PM PT | Self-learning weight adjustment |
 
-1. Multi-timeframe momentum (5d + 20d)
-2. Relative volume (today vs 20-day average)
-3. Sector diversification (max 2 per sector in top 5)
-4. Earnings date avoidance (-10 penalty)
-5. Dynamic position sizing (volatility-based, max 2% risk)
-6. Profit-taking ladder (sell 25% at +10/+20/+30/+50%)
-7. SPY market regime (bull/neutral/bear adjusts scores)
-8. News sentiment (Alpaca news API keyword analysis)
-9. Daily P&L tracking (alerts if >3% loss)
-10. Backtesting (30-day trailing stop simulation)
+**Note:** Tasks run via Claude Code on user's laptop. For 24/7 cloud execution, see "Cloud Scheduler (Pending)" below.
 
-## 10 Production Readiness Features
-
-1. **Performance Scorecard** — win rate, avg win/loss, profit factor, Sharpe/Sortino ratios
-2. **Push + Email Notifications** — ntfy.sh to phone, email to se2login@gmail.com
-3. **Cloud Hosting** — Railway auto-deploys from GitHub main branch
-4. **Paper-to-Live Readiness Score** — 0-100, must hit 80+ before going live (30 days, 50% win rate, <10% drawdown, 1.5 profit factor, 0.5 Sharpe)
-5. **Trade Journal** — every trade logged with full reasoning and scores
-6. **Error Recovery** — auto-fixes orphan positions, missing stops, stale strategies
-7. **A/B Testing** — compares strategy performance head-to-head in scorecard
-8. **Risk-Adjusted Metrics** — Sharpe ratio, Sortino ratio, max drawdown tracking
-9. **Correlation Guard** — warns if 3+ positions in same sector
-10. **Market Hours Awareness** — won't waste API calls outside trading hours
-
-## Safety & Guard Rails
-
-| Guard Rail | Setting | What It Does |
-|-----------|---------|-------------|
-| Kill Switch | Dashboard button | Cancels all orders, closes all positions, halts everything |
-| Daily Loss Limit | 3% | Auto-triggers kill switch if breached |
-| Max Drawdown | 10% | Circuit breaker from peak portfolio value |
-| Max Positions | 5 | Won't open more until one closes |
-| Max Per Stock | 10% | Limits single-stock exposure |
-| Capital Check | Before every deploy | Won't trade if insufficient free cash |
-| Cooldown | 60 min after loss | Prevents revenge trading |
-| Earnings Filter | Auto-skip | Won't trade stocks near earnings |
-| Bear Market | Pauses aggressive strategies | Only wheel runs in bear markets |
+---
 
 ## Dashboard Features
 
-- Account overview with P&L meters
-- Kill switch button (red, with confirmation modal)
-- Auto-deployer toggle (ON/OFF)
-- "What Happens at Market Open" timeline
-- Top 3 stock picks with 5 strategy score bars + Deploy buttons
-- 5 active strategy cards with Pause/Stop buttons
-- Positions table with Close / Sell Half buttons
-- Orders table with Cancel buttons
-- Full screener (top 50, sortable) with per-row Deploy
-- Activity log with timestamps and color coding
-- Guard rail meters (daily loss, drawdown)
-- Confirmation modals on ALL financial actions showing plain-English P&L estimates
-- Auto-refresh every 60 seconds
+**Header:** Kill switch, auto-deployer toggle, voice control, trading session badge, readiness score
+**Top 3 Picks:** Cards with tech indicators (RSI/MACD/bias), social sentiment, 5 strategy score bars, deploy button
+**6 Active Strategy Cards:** Status badges, pause/stop buttons, ON/OFF toggle for shorts
+**Positions Table:** Close/Sell Half with P&L confirmation modals
+**Orders Table:** Cancel with confirmation
+**Full Screener:** Top 50 sortable with per-row Deploy
+**Short Candidates Section:** Only active in bear markets
+**Tax-Loss Harvesting:** Opportunities with replacement suggestions
+**Visual Backtest:** Interactive stock selector with equity curve chart
+**Readiness Scorecard:** Progress toward going live (80/100 target)
+**Economic Calendar Banner:** FOMC/opex alerts
+**Strategy Marketplace:** Conservative/Moderate/Aggressive presets + export/import
+**Activity Log:** Color-coded with timestamps
+**Correlation Warnings:** Sector concentration alerts
+**Mobile PWA:** Installable on phone
+
+All financial actions require confirmation modals with plain-English P&L estimates.
+
+---
+
+## Safety & Guard Rails
+
+| Rail | Setting | Enforced By |
+|------|---------|-------------|
+| Kill switch | Dashboard button | All trading tasks check first |
+| Daily loss limit | 3% | Auto-triggers kill switch |
+| Max drawdown | 10% | Circuit breaker from peak |
+| Max positions | 5 | Blocks new deploys |
+| Max per stock | 10% of portfolio | Position sizing |
+| Capital check | Before every deploy | capital_check.py |
+| Cooldown | 60 min after loss | last_loss_time check |
+| Earnings filter | Auto-skip | News API scan |
+| Bear market | Shorts only, others pause | market_regime check |
+| Short-specific | 48hr cooldown after loss | last_short_loss_time |
+| Meme filter | Skip shorts on meme stocks | StockTwits buzz check |
+
+---
 
 ## Notifications
 
-| Type | Push (Phone) | Email | When |
-|------|-------------|-------|------|
-| Trade placed | Yes | Yes | New position opened |
-| Position closed | Yes | Yes | Stop hit or profit taken |
-| Stop triggered | Yes (high priority) | Yes | Stop-loss fired |
-| Kill switch | Yes (max priority) | Yes | Emergency halt |
-| Daily summary | Yes | Yes | Market close recap |
-| Learning update | Yes | No | Weekly weight adjustment |
-| Info | Yes | No | Routine updates |
+Free via ntfy.sh. Install app on phone, subscribe to topic `alpaca-trading-bot-kevin`.
 
-**Phone setup:** Install [ntfy app](https://ntfy.sh), subscribe to topic `alpaca-trading-bot-kevin`
+| Type | Priority | When |
+|------|----------|------|
+| trade | Normal | New position opened |
+| exit | Normal | Profit taken |
+| stop | High | Stop-loss fired |
+| alert | Urgent | Drawdown/correlation warnings |
+| kill | Max | Kill switch activated |
+| daily | Low | 4 PM ET close summary |
+| learn | Low | Weekly learning update |
 
-## Self-Learning Engine
+Important types also queue emails to se2login@gmail.com.
 
-Runs weekly (Fridays). Analyzes the trade journal and adjusts strategy scoring:
-- **Strategy multipliers:** Boosts strategies with >60% win rate (1.2x), reduces <40% (0.7x)
-- **Signal analysis:** Identifies which entry signals (momentum, volume, sentiment) correlate with wins
-- **Price range preferences:** Finds optimal price range per strategy
-- **Holding period:** Finds optimal trade duration per strategy
-- **Confidence:** Low (<20 trades) → Medium (20-50) → High (50+)
+---
 
-## Cloud Hosting (Railway)
+## 10 Scoring Improvements + 15 Advanced Features
 
-**GitHub:** https://github.com/Kbell0629/alpaca-trading-bot
-**Auto-deploy:** Push to `main` → Railway deploys automatically
+**Scoring:** Multi-timeframe momentum, relative volume, sector diversification, earnings avoidance, dynamic position sizing, profit-taking ladder, SPY market regime, news sentiment, daily P&L tracking, backtesting
 
-### Railway Setup (one-time, in Terminal)
-```bash
-cd "/Users/kevinbell/Alpaca Trading"
-railway login                    # Opens browser for auth
-railway init                     # Create project "alpaca-trading-bot"
-railway variables set ALPACA_API_KEY=<your-api-key>
-railway variables set ALPACA_API_SECRET=<your-api-secret>
-railway variables set ALPACA_ENDPOINT=https://paper-api.alpaca.markets/v2
-railway variables set ALPACA_DATA_ENDPOINT=https://data.alpaca.markets/v2
-railway variables set NTFY_TOPIC=alpaca-trading-bot-kevin
-railway variables set NOTIFICATION_EMAIL=se2login@gmail.com
-railway up                       # Deploy
-```
+**Advanced:** Technical indicators, real-time monitor, economic calendar, social sentiment, options chain, extended hours, short selling, correlation matrix, mobile PWA, visual backtesting, multi-account, tax-loss harvesting, voice interface, strategy marketplace
 
-Then connect GitHub: Railway dashboard → Project → Settings → Connect Repo → `Kbell0629/alpaca-trading-bot`
-
-**Note:** Scheduled tasks run locally via Claude Code (they need Claude). The dashboard server runs on Railway for 24/7 access.
-
-## Going Live (Future)
-
-When the readiness score hits 80+ after 30 days of paper trading:
-
-1. Create a live Alpaca account and fund with $5k
-2. Generate live API keys (endpoint: `api.alpaca.markets` instead of `paper-api.alpaca.markets`)
-3. Update environment variables:
-   - `ALPACA_API_KEY` → live key
-   - `ALPACA_API_SECRET` → live secret
-   - `ALPACA_ENDPOINT` → `https://api.alpaca.markets/v2`
-4. Update guardrails for $5k:
-   - Max positions: 3
-   - Max per stock: 5% ($250)
-   - Max new per day: 1
-   - Wheel: stocks under $50 only
-5. Keep paper account running in parallel to compare
+---
 
 ## Architecture
 
 ```
 Morning (9:35 AM ET):
-  capital_check.py → Can we trade?
-  auto-deployer → update_dashboard.py (screen 12k stocks, ~47s)
-                 → Pick top 2, deploy via Alpaca API
-                 → Log to trade_journal.json
-                 → notify.py (push + email)
-                 → update_scorecard.py
-                 → error_recovery.py
+  auto-deployer → capital_check.py (safety)
+                → update_dashboard.py (screen 12k stocks, ~47s)
+                → Pick top 2, deploy via Alpaca API
+                → Log to trade_journal.json
+                → notify.py (push + email)
+                → update_scorecard.py
+                → error_recovery.py
 
 During Market Hours:
   strategy-monitor (5 min) → Manage all active positions
-  wheel-strategy-monitor (15 min) → Manage options wheel
-  
-Market Close (4:05 PM ET):
-  daily-close-summary → Snapshot portfolio
-                      → Update scorecard
-                      → Check readiness
-                      → Send daily summary
+  wheel-strategy-monitor (15 min) → Manage options cycle
 
-Weekly (Friday 2 PM):
-  learn.py → Analyze journal → Adjust weights → Better picks next week
+Market Close (4:05 PM ET):
+  daily-close-summary → Snapshot + scorecard + readiness check + summary
+
+Weekly (Friday 2 PM PT):
+  weekly-learning → Analyze journal → Adjust weights
 ```
+
+---
+
+## Cloud Scheduler (Pending)
+
+Currently scheduled tasks run via Claude Code on laptop. For full 24/7 autonomy on Railway without laptop:
+
+**Status:** Proposed but not built. User decided frequency is fine at 30 min screener / 60 sec monitor / daily auto-deploy / EOD close.
+
+**To build:** `cloud_scheduler.py` — Python threading-based scheduler that runs inside server.py. Implements:
+- Screener every 30 min during market hours
+- Strategy monitor every 60s during market hours
+- Auto-deployer at 9:35 AM ET daily
+- Daily close at 4:05 PM ET
+- Weekly learning Fridays 5 PM ET
+
+When built, adds `/api/scheduler-status` endpoint and "24/7 CLOUD" badge to dashboard header.
+
+---
+
+## Going Live ($5k Account)
+
+When readiness score hits 80/100 after 30 days:
+1. Create live Alpaca account, fund $5k
+2. Generate live API keys
+3. Update Railway env vars:
+   - `ALPACA_ENDPOINT=https://api.alpaca.markets/v2`
+   - New live key and secret
+4. Update `guardrails.json` to live_mode_settings (max 3 positions, 5% per stock, 1 new/day)
+5. Keep paper running in parallel to validate
+
+---
 
 ## Common Commands
 
 ```
-/stock-bot                          # Launch bot skill, see picks
+/stock-bot                          # Launch bot skill
 "Run trailing stop on NVDA"         # Deploy trailing stop
-"Start wheel on SOFI"               # Deploy wheel strategy
+"Start wheel on SOFI"               # Deploy wheel
 "Set up copy trading"               # Start copy trading
-"Show me the dashboard"             # Open dashboard
-"Pause the auto-deployer"           # Turn off auto mode
+"Kill switch"                       # Emergency stop
 "What's my P&L?"                    # Check positions
-"Check readiness score"             # Am I ready for live?
-"Run the learning engine"           # Force a learning cycle
+"Check readiness score"             # Ready for live?
+"Refresh dashboard"                 # Force screener rerun
 ```
+
+---
+
+## Recent Major Changes
+
+- **2026-04-16:** Built all 6 strategies, 40+ features, cloud hosting, PWA, voice control
+- **2026-04-16:** Removed all hardcoded secrets, scrubbed git history
+- **2026-04-16:** Full audit: fixed 57 + 20 + 10 issues across code, configs, UI
+- **2026-04-16:** Added short selling as 6th strategy with bear-market gating + ON/OFF toggle
+- **2026-04-16:** Interactive backtest with stock selector + plain-language explanation
+
+---
+
+## Known Issues / Decisions Pending
+
+1. **Cloud scheduler not yet built** — tasks run via laptop Claude Code. Railway deployment shows empty screener without local `dashboard_data.json` push. User said we'll build this next.
+2. **PWA icons** — gradient placeholders. Could design proper icons later.
+3. **Options API** — wheel strategy falls back to simulation if Alpaca options API unavailable.
+4. **Duplicate SECTOR_MAP** — exists in update_dashboard.py and update_scorecard.py. Not a bug, could refactor to shared module.
