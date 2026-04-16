@@ -44,6 +44,8 @@ Tracker for the 20 profit-enhancement features proposed after the initial build.
 - **Screener optimized 2026-04-16** — 60-80s → 48-51s locally via parallel batch fetching (6 workers), parallel historical bars, parallel sector ETFs, sector rotation cached 1hr, ENRICH_TOP_N 100→50, parallel news/social sentiment.
 - **Railway volume persistence 2026-04-16** — `DATA_DIR` abstraction across all runtime code. Railway volume `web-volume` mounted at `/data` via `railway volume add --mount-path /data`. `DATA_DIR=/data` env var set. users.db, users/, strategies/, and all runtime JSON now persist across redeploys. Solved ephemeral filesystem wipeouts.
 - **SOXL orphan recovery 2026-04-16** — First-day trade (SOXL 117@$85.11, stop@$76.60) lost strategy file due to Railway redeploy before volume was set up. `recover_soxl.py` script rebuilds strategy file from live Alpaca position data.
+- **Dashboard per-user picks fix 2026-04-16** — After multi-user + volume migrations, screener wrote to `users/{id}/dashboard_data.json` but dashboard read from shared path → showed 0 picks. Fixed: `get_dashboard_data(user_id=...)` reads per-user path first.
+- **Force Deploy button 2026-04-16** — New `/api/force-auto-deploy` endpoint + ⚡ Force Deploy button in dashboard header. Bypasses once-per-day lock so user can trigger a full auto-deploy cycle on demand. Guardrails still apply.
 
 ## Future Improvements (User-Deferred)
 
