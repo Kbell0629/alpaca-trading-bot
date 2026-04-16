@@ -2119,14 +2119,14 @@ def scheduler_loop():
                     if market_open_flag and should_run_interval(f"monitor_{uid}", 60):
                         monitor_strategies(user)
 
-                    # Daily close: weekdays 4:05 PM ET
-                    if is_weekday and now_et.hour == 16 and now_et.minute >= 5:
-                        # Wide window — daily close is a reporting task
-                        # (scorecard + audit log); safe to run hours late
-                        # if a Railway redeploy straddled 4:05 PM. Unlike
-                        # auto-deployer where firing 4 hours late would
-                        # mean trading on stale screener data, daily close
-                        # just captures end-of-day state.
+                    # Daily close: weekdays 4:05 PM ET — check anywhere
+                    # from 4:05 PM to 8:00 PM so a container restart
+                    # crossing the target still recovers. The previous
+                    # gate `hour == 16` locked this to a 55-min window,
+                    # so a 5:00 PM+ restart would silently skip today's
+                    # close. should_run_daily_at's max_late_seconds=4hr
+                    # enforces the same bound with its time math.
+                    if is_weekday and (now_et.hour == 16 or (now_et.hour >= 17 and now_et.hour < 20)):
                         if should_run_daily_at(f"daily_close_{uid}", 16, 5, max_late_seconds=4*3600):
                             run_daily_close(user)
 
