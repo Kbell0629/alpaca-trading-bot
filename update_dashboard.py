@@ -119,6 +119,20 @@ EARNINGS_PATTERN = re.compile(r'\b(earnings|quarterly results|revenue report|gui
 Q_PATTERN = re.compile(r'\bQ[1-4]\b')
 
 
+# --- Economic Calendar & Social Sentiment (free modules) ---
+try:
+    from economic_calendar import get_market_risk_level
+except ImportError:
+    def get_market_risk_level():
+        return {"risk_level": "normal", "recommendation": "Economic calendar module not found.", "events": [], "high_impact_count": 0, "medium_impact_count": 0}
+
+try:
+    from social_sentiment import get_social_sentiment
+except ImportError:
+    def get_social_sentiment(symbol):
+        return {"symbol": symbol, "overall_sentiment": "unknown", "overall_score": 0, "social_volume": 0, "is_trending": False, "sources": [], "strategy_adjustments": {}, "meme_warning": False}
+
+
 def api_get(url, timeout=15):
     """Make an authenticated GET request to Alpaca API (no retry, legacy)."""
     req = urllib.request.Request(url, headers=HEADERS)
@@ -678,6 +692,15 @@ def fetch_all_data():
     # Apply market regime to all picks (Improvement 7)
     apply_market_regime(picks, market_info["market_regime"])
 
+    # --- Economic Calendar: check risk level ONCE (not per stock) ---
+    print("Checking economic calendar for market-moving events...")
+    econ_risk = get_market_risk_level()
+    econ_risk_level = econ_risk["risk_level"]
+    print(f"  Economic risk level: {econ_risk_level.upper()} -- {econ_risk['recommendation']}")
+    if econ_risk["events"]:
+        for ev in econ_risk["events"][:5]:
+            print(f"    [{ev['impact'].upper()}] {ev['date']}: {ev['event']}")
+
     # --- Enrich top 100 candidates ---
     top_candidates = picks[:100]
     if top_candidates:
@@ -690,11 +713,35 @@ def fetch_all_data():
             try:
                 bars_20d = fetch_historical_bars(sym, days=20)
                 enrich_with_momentum(pick, bars_20d)
+
+                # Technical Indicators (uses the same bars we already fetched)
+                from indicators import analyze_stock
+                if bars_20d and len(bars_20d) >= 14:
+                    tech = analyze_stock(bars_20d)
+                    pick["technical"] = tech
+                    pick["rsi"] = tech.get("rsi", 50)
+                    pick["macd_histogram"] = tech.get("macd_histogram", 0)
+                    pick["overall_bias"] = tech.get("overall_bias", "neutral")
+
+                    # Apply indicator score adjustments to all strategies
+                    for strat, adj in tech.get("strategy_adjustments", {}).items():
+                        key = f"{strat}_score"
+                        if key in pick:
+                            pick[key] += adj
+                else:
+                    pick["technical"] = {}
+                    pick["rsi"] = 50
+                    pick["macd_histogram"] = 0
+                    pick["overall_bias"] = "neutral"
             except Exception as e:
                 print(f"    Error fetching bars for {sym}: {e}")
                 pick["momentum_5d"] = 0.0
                 pick["momentum_20d"] = 0.0
                 pick["relative_volume"] = 1.0
+                pick["technical"] = {}
+                pick["rsi"] = 50
+                pick["macd_histogram"] = 0
+                pick["overall_bias"] = "neutral"
             time.sleep(0.15)  # rate limit
 
         # Improvement 4 & 8: News sentiment + earnings avoidance for top 20
@@ -720,6 +767,62 @@ def fetch_all_data():
             pick.setdefault("earnings_warning", False)
             pick.setdefault("news_sentiment", "neutral")
             pick.setdefault("sentiment_score", 0)
+
+        # --- Social Sentiment for top 10 candidates ---
+        print("Fetching social sentiment for top 10 candidates...")
+        for i, pick in enumerate(top_candidates[:10]):
+            sym = pick["symbol"]
+            try:
+                social = get_social_sentiment(sym)
+                pick["social_sentiment"] = social.get("overall_sentiment", "unknown")
+                pick["social_score"] = social.get("overall_score", 0)
+                pick["social_volume"] = social.get("social_volume", 0)
+                pick["social_trending"] = social.get("is_trending", False)
+                pick["meme_warning"] = social.get("meme_warning", False)
+                pick["meme_note"] = social.get("meme_note", "")
+
+                # Apply strategy adjustments from social sentiment
+                adj = social.get("strategy_adjustments", {})
+                if adj:
+                    pick["trailing_score"] += adj.get("trailing_stop", 0)
+                    pick["copy_score"] += adj.get("copy_trading", 0)
+                    pick["wheel_score"] += adj.get("wheel", 0)
+                    pick["mean_reversion_score"] += adj.get("mean_reversion", 0)
+                    pick["breakout_score"] += adj.get("breakout", 0)
+
+                    # Recalculate best strategy after social adjustments
+                    pick["scores"] = {
+                        "Trailing Stop": pick["trailing_score"],
+                        "Copy Trading": pick["copy_score"],
+                        "Wheel Strategy": pick["wheel_score"],
+                        "Mean Reversion": pick["mean_reversion_score"],
+                        "Breakout": pick["breakout_score"],
+                    }
+                    pick["best_strategy"] = max(pick["scores"], key=pick["scores"].get)
+                    pick["best_score"] = pick["scores"][pick["best_strategy"]]
+
+                if social.get("overall_sentiment") != "unknown":
+                    print(f"    {sym}: social={social['overall_sentiment']} ({social['overall_score']:+.1f}), "
+                          f"vol={social['social_volume']}, trending={social['is_trending']}"
+                          + (f" MEME WARNING" if social.get("meme_warning") else ""))
+            except Exception as e:
+                print(f"    Error fetching social sentiment for {sym}: {e}")
+                pick["social_sentiment"] = "unknown"
+                pick["social_score"] = 0
+                pick["social_volume"] = 0
+                pick["social_trending"] = False
+                pick["meme_warning"] = False
+                pick["meme_note"] = ""
+            time.sleep(0.3)  # rate limit for StockTwits
+
+        # Set social defaults for candidates 10-100 that didn't get social data
+        for pick in top_candidates[10:]:
+            pick.setdefault("social_sentiment", "unknown")
+            pick.setdefault("social_score", 0)
+            pick.setdefault("social_volume", 0)
+            pick.setdefault("social_trending", False)
+            pick.setdefault("meme_warning", False)
+            pick.setdefault("meme_note", "")
 
     # --- Apply learned weights from self-learning engine ---
     learned = load_json(os.path.join(BASE_DIR, "learned_weights.json"))
@@ -866,11 +969,17 @@ def fetch_all_data():
         pick.setdefault("backtest_detail", None)
 
     # Improvement 5: Position sizing for top candidates
-    print("Calculating position sizes...")
+    # If economic calendar risk is high/extreme, reduce position sizes by 50%
+    econ_size_multiplier = 0.5 if econ_risk_level in ("high", "extreme") else 1.0
+    if econ_size_multiplier < 1.0:
+        print(f"Calculating position sizes (REDUCED 50% due to {econ_risk_level} economic risk)...")
+    else:
+        print("Calculating position sizes...")
     for pick in top_candidates:
-        pick["recommended_shares"] = calc_position_size(
+        base_shares = calc_position_size(
             pick["price"], pick["volatility"], portfolio_value
         )
+        pick["recommended_shares"] = max(1, int(base_shares * econ_size_multiplier))
 
     # Improvement 6: Add profit ladder to all top candidates
     for pick in top_candidates:
@@ -895,6 +1004,12 @@ def fetch_all_data():
         p.setdefault("backtest_detail", None)
         p.setdefault("recommended_shares", 0)
         p.setdefault("profit_ladder", None)
+        p.setdefault("social_sentiment", "unknown")
+        p.setdefault("social_score", 0)
+        p.setdefault("social_volume", 0)
+        p.setdefault("social_trending", False)
+        p.setdefault("meme_warning", False)
+        p.setdefault("meme_note", "")
 
     all_picks = top_candidates + remaining
 
@@ -919,6 +1034,14 @@ def fetch_all_data():
         "total_passed": len(all_picks),
         "market_regime": market_info["market_regime"],
         "spy_momentum_20d": market_info["spy_momentum_20d"],
+        "economic_calendar": {
+            "risk_level": econ_risk_level,
+            "recommendation": econ_risk["recommendation"],
+            "events": econ_risk["events"],
+            "high_impact_count": econ_risk["high_impact_count"],
+            "medium_impact_count": econ_risk["medium_impact_count"],
+            "position_size_multiplier": econ_size_multiplier,
+        },
         "pnl": pnl_data,
         "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
     }
@@ -1340,6 +1463,7 @@ def save_data_json(data):
         "total_passed": data["total_passed"],
         "market_regime": data["market_regime"],
         "spy_momentum_20d": data["spy_momentum_20d"],
+        "economic_calendar": data.get("economic_calendar", {}),
         "pnl": data["pnl"],
         "updated_at": data["updated_at"],
         "trailing_strategy": data["trailing"],
@@ -1368,6 +1492,9 @@ def main():
 
     # Summary
     print(f"\nMarket regime: {data['market_regime']} (SPY 20d: {data['spy_momentum_20d']:+.1f}%)")
+    econ = data.get("economic_calendar", {})
+    if econ:
+        print(f"Economic calendar: {econ.get('risk_level', 'N/A').upper()} risk -- {econ.get('recommendation', '')}")
     pnl = data["pnl"]
     print(f"Portfolio P&L: ${pnl['total_portfolio_pnl']:,.2f} ({pnl['daily_pnl_pct']:+.1f}%)")
     if pnl["alert_triggered"]:
@@ -1389,6 +1516,10 @@ def main():
                 extras.append(f"news:{p['news_sentiment']}")
             if p.get("earnings_warning"):
                 extras.append("EARNINGS!")
+            if p.get("social_sentiment", "unknown") not in ("unknown", "neutral"):
+                extras.append(f"social:{p['social_sentiment']}")
+            if p.get("meme_warning"):
+                extras.append("MEME!")
             extra_str = f" [{', '.join(extras)}]" if extras else ""
             print(f"  {i+1}. {p['symbol']} ({p['sector']}) - {p['best_strategy']}, score {p['best_score']:.0f}, {p['recommended_shares']} shares{extra_str}")
     elif data["picks"]:

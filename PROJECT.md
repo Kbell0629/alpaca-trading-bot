@@ -161,8 +161,8 @@ Runs weekly (Fridays). Analyzes the trade journal and adjusts strategy scoring:
 cd "/Users/kevinbell/Alpaca Trading"
 railway login                    # Opens browser for auth
 railway init                     # Create project "alpaca-trading-bot"
-railway variables set ALPACA_API_KEY=
-railway variables set ALPACA_API_SECRET=
+railway variables set ALPACA_API_KEY=<your-api-key>
+railway variables set ALPACA_API_SECRET=<your-api-secret>
 railway variables set ALPACA_ENDPOINT=https://paper-api.alpaca.markets/v2
 railway variables set ALPACA_DATA_ENDPOINT=https://data.alpaca.markets/v2
 railway variables set NTFY_TOPIC=alpaca-trading-bot-kevin
