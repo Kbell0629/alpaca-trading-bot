@@ -220,12 +220,47 @@ def get_dashboard_data(api_endpoint=None, api_headers=None, user_id=None):
         data["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         data["api_errors"] = api_errors
         # Strategy files and per-user config — all per-user paths
-        data["trailing"] = load_json(os.path.join(_user_strats, "trailing_stop.json")) or data.get("trailing")
-        data["copy_trading"] = load_json(os.path.join(_user_strats, "copy_trading.json")) or data.get("copy_trading")
-        data["wheel"] = load_json(os.path.join(_user_strats, "wheel_strategy.json")) or data.get("wheel")
-        data["scorecard"] = load_json(os.path.join(_user_dir, "scorecard.json")) or data.get("scorecard", {})
-        data["auto_deployer_config"] = load_json(os.path.join(_user_dir, "auto_deployer_config.json")) or {}
-        data["guardrails"] = load_json(os.path.join(_user_dir, "guardrails.json")) or {}
+        # Helper: load per-user file, fall back to shared DATA_DIR copy (for
+        # users whose files predate the multi-user file isolation migration).
+        def _load_with_shared_fallback(user_path, shared_path):
+            val = load_json(user_path)
+            if val:
+                return val
+            val = load_json(shared_path)
+            # One-shot migrate into user's dir so subsequent reads are fast
+            if val and user_id is not None:
+                try:
+                    import shutil
+                    os.makedirs(os.path.dirname(user_path) or ".", exist_ok=True)
+                    shutil.copy2(shared_path, user_path)
+                except Exception:
+                    pass
+            return val
+
+        data["trailing"] = _load_with_shared_fallback(
+            os.path.join(_user_strats, "trailing_stop.json"),
+            os.path.join(STRATEGIES_DIR, "trailing_stop.json"),
+        ) or data.get("trailing")
+        data["copy_trading"] = _load_with_shared_fallback(
+            os.path.join(_user_strats, "copy_trading.json"),
+            os.path.join(STRATEGIES_DIR, "copy_trading.json"),
+        ) or data.get("copy_trading")
+        data["wheel"] = _load_with_shared_fallback(
+            os.path.join(_user_strats, "wheel_strategy.json"),
+            os.path.join(STRATEGIES_DIR, "wheel_strategy.json"),
+        ) or data.get("wheel")
+        data["scorecard"] = _load_with_shared_fallback(
+            os.path.join(_user_dir, "scorecard.json"),
+            os.path.join(DATA_DIR, "scorecard.json"),
+        ) or data.get("scorecard", {})
+        data["auto_deployer_config"] = _load_with_shared_fallback(
+            os.path.join(_user_dir, "auto_deployer_config.json"),
+            os.path.join(DATA_DIR, "auto_deployer_config.json"),
+        ) or {}
+        data["guardrails"] = _load_with_shared_fallback(
+            os.path.join(_user_dir, "guardrails.json"),
+            os.path.join(DATA_DIR, "guardrails.json"),
+        ) or {}
         return data
     # Fallback: build from strategy files and API
     trailing = load_json(os.path.join(_user_strats, "trailing_stop.json"))
