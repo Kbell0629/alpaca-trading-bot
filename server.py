@@ -1926,12 +1926,23 @@ function renderDashboard() {
 
     // Short candidates section
     const shortCands = d.short_candidates || [];
+    const marketRegime = (d.market_regime || (d.economic_calendar && d.economic_calendar.market_regime) || 'neutral');
+    const spyMom20 = (typeof d.spy_momentum_20d === 'number') ? d.spy_momentum_20d : 0;
+    const shortsUnlocked = (marketRegime === 'bear' && spyMom20 < -3);
+    const shortBadge = shortsUnlocked
+        ? '<span class="badge-active" style="background:rgba(239,68,68,0.15);color:var(--red)">SHORTS ENABLED</span>'
+        : '<span class="badge-pending">SHORTS DISABLED</span>';
+    const shortStatusLine = shortsUnlocked
+        ? 'Bear market conditions confirmed &mdash; SPY 20d ' + fmtPct(spyMom20) + ' (threshold: &lt; -3%). Auto-deployer may deploy up to 1 short.'
+        : 'Shorts unlock in bear market (SPY currently ' + fmtPct(spyMom20) + ' in 20d, need &lt; -3% AND regime = bear). Current regime: <strong>' + esc(marketRegime) + '</strong>';
+
     let shortHtml = '';
     if (shortCands.length > 0) {
         let rows = '';
         shortCands.forEach(function(sc) {
+            const memeFlag = sc.meme_warning ? ' <span style="color:var(--orange);font-weight:700">MEME!</span>' : '';
             rows += '<tr>' +
-                '<td><strong>' + esc(sc.symbol) + '</strong></td>' +
+                '<td><strong>' + esc(sc.symbol) + '</strong>' + memeFlag + '</td>' +
                 '<td>' + fmtMoney(sc.price) + '</td>' +
                 '<td style="font-weight:700">' + (sc.short_score||0) + '</td>' +
                 '<td class="negative">' + fmtPct(sc.momentum_20d||0) + '</td>' +
@@ -1942,9 +1953,17 @@ function renderDashboard() {
             '</tr>';
         });
         shortHtml = '<div class="short-section" id="section-shorts">' +
-            '<h3>\u{1F4C9} Short Selling Candidates (Bear Market Plays)</h3>' +
+            '<h3>\u{1F4C9} Short Selling Candidates (Bear Market Plays) ' + shortBadge + '</h3>' +
+            '<div style="font-size:12px;color:var(--text-dim);margin-bottom:12px">' + shortStatusLine + '</div>' +
             '<table><thead><tr><th>Symbol</th><th>Price</th><th>Score</th><th>20d Mom</th><th>Stop</th><th>Target</th><th>R:R</th><th>Reasons</th></tr></thead>' +
             '<tbody>' + rows + '</tbody></table></div>';
+    } else {
+        // Still show the section with status even if no candidates
+        shortHtml = '<div class="short-section" id="section-shorts">' +
+            '<h3>\u{1F4C9} Short Selling Candidates (Bear Market Plays) ' + shortBadge + '</h3>' +
+            '<div style="font-size:12px;color:var(--text-dim)">' + shortStatusLine + '</div>' +
+            '<div class="empty" style="padding:16px;color:var(--text-dim)">No short candidates scored above threshold today.</div>' +
+            '</div>';
     }
 
     // Tax-loss harvesting section

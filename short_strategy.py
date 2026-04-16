@@ -110,6 +110,9 @@ def identify_short_candidates(picks):
             "daily_change": daily_change,
             "rsi": rsi,
             "sentiment": sentiment,
+            "meme_warning": pick.get("meme_warning", False),
+            "meme_note": pick.get("meme_note", ""),
+            "social_sentiment": pick.get("social_sentiment", "unknown"),
         })
 
     short_candidates.sort(key=lambda x: x["short_score"], reverse=True)

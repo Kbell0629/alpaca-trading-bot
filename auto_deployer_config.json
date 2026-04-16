@@ -15,6 +15,18 @@
     "default_stop_loss_pct": 0.1,
     "breakout_stop_loss_pct": 0.05
   },
+  "short_selling": {
+    "enabled": true,
+    "only_in_bear_market": true,
+    "max_short_positions": 1,
+    "min_short_score": 15,
+    "max_portfolio_pct_per_short": 0.05,
+    "stop_loss_pct": 0.08,
+    "profit_target_pct": 0.15,
+    "require_spy_20d_below": -3,
+    "skip_if_meme_warning": true,
+    "note": "Shorts only deploy in bear markets with tight 8% stops. Max 1 short at a time."
+  },
   "last_deploy_date": null,
   "deploy_history": [],
   "last_toggled": "2026-04-16 00:27:33 UTC"
