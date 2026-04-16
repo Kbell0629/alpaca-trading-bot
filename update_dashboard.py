@@ -1846,6 +1846,9 @@ def save_data_json(data):
         "short_candidates": data.get("short_candidates", []),
         "trading_session": data.get("trading_session", "unknown"),
         "options_data": data.get("options_data"),
+        "earnings_candidates": data.get("earnings_candidates", []),
+        "news_signals": data.get("news_signals", {"actionable": []}),
+        "options_flow": data.get("options_flow", []),
     }
     safe_save_json(DATA_JSON_PATH, output)
     print(f"Data JSON saved: {DATA_JSON_PATH}")
