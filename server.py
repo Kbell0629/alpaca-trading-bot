@@ -2757,11 +2757,14 @@ function renderDashboard() {
     if (!scrHtml) scrHtml = '<tr><td colspan="10" class="empty">No screener data - market may be closed</td></tr>';
 
     // Trading session badge
+    // Backend (extended_hours.py) emits: 'market' | 'pre_market' | 'after_hours' | 'closed' | 'unknown'.
+    // We also accept other common aliases ('open', 'regular') just in case.
     const session = (d.trading_session || 'closed').toLowerCase();
     let sessionLabel = 'CLOSED', sessionClass = 'session-closed';
     if (session === 'pre-market' || session === 'pre_market' || session === 'premarket') { sessionLabel = 'PRE-MARKET'; sessionClass = 'session-pre'; }
-    else if (session === 'open' || session === 'market_open' || session === 'regular') { sessionLabel = 'MARKET OPEN'; sessionClass = 'session-open'; }
+    else if (session === 'market' || session === 'open' || session === 'market_open' || session === 'regular') { sessionLabel = 'MARKET OPEN'; sessionClass = 'session-open'; }
     else if (session === 'after-hours' || session === 'after_hours' || session === 'afterhours' || session === 'post_market') { sessionLabel = 'AFTER HOURS'; sessionClass = 'session-after'; }
+    else if (session === 'unknown') { sessionLabel = 'UNKNOWN'; sessionClass = 'session-closed'; }
 
     // Readiness score for header
     const scorecard = d.scorecard || {};
