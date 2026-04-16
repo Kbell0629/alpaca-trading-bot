@@ -265,6 +265,9 @@ When readiness score hits 80/100 after 30 days:
 - **2026-04-16:** Full audit: fixed 57 + 20 + 10 issues across code, configs, UI
 - **2026-04-16:** Added short selling as 6th strategy with bear-market gating + ON/OFF toggle
 - **2026-04-16:** Interactive backtest with stock selector + plain-language explanation
+- **2026-04-16:** Built cloud_scheduler.py — bot now 24/7 autonomous on Railway, laptop not required
+- **2026-04-16:** Disabled all Claude Code scheduled tasks to prevent duplicates
+- **2026-04-16:** Dashboard Scheduler tab with live task status + log feed
 
 ---
 
@@ -274,3 +277,22 @@ When readiness score hits 80/100 after 30 days:
 2. **Options API** — wheel strategy falls back to simulation if Alpaca options API unavailable.
 3. **Duplicate SECTOR_MAP** — exists in update_dashboard.py and update_scorecard.py. Not a bug, could refactor to shared module.
 4. **Short selling auto-deploy** — cloud scheduler logs short candidates but doesn't auto-deploy yet (TODO marker in code). Manual deploy from dashboard works.
+
+---
+
+## First Market Day Expectations
+
+**Date:** 2026-04-16 (tomorrow at bot build time)
+
+| Time (ET) | Expected Event |
+|---|---|
+| 9:30 AM | Market opens. Cloud scheduler detects via Alpaca /v2/clock |
+| ~9:30-9:35 | First screener run (~47 sec, screens 12k+ stocks) |
+| 9:35 AM | Auto-deployer fires: capital check → pick top 2 → place market buys → log → notify |
+| 9:36+ | Strategy monitor every 60s: places stops as buys fill, manages trailing |
+| Every 30 min | Screener refreshes |
+| Every 15 min | Wheel strategy check (if active) |
+| 4:00 PM | Market closes |
+| 4:05 PM | Daily close summary → push + email notification |
+
+User will receive push notifications on phone (ntfy app, topic `alpaca-trading-bot-kevin`) for trade events.
