@@ -46,8 +46,12 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # path (e.g. /data). Locally defaults to BASE_DIR so nothing changes.
 DATA_DIR = os.environ.get("DATA_DIR", BASE_DIR)
 os.makedirs(DATA_DIR, exist_ok=True)
-TRADE_JOURNAL_PATH = os.path.join(DATA_DIR, "trade_journal.json")
-LEARNED_WEIGHTS_PATH = os.path.join(DATA_DIR, "learned_weights.json")
+# Per-user paths — cloud_scheduler.run_weekly_learning passes
+# TRADE_JOURNAL_PATH and LEARNED_WEIGHTS_PATH env vars pointing to the
+# current user's dir. CRITICAL: without this override, every user's
+# weekly learning overwrote the same shared learned_weights.json.
+TRADE_JOURNAL_PATH = os.environ.get("TRADE_JOURNAL_PATH", os.path.join(DATA_DIR, "trade_journal.json"))
+LEARNED_WEIGHTS_PATH = os.environ.get("LEARNED_WEIGHTS_PATH", os.path.join(DATA_DIR, "learned_weights.json"))
 
 # Maximum weight change per update (20%)
 MAX_CHANGE = 0.2

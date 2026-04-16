@@ -197,12 +197,18 @@ def get_dashboard_data(api_endpoint=None, api_headers=None, user_id=None):
         _user_dir = DATA_DIR
         _user_strats = STRATEGIES_DIR
 
-    # Look for per-user dashboard data first, then shared, then legacy
+    # Per-user dashboard data. CRITICAL: do NOT fall back to the shared
+    # DASHBOARD_DATA_PATH for authenticated non-admin users — that would
+    # leak another user's screener picks. Only user_id==1 (bootstrap admin)
+    # may read the legacy shared file; everyone else sees empty picks until
+    # their own screener runs (up to 30 min after signup).
     data = None
     if user_id is not None:
         data = load_json(os.path.join(_user_dir, "dashboard_data.json"))
-    if not data:
-        data = load_json(DASHBOARD_DATA_PATH)
+        if not data and user_id == 1:
+            data = load_json(DASHBOARD_DATA_PATH)
+    else:
+        data = load_json(DASHBOARD_DATA_PATH)  # env-mode legacy
     if data:
         # Always refresh live data from Alpaca (using cached API calls)
         account = alpaca_get_cached(f"{ep}/account", headers=api_headers)
@@ -220,22 +226,25 @@ def get_dashboard_data(api_endpoint=None, api_headers=None, user_id=None):
         data["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         data["api_errors"] = api_errors
         # Strategy files and per-user config — all per-user paths
-        # Helper: load per-user file, fall back to shared DATA_DIR copy (for
-        # users whose files predate the multi-user file isolation migration).
+        # Helper: load per-user file. Fallback to shared DATA_DIR only for
+        # user_id=1 (bootstrap admin) — the legacy single-user config lives
+        # there. OTHER users must never read shared files, or they'd inherit
+        # Kevin's active strategies/guardrails/auto-deployer config.
         def _load_with_shared_fallback(user_path, shared_path):
             val = load_json(user_path)
             if val:
                 return val
-            val = load_json(shared_path)
-            # One-shot migrate into user's dir so subsequent reads are fast
-            if val and user_id is not None:
-                try:
-                    import shutil
-                    os.makedirs(os.path.dirname(user_path) or ".", exist_ok=True)
-                    shutil.copy2(shared_path, user_path)
-                except Exception:
-                    pass
-            return val
+            if user_id == 1:
+                val = load_json(shared_path)
+                if val:
+                    try:
+                        import shutil
+                        os.makedirs(os.path.dirname(user_path) or ".", exist_ok=True)
+                        shutil.copy2(shared_path, user_path)
+                    except Exception:
+                        pass
+                return val
+            return None
 
         data["trailing"] = _load_with_shared_fallback(
             os.path.join(_user_strats, "trailing_stop.json"),
@@ -306,7 +315,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <style>
 :root {
     --bg: #0a0e17; --card: #111827; --card-hover: #1a2332; --border: #1e293b;
-    --text: #e2e8f0; --text-dim: #94a3b8; --accent: #3b82f6;
+    --text: #e2e8f0; --text-dim: #94a3b8; --accent: #3b82f6; --blue: #3b82f6;
     --green: #10b981; --red: #ef4444; --orange: #f59e0b; --purple: #8b5cf6;
     --radius: 12px;
 }
@@ -1839,14 +1848,25 @@ const STRATEGY_INFO = {
     }
 };
 
-function toast(msg, type='info') {
+function toast(msg, type='info', correlationId='') {
     const c = document.getElementById('toastContainer');
     const icons = {success: '\u2713', error: '\u2717', info: '\u2139'};
     const t = document.createElement('div');
     t.className = 'toast ' + type;
-    t.innerHTML = '<span class="toast-icon">' + (icons[type]||'') + '</span><span>' + esc(msg) + '</span>';
+    let idSuffix = '';
+    if (correlationId) {
+        idSuffix = ' <span style="opacity:.6;font-size:11px">(ref: ' + esc(correlationId) + ')</span>';
+    }
+    t.innerHTML = '<span class="toast-icon">' + (icons[type]||'') + '</span><span>' + esc(msg) + idSuffix + '</span>';
     c.appendChild(t);
     setTimeout(() => t.remove(), 4000);
+}
+
+/* Helper: convert a fetch response + parsed JSON into a clean toast.
+   Surfaces correlation_id so support can trace to server logs. */
+function toastFromApiError(data, fallback) {
+    if (!data) { toast(fallback || 'Request failed', 'error'); return; }
+    toast(data.error || fallback || 'Request failed', 'error', data.correlation_id || '');
 }
 
 function addLog(msg, type='info') {
@@ -3239,7 +3259,8 @@ function renderDashboard() {
         '<button class="nav-tab" onclick="scrollToSection(\'section-scheduler\')">Scheduler</button>' +
         '<button class="nav-tab" onclick="scrollToSection(\'section-heatmap\')">Heatmap</button>' +
         '<button class="nav-tab" onclick="scrollToSection(\'section-comparison\')">Paper vs Live</button>' +
-        '<button class="nav-tab" onclick="scrollToSection(\'section-settings\')">Settings</button>' +
+        '<button class="nav-tab" onclick="scrollToSection(\'section-settings\')">Templates</button>' +
+        '<button class="nav-tab" onclick="openSettingsModal()">\u2699\ufe0f Account</button>' +
     '</div>';
 
     document.getElementById('app').innerHTML =
@@ -3475,20 +3496,36 @@ function renderDashboard() {
     renderLog();
     refreshSchedulerStatus();
 
-    // Populate the stock selector and render backtest
+    // Populate the stock selector and render backtest.
+    // Show ALL top-50 filtered picks so the user can backtest any of them,
+    // not just those with pre-computed backtest_detail. Picks that were
+    // enriched by the screener render instantly; the rest show "Run Backtest"
+    // placeholder state when selected.
     setTimeout(function() {
         var selector = document.getElementById('backtestStockSelector');
         if (selector && d.picks && d.picks.length) {
-            // Only show picks that have backtest data
-            var withBacktest = d.picks.filter(function(p) { return p.backtest_detail && p.backtest_detail.equity_curve; });
-            selector.innerHTML = withBacktest.map(function(p, i) {
+            var top50 = d.picks.slice(0, 50);
+            // Order: picks with backtest_detail first (labelled with return %),
+            // then the rest (marked "backtest not computed").
+            var withBT = top50.filter(function(p) { return p.backtest_detail && p.backtest_detail.equity_curve; });
+            var withoutBT = top50.filter(function(p) { return !(p.backtest_detail && p.backtest_detail.equity_curve); });
+            var options = [];
+            if (withBT.length) options.push('<optgroup label="Pre-computed backtests">');
+            withBT.forEach(function(p) {
                 var bt = p.backtest_detail;
                 var ret = bt.return_pct || 0;
                 var retStr = (ret >= 0 ? '+' : '') + ret.toFixed(1) + '%';
-                return '<option value="' + p.symbol + '">' + p.symbol + ' — ' + p.best_strategy + ' (' + retStr + ')</option>';
-            }).join('');
-            if (withBacktest.length > 0) {
-                renderBacktest(withBacktest[0].symbol);
+                options.push('<option value="' + esc(p.symbol) + '">' + esc(p.symbol) + ' — ' + esc(p.best_strategy) + ' (' + retStr + ')</option>');
+            });
+            if (withBT.length) options.push('</optgroup>');
+            if (withoutBT.length) options.push('<optgroup label="Top 50 (click to compute backtest)">');
+            withoutBT.forEach(function(p) {
+                options.push('<option value="' + esc(p.symbol) + '">' + esc(p.symbol) + ' — ' + esc(p.best_strategy || 'n/a') + ' (backtest not computed)</option>');
+            });
+            if (withoutBT.length) options.push('</optgroup>');
+            selector.innerHTML = options.join('');
+            if (top50.length > 0) {
+                renderBacktest((withBT[0] || top50[0]).symbol);
             }
         }
     }, 300);
@@ -3516,11 +3553,34 @@ function renderDashboard() {
 
 var _backtestChart = null;
 
-function renderBacktest(symbol) {
+async function renderBacktest(symbol) {
     if (!lastData || !lastData.picks) return;
     var pick = lastData.picks.find(function(p) { return p.symbol === symbol; });
-    if (!pick || !pick.backtest_detail) return;
+    if (!pick) return;
+    // If backtest data isn't pre-computed, fetch it on-demand
+    if (!pick.backtest_detail || !pick.backtest_detail.equity_curve) {
+        var summary = document.getElementById('backtestSummary');
+        if (summary) summary.innerHTML = '<div class="metric" style="grid-column:1/-1;text-align:center;color:var(--text-dim)">Computing backtest for ' + esc(symbol) + '...</div>';
+        var expl = document.getElementById('backtestExplanation');
+        if (expl) expl.innerHTML = '<em>Fetching 30-day price history and simulating strategy...</em>';
+        if (_backtestChart) { _backtestChart.destroy(); _backtestChart = null; }
+        try {
+            var resp = await fetch(API_BASE + '/api/compute-backtest?symbol=' + encodeURIComponent(symbol) + '&strategy=' + encodeURIComponent(pick.best_strategy || 'trailing_stop'), {credentials: 'same-origin'});
+            var data = await resp.json();
+            if (!resp.ok || data.error) {
+                if (summary) summary.innerHTML = '<div class="metric" style="grid-column:1/-1;text-align:center;color:var(--red)">Backtest unavailable: ' + esc(data.error || 'computation failed') + '</div>';
+                if (expl) expl.innerHTML = '<em>Not enough 30-day price history for ' + esc(symbol) + '.</em>';
+                return;
+            }
+            // Attach to pick so subsequent renders are cached
+            pick.backtest_detail = data.backtest_detail;
+        } catch (e) {
+            if (summary) summary.innerHTML = '<div class="metric" style="grid-column:1/-1;text-align:center;color:var(--red)">Backtest error: ' + esc(e.message) + '</div>';
+            return;
+        }
+    }
     var bt = pick.backtest_detail;
+    if (!bt || !bt.equity_curve) return;
 
     // Summary cards
     var ret = bt.return_pct || 0;
@@ -4500,6 +4560,10 @@ async function loadCurrentUser() {
     await loadGuardrails();
     renderDashboard();
     loadHeatmap();
+    // Scheduler status must load independently of dashboard data — for new
+    // users with no creds yet, refreshData fails and renderDashboard never
+    // runs, which previously left the Scheduler tab stuck on "Loading...".
+    try { refreshSchedulerStatus(); } catch (e) {}
     addLog('Dashboard loaded as ' + (window.currentUsername || 'user'), 'success');
     countdownInterval = setInterval(() => {
         countdown--;
@@ -4850,6 +4914,9 @@ _LOGIN_LOCK = threading.Lock()
 _LOGIN_MAX_FAILURES = 5
 _LOGIN_WINDOW_SEC = 15 * 60
 
+# Per-user cooldown for /api/refresh. Spawns a 10-min subprocess if abused.
+_refresh_cooldowns = {}  # user_id -> last_refresh_ts
+
 def _login_rate_limited(ip, username):
     """Check if this (ip, username) pair is currently locked out."""
     now = time.time()
@@ -4998,16 +5065,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _user_strategies_dir(self):
         """Return the per-user strategies directory (creates it if needed).
 
-        One-shot migrates any pre-existing strategy files from the shared
-        STRATEGIES_DIR the very first time this user's strategies dir is
-        created (Kevin's pre-multi-user trailing_stop_SOXL.json lives in
-        the shared dir and would otherwise never be monitored after the
-        refactor).
+        CRITICAL: Strategy file seed from shared STRATEGIES_DIR is RESTRICTED
+        to the bootstrap admin (user_id=1). Previously this copied Kevin's
+        active strategy files (trailing_stop_SOXL.json, wheel_strategy.json)
+        into every new user's dir, causing the monitor to attempt trades on
+        symbols that don't exist in their Alpaca account.
         """
         d = os.path.join(self._user_dir(), "strategies")
         first_time = not os.path.isdir(d)
         os.makedirs(d, exist_ok=True)
-        if first_time and self.current_user and self.current_user.get("id") is not None:
+        if (first_time
+                and self.current_user
+                and self.current_user.get("id") == 1):
             try:
                 if os.path.isdir(STRATEGIES_DIR) and STRATEGIES_DIR != d:
                     import shutil
@@ -5017,7 +5086,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             dst = os.path.join(d, f)
                             if os.path.isfile(src) and not os.path.exists(dst):
                                 shutil.copy2(src, dst)
-                    print(f"[migration] Seeded strategies dir for user {self.current_user.get('id')}", flush=True)
+                    print(f"[migration] Seeded strategies dir for bootstrap admin", flush=True)
             except Exception as e:
                 print(f"[migration] WARN strategies seed failed: {e}", flush=True)
         return d
@@ -5025,21 +5094,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _user_file(self, filename):
         """Return an absolute path to a per-user data file.
 
-        If the per-user file is missing but a matching file exists at the
-        legacy shared DATA_DIR, one-shot migrate it into the user's dir.
-        This keeps Kevin's existing auto-deployer config, guardrails, and
-        strategy files working after the multi-user file isolation refactor
-        without forcing a manual migration.
+        CRITICAL: Migration from shared DATA_DIR is RESTRICTED to the legacy
+        bootstrap admin (user_id=1). New users must never inherit another
+        user's config — previously this caused Kevin's auto_deployer_config
+        (enabled=True, short_selling=enabled) to be copied into friend's
+        dir on first signup, auto-trading without consent.
         """
         user_path = os.path.join(self._user_dir(), filename)
-        if not os.path.exists(user_path) and self.current_user and self.current_user.get("id") is not None:
+        if (not os.path.exists(user_path)
+                and self.current_user
+                and self.current_user.get("id") == 1):
             shared_path = os.path.join(DATA_DIR, filename)
             if os.path.exists(shared_path) and shared_path != user_path:
                 try:
                     import shutil
                     os.makedirs(os.path.dirname(user_path) or ".", exist_ok=True)
                     shutil.copy2(shared_path, user_path)
-                    print(f"[migration] Copied {filename} to per-user dir for user {self.current_user.get('id')}", flush=True)
+                    print(f"[migration] Copied {filename} to bootstrap admin user dir", flush=True)
                 except Exception as e:
                     print(f"[migration] WARN failed to migrate {filename}: {e}", flush=True)
         return user_path
@@ -5314,6 +5385,81 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.wfile.write(content.encode("utf-8"))
             except Exception as e:
                 self.send_json({"error": f"Could not read README: {e}"}, 500)
+
+        elif path == "/api/compute-backtest":
+            # On-demand backtest for any symbol (even ones the screener didn't
+            # enrich — the dropdown now shows all top-50 picks so the user
+            # can pick any of them).
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            symbol = (params.get("symbol") or [""])[0].strip().upper()
+            strategy = (params.get("strategy") or ["Trailing Stop"])[0].strip()
+            if not re.match(r"^[A-Z.]{1,10}$", symbol):
+                self.send_json({"error": "Invalid symbol"}, 400)
+                return
+            try:
+                # Fetch 30d daily bars from the caller's data endpoint
+                from datetime import datetime as _dt, timedelta as _td
+                end = _dt.utcnow().date()
+                start = end - _td(days=45)
+                url = (f"{self.user_data_endpoint}/stocks/{symbol}/bars"
+                       f"?timeframe=1Day&start={start}T00:00:00Z&end={end}T00:00:00Z"
+                       f"&limit=45&adjustment=split")
+                bars_resp = self.user_api_get(url)
+                bars = (bars_resp or {}).get("bars", [])
+                if not isinstance(bars, list) or len(bars) < 5:
+                    self.send_json({"error": "Not enough price history"}, 404)
+                    return
+                # Take the most recent 30 trading days
+                bars = bars[-30:]
+                closes = [float(b.get("c", 0)) for b in bars if b.get("c")]
+                if len(closes) < 5:
+                    self.send_json({"error": "Price data incomplete"}, 404)
+                    return
+                # Simulate trailing-stop strategy (matches what the screener
+                # uses for pre-computed backtests): 10% initial stop, trails
+                # 5% below peak once +10% gain is reached.
+                entry = closes[0]
+                peak = entry
+                stop = entry * 0.90
+                equity = []
+                stop_levels = []
+                stopped_out = False
+                exit_price = closes[-1]
+                trailing_active = False
+                for i, px in enumerate(closes):
+                    if not trailing_active and px >= entry * 1.10:
+                        trailing_active = True
+                    if trailing_active:
+                        if px > peak:
+                            peak = px
+                        stop = max(stop, peak * 0.95)
+                    equity.append(round(px, 2))
+                    stop_levels.append(round(stop, 2))
+                    if px <= stop:
+                        stopped_out = True
+                        exit_price = stop
+                        # Pad remaining days with exit price
+                        while len(equity) < len(closes):
+                            equity.append(exit_price)
+                            stop_levels.append(stop)
+                        break
+                return_pct = round((exit_price / entry - 1) * 100, 2) if entry else 0
+                self.send_json({
+                    "symbol": symbol,
+                    "strategy": strategy,
+                    "backtest_detail": {
+                        "entry": round(entry, 2),
+                        "exit": round(exit_price, 2),
+                        "return_pct": return_pct,
+                        "days": len(equity),
+                        "stopped_out": stopped_out,
+                        "equity_curve": equity,
+                        "stop_curve": stop_levels,
+                    }
+                })
+            except Exception as e:
+                self._send_error_safe(e, 500, "compute-backtest")
 
         elif path == "/api/trade-heatmap":
             # Per-user trade journal — each user has their own heatmap
@@ -6085,9 +6231,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def handle_refresh(self):
         """Run update_dashboard.py with current user's credentials and return fresh data."""
+        # Rate limit: each user's refresh spawns a 10-min-capable subprocess.
+        # Without a lock, rapid clicks spawn N parallel screener runs and DoS
+        # Alpaca + CPU. 30-second cooldown per user.
+        user_id = self.current_user.get("id") if self.current_user else None
+        if user_id is not None:
+            now_ts = time.time()
+            last = _refresh_cooldowns.get(user_id, 0)
+            if now_ts - last < 30:
+                wait = int(30 - (now_ts - last))
+                return self.send_json({
+                    "error": f"Refresh cooling down — try again in {wait}s"
+                }, 429)
+            _refresh_cooldowns[user_id] = now_ts
+
         script_path = os.path.join(BASE_DIR, "update_dashboard.py")
         env = os.environ.copy()
-        user_id = self.current_user.get("id") if self.current_user else None
         if user_id is not None:
             try:
                 import auth as _auth
@@ -6624,14 +6783,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 for fname, wstate in ws.list_wheel_files(user_shim):
                     ac = wstate.get("active_contract") or {}
                     if ac.get("contract_symbol") and ac.get("status") in ("active", "pending"):
-                        # Market buy-to-close the short option contract
-                        self.user_api_post(f"{self.user_api_endpoint}/orders", {
-                            "symbol": ac["contract_symbol"],
-                            "qty": str(ac.get("quantity", 1)),
-                            "side": "buy",
-                            "type": "market",
-                            "time_in_force": "day",
-                        })
+                        # LIMIT buy-to-close at 2× current ask (safety ceiling
+                        # so an illiquid OTM option with bid=0.05/ask=0.80
+                        # doesn't fill at 10× the original premium). If the
+                        # limit doesn't fill, the order sits until next
+                        # monitor tick — but we're in kill-switch state so
+                        # no further harm is done.
+                        contract_sym = ac["contract_symbol"]
+                        qty = ac.get("quantity", 1)
+                        try:
+                            quote = ws.get_option_quote(user_shim, contract_sym)
+                            ask = (quote or {}).get("ask", 0) or ac.get("limit_price_used", 1.0)
+                            # 2x ceiling, round to nearest nickel, minimum $0.05
+                            limit_px = max(0.05, round((ask * 2) * 20) / 20)
+                            order_payload = {
+                                "symbol": contract_sym,
+                                "qty": str(qty),
+                                "side": "buy",
+                                "type": "limit",
+                                "limit_price": f"{limit_px:.2f}",
+                                "time_in_force": "day",
+                                "order_class": "simple",
+                            }
+                        except Exception:
+                            # Worst case — fall back to market order but only
+                            # as last resort.
+                            order_payload = {
+                                "symbol": contract_sym, "qty": str(qty),
+                                "side": "buy", "type": "market",
+                                "time_in_force": "day",
+                            }
+                        self.user_api_post(f"{self.user_api_endpoint}/orders", order_payload)
                         # Mark the wheel state as killed
                         wstate["stage"] = "killed_by_kill_switch"
                         wstate["active_contract"] = None
@@ -6881,17 +7063,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "_data_dir": auth.user_data_dir(self.current_user["id"]),
                 "_strategies_dir": os.path.join(auth.user_data_dir(self.current_user["id"]), "strategies"),
             }
-            # Clear all relevant once-per-day / interval locks so everything re-runs
+            # DO NOT clear the daily lock. Previously we popped _last_runs
+            # keys so force-deploy could re-run, but that caused the 9:35 AM
+            # scheduler tick to ALSO fire (it sees no lock → runs again)
+            # → two concurrent auto_deployers. Instead we rely on the
+            # dedup inside run_wheel_auto_deploy (_wheel_deploy_in_flight)
+            # and the once-per-tick idempotency checks inside run_auto_deployer
+            # (existing_syms, correlation check).
             uid = user["id"]
-            for key in (
-                f"auto_deployer_{uid}",
-                f"wheel_deploy_{uid}",
-                f"wheel_monitor_{uid}",
-                f"screener_{uid}",
-            ):
+            # Still clear the interval-based locks (non-daily) so screener
+            # and monitor run fresh — those aren't susceptible to the race
+            # because they're idempotent by design.
+            for key in (f"wheel_monitor_{uid}", f"screener_{uid}"):
                 cs._last_runs.pop(key, None)
 
-            # Run in a background thread so the request returns quickly
+            # Run in a background thread so the request returns quickly.
+            # Guard against rapid double-clicks with an in-flight set.
+            deploy_key = f"force_deploy_{uid}"
+            with cs._wheel_deploy_lock:
+                if deploy_key in cs._wheel_deploy_in_flight:
+                    return self.send_json({
+                        "error": "Force Deploy already running — wait for it to complete."
+                    }, 429)
+                cs._wheel_deploy_in_flight.add(deploy_key)
             def _run():
                 try:
                     cs.log(f"[{user['username']}] FORCE DEPLOY: starting full cycle", "deployer")
@@ -6903,6 +7097,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     cs.log(f"[{user['username']}] FORCE DEPLOY: all three tasks complete", "deployer")
                 except Exception as e:
                     cs.log(f"Force-deploy error for {user['username']}: {e}", "deployer")
+                finally:
+                    with cs._wheel_deploy_lock:
+                        cs._wheel_deploy_in_flight.discard(deploy_key)
             threading.Thread(target=_run, daemon=True, name=f"ForceDeploy-{user['id']}").start()
             self.send_json({
                 "success": True,

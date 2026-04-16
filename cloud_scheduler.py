@@ -180,22 +180,21 @@ def user_api_delete(user, url_path, timeout=10):
 def user_file(user, filename):
     """Return path to a user-scoped data file.
 
-    One-shot migrates pre-multi-user shared files from DATA_DIR into the
-    user's dir when missing. Matches the server-side _user_file behavior so
-    Kevin's existing auto_deployer_config.json, guardrails.json, and so on
-    are preserved after the file-isolation refactor.
+    CRITICAL: Migration from shared DATA_DIR is RESTRICTED to user_id=1
+    (the bootstrap admin). Other users must never inherit another user's
+    config — previously caused cross-user auto-trading on signup.
     """
     path = os.path.join(user["_data_dir"], filename)
-    if not os.path.exists(path) and user.get("id") != "env":
+    if not os.path.exists(path) and user.get("id") == 1:
         shared = os.path.join(DATA_DIR, filename)
         if os.path.exists(shared) and shared != path:
             try:
                 import shutil
                 os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
                 shutil.copy2(shared, path)
-                log(f"[migration] Copied {filename} to {user['username']}'s dir", "scheduler")
+                log(f"[migration] Copied {filename} to bootstrap admin dir", "scheduler")
             except Exception as e:
-                log(f"[migration] WARN failed to migrate {filename} for {user.get('username')}: {e}", "scheduler")
+                log(f"[migration] WARN failed to migrate {filename}: {e}", "scheduler")
     return path
 
 
@@ -203,8 +202,9 @@ def user_strategies_dir(user):
     d = user["_strategies_dir"]
     first_time = not os.path.isdir(d)
     os.makedirs(d, exist_ok=True)
-    # One-shot seed from shared STRATEGIES_DIR on first access
-    if first_time and user.get("id") != "env":
+    # Strategy seed ONLY for bootstrap admin (user_id=1). New users start
+    # clean — no inherited strategies from other accounts.
+    if first_time and user.get("id") == 1:
         try:
             shared = STRATEGIES_DIR
             if os.path.isdir(shared) and shared != d:
@@ -215,9 +215,9 @@ def user_strategies_dir(user):
                         dst = os.path.join(d, f)
                         if os.path.isfile(src) and not os.path.exists(dst):
                             shutil.copy2(src, dst)
-                log(f"[migration] Seeded strategies dir for {user.get('username')}", "scheduler")
+                log(f"[migration] Seeded strategies dir for bootstrap admin", "scheduler")
         except Exception as e:
-            log(f"[migration] WARN strategies seed failed for {user.get('username')}: {e}", "scheduler")
+            log(f"[migration] WARN strategies seed failed: {e}", "scheduler")
     return d
 
 # ============================================================================
@@ -1196,6 +1196,11 @@ def run_weekly_learning(user):
         env["ALPACA_API_SECRET"] = user["_api_secret"]
         env["ALPACA_ENDPOINT"] = user["_api_endpoint"]
         env["ALPACA_DATA_ENDPOINT"] = user["_data_endpoint"]
+        # CRITICAL per-user paths — otherwise learn.py reads/writes the
+        # shared trade_journal + learned_weights and every user's weekly
+        # run overwrites the others.
+        env["TRADE_JOURNAL_PATH"] = user_file(user, "trade_journal.json")
+        env["LEARNED_WEIGHTS_PATH"] = user_file(user, "learned_weights.json")
         subprocess.run([sys.executable, os.path.join(BASE_DIR, "learn.py")],
                       cwd=BASE_DIR, capture_output=True, text=True, timeout=120, env=env)
         notify_user(user, "Weekly learning engine completed", "learn")
@@ -1422,7 +1427,35 @@ def should_run_daily_at(task_name, hour_et, minute_et):
 # All safety checks live in wheel_strategy.py (options level, cash coverage,
 # earnings avoidance, concurrent-wheels cap, price range, premium yield, etc).
 # ============================================================================
+_wheel_deploy_lock = threading.Lock()
+_wheel_deploy_in_flight = set()  # set of user ids currently deploying
+
+
 def run_wheel_auto_deploy(user):
+    try:
+        import wheel_strategy as ws
+    except Exception as e:
+        log(f"[{user['username']}] wheel_strategy import failed: {e}", "wheel")
+        return
+
+    # Dedup: if a wheel deploy is already running for this user (from the
+    # 9:40 AM scheduler tick OR Force Deploy OR both), skip. Otherwise two
+    # concurrent calls can both place short-put orders on the same symbol
+    # before the first writes state (count_active_wheels returns 0 for both).
+    uid = user.get("id")
+    with _wheel_deploy_lock:
+        if uid in _wheel_deploy_in_flight:
+            log(f"[{user['username']}] Wheel auto-deploy already running — skipping concurrent invocation", "wheel")
+            return
+        _wheel_deploy_in_flight.add(uid)
+    try:
+        _run_wheel_auto_deploy_inner(user)
+    finally:
+        with _wheel_deploy_lock:
+            _wheel_deploy_in_flight.discard(uid)
+
+
+def _run_wheel_auto_deploy_inner(user):
     try:
         import wheel_strategy as ws
     except Exception as e:
@@ -1559,12 +1592,21 @@ def scheduler_loop():
                 time.sleep(60)
                 continue
 
-            # Check market once per tick (shared across all users — same clock)
+            # Check market once per tick (shared across all users — same clock).
+            # Try each user's credentials until one succeeds — previously we
+            # only tried users[0], so if that user had revoked their Alpaca
+            # keys, market_open_flag stayed False and NO user in the system
+            # would trade that day.
             market_open_flag = False
             if is_weekday:
                 try:
-                    clock = user_api_get(users[0], "/clock")
-                    if isinstance(clock, dict) and "error" not in clock:
+                    clock = None
+                    for _u in users:
+                        result = user_api_get(_u, "/clock")
+                        if isinstance(result, dict) and "error" not in result:
+                            clock = result
+                            break
+                    if isinstance(clock, dict):
                         market_open_flag = clock.get("is_open", False)
                 except Exception:
                     pass
