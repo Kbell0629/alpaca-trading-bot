@@ -209,6 +209,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="StockBot">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
 <style>
 :root {
     --bg: #0a0e17; --card: #111827; --card-hover: #1a2332; --border: #1e293b;
@@ -657,6 +658,115 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
 }
 @keyframes voicePulse { 0%,100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.4); } 50% { box-shadow: 0 0 0 10px rgba(239,68,68,0); } }
 .voice-result { background: var(--card); border: 1px solid var(--accent); border-radius: 8px; padding: 12px; margin-top: 8px; display: none; }
+
+/* Help button + Readme modal */
+.help-btn {
+    background: rgba(59,130,246,0.15); color: var(--accent);
+    border: 1px solid rgba(59,130,246,0.3); border-radius: 20px;
+    padding: 8px 14px; cursor: pointer; font-size: 13px; font-weight: 600;
+    transition: all 0.2s; display: inline-flex; align-items: center; gap: 4px;
+}
+.help-btn:hover { background: rgba(59,130,246,0.25); transform: translateY(-1px); }
+.readme-modal-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.85); z-index: 10000;
+    display: none; align-items: center; justify-content: center;
+    padding: 20px;
+}
+.readme-modal-overlay.active { display: flex; }
+.readme-modal {
+    background: var(--card); border: 1px solid var(--border); border-radius: 16px;
+    width: 100%; max-width: 1100px; height: 90vh;
+    display: flex; flex-direction: column; overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+}
+.readme-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 16px 24px; border-bottom: 1px solid var(--border);
+    background: rgba(59,130,246,0.05);
+}
+.readme-header h2 { margin: 0; font-size: 18px; }
+.readme-controls { display: flex; gap: 8px; align-items: center; }
+.readme-search {
+    background: rgba(10,14,23,0.5); border: 1px solid var(--border);
+    border-radius: 8px; padding: 6px 12px; color: var(--text);
+    font-size: 13px; width: 200px;
+}
+.readme-close {
+    background: var(--red); color: #fff; border: none; border-radius: 50%;
+    width: 32px; height: 32px; cursor: pointer; font-size: 16px;
+    display: flex; align-items: center; justify-content: center;
+}
+.readme-body { flex: 1; display: flex; overflow: hidden; }
+.readme-toc {
+    width: 280px; border-right: 1px solid var(--border);
+    overflow-y: auto; padding: 16px; background: rgba(10,14,23,0.3);
+}
+.readme-toc h4 {
+    font-size: 10px; color: var(--text-dim); text-transform: uppercase;
+    letter-spacing: 1px; margin-bottom: 8px;
+}
+.readme-toc a {
+    display: block; color: var(--text-dim); text-decoration: none;
+    padding: 4px 8px; border-radius: 4px; font-size: 12px;
+    margin-bottom: 2px; transition: all 0.15s;
+}
+.readme-toc a:hover, .readme-toc a.active { background: rgba(59,130,246,0.15); color: var(--accent); }
+.readme-toc a.h2 { font-weight: 600; color: var(--text); padding-left: 8px; margin-top: 8px; }
+.readme-toc a.h3 { padding-left: 20px; font-size: 11px; }
+.readme-toc a.h4 { padding-left: 32px; font-size: 11px; }
+.readme-content {
+    flex: 1; overflow-y: auto; padding: 32px 40px;
+    line-height: 1.6; font-size: 14px;
+}
+.readme-content h1 {
+    font-size: 26px; margin: 0 0 8px; padding-bottom: 12px;
+    border-bottom: 2px solid var(--accent);
+    background: linear-gradient(135deg, var(--accent), var(--purple));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+}
+.readme-content h2 {
+    font-size: 20px; margin: 28px 0 12px; padding-top: 12px;
+    border-top: 1px solid var(--border); color: var(--accent);
+}
+.readme-content h3 { font-size: 16px; margin: 20px 0 8px; color: var(--text); }
+.readme-content h4 { font-size: 14px; margin: 16px 0 6px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+.readme-content p { margin: 0 0 12px; color: var(--text); }
+.readme-content a { color: var(--accent); text-decoration: none; border-bottom: 1px dashed rgba(59,130,246,0.3); }
+.readme-content a:hover { border-bottom-style: solid; }
+.readme-content code {
+    background: rgba(59,130,246,0.1); color: var(--accent);
+    padding: 2px 6px; border-radius: 4px; font-size: 12px;
+    font-family: 'SF Mono', Monaco, monospace;
+}
+.readme-content pre {
+    background: rgba(10,14,23,0.8); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px; margin: 12px 0;
+    overflow-x: auto; font-size: 12px; line-height: 1.5;
+}
+.readme-content pre code { background: none; color: var(--text); padding: 0; }
+.readme-content table {
+    width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px;
+}
+.readme-content th, .readme-content td {
+    padding: 8px 12px; border-bottom: 1px solid var(--border); text-align: left;
+}
+.readme-content th { background: rgba(10,14,23,0.5); color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+.readme-content ul, .readme-content ol { padding-left: 24px; margin: 8px 0 12px; }
+.readme-content li { margin-bottom: 4px; color: var(--text); }
+.readme-content blockquote {
+    border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+    background: rgba(59,130,246,0.05); color: var(--text-dim);
+}
+.readme-content hr { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
+.readme-content strong { color: var(--text); font-weight: 700; }
+.readme-content em { color: var(--text-dim); font-style: italic; }
+.readme-highlight { background: rgba(245,158,11,0.3); color: var(--text); border-radius: 2px; }
+@media (max-width: 900px) {
+    .readme-toc { display: none; }
+    .readme-content { padding: 20px; }
+    .readme-search { width: 120px; }
+}
 
 /* Strategy Marketplace */
 .marketplace { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 24px; }
@@ -1135,6 +1245,26 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
 </div>
 
 <!-- Kill Switch Confirmation Modal -->
+<!-- README / User Guide Modal -->
+<div class="readme-modal-overlay" id="readmeModal">
+  <div class="readme-modal">
+    <div class="readme-header">
+      <h2>📖 User Guide</h2>
+      <div class="readme-controls">
+        <input type="text" class="readme-search" id="readmeSearch" placeholder="Search guide..." oninput="searchReadme(this.value)">
+        <button class="btn-ghost btn-sm" onclick="window.open('/api/readme','_blank')" title="Open raw markdown">Raw</button>
+        <button class="readme-close" onclick="closeReadme()">✕</button>
+      </div>
+    </div>
+    <div class="readme-body">
+      <div class="readme-toc" id="readmeToc"></div>
+      <div class="readme-content" id="readmeContent">
+        <div style="text-align:center;padding:40px;color:var(--text-dim)">Loading user guide...</div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="killSwitchModal">
   <div class="modal" style="max-width:540px">
     <h2 style="color:var(--red)">EMERGENCY KILL SWITCH</h2>
@@ -2578,6 +2708,7 @@ function renderDashboard() {
                     ? '<span class="kill-switch-indicator">KILL SWITCH ACTIVE</span>'
                     : '<button class="kill-switch-btn" onclick="openKillSwitchModal()">KILL SWITCH</button>') +
                 '<button id="voiceBtn" class="voice-btn" onclick="toggleVoice()" title="Voice Control">\ud83c\udfa4</button>' +
+                '<button class="help-btn" onclick="openReadme()" title="User Guide / README">\ud83d\udcd6 Help</button>' +
                 '<span class="countdown" id="countdown">Next refresh: ' + countdown + 's</span>' +
                 '<button class="btn-primary" onclick="forceRefresh()">\u21BB Refresh</button>' +
                 '<span class="paper-badge">PAPER TRADING</span>' +
@@ -2913,6 +3044,125 @@ function renderBacktest(symbol) {
 /* ---- Voice Interface ---- */
 var recognition = null;
 var isListening = false;
+
+/* ---- README / Help Modal ---- */
+var _readmeLoaded = false;
+var _readmeRawMarkdown = '';
+
+function openReadme() {
+    var modal = document.getElementById('readmeModal');
+    if (modal) modal.classList.add('active');
+    if (!_readmeLoaded) {
+        loadReadme();
+    }
+}
+
+function closeReadme() {
+    var modal = document.getElementById('readmeModal');
+    if (modal) modal.classList.remove('active');
+    var search = document.getElementById('readmeSearch');
+    if (search) search.value = '';
+}
+
+async function loadReadme() {
+    try {
+        var resp = await fetch(API_BASE + '/api/readme', {credentials: 'same-origin'});
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        var md = await resp.text();
+        _readmeRawMarkdown = md;
+        renderReadme(md);
+        _readmeLoaded = true;
+    } catch(e) {
+        var content = document.getElementById('readmeContent');
+        if (content) content.innerHTML = '<div style="color:var(--red);padding:20px">Error loading README: ' + e.message + '</div>';
+    }
+}
+
+function renderReadme(markdown) {
+    var content = document.getElementById('readmeContent');
+    var toc = document.getElementById('readmeToc');
+    if (!content || typeof marked === 'undefined') {
+        if (content) content.innerHTML = '<pre style="white-space:pre-wrap">' + markdown + '</pre>';
+        return;
+    }
+
+    // Render markdown to HTML
+    var html = marked.parse(markdown);
+    content.innerHTML = html;
+
+    // Add IDs to headers for TOC anchoring
+    var headers = content.querySelectorAll('h1, h2, h3, h4');
+    var tocHtml = '<h4>Table of Contents</h4>';
+    headers.forEach(function(h, i) {
+        var id = 'readme-h-' + i;
+        h.id = id;
+        var level = h.tagName.toLowerCase();
+        var text = h.textContent;
+        tocHtml += '<a href="#' + id + '" class="' + level + '" onclick="scrollToReadmeSection(\'' + id + '\');return false;">' + text + '</a>';
+    });
+    if (toc) toc.innerHTML = tocHtml;
+}
+
+function scrollToReadmeSection(id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.scrollIntoView({behavior: 'smooth', block: 'start'});
+    // Highlight in TOC
+    document.querySelectorAll('.readme-toc a').forEach(function(a) { a.classList.remove('active'); });
+    var tocLink = document.querySelector('.readme-toc a[href="#' + id + '"]');
+    if (tocLink) tocLink.classList.add('active');
+}
+
+function searchReadme(query) {
+    var content = document.getElementById('readmeContent');
+    if (!content || !_readmeRawMarkdown) return;
+
+    if (!query || query.length < 2) {
+        // Reset to clean render
+        renderReadme(_readmeRawMarkdown);
+        return;
+    }
+
+    // Render fresh then highlight
+    renderReadme(_readmeRawMarkdown);
+
+    var q = query.toLowerCase();
+    var walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT, null, false);
+    var nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+
+    var firstMatch = null;
+    nodes.forEach(function(node) {
+        var text = node.textContent;
+        var lower = text.toLowerCase();
+        var idx = lower.indexOf(q);
+        if (idx === -1) return;
+
+        var before = text.substring(0, idx);
+        var match = text.substring(idx, idx + query.length);
+        var after = text.substring(idx + query.length);
+
+        var span = document.createElement('span');
+        span.innerHTML = before + '<mark class="readme-highlight">' + match + '</mark>' + after;
+        node.parentNode.replaceChild(span, node);
+        if (!firstMatch) firstMatch = span;
+    });
+
+    if (firstMatch) firstMatch.scrollIntoView({behavior: 'smooth', block: 'center'});
+}
+
+// Close modal on Escape key
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        var modal = document.getElementById('readmeModal');
+        if (modal && modal.classList.contains('active')) closeReadme();
+    }
+});
+
+// Close modal when clicking overlay
+document.addEventListener('click', function(e) {
+    if (e.target && e.target.id === 'readmeModal') closeReadme();
+});
 
 function toggleVoice() {
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
@@ -3434,6 +3684,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json(get_scheduler_status())
             else:
                 self.send_json({"running": False, "error": "Scheduler module not loaded"})
+
+        elif path == "/api/readme":
+            readme_path = os.path.join(BASE_DIR, "README.md")
+            try:
+                with open(readme_path, encoding="utf-8") as f:
+                    content = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Cache-Control", "private, max-age=60")
+                self.end_headers()
+                self.wfile.write(content.encode("utf-8"))
+            except Exception as e:
+                self.send_json({"error": f"Could not read README: {e}"}, 500)
 
         elif path == "/api/trade-heatmap":
             journal = load_json(os.path.join(BASE_DIR, "trade_journal.json")) or {}
