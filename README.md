@@ -67,7 +67,7 @@ When the Readiness Score hits 80/100 (usually takes 30 days of profitable paper 
 ### Day 1 Setup (5 minutes)
 
 1. **Open the dashboard:** https://stockbott.up.railway.app
-2. **Log in:** use your username and password (set during signup)
+2. **Log in:** use your username and password (set during signup — min 10 chars, strength-checked against zxcvbn; a passphrase like "correct horse battery staple" works great)
 3. **Install ntfy on your phone** (for push notifications):
    - iPhone: App Store → "ntfy" → Install → Subscribe to topic `alpaca-trading-bot-kevin`
    - Android: Play Store → same
@@ -238,10 +238,15 @@ Side-by-side cards:
 ### Scheduler Panel
 
 Real-time status of all cloud tasks:
-- **Task grid** — 5 jobs with last-run times and status (Active/Market Closed/Pending)
+- **Task grid** — all scheduled jobs with last-run times and status (Active / Market Closed / Pending). Includes: auto-deployer, wheel auto-deploy, strategy monitor, wheel monitor, screener, daily close, Friday risk reduction, monthly rebalance, weekly learning, daily backup.
 - **Summary bar** — Current ET time, market status, thread name
-- **Live log feed** — Last 20 scheduler events
+- **Live log feed** — Last 20 scheduler events. A `[scheduler] heartbeat` log fires every 2 min whenever the loop is ticking, so after-hours the feed never looks "stale" while the bot is alive.
+- **Staleness watchdog** — during market hours, if any interval task (monitor, wheel_monitor, screener) hasn't run in > 2× its expected window, you get a push notification. One alert per task per hour.
 - Auto-refreshes every 15 seconds
+
+**Health check:** the `/healthz` endpoint returns 200 if the scheduler is alive AND has logged within the last 5 minutes. Railway uses this to auto-restart on hang. Hit `curl https://stockbott.up.railway.app/healthz` any time to confirm the bot is actually running.
+
+**Version check:** `curl https://stockbott.up.railway.app/api/version` returns the current `bot_version` label + git commit hash. Useful for confirming a Railway deploy actually swapped the container.
 
 ### Strategy Templates (Settings)
 
@@ -603,12 +608,14 @@ Scans positions at a loss. Suggests selling for tax deduction + buying similar-b
 - Your choice: Review positions, decide if you want to resume.
 - **To resume:** Edit `guardrails.json` → set `kill_switch: false` (or use API).
 
-### Scenario: "Dashboard shows 'Scheduler OFF'"
+### Scenario: "Dashboard shows 'Scheduler OFF' or healthz returns 503"
 
-Cloud scheduler stopped. Usually means Railway deployment crashed.
-1. Check Railway dashboard → Logs
-2. Look for Python errors
-3. Usually fixed by a redeploy: push any commit to main branch
+Cloud scheduler is not running OR has been silent for > 5 minutes.
+1. First, hit `curl https://stockbott.up.railway.app/healthz` — the response tells you `seconds_since_last_log` and whether `stale: true`. Stale with a very high seconds value means the scheduler thread is alive but not ticking.
+2. Check `curl https://stockbott.up.railway.app/api/version` — confirms which commit is running. If it's old, Railway may not have picked up the latest push.
+3. Check Railway dashboard → Logs. Look for Python tracebacks.
+4. Usually fixed by a redeploy: push any commit to main (even an empty commit). Railway auto-deploys on main.
+5. If the healthz endpoint itself is unreachable, Railway's auto-restart policy (`restartPolicyMaxRetries: 10` in `railway.json`) will cycle the container up to 10 times before staying down. Check the deploy status page.
 
 ### Scenario: "No trades deployed this morning"
 
@@ -636,12 +643,22 @@ Credentials are case-sensitive. If you've forgotten them or they've changed, che
 
 ## 💵 Going Live — Switching to Real Money
 
+> **The full 30-day paper review framework + go-live checklist lives in
+> Claude's memory as `thirty_day_review.md`.** If you're asking Claude
+> for a readiness review, it will automatically load that file — it has
+> GREEN / YELLOW / RED outcome thresholds, deferred-feature revisit
+> priority, and the full live-migration checklist with rollback plan.
+> This section is the short version.
+
 ### Prerequisites
 
-1. **Readiness Score ≥ 80/100**
-2. **Profitable paper trading** (if paper is losing money, don't go live)
-3. **Understand the strategies** (re-read this manual)
-4. **$5,000 minimum** to fund live account (bot sized for this amount)
+1. **Readiness Score ≥ 80/100** for at least 2 consecutive weeks
+2. **Profitable paper trading** — win rate ≥ 55%, Sharpe ≥ 1.5, max drawdown < 15%
+3. **≥ 30 days of paper trading history** (first market day 2026-04-16 → earliest go-live 2026-05-16)
+4. **Understand the strategies** (re-read this manual)
+5. **$5,000 minimum** to fund live account (bot sized for this amount)
+6. **Backup of `MASTER_ENCRYPTION_KEY`** stored off-Railway — if this env var is ever lost, every user has to re-enter their Alpaca credentials
+7. **Build #11 (limit-order entries) first** — saves 0.1-0.3% slippage × real dollars, worth doing before your first live trade
 
 ### Step-by-Step Process
 
@@ -707,16 +724,20 @@ Credentials are case-sensitive. If you've forgotten them or they've changed, che
 
 | Variable | Purpose |
 |---|---|
-| `ALPACA_API_KEY` | Alpaca API key |
-| `ALPACA_API_SECRET` | Alpaca API secret |
+| `MASTER_ENCRYPTION_KEY` | **Required in production.** 64-char random key used for AES-256-GCM encryption of each user's Alpaca credentials. Store off-Railway — if lost, all credentials must be re-entered via Settings. |
+| `REQUIRE_MASTER_KEY` | Set to `1` to fail-closed at boot if `MASTER_ENCRYPTION_KEY` is missing. Prevents silent plaintext fallback in production. |
+| `DATA_DIR` | Volume mount path for persistent data (Railway: `/data`). Holds `users.db`, `users/`, strategy files, all JSON runtime state. |
+| `SIGNUP_INVITE_CODE` | If set, new signups require this code (multi-user gate). Current: `CDjKmmrQr_x4MKnjPb0fGw`. |
+| `SIGNUP_DISABLED` | Set to `1` to block all new signups (after bootstrap). |
+| `FORCE_SECURE_COOKIE` | Set to `1` to always send `Secure` flag on session cookie (Railway does this automatically via `X-Forwarded-Proto`). |
+| `ALPACA_API_KEY` / `ALPACA_API_SECRET` | Legacy env-var credentials. Only used as bootstrap for the first user. Actual trading uses per-user encrypted creds from `users.db`. |
 | `ALPACA_ENDPOINT` | `paper-api.alpaca.markets/v2` or `api.alpaca.markets/v2` |
 | `ALPACA_DATA_ENDPOINT` | `data.alpaca.markets/v2` |
-| `DASHBOARD_USER` | Dashboard login username |
-| `DASHBOARD_PASS` | Dashboard login password |
-| `NTFY_TOPIC` | Push notification topic |
-| `NOTIFICATION_EMAIL` | Email for critical alerts |
+| `DASHBOARD_USER` / `DASHBOARD_PASS` | Legacy bootstrap-admin creds. Normal login goes through the signup/login pages and the SQLite users table. |
+| `NTFY_TOPIC` | Push notification topic (per-user override in Settings modal). |
+| `NOTIFICATION_EMAIL` | Email for critical alerts (per-user override in Settings modal). |
 | `PORT` | Server port (Railway sets automatically) |
-| `ENABLE_CLOUD_SCHEDULER` | `true` to run scheduler on Railway |
+| `ENABLE_CLOUD_SCHEDULER` | `true` (default) to run scheduler on Railway. Set `false` to disable (debug only). |
 
 ### Voice Commands (Click 🎤 button)
 
@@ -728,32 +749,81 @@ Credentials are case-sensitive. If you've forgotten them or they've changed, che
 
 ### API Endpoints (For Developers)
 
-All require basic auth.
-- `GET /api/data` — Full dashboard data
+All authenticated endpoints require a valid session cookie (obtained
+via `/login`) PLUS a matching `X-CSRF-Token` header on any state-
+changing POST. The dashboard's JS does this automatically.
+
+**Public (no auth):**
+- `GET /healthz` — 200 if scheduler is alive AND logged within 5 min, else 503. Payload: `{status, scheduler_alive, log_count, seconds_since_last_log, stale}`.
+- `GET /api/version` — Current `bot_version`, git commit hash (when available), Python version, `scheduler_alive`.
+- `GET /login` `/signup` `/forgot` `/reset` — auth pages.
+
+**Authenticated:**
+- `GET /api/data` — Full dashboard data (per-user picks, positions, overlays)
 - `GET /api/account` — Alpaca account
 - `GET /api/positions` — Current positions
 - `GET /api/orders` — Open orders
-- `GET /api/scheduler-status` — Cloud scheduler state
+- `GET /api/scheduler-status` — Cloud scheduler state + last 20 log lines
+- `GET /api/wheel-status` — Per-symbol wheel state (active cycles, premium collected, safety rails)
 - `GET /api/trade-heatmap` — Daily P&L history
 - `GET /api/guardrails` — Safety config
 - `GET /api/readme` — This user manual (raw markdown)
 - `POST /api/deploy` — Deploy a strategy
 - `POST /api/kill-switch` — Activate/deactivate kill switch
 - `POST /api/auto-deployer` — Toggle auto-deployer
+- `POST /api/force-auto-deploy` — Force-run the auto-deployer (bypasses once-per-day lock)
 - `POST /api/apply-preset` — Apply strategy preset
+- `POST /api/pause-strategy` `/api/stop-strategy` — Lifecycle control
+- `POST /api/change-password` — Change current user's password
+- `POST /api/update-settings` — Update Alpaca keys, endpoint, notifications
+- `POST /api/refresh` — Trigger manual screener run (rate-limited per user)
+
+**Admin only:**
+- `GET /api/admin/users` — List all users (active + inactive)
+- `POST /api/admin/set-active` — Deactivate / reactivate a user
+- `POST /api/admin/reset-password` — Admin-initiated password reset
+- `GET /api/admin/audit-log` — Admin action history (90-day retention)
+- `GET /api/admin/list-backups` — Daily backup archives
+- `GET /api/admin/download-backup?name=...` — Download a specific backup (credentials stripped)
+- `POST /api/admin/create-backup` — Trigger an on-demand backup
 
 ### File Locations
 
+**Core code (repo-level, tracked in git):**
+
 | File | Purpose |
 |---|---|
-| `server.py` | Dashboard web server |
-| `cloud_scheduler.py` | 24/7 task scheduler |
-| `update_dashboard.py` | Stock screener |
-| `guardrails.json` | Safety limits |
-| `auto_deployer_config.json` | Auto-deployer settings |
-| `strategies/*.json` | Per-position strategy state |
-| `trade_journal.json` | All trade history |
-| `scorecard.json` | Performance metrics |
+| `server.py` | HTTP handler + routing + utilities (~1600 lines after round-6.5 decomposition) |
+| `handlers/auth_mixin.py` | Login / signup / password / settings endpoints |
+| `handlers/admin_mixin.py` | Admin-only endpoints (user management, backups) |
+| `handlers/strategy_mixin.py` | Deploy / pause / stop / preset endpoints |
+| `handlers/actions_mixin.py` | Refresh / kill-switch / order / auto-deployer endpoints |
+| `auth.py` | Users, sessions, encryption (HKDF ENCv3), password hashing (PBKDF2 600k), zxcvbn strength |
+| `cloud_scheduler.py` | 24/7 task scheduler — auto-deployer, monitor, wheel deploy/monitor, learning, backup |
+| `update_dashboard.py` | Stock screener — scores 10k+ stocks across 6 strategies |
+| `wheel_strategy.py` | Cash-secured put / covered call state machine |
+| `backup.py` | Daily `tar.gz` of users.db + per-user dirs; credentials stripped from backup |
+| `notify.py` | Push (ntfy) + email queue |
+| `learn.py` | Weekly self-learning engine |
+| `update_scorecard.py` | Performance metrics |
+| `et_time.py` | Shared ET timezone helper (single source of truth for "now") |
+| `constants.py` | SECTOR_MAP, profit ladder, keyword lists |
+| `templates/*.html` | Dashboard HTML (extracted from server.py in round-5.2) |
+| `tests/*.py` | 53-test pytest suite — unit, AST, subprocess boot, E2E, screener guards |
+
+**Runtime data (per-user, not in git):**
+
+| Path (under `DATA_DIR`) | Purpose |
+|---|---|
+| `users.db` | SQLite: users, sessions, password_resets, admin_audit_log, login_attempts |
+| `users/{id}/strategies/*.json` | Per-position strategy state (trailing, mean-rev, breakout, wheel_{SYMBOL}) |
+| `users/{id}/guardrails.json` | Safety limits |
+| `users/{id}/auto_deployer_config.json` | Auto-deployer toggle + candidate pool size |
+| `users/{id}/trade_journal.json` | All trade history for this user |
+| `users/{id}/scorecard.json` | Performance metrics |
+| `users/{id}/dashboard_data.json` | Latest screener output |
+| `users/{id}/learned_weights.json` | Weekly learning weights |
+| `backups/*.tar.gz` | 14-day rolling backups (credentials stripped) |
 
 ---
 
