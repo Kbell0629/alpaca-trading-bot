@@ -5,6 +5,7 @@ Serves a fully interactive dashboard at http://localhost:8888
 with API endpoints for deploying strategies, managing orders/positions, and more.
 """
 
+import base64
 import json
 import os
 import subprocess
@@ -15,6 +16,10 @@ import urllib.error
 import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timezone
+
+# Basic auth credentials (set via env vars on Railway, defaults for local dev)
+AUTH_USER = os.environ.get("DASHBOARD_USER", "kevin")
+AUTH_PASS = os.environ.get("DASHBOARD_PASS", "stockb0tt2026")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STRATEGIES_DIR = os.path.join(BASE_DIR, "strategies")
@@ -1306,13 +1311,13 @@ function buildNextActionsPanel(d) {
             '<span class="' + (monOn ? 'badge-on' : 'badge-off') + '">' + (monOn ? 'ON' : 'OFF') + '</span>' +
         '</div>' +
         '<div class="timeline-item' + (copyOn ? '' : ' off') + '">' +
-            '<span class="time">10:00 AM ET</span>' +
+            '<span class="time">9:35 AM ET</span>' +
             '<span class="action">Copy Trading scans Capitol Trades for politician moves</span>' +
             '<span class="' + (copyOn ? 'badge-on' : 'badge-off') + '">' + (copyOn ? 'ON' : 'OFF') + '</span>' +
         '</div>' +
         '<div class="timeline-item' + (wheelOn ? '' : ' off') + '">' +
-            '<span class="time">10:00 AM ET</span>' +
-            '<span class="action">Wheel Strategy attempts to sell puts on TSLA</span>' +
+            '<span class="time">9:35 AM ET</span>' +
+            '<span class="action">Wheel Strategy auto-picks affordable stock, sells puts/calls</span>' +
             '<span class="' + (wheelOn ? 'badge-on' : 'badge-off') + '">' + (wheelOn ? 'ON' : 'OFF') + '</span>' +
         '</div>' +
         '<div class="timeline-item active' + (monOn ? '' : ' off') + '">' +
@@ -1732,6 +1737,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """Override to add timestamp prefix."""
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {args[0]}")
 
+    def check_auth(self):
+        """Check HTTP Basic Auth. Returns True if authorized."""
+        auth_header = self.headers.get("Authorization", "")
+        if not auth_header.startswith("Basic "):
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="Stock Trading Bot"')
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"<h1>Login Required</h1>")
+            return False
+        try:
+            decoded = base64.b64decode(auth_header[6:]).decode("utf-8")
+            user, passwd = decoded.split(":", 1)
+            if user == AUTH_USER and passwd == AUTH_PASS:
+                return True
+        except Exception:
+            pass
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="Stock Trading Bot"')
+        self.send_header("Content-Type", "text/html")
+        self.end_headers()
+        self.wfile.write(b"<h1>Invalid credentials</h1>")
+        return False
+
     def send_json(self, data, status=200):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -1766,6 +1795,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        if not self.check_auth():
+            return
         path = self.path.split("?")[0]
 
         if path == "/":
@@ -1801,6 +1832,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "Not found"}, 404)
 
     def do_POST(self):
+        if not self.check_auth():
+            return
         path = self.path.split("?")[0]
         body = self.read_body()
 
