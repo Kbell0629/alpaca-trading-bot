@@ -61,6 +61,9 @@ Tracker for remaining improvements. Updated 2026-04-16.
 - [x] Dynamic strategy rotation
 - [x] Earnings play module
 - [x] Post-market news scanner
+- [x] **Wheel strategy full autonomy** (2026-04-16) — cash-secured puts → covered calls → repeat, fully automated
+- [x] **Settings modal + admin panel** (2026-04-16) — multi-user management, per-user Alpaca creds, admin user list
+- [x] **Auto-deployer fallback pool 5→20** (2026-04-16) — doesn't give up when top picks blocked by guardrails
 - [x] Market breadth filter
 - [x] Volume profile breakouts
 - [x] Partial profit taking
@@ -92,6 +95,15 @@ Tracker for remaining improvements. Updated 2026-04-16.
 **Impact:** Medium — limited to pre-earnings window
 **Effort:** 1 hour
 **Plan:** Separate auto-deploy path that buys 2-3 days before earnings, sells morning of. Track `earnings_date` field.
+
+### ✅ Wheel Strategy Auto-Deploy (DONE 2026-04-16)
+**Status:** COMPLETE — fully autonomous wheel cycle in `wheel_strategy.py` + cloud_scheduler tasks.
+**What shipped:**
+- `wheel_strategy.py` (~700 lines): state machine (searching → put_active → shares_owned → call_active → searching), Alpaca options API integration, per-symbol state files with audit trail.
+- Cloud scheduler: `run_wheel_auto_deploy` at 9:40 AM weekdays + `run_wheel_monitor` every 15 min.
+- Safety rails: options level 2+, cash coverage, never sell call below cost basis, earnings avoidance 30d, max 2 concurrent, price $10-$50, min 0.5% premium yield, 50% profit buy-to-close.
+- `/api/wheel-status` endpoint.
+- Config toggle: `auto_deployer_config.wheel.enabled` (default true).
 
 ### 4. Dividend Capture Strategy
 **Status:** Not built

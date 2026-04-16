@@ -49,7 +49,8 @@ All secrets in `.env` (gitignored) and Railway variables. No hardcoded defaults.
 - `economic_calendar.py` — FOMC, opex, news events
 - `social_sentiment.py` — StockTwits sentiment (free)
 - `correlation.py` — Portfolio correlation matrix
-- `options_analysis.py` — Options chain for wheel strategy
+- `options_analysis.py` — Options chain utilities (used by wheel_strategy)
+- `wheel_strategy.py` — **Full wheel automation** (sell puts → assign → sell calls → repeat). State machine per symbol, all safety rails. Called by cloud_scheduler.run_wheel_auto_deploy and run_wheel_monitor.
 - `extended_hours.py` — Pre-market / after-hours trading logic
 - `short_strategy.py` — Short selling candidate identification
 
@@ -214,11 +215,15 @@ Weekly (Friday 2 PM PT):
 `cloud_scheduler.py` runs as a background thread inside server.py on Railway. Bot is fully autonomous 24/7 — laptop not needed.
 
 **Task schedule:**
-- Auto-deployer: weekdays 9:35 AM ET (screen + deploy top 2)
+- Auto-deployer (trailing/breakout/mean-rev): weekdays 9:35 AM ET (top-20 candidate pool with fallback)
+- **Wheel auto-deploy: weekdays 9:40 AM ET** (sells cash-secured puts on wheel candidates)
+- **Wheel monitor: every 15 min during market hours** (assignment, expiration, buy-to-close)
 - Screener: every 30 min during market hours
 - Strategy monitor: every 60s during market hours (stops, ladders, targets)
+- Friday risk reduction: 3:45 PM ET (scale out of winners before weekend)
 - Daily close: weekdays 4:05 PM ET
 - Weekly learning: Fridays 5:00 PM ET
+- Monthly rebalance: first trading day 9:45 AM ET
 
 **Claude Code tasks are DISABLED** to prevent duplicate trades. Cloud scheduler is the single source of truth.
 
@@ -269,6 +274,13 @@ When readiness score hits 80/100 after 30 days:
 - **2026-04-16:** Built cloud_scheduler.py — bot now 24/7 autonomous on Railway, laptop not required
 - **2026-04-16:** Disabled all Claude Code scheduled tasks to prevent duplicates
 - **2026-04-16:** Dashboard Scheduler tab with live task status + log feed
+- **2026-04-16 (PM):** Multi-user support complete (auth.py, sessions, password reset, per-user Alpaca creds)
+- **2026-04-16 (PM):** Railway volume persistence via DATA_DIR abstraction
+- **2026-04-16 (PM):** Screener parallelized (60-80s → 50s)
+- **2026-04-16 (PM):** Auto-deployer fallback pool 5→20 picks
+- **2026-04-16 (PM):** Header v2 redesign + time format fixes
+- **2026-04-16 (PM):** **Settings modal + Admin panel** — full multi-user UI
+- **2026-04-16 (PM):** **Wheel strategy full autonomy** — wheel_strategy.py + cloud_scheduler tasks. Sell puts → assign → sell calls → repeat, fully automated with safety rails.
 
 ---
 
