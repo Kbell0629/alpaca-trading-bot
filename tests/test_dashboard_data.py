@@ -41,6 +41,40 @@ def test_load_with_shared_fallback_non_admin_never_reads_shared(isolated_data_di
         "non-admin user read the shared file — SECURITY REGRESSION"
 
 
+def test_trading_session_is_computed_live_not_from_stale_json(isolated_data_dir):
+    """Regression: the dashboard badge was stuck on "MARKET OPEN" for
+    46+ minutes after the 4 PM close because trading_session was only
+    refreshed when the screener ran (every 30 min during market hours).
+    After close, no more screener runs fire, so the stored value
+    stayed at "market" all evening. Fixed by overwriting on every
+    get_dashboard_data() call.
+    """
+    import os, json, server
+    uid = 1
+    user_dir, _ = server._resolve_user_paths(uid)
+
+    # Seed a dashboard_data.json with a stale "market" value plus
+    # enough scaffolding that get_dashboard_data() picks it up.
+    stale_data = {
+        "picks": [],
+        "total_screened": 0,
+        "total_passed": 0,
+        "trading_session": "market",  # stale value — bot thinks market is open
+    }
+    with open(os.path.join(user_dir, "dashboard_data.json"), "w") as f:
+        json.dump(stale_data, f)
+
+    # get_dashboard_data should OVERWRITE the stale value with whatever
+    # extended_hours.get_trading_session() returns right now.
+    result = server.get_dashboard_data(user_id=uid)
+    from extended_hours import get_trading_session
+    expected = get_trading_session()
+    assert result["trading_session"] == expected, (
+        f"dashboard stuck on stale session: got {result['trading_session']!r} "
+        f"instead of live {expected!r}"
+    )
+
+
 def test_load_with_shared_fallback_admin_copies_on_first_read(isolated_data_dir):
     """user_id=1 (bootstrap admin) may migrate shared → per-user once."""
     import server

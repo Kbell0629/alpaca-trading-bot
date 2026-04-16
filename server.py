@@ -396,12 +396,26 @@ def get_dashboard_data(api_endpoint=None, api_headers=None, user_id=None):
         api_endpoint, api_headers,
     )
 
+    # Compute trading_session LIVE on every request, not from the stale
+    # value baked into dashboard_data.json by the last screener run.
+    # The screener only runs every 30 min during market hours, so after
+    # 4:00 PM close the stored value stays at "market" all evening.
+    # Dashboard UI reads `trading_session` to decide the header badge
+    # (MARKET OPEN / AFTER HOURS / CLOSED). Overwrite here so it's
+    # always current with wall-clock ET.
+    try:
+        from extended_hours import get_trading_session as _live_session
+        current_session = _live_session()
+    except Exception:
+        current_session = "unknown"
+
     if data:
         data["account"] = account if isinstance(account, dict) and "error" not in account else data.get("account", {})
         data["positions"] = positions if isinstance(positions, list) else data.get("positions", [])
         data["open_orders"] = orders if isinstance(orders, list) else data.get("open_orders", [])
         data["updated_at"] = now_et().strftime("%Y-%m-%d %I:%M:%S %p ET")
         data["api_errors"] = api_errors
+        data["trading_session"] = current_session
         overlays = _load_overlay_files(user_dir, strats_dir, user_id)
         for key, value in overlays.items():
             data[key] = value if value is not None else data.get(key, {})
@@ -420,6 +434,7 @@ def get_dashboard_data(api_endpoint=None, api_headers=None, user_id=None):
         "picks": [],
         "total_screened": 0,
         "total_passed": 0,
+        "trading_session": current_session,
         "updated_at": now_et().strftime("%Y-%m-%d %I:%M:%S %p ET"),
         "api_errors": api_errors,
     }
@@ -1469,6 +1484,9 @@ class DashboardHandler(
 
         elif path == "/api/force-auto-deploy":
             self.handle_force_auto_deploy()
+
+        elif path == "/api/force-daily-close":
+            self.handle_force_daily_close()
 
         else:
             self.send_json({"error": "Not found"}, 404)

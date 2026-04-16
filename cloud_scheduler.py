@@ -54,6 +54,57 @@ _last_fatal_notify_ts = 0.0  # rate-limit fatal-loop-error push notifications
 _staleness_last_alert = {}   # {task_key: ts} — prevent repeat alerts every tick
 _last_heartbeat_ts = 0.0     # when we last emitted a heartbeat log line
 
+# Persist _last_runs across container restarts. Before this was added,
+# a Railway redeploy that happened to straddle 4:05 PM ET would wipe
+# the in-memory dict and the daily close would either (a) be re-run
+# spuriously or (b) silently skip, depending on timing. With on-disk
+# persistence, `should_run_daily_at("daily_close_1", 16, 5)` correctly
+# returns False if today's run already completed before the restart.
+_LAST_RUNS_PATH = os.path.join(DATA_DIR, "scheduler_last_runs.json")
+_last_runs_lock = threading.Lock()
+
+
+def _load_last_runs():
+    """Load the persisted _last_runs dict at scheduler startup. Silent
+    best-effort — a missing or malformed file just means we start with
+    an empty dict (same as pre-persistence behavior)."""
+    global _last_runs
+    try:
+        with open(_LAST_RUNS_PATH) as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            with _last_runs_lock:
+                _last_runs.update(data)
+            log(f"Loaded {len(data)} persisted scheduler last_runs entries", "scheduler")
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        log(f"Could not load {_LAST_RUNS_PATH}: {e}", "scheduler")
+
+
+def _save_last_runs():
+    """Atomic write of _last_runs to disk. Called after every update
+    to should_run_daily_at / should_run_interval so a restart picks up
+    exactly where we were. tempfile+rename keeps the file consistent
+    even if the process dies mid-write."""
+    try:
+        with _last_runs_lock:
+            snapshot = dict(_last_runs)
+        d = os.path.dirname(_LAST_RUNS_PATH) or "."
+        os.makedirs(d, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(snapshot, f)
+            os.rename(tmp, _LAST_RUNS_PATH)
+        except Exception:
+            try: os.unlink(tmp)
+            except OSError: pass
+            raise
+    except Exception as e:
+        # Persistence is best-effort — never fail a scheduler tick over it.
+        log(f"_save_last_runs failed: {e}", "scheduler")
+
 
 def _heartbeat_tick():
     """Emit a heartbeat log line every ~2 min so /healthz sees recent
@@ -1816,17 +1867,34 @@ def should_run_interval(task_name, interval_seconds):
     now = time.time()
     last = _last_runs.get(task_name, 0)
     if now - last >= interval_seconds:
-        _last_runs[task_name] = now
+        with _last_runs_lock:
+            _last_runs[task_name] = now
+        _save_last_runs()
         return True
     return False
 
-def should_run_daily_at(task_name, hour_et, minute_et):
+def should_run_daily_at(task_name, hour_et, minute_et, max_late_seconds=1800):
+    """Fire a daily task exactly once per day.
+
+    `max_late_seconds` is the tolerance window after the target time
+    within which the task will still fire if it hasn't run yet today.
+    The previous hard-coded 600 (10 min) was too tight — a Railway
+    redeploy at ~4:05 PM today wiped in-memory state and restarted at
+    4:46 PM, 41 min past the daily-close target, so daily_close silently
+    skipped even though it hadn't run that day. Default is now 30 min
+    (catches typical redeploy windows); tasks that are safe to run hours
+    late (daily_close, weekly_learning, monthly_rebalance) can pass a
+    larger value. Auto-deployer/wheel-deploy keep the default because
+    firing those hours late = trading on stale screener data.
+    """
     now_et = get_et_time()
     target = now_et.replace(hour=hour_et, minute=minute_et, second=0, microsecond=0)
     last_date = _last_runs.get(task_name, "")
     today_str = now_et.strftime("%Y-%m-%d")
-    if last_date != today_str and now_et >= target and (now_et - target).total_seconds() < 600:
-        _last_runs[task_name] = today_str
+    if last_date != today_str and now_et >= target and (now_et - target).total_seconds() < max_late_seconds:
+        with _last_runs_lock:
+            _last_runs[task_name] = today_str
+        _save_last_runs()
         return True
     return False
 
@@ -1987,6 +2055,9 @@ def run_daily_backup():
 def scheduler_loop():
     global _scheduler_running
     log("Cloud scheduler loop started (multi-user)", "scheduler")
+    # Load persisted _last_runs so we don't re-fire tasks that already
+    # completed before a container restart. Round-8+ fix.
+    _load_last_runs()
     notify_user_global("Cloud scheduler started — autonomous bot running on Railway", "info")
 
     while _scheduler_running:
@@ -2050,7 +2121,13 @@ def scheduler_loop():
 
                     # Daily close: weekdays 4:05 PM ET
                     if is_weekday and now_et.hour == 16 and now_et.minute >= 5:
-                        if should_run_daily_at(f"daily_close_{uid}", 16, 5):
+                        # Wide window — daily close is a reporting task
+                        # (scorecard + audit log); safe to run hours late
+                        # if a Railway redeploy straddled 4:05 PM. Unlike
+                        # auto-deployer where firing 4 hours late would
+                        # mean trading on stale screener data, daily close
+                        # just captures end-of-day state.
+                        if should_run_daily_at(f"daily_close_{uid}", 16, 5, max_late_seconds=4*3600):
                             run_daily_close(user)
 
                     # Weekly learning: Fridays 5:00 PM ET

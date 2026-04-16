@@ -346,3 +346,50 @@ class ActionsHandlerMixin:
             })
         except Exception as e:
             self.send_json({"error": f"Failed to start force-deploy: {e}"}, 500)
+
+    def handle_force_daily_close(self):
+        """Manually fire run_daily_close for the current user. Needed when
+        a container restart caused the scheduled 4:05 PM task to skip
+        (in-memory _last_runs loses state across restarts, so if the
+        restart crosses the scheduled time, daily close may not fire in
+        the first tick of the new container — persistence fix landed in
+        the same commit addresses the root cause going forward).
+
+        Writes scorecard.json + logs daily PnL notification exactly as
+        the scheduled task would. Sets _last_runs so the scheduler
+        won't double-fire it.
+        """
+        if not self.current_user:
+            return self.send_json({"error": "Not authenticated"}, 401)
+        try:
+            import cloud_scheduler as cs
+            user = {
+                "id": self.current_user["id"],
+                "username": self.current_user["username"],
+                "_api_key": self.user_api_key,
+                "_api_secret": self.user_api_secret,
+                "_api_endpoint": self.user_api_endpoint,
+                "_data_endpoint": self.user_data_endpoint,
+                "_ntfy_topic": self.current_user.get("ntfy_topic", "") or f"alpaca-bot-{self.current_user['username'].lower()}",
+                "_data_dir": auth.user_data_dir(self.current_user["id"]),
+                "_strategies_dir": os.path.join(auth.user_data_dir(self.current_user["id"]), "strategies"),
+            }
+            # Run synchronously so the caller sees it completed and can
+            # read fresh scorecard values. Daily close is fast (~1-3s).
+            cs.run_daily_close(user)
+            # Mark it done for today so the scheduler doesn't re-fire.
+            from et_time import now_et
+            today_str = now_et().strftime("%Y-%m-%d")
+            cs._last_runs[f"daily_close_{user['id']}"] = today_str
+            # Persist if the scheduler supports it (round-8+ fix).
+            try:
+                if hasattr(cs, "_save_last_runs"):
+                    cs._save_last_runs()
+            except Exception:
+                pass
+            self.send_json({
+                "success": True,
+                "message": f"Daily close complete for {user['username']}. Scorecard updated.",
+            })
+        except Exception as e:
+            self._send_error_safe(e, 500, "force-daily-close")

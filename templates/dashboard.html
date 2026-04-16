@@ -3367,6 +3367,12 @@ function renderDashboard() {
 
     renderLog();
     refreshSchedulerStatus();
+    // Every renderDashboard() rebuilds the #heatmapContent div back to
+    // the "Loading heatmap data..." placeholder. Without this call the
+    // heatmap stayed stuck on "Loading..." after every 60s auto-refresh
+    // until the user hit the Refresh button manually. Fire-and-forget —
+    // loadHeatmap is async and non-blocking.
+    loadHeatmap();
 
     // Populate the stock selector and render backtest.
     // Show ALL top-50 filtered picks so the user can backtest any of them,
