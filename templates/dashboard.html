@@ -3072,7 +3072,11 @@ function renderDashboard() {
     // Readiness scorecard section
     const sc = d.scorecard || {};
     const criteria = sc.readiness_criteria || {};
-    const scDays = Math.round((new Date() - new Date(sc.start_date || new Date())) / 86400000) || 0;
+    // Math.floor not Math.round — "Days Tracked: 1" should mean "one
+    // full day has elapsed since start", not "halfway through the
+    // second day." Previously this rounded 1.88 calendar days up to 2
+    // even though only one market day had actually completed.
+    const scDays = Math.max(0, Math.floor((new Date() - new Date(sc.start_date || new Date())) / 86400000));
     let readinessHtml = '<div class="readiness-card" id="section-readiness">' +
         '<h3>\u{1F4CA} Paper Trading Progress</h3>' +
         '<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">' +
