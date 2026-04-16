@@ -22,9 +22,9 @@ def test_hash_legacy_200k_still_verifies(isolated_data_dir):
 
 def test_encrypt_decrypt_roundtrip_encv3(isolated_data_dir):
     import auth
-    ct = auth.encrypt_secret("PKCMCPJLP7HH5PD3VDYKD6DQ5I")
+    ct = auth.encrypt_secret("FAKE-TEST-KEY-NOT-A-REAL-SECRET")
     assert ct.startswith("ENCv3:"), f"new writes must be ENCv3, got: {ct[:8]}"
-    assert auth.decrypt_secret(ct) == "PKCMCPJLP7HH5PD3VDYKD6DQ5I"
+    assert auth.decrypt_secret(ct) == "FAKE-TEST-KEY-NOT-A-REAL-SECRET"
 
 
 def test_encv2_still_decrypts_backward_compat(isolated_data_dir):
