@@ -4920,6 +4920,62 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "total_trades": len(trades),
             })
 
+        elif path == "/api/wheel-status":
+            # Return all active wheel strategies for the current user with
+            # enough state detail for the dashboard wheel card to render.
+            try:
+                import wheel_strategy as ws
+                user = {
+                    "_api_key": self.user_api_key,
+                    "_api_secret": self.user_api_secret,
+                    "_api_endpoint": self.user_api_endpoint,
+                    "_data_endpoint": self.user_data_endpoint,
+                    "_data_dir": auth.user_data_dir(self.current_user["id"]) if self.current_user else DATA_DIR,
+                    "_strategies_dir": os.path.join(
+                        auth.user_data_dir(self.current_user["id"]) if self.current_user else DATA_DIR,
+                        "strategies"
+                    ),
+                }
+                wheels = ws.list_wheel_files(user)
+                result = []
+                total_premium = 0
+                total_pnl = 0
+                for fname, state in wheels:
+                    total_premium += state.get("total_premium_collected", 0)
+                    total_pnl += state.get("total_realized_pnl", 0)
+                    result.append({
+                        "symbol": state.get("symbol"),
+                        "stage": state.get("stage"),
+                        "shares_owned": state.get("shares_owned", 0),
+                        "cost_basis": state.get("cost_basis"),
+                        "cycles_completed": state.get("cycles_completed", 0),
+                        "total_premium_collected": state.get("total_premium_collected", 0),
+                        "total_realized_pnl": state.get("total_realized_pnl", 0),
+                        "active_contract": state.get("active_contract"),
+                        "created": state.get("created"),
+                        "updated": state.get("updated"),
+                        "history": state.get("history", [])[-5:],  # Last 5 events
+                    })
+                self.send_json({
+                    "wheels": result,
+                    "total_active": len(result),
+                    "total_premium_collected": round(total_premium, 2),
+                    "total_realized_pnl": round(total_pnl, 2),
+                    "safety_rails": {
+                        "min_stock_price": ws.MIN_STOCK_PRICE,
+                        "max_stock_price": ws.MAX_STOCK_PRICE,
+                        "min_dte": ws.MIN_DTE,
+                        "max_dte": ws.MAX_DTE,
+                        "put_strike_pct_below": ws.PUT_STRIKE_PCT_BELOW,
+                        "call_strike_pct_above": ws.CALL_STRIKE_PCT_ABOVE,
+                        "profit_close_pct": ws.PROFIT_CLOSE_PCT,
+                        "max_concurrent_wheels": ws.MAX_CONCURRENT_WHEELS,
+                        "earnings_avoid_days": ws.EARNINGS_AVOID_DAYS,
+                    }
+                })
+            except Exception as e:
+                self.send_json({"error": str(e)}, 500)
+
         elif path == "/api/admin/users":
             # Admin only: list all users (active + inactive) with metadata.
             if not self.current_user or not self.current_user.get("is_admin"):

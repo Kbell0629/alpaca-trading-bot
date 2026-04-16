@@ -1281,6 +1281,111 @@ def should_run_daily_at(task_name, hour_et, minute_et):
         return True
     return False
 
+# ============================================================================
+# TASK 8: WHEEL AUTO-DEPLOY (per user) — fires at 9:40 AM ET weekdays.
+# Picks the top wheel candidate from the screener and sells a cash-secured put.
+# All safety checks live in wheel_strategy.py (options level, cash coverage,
+# earnings avoidance, concurrent-wheels cap, price range, premium yield, etc).
+# ============================================================================
+def run_wheel_auto_deploy(user):
+    try:
+        import wheel_strategy as ws
+    except Exception as e:
+        log(f"[{user['username']}] wheel_strategy import failed: {e}", "wheel")
+        return
+
+    log(f"[{user['username']}] Running wheel auto-deploy...", "wheel")
+
+    # Respect kill switch and auto-deployer config
+    guardrails = load_json(user_file(user, "guardrails.json")) or {}
+    if guardrails.get("kill_switch"):
+        log(f"[{user['username']}] Kill switch active — skipping wheel auto-deploy", "wheel")
+        return
+    config = load_json(user_file(user, "auto_deployer_config.json")) or {}
+    if not config.get("enabled", True):
+        log(f"[{user['username']}] Auto-deployer disabled — skipping wheel auto-deploy", "wheel")
+        return
+    # Per-strategy wheel toggle (default enabled)
+    wheel_cfg = config.get("wheel", {})
+    if wheel_cfg.get("enabled", True) is False:
+        log(f"[{user['username']}] Wheel strategy disabled in auto_deployer_config — skipping", "wheel")
+        return
+
+    # Make sure we have fresh screener data (skip if already ran in last 5 min)
+    run_screener(user, max_age_seconds=300)
+
+    picks_path = user_file(user, "dashboard_data.json")
+    if not os.path.exists(picks_path):
+        picks_path = os.path.join(DATA_DIR, "dashboard_data.json")
+    picks_data = load_json(picks_path) or {}
+
+    # Search up to top 20 picks (matches main auto-deployer fallback pool).
+    # Most will be filtered out by safety rails (price range, earnings, concurrent cap).
+    candidates = ws.find_wheel_candidates(picks_data, max_candidates=20)
+    if not candidates:
+        log(f"[{user['username']}] No wheel candidates in screener output", "wheel")
+        return
+
+    log(f"[{user['username']}] Wheel candidates: {[c.get('symbol') for c in candidates]}", "wheel")
+
+    deployed = 0
+    max_per_day = int(wheel_cfg.get("max_new_per_day", 1))
+    for pick in candidates:
+        if deployed >= max_per_day:
+            break
+        success, msg, _ = ws.open_short_put(user, pick)
+        if success:
+            log(f"[{user['username']}] WHEEL DEPLOYED: {msg}", "wheel")
+            notify_user(user, f"Wheel opened on {pick.get('symbol')}: {msg}", "trade")
+            deployed += 1
+        else:
+            log(f"[{user['username']}] {pick.get('symbol')}: wheel skipped — {msg}", "wheel")
+
+    if deployed == 0:
+        log(f"[{user['username']}] No wheels deployed after evaluating {len(candidates)} candidates", "wheel")
+    else:
+        log(f"[{user['username']}] Wheel auto-deploy done — {deployed} new wheel(s)", "wheel")
+
+
+# ============================================================================
+# TASK 9: WHEEL MONITOR (per user) — every 15 min during market hours.
+# Iterates every wheel_*.json file and advances the state machine:
+#   - Check fill on pending open orders
+#   - Check expiration / assignment for active contracts
+#   - Buy to close at 50% profit
+#   - Sell covered calls once shares are assigned
+# ============================================================================
+def run_wheel_monitor(user):
+    try:
+        import wheel_strategy as ws
+    except Exception as e:
+        log(f"[{user['username']}] wheel_strategy import failed: {e}", "wheel")
+        return
+
+    wheels = ws.list_wheel_files(user)
+    if not wheels:
+        return  # Nothing to monitor
+
+    for fname, state in wheels:
+        try:
+            stage_before = state.get("stage")
+            events = ws.advance_wheel_state(user, state)
+            for ev in events:
+                log(f"[{user['username']}] {ev}", "wheel")
+                notify_user(user, ev, "info")
+
+            # Stage 2 auto-pilot: once shares are owned, proactively sell a call
+            if state.get("stage") == "stage_2_shares_owned" and not state.get("active_contract"):
+                ok, msg = ws.open_covered_call(user, state)
+                if ok:
+                    log(f"[{user['username']}] {state['symbol']}: {msg}", "wheel")
+                    notify_user(user, f"Covered call opened on {state['symbol']}: {msg}", "trade")
+                else:
+                    log(f"[{user['username']}] {state['symbol']}: covered call skipped — {msg}", "wheel")
+        except Exception as e:
+            log(f"[{user['username']}] Wheel monitor error on {fname}: {e}", "wheel")
+
+
 def scheduler_loop():
     global _scheduler_running
     log("Cloud scheduler loop started (multi-user)", "scheduler")
@@ -1316,6 +1421,17 @@ def scheduler_loop():
                     if is_weekday and now_et.hour == 9 and now_et.minute >= 35 and market_open_flag:
                         if should_run_daily_at(f"auto_deployer_{uid}", 9, 35):
                             run_auto_deployer(user)
+
+                    # Wheel auto-deploy: weekdays 9:40 AM ET (5 min after regular deployer)
+                    # Sells cash-secured puts on top wheel candidates.
+                    if is_weekday and now_et.hour == 9 and now_et.minute >= 40 and market_open_flag:
+                        if should_run_daily_at(f"wheel_deploy_{uid}", 9, 40):
+                            run_wheel_auto_deploy(user)
+
+                    # Wheel monitor: every 15 min during market hours
+                    # Manages assignment, expiration, buy-to-close, stage transitions.
+                    if market_open_flag and should_run_interval(f"wheel_monitor_{uid}", 15 * 60):
+                        run_wheel_monitor(user)
 
                     # Screener: every 30 min during market hours
                     if market_open_flag and should_run_interval(f"screener_{uid}", 30 * 60):
