@@ -166,6 +166,8 @@ def get_dashboard_data():
         data["scorecard"] = load_json(os.path.join(BASE_DIR, "scorecard.json")) or data.get("scorecard", {})
         # Load auto-deployer config for short selling toggle state
         data["auto_deployer_config"] = load_json(os.path.join(BASE_DIR, "auto_deployer_config.json")) or {}
+        # Load guardrails for active preset detection
+        data["guardrails"] = load_json(os.path.join(BASE_DIR, "guardrails.json")) or {}
         return data
     # Fallback: build from strategy files and API
     trailing = load_json(os.path.join(STRATEGIES_DIR, "trailing_stop.json"))
@@ -626,6 +628,64 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
 .preset-card:hover { border-color: var(--accent); transform: translateY(-2px); }
 .preset-card strong { display: block; margin-bottom: 4px; }
 .preset-card p { font-size: 12px; color: var(--text-dim); margin: 0; }
+
+/* Strategy Template V2 - enhanced cards */
+.preset-strategies-v2 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.preset-card-v2 {
+    background: var(--card); border: 1px solid var(--border);
+    border-top: 4px solid var(--accent); border-radius: 12px;
+    padding: 20px; display: flex; flex-direction: column; gap: 14px;
+    transition: all 0.2s;
+}
+.preset-card-v2.active {
+    box-shadow: 0 0 0 2px rgba(59,130,246,0.3), 0 8px 24px rgba(0,0,0,0.4);
+    background: rgba(59,130,246,0.03);
+}
+.preset-card-v2:hover:not(.active) { transform: translateY(-2px); border-color: var(--accent); }
+.preset-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.preset-name { font-size: 22px; font-weight: 800; line-height: 1; }
+.preset-tag { font-size: 11px; color: var(--text-dim); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+.preset-active-badge {
+    background: var(--green); color: #000;
+    padding: 4px 10px; border-radius: 20px;
+    font-size: 10px; font-weight: 800; letter-spacing: 1px;
+    animation: activeGlow 2s infinite;
+}
+@keyframes activeGlow { 0%,100% { box-shadow: 0 0 0 0 rgba(16,185,129,0.6); } 50% { box-shadow: 0 0 0 6px rgba(16,185,129,0); } }
+.preset-stats {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+    background: rgba(10,14,23,0.5); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px;
+}
+.preset-stats > div { display: flex; flex-direction: column; align-items: center; }
+.preset-stats .lbl { font-size: 9px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
+.preset-stats .val { font-size: 15px; font-weight: 700; color: var(--text); }
+.preset-section-title { font-size: 10px; font-weight: 700; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px; }
+.preset-section-body { font-size: 12px; color: var(--text); line-height: 1.5; }
+.preset-pill {
+    display: inline-block; padding: 3px 8px; border-radius: 6px;
+    font-size: 11px; font-weight: 600; margin: 2px 4px 2px 0;
+}
+.preset-pill.ok { background: rgba(16,185,129,0.15); color: var(--green); }
+.preset-pill.no { background: rgba(239,68,68,0.15); color: var(--red); text-decoration: line-through; opacity: 0.8; }
+.preset-outcome {
+    border-top: 1px solid var(--border); padding-top: 12px;
+    display: flex; flex-direction: column; gap: 6px;
+}
+.preset-outcome-row { display: flex; justify-content: space-between; font-size: 12px; }
+.preset-outcome-row span { color: var(--text-dim); }
+.preset-outcome-row strong { color: var(--text); }
+.preset-apply-btn {
+    padding: 10px; border-radius: 8px; border: none;
+    color: #fff; font-size: 13px; font-weight: 700;
+    cursor: pointer; transition: all 0.2s;
+}
+.preset-apply-btn:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.1); }
+.preset-apply-btn:disabled { cursor: default; opacity: 0.6; color: var(--text-dim); }
+@media (max-width: 900px) {
+    .preset-strategies-v2 { grid-template-columns: 1fr; }
+    .preset-stats { grid-template-columns: repeat(2, 1fr); }
+}
 
 /* What Happens Next Panel */
 .next-actions-panel {
@@ -1838,6 +1898,155 @@ function buildNextActionsPanel(d) {
     '</div>';
 }
 
+function detectActivePreset(d) {
+    // Match current guardrails/config against presets to determine which is active
+    var g = d.guardrails || {};
+    var c = d.auto_deployer_config || {};
+    var stopPct = (c.risk_settings && c.risk_settings.default_stop_loss_pct) || 0.10;
+    var maxPos = c.max_positions || g.max_positions || 5;
+    var maxPerStock = g.max_position_pct || 0.10;
+    var allowed = (g.strategies_allowed || []).slice().sort().join(',');
+
+    // Preset signatures
+    if (stopPct === 0.05 && maxPos === 3 && maxPerStock === 0.05) return 'conservative';
+    if (stopPct === 0.10 && maxPos === 5 && maxPerStock === 0.10) return 'moderate';
+    if (stopPct === 0.05 && maxPos >= 8 && maxPerStock >= 0.15) return 'aggressive';
+    return 'custom';
+}
+
+function buildStrategyTemplates(d) {
+    var active = detectActivePreset(d);
+    var c = d.auto_deployer_config || {};
+    var g = d.guardrails || {};
+
+    // Current settings summary
+    var curStop = Math.round(((c.risk_settings && c.risk_settings.default_stop_loss_pct) || 0.10) * 100);
+    var curMaxPos = c.max_positions || g.max_positions || 5;
+    var curMaxPerStock = Math.round((g.max_position_pct || 0.10) * 100);
+    var curStrats = (g.strategies_allowed || []).length;
+
+    var presets = {
+        conservative: {
+            name: 'Conservative',
+            tagline: 'Capital preservation first',
+            stopLoss: '5%',
+            maxPositions: 3,
+            maxPerStock: '5%',
+            maxNewPerDay: 1,
+            strategies: ['Trailing Stop', 'Wheel', 'Copy Trading'],
+            excluded: ['Breakout', 'Mean Reversion', 'Short Selling'],
+            detail: 'Tight 5% stops to cut losses fast. Fewer positions (max 3) means less overall market exposure. Smaller 5% position sizing per stock. Only runs proven, slower strategies — no aggressive breakout chasing or short selling.',
+            goodFor: 'First-time traders, small accounts under $5k, during high market uncertainty, or when you want to sleep well at night.',
+            tradeoffs: 'Lower returns in bull markets (misses breakouts). Slower to deploy capital. Won\'t capture big short-term swings.',
+            expectedReturn: '5-15% annually (lower volatility)',
+            maxDrawdown: '~5-8% typical',
+            color: '#10b981'
+        },
+        moderate: {
+            name: 'Moderate',
+            tagline: 'Balanced risk/reward',
+            stopLoss: '10%',
+            maxPositions: 5,
+            maxPerStock: '10%',
+            maxNewPerDay: 2,
+            strategies: ['All 5 Strategies', '(shorts only in bear)'],
+            excluded: ['Short Selling auto-deploy in bull'],
+            detail: 'Standard 10% stop-loss. Up to 5 concurrent positions with dynamic volatility-based sizing. All strategies enabled, but shorts only activate in bear markets. This is the default "set and forget" mode for most traders.',
+            goodFor: 'The default recommendation. Accounts $5k-$50k. Users who want the bot to work across all market conditions without babysitting.',
+            tradeoffs: 'Middle ground — won\'t be the best in any single market regime but stays reasonable across all of them.',
+            expectedReturn: '15-25% annually',
+            maxDrawdown: '~10% max (enforced by guardrails)',
+            color: '#3b82f6'
+        },
+        aggressive: {
+            name: 'Aggressive',
+            tagline: 'Maximize upside, accept volatility',
+            stopLoss: '5% (tight)',
+            maxPositions: 8,
+            maxPerStock: '15%',
+            maxNewPerDay: 3,
+            strategies: ['All 6', 'Shorts enabled anytime'],
+            excluded: [],
+            detail: 'Tight 5% stops (fail fast), but larger 15% positions and up to 8 concurrent trades. Extended hours trading enabled. Short selling runs in any market regime, not just bear. Breakouts prioritized. Pre-market and after-hours sessions used when appropriate.',
+            goodFor: 'Experienced traders. Accounts $25k+ (pattern day trader rules). Active day traders who want maximum signal deployment.',
+            tradeoffs: 'Higher drawdowns. More false signals (tight stops = more stop-outs). Requires closer monitoring. Higher tax bills from more frequent trades.',
+            expectedReturn: '20-40% annually (or -20% in bad year)',
+            maxDrawdown: '~15-20% possible',
+            color: '#ef4444'
+        }
+    };
+
+    var order = ['conservative', 'moderate', 'aggressive'];
+    var cards = order.map(function(key) {
+        var p = presets[key];
+        var isActive = (active === key);
+        var badge = isActive
+            ? '<span class="preset-active-badge">ACTIVE</span>'
+            : '';
+        var btnLabel = isActive ? 'Currently Active' : 'Apply ' + p.name;
+        var btnDisabled = isActive ? 'disabled' : '';
+
+        var strategiesHtml = p.strategies.map(function(s) {
+            return '<span class="preset-pill ok">' + esc(s) + '</span>';
+        }).join('');
+        var excludedHtml = p.excluded.length ? p.excluded.map(function(s) {
+            return '<span class="preset-pill no">' + esc(s) + '</span>';
+        }).join('') : '';
+
+        return (
+            '<div class="preset-card-v2 ' + (isActive ? 'active' : '') + '" style="border-top-color:' + p.color + '">' +
+                '<div class="preset-header">' +
+                    '<div>' +
+                        '<div class="preset-name" style="color:' + p.color + '">' + p.name + '</div>' +
+                        '<div class="preset-tag">' + esc(p.tagline) + '</div>' +
+                    '</div>' +
+                    badge +
+                '</div>' +
+                '<div class="preset-stats">' +
+                    '<div><span class="lbl">Stop-Loss</span><span class="val">' + p.stopLoss + '</span></div>' +
+                    '<div><span class="lbl">Max Positions</span><span class="val">' + p.maxPositions + '</span></div>' +
+                    '<div><span class="lbl">Per Stock</span><span class="val">' + p.maxPerStock + '</span></div>' +
+                    '<div><span class="lbl">New/Day</span><span class="val">' + p.maxNewPerDay + '</span></div>' +
+                '</div>' +
+                '<div class="preset-section"><div class="preset-section-title">How it works</div><div class="preset-section-body">' + esc(p.detail) + '</div></div>' +
+                '<div class="preset-section"><div class="preset-section-title">Strategies Enabled</div><div>' + strategiesHtml + '</div></div>' +
+                (excludedHtml ? '<div class="preset-section"><div class="preset-section-title">Disabled</div><div>' + excludedHtml + '</div></div>' : '') +
+                '<div class="preset-section"><div class="preset-section-title">Good for</div><div class="preset-section-body">' + esc(p.goodFor) + '</div></div>' +
+                '<div class="preset-section"><div class="preset-section-title">Tradeoffs</div><div class="preset-section-body">' + esc(p.tradeoffs) + '</div></div>' +
+                '<div class="preset-outcome">' +
+                    '<div class="preset-outcome-row"><span>Expected return</span><strong>' + esc(p.expectedReturn) + '</strong></div>' +
+                    '<div class="preset-outcome-row"><span>Max drawdown</span><strong>' + esc(p.maxDrawdown) + '</strong></div>' +
+                '</div>' +
+                '<button class="preset-apply-btn" onclick="applyPreset(\'' + key + '\')" ' + btnDisabled + ' style="background:' + (isActive ? 'var(--border)' : p.color) + '">' + btnLabel + '</button>' +
+            '</div>'
+        );
+    }).join('');
+
+    // Active mode indicator
+    var activeLabel = active === 'custom'
+        ? '<span style="color:var(--orange)">CUSTOM (doesn\'t match any preset)</span>'
+        : '<span style="color:' + presets[active].color + '">' + presets[active].name.toUpperCase() + '</span>';
+
+    return (
+        '<div class="marketplace">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px">' +
+                '<div>' +
+                    '<h3 style="margin:0">Strategy Templates</h3>' +
+                    '<div style="font-size:13px;color:var(--text-dim);margin-top:6px">Currently running: ' + activeLabel +
+                        ' &nbsp;·&nbsp; Stop: ' + curStop + '% · Max positions: ' + curMaxPos + ' · Per stock: ' + curMaxPerStock + '% · ' + curStrats + ' strategies enabled' +
+                    '</div>' +
+                '</div>' +
+                '<div class="marketplace-actions">' +
+                    '<button class="btn-primary btn-sm" onclick="exportStrategies()">Export My Strategies</button>' +
+                    '<button class="btn-sm" onclick="document.getElementById(\'importFile\').click()">Import Strategy</button>' +
+                    '<input type="file" id="importFile" accept=".json" style="display:none" onchange="importStrategy(this)">' +
+                '</div>' +
+            '</div>' +
+            '<div class="preset-strategies-v2">' + cards + '</div>' +
+        '</div>'
+    );
+}
+
 function buildShortStrategyCard(d) {
     // Determine if shorts are currently unlocked
     var marketRegime = (d.market_regime || (d.economic_calendar && d.economic_calendar.market_regime) || 'neutral').toLowerCase();
@@ -2499,28 +2708,7 @@ function renderDashboard() {
             '<div class="log-entries" id="logEntries"></div>' +
         '</div>' +
         '<div id="section-settings">' +
-        '<div class="marketplace">' +
-            '<h3>Strategy Templates</h3>' +
-            '<div class="marketplace-actions">' +
-                '<button class="btn-primary btn-sm" onclick="exportStrategies()">Export My Strategies</button>' +
-                '<button class="btn-sm" onclick="document.getElementById(\'importFile\').click()">Import Strategy</button>' +
-                '<input type="file" id="importFile" accept=".json" style="display:none" onchange="importStrategy(this)">' +
-            '</div>' +
-            '<div class="preset-strategies">' +
-                '<div class="preset-card" onclick="applyPreset(\'conservative\')">' +
-                    '<strong>Conservative</strong>' +
-                    '<p>Low risk. 5% stops, no breakouts, wheel on blue chips only.</p>' +
-                '</div>' +
-                '<div class="preset-card" onclick="applyPreset(\'moderate\')">' +
-                    '<strong>Moderate</strong>' +
-                    '<p>Balanced. 10% stops, all strategies, dynamic sizing.</p>' +
-                '</div>' +
-                '<div class="preset-card" onclick="applyPreset(\'aggressive\')">' +
-                    '<strong>Aggressive</strong>' +
-                    '<p>High risk/reward. Tight stops, breakouts + shorts, extended hours.</p>' +
-                '</div>' +
-            '</div>' +
-        '</div>' +
+            buildStrategyTemplates(d) +
         '</div>' +
         '<div class="footer">Stock Trading Bot - Strategies: Trailing Stop | Copy Trading | Wheel | Mean Reversion | Breakout | Short Selling - Full market screener across NYSE, NASDAQ, ARCA</div>';
 
