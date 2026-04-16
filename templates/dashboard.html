@@ -1568,16 +1568,22 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
 
     <!-- Notifications tab -->
     <div class="settings-panel" id="settingsPanel-notify">
-      <div class="settings-row">
-        <label>ntfy.sh Topic (push notifications)</label>
-        <input type="text" id="setNtfyTopic" placeholder="alpaca-bot-yourname">
-        <div class="settings-hint">Subscribe to this topic in the ntfy app on your phone for push alerts.</div>
+      <div class="modal-info-box" style="margin-bottom:12px">
+        <strong>📧 Email is the primary channel.</strong> You'll get trade activity, alerts, stop-loss triggers, and daily summaries delivered to the address below.
       </div>
       <div class="settings-row">
         <label>Notification Email</label>
         <input type="email" id="setNotifyEmail" placeholder="you@example.com">
-        <div class="settings-hint">Used for important trade events and daily summaries.</div>
+        <div class="settings-hint">Leave blank to stop receiving bot emails entirely.</div>
       </div>
+      <details style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border)">
+        <summary style="cursor:pointer;font-size:12px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:10px">Advanced — push notifications (optional)</summary>
+        <div class="settings-row" style="margin-top:10px">
+          <label>ntfy.sh Topic</label>
+          <input type="text" id="setNtfyTopic" placeholder="alpaca-bot-yourname">
+          <div class="settings-hint">Install the free <a href="https://ntfy.sh" target="_blank" style="color:var(--accent)">ntfy</a> app and subscribe to this topic for instant push alerts on your phone. Most users can skip this — email covers everything.</div>
+        </div>
+      </details>
     </div>
 
     <!-- Password tab -->

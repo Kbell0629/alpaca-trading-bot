@@ -126,13 +126,21 @@ class AuthHandlerMixin:
         alpaca_key = (body.get("alpaca_key") or "").strip()
         alpaca_secret = (body.get("alpaca_secret") or "").strip()
         alpaca_endpoint = (body.get("alpaca_endpoint") or "https://paper-api.alpaca.markets/v2").strip()
+        # ntfy_topic is now optional and auto-generated if omitted; signup UI
+        # no longer exposes it, but we still accept it from older clients /
+        # API callers.
         ntfy_topic = (body.get("ntfy_topic") or "").strip()
+        notification_email_raw = (body.get("notification_email") or "").strip().lower()
         invite_code = (body.get("invite_code") or "").strip()
 
-        if not server.is_valid_ntfy_topic(ntfy_topic):
+        if ntfy_topic and not server.is_valid_ntfy_topic(ntfy_topic):
             return self.send_json({
                 "error": "Invalid ntfy topic. Allowed: letters, digits, _, - (4-64 chars)."
             }, 400)
+        # Notification email: default to login email, but allow the user to
+        # route bot emails to a different inbox. Reject malformed addresses.
+        if notification_email_raw and "@" not in notification_email_raw:
+            return self.send_json({"error": "Notification email looks invalid"}, 400)
 
         # Gate: SIGNUP_DISABLED env var blocks all signups; SIGNUP_INVITE_CODE
         # requires a matching code. Both are for sharing the deployment safely
@@ -198,7 +206,7 @@ class AuthHandlerMixin:
             alpaca_endpoint=alpaca_endpoint,
             alpaca_data_endpoint=data_endpoint,
             ntfy_topic=ntfy_topic or None,
-            notification_email=email,
+            notification_email=notification_email_raw or email,
         )
         if err:
             return self.send_json({"error": err}, 400)

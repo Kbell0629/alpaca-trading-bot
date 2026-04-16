@@ -53,8 +53,11 @@ button:disabled { opacity:0.5; cursor:not-allowed; }
       </select>
     </div>
 
-    <div class="section-title">Notifications (optional)</div>
-    <div class="form-group"><label>Push Notification Topic</label><input type="text" id="ntfy_topic" placeholder="leave blank for auto-generated"><div class="help-text">Install ntfy app, subscribe to this topic</div></div>
+    <div class="section-title">Email Notifications</div>
+    <div class="info-box">
+      We'll email you <strong>trade activity, alerts, and daily summaries</strong>. By default they go to the email above. You can change the destination or turn them off anytime from <strong>Settings → Notifications</strong> after signup.
+    </div>
+    <div class="form-group"><label>Send Notifications To</label><input type="email" id="notification_email" placeholder="leave blank to use your login email"><div class="help-text">Optional override — e.g. a separate inbox just for bot emails.</div></div>
 
     <div class="section-title">Invite Code</div>
     <div class="form-group"><label>Invite Code</label><input type="text" id="invite_code" placeholder="leave blank if not required" autocomplete="off"><div class="help-text">Required if the deployment has SIGNUP_INVITE_CODE set. Ask the admin for this code.</div></div>
@@ -111,7 +114,7 @@ document.getElementById('signupForm').addEventListener('submit', async function(
         alpaca_key: document.getElementById('alpaca_key').value,
         alpaca_secret: document.getElementById('alpaca_secret').value,
         alpaca_endpoint: document.getElementById('alpaca_endpoint').value,
-        ntfy_topic: document.getElementById('ntfy_topic').value,
+        notification_email: document.getElementById('notification_email').value,
         invite_code: document.getElementById('invite_code').value
       })
     });

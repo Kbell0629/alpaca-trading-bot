@@ -2173,6 +2173,22 @@ def scheduler_loop():
                 except Exception as e:
                     log(f"[{user.get('username','?')}] Per-user scheduler error: {e}", "scheduler")
 
+            # Email queue drain — walks every user's email_queue.json and
+            # ships pending entries via Gmail SMTP. System task (not per-user)
+            # so one SMTP session covers the whole drain pass. Runs every 60s
+            # so trade/alert emails land within a minute of being queued.
+            # No-op if GMAIL_USER / GMAIL_APP_PASSWORD aren't set — the
+            # queue keeps growing until the creds are added, at which point
+            # the backlog flushes.
+            if should_run_interval("email_drain", 60):
+                try:
+                    import email_sender
+                    result = email_sender.drain_all()
+                    if result.get("sent") or result.get("failed"):
+                        log(f"Email drain: {result}", "scheduler")
+                except Exception as e:
+                    log(f"Email drain error: {e}", "scheduler")
+
             # Daily backup — runs ONCE (not per-user) at 3 AM ET.
             # 3 AM is well after market close and well before any pre-market
             # activity, minimizing contention on the volume.
