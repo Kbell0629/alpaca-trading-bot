@@ -1893,7 +1893,17 @@ function renderLog() {
 function scrollToSection(id) {
     var el = document.getElementById(id);
     if (el) {
-        el.scrollIntoView({behavior: 'smooth', block: 'start'});
+        // Offset for the sticky header (header-v2) + a small breathing gap
+        // so the section title lands BELOW the header, not hidden under it.
+        // Previously `scrollIntoView` put the target at y=0 which sat behind
+        // the sticky header — user had to scroll back up to see the title.
+        var header = document.querySelector('.header-v2') || document.querySelector('.header');
+        var headerHeight = header ? header.getBoundingClientRect().height : 0;
+        var navBar = document.querySelector('.nav-tabs');
+        var navHeight = navBar ? navBar.getBoundingClientRect().height : 0;
+        var gap = 16; // visual breathing room
+        var targetY = el.getBoundingClientRect().top + window.pageYOffset - headerHeight - navHeight - gap;
+        window.scrollTo({top: Math.max(0, targetY), behavior: 'smooth'});
         // Highlight active tab
         document.querySelectorAll('.nav-tab').forEach(function(t) { t.classList.remove('active'); });
         document.querySelectorAll('.nav-tab').forEach(function(t) {
