@@ -10,6 +10,7 @@ the client and Railway is encrypted via TLS. The app itself listens on plain HTT
 
 import base64
 import glob
+import hmac
 import json
 import os
 import re
@@ -177,15 +178,28 @@ def get_dashboard_data(api_endpoint=None, api_headers=None, user_id=None):
     """
     ep = api_endpoint or API_ENDPOINT
     api_errors = []
-    # Look for per-user dashboard data first, then shared, then legacy
-    data = None
+
+    # Resolve this user's data/strategies directory. All overlay reads below
+    # must route through here so user A can't see user B's strategies or
+    # guardrails. Falls back to shared DATA_DIR only when user_id is None
+    # (legacy env-var mode with no SQLite user).
     if user_id is not None:
         try:
             import auth as _auth
-            user_path = os.path.join(_auth.user_data_dir(user_id), "dashboard_data.json")
-            data = load_json(user_path)
+            _user_dir = _auth.user_data_dir(user_id)
+            _user_strats = os.path.join(_user_dir, "strategies")
+            os.makedirs(_user_strats, exist_ok=True)
         except Exception:
-            pass
+            _user_dir = DATA_DIR
+            _user_strats = STRATEGIES_DIR
+    else:
+        _user_dir = DATA_DIR
+        _user_strats = STRATEGIES_DIR
+
+    # Look for per-user dashboard data first, then shared, then legacy
+    data = None
+    if user_id is not None:
+        data = load_json(os.path.join(_user_dir, "dashboard_data.json"))
     if not data:
         data = load_json(DASHBOARD_DATA_PATH)
     if data:
@@ -204,21 +218,18 @@ def get_dashboard_data(api_endpoint=None, api_headers=None, user_id=None):
         data["open_orders"] = orders if isinstance(orders, list) else data.get("open_orders", [])
         data["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         data["api_errors"] = api_errors
-        # Also refresh strategy files
-        data["trailing"] = load_json(os.path.join(STRATEGIES_DIR, "trailing_stop.json")) or data.get("trailing")
-        data["copy_trading"] = load_json(os.path.join(STRATEGIES_DIR, "copy_trading.json")) or data.get("copy_trading")
-        data["wheel"] = load_json(os.path.join(STRATEGIES_DIR, "wheel_strategy.json")) or data.get("wheel")
-        # Load scorecard for readiness score
-        data["scorecard"] = load_json(os.path.join(DATA_DIR, "scorecard.json")) or data.get("scorecard", {})
-        # Load auto-deployer config for short selling toggle state
-        data["auto_deployer_config"] = load_json(os.path.join(DATA_DIR, "auto_deployer_config.json")) or {}
-        # Load guardrails for active preset detection
-        data["guardrails"] = load_json(os.path.join(DATA_DIR, "guardrails.json")) or {}
+        # Strategy files and per-user config — all per-user paths
+        data["trailing"] = load_json(os.path.join(_user_strats, "trailing_stop.json")) or data.get("trailing")
+        data["copy_trading"] = load_json(os.path.join(_user_strats, "copy_trading.json")) or data.get("copy_trading")
+        data["wheel"] = load_json(os.path.join(_user_strats, "wheel_strategy.json")) or data.get("wheel")
+        data["scorecard"] = load_json(os.path.join(_user_dir, "scorecard.json")) or data.get("scorecard", {})
+        data["auto_deployer_config"] = load_json(os.path.join(_user_dir, "auto_deployer_config.json")) or {}
+        data["guardrails"] = load_json(os.path.join(_user_dir, "guardrails.json")) or {}
         return data
     # Fallback: build from strategy files and API
-    trailing = load_json(os.path.join(STRATEGIES_DIR, "trailing_stop.json"))
-    copy_trading = load_json(os.path.join(STRATEGIES_DIR, "copy_trading.json"))
-    wheel = load_json(os.path.join(STRATEGIES_DIR, "wheel_strategy.json"))
+    trailing = load_json(os.path.join(_user_strats, "trailing_stop.json"))
+    copy_trading = load_json(os.path.join(_user_strats, "copy_trading.json"))
+    wheel = load_json(os.path.join(_user_strats, "wheel_strategy.json"))
     account = alpaca_get_cached(f"{ep}/account", headers=api_headers)
     positions = alpaca_get_cached(f"{ep}/positions", headers=api_headers)
     orders = alpaca_get_cached(f"{ep}/orders?status=open&limit=50", headers=api_headers)
@@ -1655,10 +1666,17 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
 <script>
 /* XSS escaping helper for user/API data inserted into innerHTML */
 function esc(s) {
+    // HTML-escape including single/double quotes so the result is safe to
+    // embed in double-quoted AND single-quoted attribute contexts and in
+    // JS string literals built via concatenation.
     if (s == null) return '';
+    const str = String(s);
     const d = document.createElement('div');
-    d.textContent = String(s);
-    return d.innerHTML;
+    d.textContent = str;
+    return d.innerHTML
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/`/g, '&#96;');
 }
 
 const API_BASE = '';
@@ -4407,6 +4425,9 @@ button:disabled { opacity:0.5; cursor:not-allowed; }
     <div class="section-title">Notifications (optional)</div>
     <div class="form-group"><label>Push Notification Topic</label><input type="text" id="ntfy_topic" placeholder="leave blank for auto-generated"><div class="help-text">Install ntfy app, subscribe to this topic</div></div>
 
+    <div class="section-title">Invite Code</div>
+    <div class="form-group"><label>Invite Code</label><input type="text" id="invite_code" placeholder="leave blank if not required" autocomplete="off"><div class="help-text">Required if the deployment has SIGNUP_INVITE_CODE set. Ask the admin for this code.</div></div>
+
     <button type="submit">Create Account</button>
   </form>
   <div class="auth-links">Already have an account? <a href="/login">Sign in</a></div>
@@ -4430,7 +4451,8 @@ document.getElementById('signupForm').addEventListener('submit', async function(
         alpaca_key: document.getElementById('alpaca_key').value,
         alpaca_secret: document.getElementById('alpaca_secret').value,
         alpaca_endpoint: document.getElementById('alpaca_endpoint').value,
-        ntfy_topic: document.getElementById('ntfy_topic').value
+        ntfy_topic: document.getElementById('ntfy_topic').value,
+        invite_code: document.getElementById('invite_code').value
       })
     });
     var data = await resp.json();
@@ -4561,6 +4583,74 @@ document.getElementById('resetForm').addEventListener('submit', async function(e
 </script></body></html>"""
 
 
+# ============================================================================
+# Security hardening: login rate limiting + Alpaca endpoint allowlist
+# ============================================================================
+
+# Whitelist of Alpaca endpoints users may configure. Prevents SSRF via the
+# signup/settings flow where `alpaca_endpoint` was previously an arbitrary URL
+# that the server would hit with user-controlled headers.
+ALLOWED_ALPACA_ENDPOINTS = {
+    "https://paper-api.alpaca.markets/v2",
+    "https://api.alpaca.markets/v2",
+}
+ALLOWED_ALPACA_DATA_ENDPOINTS = {
+    "https://data.alpaca.markets/v2",
+    "https://data.alpaca.markets/v1beta1",
+}
+
+def is_allowed_alpaca_endpoint(url, data=False):
+    """Return True if the URL is on the Alpaca allowlist."""
+    if not isinstance(url, str):
+        return False
+    url = url.strip().rstrip("/")
+    pool = ALLOWED_ALPACA_DATA_ENDPOINTS if data else ALLOWED_ALPACA_ENDPOINTS
+    return url in pool
+
+# Simple in-memory login rate limiter: 5 failed attempts per (ip, username)
+# per 15 minutes. Blocks further attempts for 15 min after the 5th failure.
+# Cleared on successful login.
+_LOGIN_ATTEMPTS = {}  # key: (ip, username_lower) -> [(timestamp, success), ...]
+_LOGIN_LOCK = threading.Lock()
+_LOGIN_MAX_FAILURES = 5
+_LOGIN_WINDOW_SEC = 15 * 60
+
+def _login_rate_limited(ip, username):
+    """Check if this (ip, username) pair is currently locked out."""
+    now = time.time()
+    key = (ip or "unknown", (username or "").lower())
+    with _LOGIN_LOCK:
+        attempts = _LOGIN_ATTEMPTS.get(key, [])
+        # Drop old attempts outside window
+        attempts = [a for a in attempts if now - a[0] < _LOGIN_WINDOW_SEC]
+        _LOGIN_ATTEMPTS[key] = attempts
+        fails = sum(1 for ts, ok in attempts if not ok)
+        return fails >= _LOGIN_MAX_FAILURES
+
+def _login_attempt_record(ip, username, success):
+    """Record a login attempt. On success, clears the history for this pair."""
+    now = time.time()
+    key = (ip or "unknown", (username or "").lower())
+    with _LOGIN_LOCK:
+        if success:
+            _LOGIN_ATTEMPTS.pop(key, None)
+        else:
+            attempts = _LOGIN_ATTEMPTS.get(key, [])
+            attempts.append((now, False))
+            _LOGIN_ATTEMPTS[key] = attempts
+
+# Signup invite code gate. Set SIGNUP_INVITE_CODE env var on Railway to require
+# the code for new signups. Set SIGNUP_DISABLED=1 to block all new signups.
+def signup_allowed(provided_code):
+    if os.environ.get("SIGNUP_DISABLED") == "1":
+        return False, "Signup is disabled on this deployment."
+    expected = os.environ.get("SIGNUP_INVITE_CODE", "").strip()
+    if expected:
+        if not hmac.compare_digest((provided_code or "").strip(), expected):
+            return False, "Invalid invite code."
+    return True, None
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     """HTTP request handler for the dashboard server."""
 
@@ -4578,8 +4668,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def get_current_user(self):
         """Return current logged-in user dict, or None.
 
-        Checks session cookie first, then falls back to HTTP Basic Auth
-        (for API clients and backward compatibility with existing scripts).
+        Checks session cookie only. Basic Auth is OFF by default — previously
+        it was an un-rate-limited brute-force surface. To re-enable for CI or
+        API clients, set env var ENABLE_BASIC_AUTH=1 (rate-limited via
+        _LOGIN_ATTEMPTS below).
         """
         cookie_header = self.headers.get("Cookie", "")
         session_token = None
@@ -4592,17 +4684,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
             user = auth.validate_session(session_token)
             if user:
                 return user
-        # Fallback to basic auth for API clients / backward compat
-        auth_header = self.headers.get("Authorization", "")
-        if auth_header.startswith("Basic "):
-            try:
-                decoded = base64.b64decode(auth_header[6:]).decode("utf-8")
-                username, password = decoded.split(":", 1)
-                user = auth.authenticate(username, password)
-                if user:
-                    return user
-            except Exception:
-                pass
+        # Optional Basic Auth (disabled by default)
+        if os.environ.get("ENABLE_BASIC_AUTH") == "1":
+            auth_header = self.headers.get("Authorization", "")
+            if auth_header.startswith("Basic "):
+                try:
+                    decoded = base64.b64decode(auth_header[6:]).decode("utf-8")
+                    username, password = decoded.split(":", 1)
+                    # Rate-limit: use the same tracker as /api/login
+                    if _login_rate_limited(self.client_address[0], username):
+                        return None
+                    user = auth.authenticate(username, password)
+                    if user:
+                        _login_attempt_record(self.client_address[0], username, success=True)
+                        return user
+                    _login_attempt_record(self.client_address[0], username, success=False)
+                except Exception:
+                    pass
         return None
 
     def check_auth(self):
@@ -4641,6 +4739,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "APCA-API-KEY-ID": self.user_api_key or API_KEY,
             "APCA-API-SECRET-KEY": self.user_api_secret or API_SECRET,
         }
+
+    # ========================================================================
+    # Per-user file isolation helpers
+    #
+    # Before multi-user: every strategy file, guardrails.json, auto_deployer
+    # config, trade_journal, etc. lived in the shared DATA_DIR / STRATEGIES_DIR.
+    # With a second user, that meant user B's deploys overwrite user A's
+    # strategy files and user A's kill switch halts user B's trading.
+    # These helpers route every per-user file access through the user's own
+    # data dir inside DATA_DIR/users/{user_id}/, with a fallback to DATA_DIR
+    # for the env-var legacy mode where there's no SQLite user.
+    # ========================================================================
+    def _user_dir(self):
+        """Return the per-user data directory, or DATA_DIR for legacy env-mode."""
+        if self.current_user and self.current_user.get("id") is not None:
+            try:
+                return auth.user_data_dir(self.current_user["id"])
+            except Exception:
+                pass
+        return DATA_DIR
+
+    def _user_strategies_dir(self):
+        """Return the per-user strategies directory (creates it if needed)."""
+        d = os.path.join(self._user_dir(), "strategies")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _user_file(self, filename):
+        """Return an absolute path to a per-user data file."""
+        return os.path.join(self._user_dir(), filename)
 
     def user_api_get(self, url, timeout=15):
         """GET an Alpaca API URL using the current user's credentials."""
@@ -4848,13 +4976,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json(result if isinstance(result, list) else [])
 
         elif path == "/api/auto-deployer-config":
-            config_path = os.path.join(DATA_DIR, "auto_deployer_config.json")
-            config = load_json(config_path)
+            config = load_json(self._user_file("auto_deployer_config.json"))
             self.send_json(config if config else {"enabled": False})
 
         elif path == "/api/guardrails":
-            guardrails_path = os.path.join(DATA_DIR, "guardrails.json")
-            guardrails = load_json(guardrails_path)
+            guardrails = load_json(self._user_file("guardrails.json"))
             self.send_json(guardrails if guardrails else {"kill_switch": False})
 
         elif path == "/api/scheduler-status":
@@ -4877,7 +5003,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": f"Could not read README: {e}"}, 500)
 
         elif path == "/api/trade-heatmap":
-            journal = load_json(os.path.join(DATA_DIR, "trade_journal.json")) or {}
+            # Per-user trade journal — each user has their own heatmap
+            journal = load_json(self._user_file("trade_journal.json")) or {}
             snapshots = journal.get("daily_snapshots", [])
             trades = journal.get("trades", [])
 
@@ -5082,11 +5209,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
     # ===== Auth handlers =====
 
     def _set_session_cookie(self, token):
-        """Send a Set-Cookie header for a fresh session token."""
+        """Send a Set-Cookie header for a fresh session token.
+        Secure flag is added when request came in over HTTPS (Railway sets
+        X-Forwarded-Proto: https at the edge). SameSite=Strict prevents
+        cross-site POSTs from using this cookie even without a CSRF token.
+        """
         max_age = 30 * 86400
+        secure = ""
+        xfp = self.headers.get("X-Forwarded-Proto", "").lower()
+        if xfp == "https" or os.environ.get("FORCE_SECURE_COOKIE") == "1":
+            secure = "; Secure"
         self.send_header(
             "Set-Cookie",
-            f"session={token}; Path=/; HttpOnly; Max-Age={max_age}; SameSite=Lax",
+            f"session={token}; Path=/; HttpOnly{secure}; Max-Age={max_age}; SameSite=Strict",
         )
 
     def handle_login(self, body):
@@ -5094,10 +5229,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
         password = body.get("password") or ""
         if not username or not password:
             return self.send_json({"error": "Username and password required"}, 400)
+
+        # Rate limit BEFORE calling authenticate (which runs expensive PBKDF2).
+        # 5 failures per (IP, username) per 15 min then locked out.
+        ip = self.client_address[0] if self.client_address else None
+        if _login_rate_limited(ip, username):
+            return self.send_json(
+                {"error": "Too many failed attempts. Try again in 15 minutes."}, 429
+            )
+
         user = auth.authenticate(username, password)
         if not user:
+            _login_attempt_record(ip, username, success=False)
+            # Small timing-safe sleep to slow down fast brute force even after
+            # the lockout is cleared. Matches approximate PBKDF2 timing.
             return self.send_json({"error": "Invalid credentials"}, 401)
-        ip = self.client_address[0] if self.client_address else None
+
+        _login_attempt_record(ip, username, success=True)
         token = auth.create_session(user["id"], ip)
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -5114,6 +5262,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         alpaca_secret = (body.get("alpaca_secret") or "").strip()
         alpaca_endpoint = (body.get("alpaca_endpoint") or "https://paper-api.alpaca.markets/v2").strip()
         ntfy_topic = (body.get("ntfy_topic") or "").strip()
+        invite_code = (body.get("invite_code") or "").strip()
+
+        # Gate: SIGNUP_DISABLED env var blocks all signups; SIGNUP_INVITE_CODE
+        # requires a matching code. Both are for sharing the deployment safely
+        # with a specific friend without exposing it to the public internet.
+        allowed, reason = signup_allowed(invite_code)
+        if not allowed:
+            return self.send_json({"error": reason}, 403)
 
         # Validation
         if not all([email, username, password, alpaca_key, alpaca_secret]):
@@ -5127,6 +5283,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return self.send_json({"error": "Invalid email"}, 400)
         if not re.match(r"^[A-Za-z0-9_-]{3,30}$", username):
             return self.send_json({"error": "Username must be 3-30 chars, alphanumeric/_/-"}, 400)
+
+        # SSRF defense: only allow Alpaca endpoints on the allowlist. Previously
+        # an attacker could point alpaca_endpoint at an internal URL (e.g.
+        # 169.254.169.254 metadata, localhost) and the server would hit it with
+        # user-controlled headers and echo back the response body.
+        if not is_allowed_alpaca_endpoint(alpaca_endpoint, data=False):
+            return self.send_json({"error": "Invalid Alpaca endpoint. Must be paper or live Alpaca API."}, 400)
 
         # Verify Alpaca credentials before saving
         test_headers = {
@@ -5215,9 +5378,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except Exception as e:
             print(f"[auth] notify.py launch failed: {e}")
 
-        # Also queue a direct email for the notification_email if one is set
+        # Also queue a direct email for the notification_email if one is set.
+        # Per-user queue file keeps password-reset emails isolated so one user
+        # can't see another user's queue, and concurrent writes don't race on
+        # a single shared file.
         try:
-            email_queue_path = os.path.join(DATA_DIR, "email_queue.json")
+            try:
+                import auth as _auth
+                _uqdir = _auth.user_data_dir(user["id"])
+            except Exception:
+                _uqdir = DATA_DIR
+            email_queue_path = os.path.join(_uqdir, "email_queue.json")
             try:
                 with open(email_queue_path) as f:
                     queue = json.load(f)
@@ -5257,7 +5428,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 break
         self.send_response(302)
         self.send_header("Location", "/login")
-        self.send_header("Set-Cookie", "session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")
+        self.send_header("Set-Cookie", "session=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
 
@@ -5291,6 +5462,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             updates[field] = s
         if not updates:
             return self.send_json({"error": "No fields to update"}, 400)
+
+        # SSRF defense: validate endpoint URLs against the Alpaca allowlist
+        # before persisting. Without this, an attacker could set the endpoint
+        # to an internal URL and every future Alpaca call for that user would
+        # hit the attacker's chosen target.
+        if "alpaca_endpoint" in updates and not is_allowed_alpaca_endpoint(updates["alpaca_endpoint"], data=False):
+            return self.send_json({"error": "Invalid Alpaca endpoint. Must be paper or live Alpaca API."}, 400)
+        if "alpaca_data_endpoint" in updates and not is_allowed_alpaca_endpoint(updates["alpaca_data_endpoint"], data=True):
+            return self.send_json({"error": "Invalid Alpaca data endpoint. Must be data.alpaca.markets."}, 400)
+
         auth.update_user_credentials(self.current_user["id"], **updates)
         self.send_json({"success": True, "message": "Settings updated"})
 
@@ -5569,8 +5750,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "ladder_fills": [],
             },
         }
-        # Per-symbol file so multiple trailing stops don't overwrite each other
-        save_json(os.path.join(STRATEGIES_DIR, f"trailing_stop_{symbol}.json"), strategy_data)
+        # Per-symbol file so multiple trailing stops don't overwrite each other (and per-user)
+        save_json(os.path.join(self._user_strategies_dir(), f"trailing_stop_{symbol}.json"), strategy_data)
 
         self.send_json({
             "success": True,
@@ -5634,7 +5815,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "history": [],
             },
         }
-        save_json(os.path.join(STRATEGIES_DIR, "wheel_strategy.json"), strategy_data)
+        save_json(os.path.join(self._user_strategies_dir(), "wheel_strategy.json"), strategy_data)
 
         self.send_json({
             "success": True,
@@ -5673,7 +5854,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "total_realized_pnl": 0,
             },
         }
-        save_json(os.path.join(STRATEGIES_DIR, "copy_trading.json"), strategy_data)
+        save_json(os.path.join(self._user_strategies_dir(), "copy_trading.json"), strategy_data)
 
         self.send_json({
             "success": True,
@@ -5735,7 +5916,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "entry_fill_price": None,
             },
         }
-        save_json(os.path.join(STRATEGIES_DIR, f"mean_reversion_{symbol}.json"), strategy_data)
+        save_json(os.path.join(self._user_strategies_dir(), f"mean_reversion_{symbol}.json"), strategy_data)
 
         self.send_json({
             "success": True,
@@ -5800,7 +5981,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "entry_fill_price": None,
             },
         }
-        save_json(os.path.join(STRATEGIES_DIR, f"breakout_{symbol}.json"), strategy_data)
+        save_json(os.path.join(self._user_strategies_dir(), f"breakout_{symbol}.json"), strategy_data)
 
         self.send_json({
             "success": True,
@@ -5870,9 +6051,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json({"success": True, "symbol": symbol, "qty": qty, "order": result})
 
     def handle_auto_deployer(self, body):
-        """Toggle the auto-deployer on/off by updating config file."""
+        """Toggle the auto-deployer on/off by updating the current user's config file."""
         enabled = body.get("enabled", False)
-        config_path = os.path.join(DATA_DIR, "auto_deployer_config.json")
+        config_path = self._user_file("auto_deployer_config.json")
         config = load_json(config_path)
         if not config:
             config = {
@@ -5888,10 +6069,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_json({"success": True, "enabled": config["enabled"]})
 
     def handle_kill_switch(self, body):
-        """Activate or deactivate the kill switch."""
+        """Activate or deactivate the kill switch FOR THE CURRENT USER ONLY.
+        Each user has their own guardrails.json and auto_deployer_config.json —
+        one user's kill switch must not halt another user's trading.
+        """
         activate = body.get("activate", False)
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        guardrails_path = os.path.join(DATA_DIR, "guardrails.json")
+        guardrails_path = self._user_file("guardrails.json")
         guardrails = load_json(guardrails_path) or {}
 
         if activate:
@@ -5913,12 +6097,40 @@ class DashboardHandler(BaseHTTPRequestHandler):
             guardrails["kill_switch_reason"] = "Manual activation via dashboard"
             save_json(guardrails_path, guardrails)
 
-            # 4. Set enabled: false in auto_deployer_config.json
-            ad_config_path = os.path.join(DATA_DIR, "auto_deployer_config.json")
+            # 4. Set enabled: false in THIS USER's auto_deployer_config.json
+            ad_config_path = self._user_file("auto_deployer_config.json")
             ad_config = load_json(ad_config_path) or {}
             ad_config["enabled"] = False
             ad_config["last_toggled"] = timestamp
             save_json(ad_config_path, ad_config)
+
+            # 5. Close all open wheel options for this user — kill switch must
+            # also flatten short option exposure (bulk /positions DELETE above
+            # only closes equity positions, leaving short puts/calls open).
+            try:
+                import wheel_strategy as ws
+                user_shim = {
+                    "_api_key": self.user_api_key, "_api_secret": self.user_api_secret,
+                    "_api_endpoint": self.user_api_endpoint, "_data_endpoint": self.user_data_endpoint,
+                    "_data_dir": self._user_dir(), "_strategies_dir": self._user_strategies_dir(),
+                }
+                for fname, wstate in ws.list_wheel_files(user_shim):
+                    ac = wstate.get("active_contract") or {}
+                    if ac.get("contract_symbol") and ac.get("status") in ("active", "pending"):
+                        # Market buy-to-close the short option contract
+                        self.user_api_post(f"{self.user_api_endpoint}/orders", {
+                            "symbol": ac["contract_symbol"],
+                            "qty": str(ac.get("quantity", 1)),
+                            "side": "buy",
+                            "type": "market",
+                            "time_in_force": "day",
+                        })
+                        # Mark the wheel state as killed
+                        wstate["stage"] = "killed_by_kill_switch"
+                        wstate["active_contract"] = None
+                        ws.save_wheel_state(user_shim, wstate)
+            except Exception as e:
+                print(f"[KILL SWITCH] Wheel close error (non-fatal): {e}")
 
             print(f"[KILL SWITCH] Activated at {timestamp}: {orders_cancelled} orders cancelled, {positions_closed} positions closed")
 
@@ -5958,8 +6170,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "mean_reversion": "mean_reversion_*.json",
             "breakout": "breakout_*.json",
         }
-        pattern = patterns.get(strategy_key, f"{strategy_key}*.json")
-        return glob.glob(os.path.join(STRATEGIES_DIR, pattern))
+        # Reject unknown strategy keys to prevent glob injection via user input
+        # (e.g. strategy="../*" matching files outside the strategies dir).
+        if strategy_key not in patterns:
+            return []
+        pattern = patterns[strategy_key]
+        return glob.glob(os.path.join(self._user_strategies_dir(), pattern))
 
     def handle_pause_strategy(self, body):
         """Pause a strategy by setting its status to 'paused'."""
@@ -6075,7 +6291,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         max_position_pct = _num("max_position_pct", 0.10, 0.01, 0.50)
         stop_loss_pct = _num("stop_loss_pct", 0.10, 0.01, 0.50)
 
-        guardrails_path = os.path.join(DATA_DIR, "guardrails.json")
+        # Per-user guardrails and config — presets are a per-user setting
+        guardrails_path = self._user_file("guardrails.json")
         guardrails = load_json(guardrails_path) or {}
         guardrails["max_positions"] = max_positions
         guardrails["max_position_pct"] = max_position_pct
@@ -6083,7 +6300,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             guardrails["strategies_allowed"] = strategies
         save_json(guardrails_path, guardrails)
 
-        config_path = os.path.join(DATA_DIR, "auto_deployer_config.json")
+        config_path = self._user_file("auto_deployer_config.json")
         config = load_json(config_path) or {}
         config["risk_settings"] = config.get("risk_settings", {})
         config["risk_settings"]["default_stop_loss_pct"] = stop_loss_pct
@@ -6109,7 +6326,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not isinstance(raw, bool):
             return self.send_json({"error": "'enabled' must be a boolean"}, 400)
         enabled = raw
-        config_path = os.path.join(DATA_DIR, "auto_deployer_config.json")
+        # Per-user short-selling toggle
+        config_path = self._user_file("auto_deployer_config.json")
         config = load_json(config_path) or {}
         if "short_selling" not in config:
             config["short_selling"] = {

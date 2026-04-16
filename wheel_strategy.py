@@ -29,6 +29,40 @@ import urllib.request
 import urllib.parse
 from datetime import datetime, date, timedelta, timezone
 
+# File locking — used to prevent races between wheel monitor ticks and
+# human-triggered actions (e.g. Force Deploy). Unix only; on Windows this
+# falls through to a no-op lock.
+try:
+    import fcntl
+    _HAS_FCNTL = True
+except ImportError:
+    _HAS_FCNTL = False
+
+class _WheelLock:
+    """Context manager that flock()s a wheel state file during read-modify-write."""
+    def __init__(self, path):
+        self.path = path
+        self.fh = None
+    def __enter__(self):
+        if not _HAS_FCNTL:
+            return self
+        try:
+            self.fh = open(self.path + ".lock", "w")
+            fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX)
+        except Exception:
+            if self.fh:
+                try: self.fh.close()
+                except Exception: pass
+                self.fh = None
+        return self
+    def __exit__(self, *a):
+        if self.fh:
+            try:
+                fcntl.flock(self.fh.fileno(), fcntl.LOCK_UN)
+                self.fh.close()
+            except Exception:
+                pass
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("DATA_DIR", BASE_DIR)
 
@@ -53,14 +87,19 @@ WHEEL_STATE_TEMPLATE = {
     "updated": None,              # ISO timestamp of last state change
     "stage": "stage_1_searching", # See state machine in module docstring
     "shares_owned": 0,            # 0 in stage 1, 100+ in stage 2
+    "shares_at_open": 0,          # Pre-put baseline share count — used to
+                                  # distinguish put-assignment from pre-existing
+                                  # shares the user already held.
     "cost_basis": None,           # Per-share, after accounting for put premiums
     "cycles_completed": 0,        # Full wheel rotations
     "total_premium_collected": 0.0,
     "total_realized_pnl": 0.0,    # Premium + stock gains combined
     "active_contract": None,      # See ACTIVE_CONTRACT_TEMPLATE
-    "history": [],                # Audit trail of state transitions
+    "history": [],                # Audit trail of state transitions (capped)
     "deployer": "cloud_scheduler",
 }
+
+HISTORY_MAX = 500  # Cap history[] to prevent unbounded growth over months
 
 ACTIVE_CONTRACT_TEMPLATE = {
     "contract_symbol": None,      # e.g. "SOFI260501P00018000"
@@ -142,13 +181,17 @@ def save_wheel_state(user, state):
 
 
 def log_history(state, event, detail=None):
-    """Append a timestamped event to the wheel's audit trail."""
-    state.setdefault("history", []).append({
+    """Append a timestamped event to the wheel's audit trail. Caps at HISTORY_MAX
+    entries to prevent unbounded growth over months of monitoring."""
+    hist = state.setdefault("history", [])
+    hist.append({
         "ts": datetime.now(timezone.utc).isoformat(),
         "event": event,
         "stage": state.get("stage"),
         "detail": detail,
     })
+    if len(hist) > HISTORY_MAX:
+        state["history"] = hist[-HISTORY_MAX:]
 
 
 # ============================================================================
@@ -453,6 +496,18 @@ def open_short_put(user, pick):
         "time_in_force": "day",
         "order_class": "simple",
     }
+    # Snapshot baseline share count BEFORE placing the put, so at expiration
+    # we can compare the delta to detect actual assignment vs. pre-existing
+    # shares the user already held for other reasons.
+    positions_now = _api_get(user, "/positions")
+    baseline_shares = 0
+    if isinstance(positions_now, list):
+        for p in positions_now:
+            if p.get("symbol") == symbol:
+                try: baseline_shares = int(float(p.get("qty") or 0))
+                except (TypeError, ValueError): baseline_shares = 0
+                break
+
     order_resp = _api_post(user, "/orders", order_payload)
     if "error" in order_resp or "id" not in order_resp:
         return False, f"Order rejected: {order_resp}", None
@@ -467,6 +522,7 @@ def open_short_put(user, pick):
     state["symbol"] = symbol
     state["created"] = now_iso
     state["stage"] = "stage_1_put_active"
+    state["shares_at_open"] = baseline_shares
     state["active_contract"] = {
         **ACTIVE_CONTRACT_TEMPLATE,
         "contract_symbol": contract["symbol"],
@@ -562,6 +618,11 @@ def open_covered_call(user, state):
     premium_received = round(limit_price * 100 * contracts_qty, 2)
     now_iso = datetime.now(timezone.utc).isoformat()
 
+    # Snapshot shares at call-open so at expiration we can detect called-away
+    # by delta (shares decreased by qty*100) instead of absolute zero (which
+    # false-positives if the user sold manually in another tab).
+    shares_at_call_open = int(shares)
+
     state["stage"] = "stage_2_call_active"
     state["active_contract"] = {
         **ACTIVE_CONTRACT_TEMPLATE,
@@ -576,6 +637,7 @@ def open_covered_call(user, state):
         "open_order_id": order_resp["id"],
         "opened_at": now_iso,
         "status": "pending",
+        "shares_at_call_open": shares_at_call_open,
     }
     log_history(state, "sell_to_open_call", {
         "contract": contract["symbol"],
@@ -599,8 +661,21 @@ def open_covered_call(user, state):
 def advance_wheel_state(user, state):
     """Inspect current Alpaca state and advance the wheel's state file as needed.
     Returns a list of human-readable events for logging.
+
+    Uses a file lock to prevent races between the 15-min monitor tick and
+    human-triggered actions (Force Deploy) that could otherwise double-count
+    premium or submit duplicate buy-to-close orders.
     """
     events = []
+    symbol = state["symbol"]
+    # Lock the wheel file for the duration of this read-modify-write
+    lock_path = wheel_state_path(user, symbol)
+    with _WheelLock(lock_path):
+        return _advance_wheel_state_locked(user, state, events)
+
+
+def _advance_wheel_state_locked(user, state, events):
+    """Inner — runs while holding the lock. Factored out to keep indentation sane."""
     symbol = state["symbol"]
     stage = state.get("stage", "stage_1_searching")
     contract_meta = state.get("active_contract") or {}
@@ -695,22 +770,31 @@ def advance_wheel_state(user, state):
                         break
 
             if stage == "stage_1_put_active":
-                if has_shares and share_qty >= 100:
-                    # Put was assigned — we now own shares
-                    # Cost basis = strike - premium per share
+                # Detect assignment by DELTA not presence: if shares increased
+                # by >= 100 × contract qty compared to shares_at_open baseline,
+                # the put was assigned. Otherwise shares were already there
+                # (user's pre-existing holdings) or came from elsewhere.
+                baseline = int(state.get("shares_at_open", 0) or 0)
+                expected_delta = 100 * contract_meta.get("quantity", 1)
+                share_delta = share_qty - baseline
+                if share_delta >= expected_delta:
+                    # Put was assigned — attribute the new 100×qty shares to us
+                    # Cost basis = strike - premium per share (on ONLY the new shares)
                     cost_basis = contract_meta["strike"] - (contract_meta["premium_received"] / 100 / contract_meta.get("quantity", 1))
-                    state["shares_owned"] = share_qty
+                    state["shares_owned"] = expected_delta  # only count the newly-assigned shares
                     state["cost_basis"] = round(cost_basis, 4)
                     state["stage"] = "stage_2_shares_owned"
                     contract_meta["status"] = "assigned"
                     contract_meta["closed_at"] = datetime.now(timezone.utc).isoformat()
                     log_history(state, "put_assigned", {
-                        "shares": share_qty,
+                        "shares_owned_now_total": share_qty,
+                        "shares_at_open_baseline": baseline,
+                        "assigned_shares": expected_delta,
                         "cost_basis": state["cost_basis"],
                         "strike": contract_meta["strike"],
                     })
                     state["active_contract"] = None
-                    events.append(f"{symbol}: put ASSIGNED — now own {share_qty} shares @ cost basis ${state['cost_basis']:.2f}")
+                    events.append(f"{symbol}: put ASSIGNED — now own {expected_delta} new shares @ cost basis ${state['cost_basis']:.2f}")
                 else:
                     # Put expired worthless — keep premium, restart stage 1
                     contract_meta["status"] = "expired"
@@ -722,9 +806,13 @@ def advance_wheel_state(user, state):
                     events.append(f"{symbol}: put expired worthless — kept ${contract_meta['premium_received']:.2f} premium")
 
             elif stage == "stage_2_call_active":
-                if not has_shares or share_qty == 0:
+                # Detect call assignment by DELTA: shares decreased by >= 100 × qty
+                # compared to the count at call-open time.
+                call_open_shares = int(contract_meta.get("shares_at_call_open", state.get("shares_owned", 0)) or 0)
+                expected_called_away = 100 * contract_meta.get("quantity", 1)
+                share_decrease = call_open_shares - share_qty
+                if share_decrease >= expected_called_away:
                     # Call was assigned — shares called away
-                    # Realized pnl from stock = (strike - cost_basis) × 100 × qty
                     qty_called = contract_meta.get("quantity", 1)
                     stock_pnl = (contract_meta["strike"] - state.get("cost_basis", 0)) * 100 * qty_called
                     state["total_realized_pnl"] = round(state.get("total_realized_pnl", 0) + stock_pnl, 2)
@@ -734,13 +822,16 @@ def advance_wheel_state(user, state):
                         "strike": contract_meta["strike"],
                         "cost_basis": state.get("cost_basis"),
                         "stock_pnl": stock_pnl,
+                        "shares_before": call_open_shares,
+                        "shares_after": share_qty,
                     })
-                    state["shares_owned"] = 0
-                    state["cost_basis"] = None
+                    state["shares_owned"] = max(0, state.get("shares_owned", 0) - expected_called_away)
+                    if state["shares_owned"] == 0:
+                        state["cost_basis"] = None
                     state["cycles_completed"] = state.get("cycles_completed", 0) + 1
                     state["stage"] = "stage_1_searching"  # Full rotation — ready for new put
                     state["active_contract"] = None
-                    events.append(f"{symbol}: call ASSIGNED — shares called away @ ${contract_meta['strike']:.2f}. Stock P&L ${stock_pnl:.2f}. Cycle #{state['cycles_completed']} complete.")
+                    events.append(f"{symbol}: call ASSIGNED — {expected_called_away} shares called away @ ${contract_meta['strike']:.2f}. Stock P&L ${stock_pnl:.2f}. Cycle #{state['cycles_completed']} complete.")
                 else:
                     # Call expired worthless — keep premium, can sell another call
                     contract_meta["status"] = "expired"

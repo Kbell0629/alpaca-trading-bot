@@ -389,22 +389,27 @@ def check_profit_ladder(user, filepath, strat, price, entry, shares):
             # CRITICAL: resize the protective stop to match remaining shares,
             # otherwise if the stop triggers it sells MORE than we hold and
             # Alpaca will reject or (with short-enabled accounts) open a short.
+            #
+            # Order: PLACE NEW FIRST, then cancel OLD on success. This avoids
+            # a window where the position is unprotected between cancel and
+            # re-place. If the new stop fails, we KEEP the old stop (which is
+            # now oversized but still protective — Alpaca will just reject if
+            # the remaining share qty is too low at trigger time).
             old_stop_id = state.get("stop_order_id")
             current_stop_price = state.get("current_stop_price")
             if old_stop_id and remaining > 0 and current_stop_price:
-                user_api_delete(user, f"/orders/{old_stop_id}")
                 new_stop = user_api_post(user, "/orders", {
                     "symbol": symbol, "qty": str(remaining), "side": "sell",
                     "type": "stop", "stop_price": str(current_stop_price),
                     "time_in_force": "gtc"
                 })
                 if isinstance(new_stop, dict) and "id" in new_stop:
+                    # New stop placed — safe to cancel old
+                    user_api_delete(user, f"/orders/{old_stop_id}")
                     state["stop_order_id"] = new_stop["id"]
                 else:
-                    # Stop replacement failed — clear stop_order_id so next
-                    # monitor tick will re-place a fresh stop.
-                    state["stop_order_id"] = None
-                    log(f"[{user['username']}] {symbol}: WARN stop resize failed after profit-take — will re-place next tick", "monitor")
+                    # Keep old oversized stop as-is; log and retry next tick.
+                    log(f"[{user['username']}] {symbol}: WARN stop resize failed after profit-take — keeping old oversized stop. Err: {new_stop}", "monitor")
             elif old_stop_id and remaining <= 0:
                 user_api_delete(user, f"/orders/{old_stop_id}")
                 state["stop_order_id"] = None
@@ -1203,15 +1208,28 @@ def run_monthly_rebalance(user):
         qty = abs(int(float(pos.get("qty", 0))))
         unrealized_plpc = float(pos.get("unrealized_plpc", 0)) * 100
 
-        # Check position age via strategy file
+        # Check position age via strategy file. Match exact "_{SYMBOL}.json"
+        # suffix — `symbol in f` would cross-match (e.g. "AI" matches "AIG").
+        # Also SKIP wheel-owned shares: the wheel state machine manages its
+        # own exits. Monthly rebalance closing wheel shares would break it.
         try:
-            strat_files = [f for f in os.listdir(sdir)
-                          if f.endswith(".json") and symbol in f]
+            sf_all = [f for f in os.listdir(sdir) if f.endswith(".json")]
+            strat_files = [f for f in sf_all if f.endswith(f"_{symbol}.json")]
+            # Check if there's an active wheel on this symbol
+            wheel_file = f"wheel_{symbol}.json"
+            if wheel_file in sf_all:
+                wstate = load_json(os.path.join(sdir, wheel_file)) or {}
+                if wstate.get("stage", "").startswith("stage_2_"):
+                    log(f"[{user['username']}] {symbol}: skipping rebalance — wheel-owned in stage {wstate.get('stage')}", "rebalance")
+                    continue
         except FileNotFoundError:
             strat_files = []
 
         too_old = False
         for sf in strat_files:
+            # Defensive: never evaluate a wheel file's age for rebalance
+            if sf.startswith("wheel_"):
+                continue
             strat = load_json(os.path.join(sdir, sf))
             if not strat:
                 continue

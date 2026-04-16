@@ -20,12 +20,28 @@ os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, "users.db")
 USERS_DIR = os.path.join(DATA_DIR, "users")
 
-# Master encryption key from env — set on Railway, never in code
+# Master encryption key from env — set on Railway, never in code.
+# Production mode (REQUIRE_MASTER_KEY=1): fails closed if the key is missing.
+# Dev mode (default when REQUIRE_MASTER_KEY unset): falls back to plaintext
+# with a loud warning so local tests work without setup.
 MASTER_KEY = os.environ.get("MASTER_ENCRYPTION_KEY", "")
+_REQUIRE_MASTER_KEY = os.environ.get("REQUIRE_MASTER_KEY") == "1"
 if not MASTER_KEY:
-    # Fallback for first-run / local dev — generate and warn
-    # In production, Railway env var MUST be set
-    pass
+    if _REQUIRE_MASTER_KEY:
+        raise RuntimeError(
+            "MASTER_ENCRYPTION_KEY env var is required when REQUIRE_MASTER_KEY=1 "
+            "but was not set. Refusing to start in plaintext-fallback mode. "
+            "Either set MASTER_ENCRYPTION_KEY on the deployment or remove "
+            "REQUIRE_MASTER_KEY=1 (not recommended for production)."
+        )
+    # Dev mode: print a loud warning at import time so this never slips
+    import sys as _sys
+    print(
+        "[auth] WARNING: MASTER_ENCRYPTION_KEY is not set. Alpaca API secrets "
+        "will be stored in plaintext prefixed 'PLAIN:'. Set MASTER_ENCRYPTION_KEY "
+        "and REQUIRE_MASTER_KEY=1 in production.",
+        file=_sys.stderr, flush=True,
+    )
 
 # Session duration
 SESSION_DAYS = 30
@@ -170,7 +186,20 @@ def create_user(email, username, password, alpaca_key, alpaca_secret,
                 alpaca_endpoint="https://paper-api.alpaca.markets/v2",
                 alpaca_data_endpoint="https://data.alpaca.markets/v2",
                 ntfy_topic=None, notification_email=None, is_admin=False):
-    """Create a new user. Returns (user_id, error)."""
+    """Create a new user. Returns (user_id, error).
+
+    Enforces the same username regex as the signup form — previously only the
+    HTTP handler validated, so callers like bootstrap_from_env() could inject
+    arbitrary chars. With usernames rendered in JS template strings, an
+    unescaped quote would break out of the string literal.
+    """
+    import re as _re
+    if not _re.match(r"^[A-Za-z0-9_-]{3,30}$", username or ""):
+        return None, "Username must be 3-30 chars (letters, digits, _, -)"
+    if not email or "@" not in email:
+        return None, "Invalid email"
+    if len(password or "") < 8:
+        return None, "Password must be at least 8 characters"
     try:
         conn = _get_db()
         cur = conn.cursor()
@@ -279,11 +308,17 @@ def update_user_credentials(user_id, alpaca_key=None, alpaca_secret=None,
     conn.close()
     return True
 
-def change_password(user_id, new_password):
+def change_password(user_id, new_password, invalidate_sessions=True):
+    """Update a user's password. By default invalidates all existing sessions
+    so a compromised cookie can't be used after the user changes their
+    password. `consume_reset_token` already does this separately.
+    """
     conn = _get_db()
     cur = conn.cursor()
     pwhash, salt = hash_password(new_password)
     cur.execute("UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?", (pwhash, salt, user_id))
+    if invalidate_sessions:
+        cur.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
     return True
