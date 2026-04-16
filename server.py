@@ -1833,6 +1833,28 @@ async function loadGuardrails() {
 }
 
 /* ---- Scheduler Panel ---- */
+// Scheduler now stores last-run keys suffixed with user id, e.g. "screener_1",
+// "auto_deployer_env". Find the most-recent entry across all users for a task.
+function latestForTask(lastRuns, taskKey) {
+    var prefix = taskKey + '_';
+    var best = null;
+    var bestMs = -1;
+    Object.keys(lastRuns).forEach(function(k) {
+        if (k.indexOf(prefix) !== 0) return;
+        var v = lastRuns[k];
+        var ms;
+        if (typeof v === 'number') {
+            ms = v * 1000;
+        } else if (typeof v === 'string' && v.match(/^\d{4}-\d{2}-\d{2}/)) {
+            ms = new Date(v).getTime();
+        } else {
+            return;
+        }
+        if (ms > bestMs) { bestMs = ms; best = v; }
+    });
+    return best;
+}
+
 function fmtRelative(isoOrTs) {
     if (!isoOrTs) return 'never';
     var when;
@@ -1889,7 +1911,7 @@ function renderSchedulerPanel(s) {
 
     var gridHtml = '<div class="scheduler-grid">';
     tasks.forEach(function(t) {
-        var last = lastRuns[t.key];
+        var last = latestForTask(lastRuns, t.key);
         var hasRun = last != null;
         var statusClass, statusLabel;
         if (t.needsMarket && !marketOpen) {

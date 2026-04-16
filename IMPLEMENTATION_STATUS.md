@@ -37,9 +37,10 @@ Tracker for the 20 profit-enhancement features proposed after the initial build.
 - **13 of 20 features implemented** (65%)
 - **All 13 tested and working** as of 2026-04-16
 - **Railway deployment updated** and live 24/7
-- **Committed and pushed** to GitHub (commit 391e8f3 + 97a8fdf)
+- **Committed and pushed** to GitHub
 - **Pre-market audit completed 2026-04-16** — 16 bugs found and fixed across cloud_scheduler, server, update_dashboard, news_scanner
-- **Short selling auto-deploy completed 2026-04-16** — cloud_scheduler now actually places short orders (was previously stub that just logged). Inverse trailing stop logic added to strategy monitor. Bear-gated: SPY 20d must be below -3%, max 1 short, 48hr cooldown after loss.
+- **Short selling auto-deploy completed 2026-04-16** — cloud_scheduler now actually places short orders. Inverse trailing stop logic added. Bear-gated with 48hr cooldown.
+- **Multi-user support added 2026-04-16** — SQLite auth database, per-user Alpaca credentials (encrypted), session cookies, signup/login/password-reset pages. Cloud scheduler iterates over all users. Backward compatible with env-var admin user.
 
 ## Future Improvements (User-Deferred)
 

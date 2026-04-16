@@ -1,6 +1,6 @@
 # Alpaca Stock Trading Bot
 
-Autonomous stock trading bot using Alpaca paper trading API. Self-learning, auto-deploying, with kill switch and capital management. 6 strategies, 40+ features.
+Autonomous stock trading bot using Alpaca paper trading API. Self-learning, auto-deploying, with kill switch and capital management. 6 strategies, 40+ features. **Multi-user** — anyone can sign up with their own Alpaca credentials.
 
 **Dashboard:** https://stockbott.up.railway.app (login: set via Railway env vars `DASHBOARD_USER` / `DASHBOARD_PASS`)
 **GitHub:** https://github.com/<your-username>/alpaca-trading-bot
