@@ -143,6 +143,8 @@ The explicit decisions the user has made:
 - [x] **#11 Dashboard TZ (addLog)** — now renders ET explicitly.
 - [x] **Bonus: SIGTERM handler fixed** — `stop_scheduler` was never imported; SIGTERM silently swallowed the NameError for months.
 - [x] **Screener scoring tune** (`e70bcf2` → `b5348e1`, 2026-04-16) — live dashboard showed all top-12 picks were thin-float breakouts. Two guards shipped: `MIN_VOLUME` 100k → 300k (middle ground between original too-permissive and 500k too-strict), plus `breakout_score *= 0.5` when intraday volatility > 25%. 4 regression tests.
+- [x] **Live-day UX fixes** (`b9e8264`, `1683791`, `21baa5b`, `bc8d765`, 2026-04-16) — stale "MARKET OPEN" badge, heatmap re-loading every refresh, daily-close skip after container restart (persistence + wider hour-gate + 4hr late-tolerance), "Days Tracked" off-by-one (Math.round → Math.floor), heatmap Best/Worst Day rendering with only 1 day of data.
+- [x] **Round 9 final audit + mobile polish** (`c3f8276`, 2026-04-16) — last comprehensive pass. Fixed: subprocess scorecard path leak (scorecard was writing to shared /data/ instead of per-user path — caused dashboard staleness observed live today), TOCTOU races in should_run_interval/should_run_daily_at, `handle_force_daily_close` + `_refresh_cooldowns` missing locks, `pnlClass(0)` rendered green. Mobile: readme/deploy/settings modals full-screen on phones, tables horizontal-scroll with min-widths, 40px touch targets, 16px form font (iOS no-autozoom), iPhone SE ultra-narrow tier. 54 tests passing. See PROJECT.md for full details.
 - [x] Market breadth filter
 - [x] Volume profile breakouts
 - [x] Partial profit taking
