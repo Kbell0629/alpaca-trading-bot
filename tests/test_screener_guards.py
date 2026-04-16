@@ -20,17 +20,17 @@ def _read_source():
     return UPDATE_DASHBOARD.read_text()
 
 
-def test_min_volume_floor_is_at_least_500k(isolated_data_dir):
+def test_min_volume_floor_is_at_least_300k(isolated_data_dir):
     """Ensure the MIN_VOLUME constant wasn't accidentally lowered back
-    to the old 100k threshold. Thin-float names produced bad paper
-    fills on volatile days; the 500k floor is the minimum we'll accept.
+    to the old 100k threshold. Round-8 bumped to 500k (too strict,
+    filtered 9/12 live picks), then tuned to 300k as the middle ground.
+    If someone drops below 300k, thin-float names will re-dominate.
     """
     src = _read_source()
-    # The constant might be written as 500_000 or 500000; match both.
     m = re.search(r"^MIN_VOLUME\s*=\s*([\d_]+)", src, re.MULTILINE)
     assert m, "MIN_VOLUME constant missing from update_dashboard.py"
     value = int(m.group(1).replace("_", ""))
-    assert value >= 500_000, \
+    assert value >= 300_000, \
         f"MIN_VOLUME dropped to {value:,} — thin-float names will re-dominate screener"
 
 

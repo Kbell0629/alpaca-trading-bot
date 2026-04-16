@@ -82,12 +82,16 @@ HEADERS = {
 MAJOR_EXCHANGES = {"NYSE", "NASDAQ", "ARCA"}
 BATCH_SIZE = 500
 MIN_PRICE = 5.0
-# Bumped 100k → 500k in round-8 follow-up. Thin-float names (0.1-0.3M
-# daily volume) were dominating the top-of-screener list on volatile
-# days because breakout_score rewards big % moves without accounting
-# for fill quality. At 500k daily volume a paper market-buy at the
-# close fills at a reasonable price; below that, slippage is real.
-MIN_VOLUME = 500_000
+# Evolution:
+#   100k (original)   → too permissive; 0.1-0.3M names dominated top of
+#                       list on volatile days, leading to bad paper fills.
+#   500k (first pass) → too strict; filtered 9 of 12 live top picks.
+#   300k (current)    → middle ground. Filters the worst thin-float
+#                       (< 300k daily volume ≈ < $1-2M dollar volume)
+#                       but keeps legitimate small-mid-cap movers.
+#                       Combined with the volatility soft-cap on breakout
+#                       (below), low-liquidity pumps stay out of the top.
+MIN_VOLUME = 300_000
 
 # --- Feature 3: Sector Rotation (sector ETFs + stock-to-ETF mapping) ---
 SECTOR_ETFS = {
