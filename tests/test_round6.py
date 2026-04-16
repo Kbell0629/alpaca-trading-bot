@@ -250,6 +250,12 @@ def test_mixin_files_have_no_undefined_names(isolated_data_dir):
     methods were REACHABLE on the class, not that each method's BODY
     resolved. This test walks each mixin's AST looking for any Name node
     loaded at runtime that is neither imported, builtin, nor locally bound.
+
+    Complementary coverage: tests/test_boot.py subprocess-launches
+    `python3 server.py` and hits /healthz, which catches the OTHER round-7
+    regression (circular `import server` under the __main__ launch pattern
+    that Railway uses). Together these two tests cover both static name
+    resolution and runtime import topology.
     """
     import ast, builtins
     BUILTINS = set(dir(builtins))
