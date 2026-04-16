@@ -18,7 +18,21 @@ import auth
 import hmac
 import subprocess
 import sys
-import server  # noqa: E402 — late-bound to avoid import cycle with mixin registration
+# Lazy server-module proxy: resolves `server.X` references at first
+# *call* time, not import time. Required because server.py is launched
+# as `python3 server.py` which makes it __main__, so `import server`
+# at mixin import time re-executes server.py and crashes on the
+# circular import (server -> mixin -> server). By then server.py has
+# finished loading so the attribute lookup succeeds.
+import sys as _sys
+class _ServerProxy:
+    def __getattr__(self, name):
+        s = _sys.modules.get("server") or _sys.modules.get("__main__")
+        if s is None:
+            import server as _s
+            s = _s
+        return getattr(s, name)
+server = _ServerProxy()
 
 
 class AuthHandlerMixin:
