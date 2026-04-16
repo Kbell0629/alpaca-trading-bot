@@ -41,6 +41,9 @@ Tracker for the 20 profit-enhancement features proposed after the initial build.
 - **Pre-market audit completed 2026-04-16** — 16 bugs found and fixed across cloud_scheduler, server, update_dashboard, news_scanner
 - **Short selling auto-deploy completed 2026-04-16** — cloud_scheduler now actually places short orders. Inverse trailing stop logic added. Bear-gated with 48hr cooldown.
 - **Multi-user support added 2026-04-16** — SQLite auth database, per-user Alpaca credentials (encrypted), session cookies, signup/login/password-reset pages. Cloud scheduler iterates over all users. Backward compatible with env-var admin user.
+- **Screener optimized 2026-04-16** — 60-80s → 48-51s locally via parallel batch fetching (6 workers), parallel historical bars, parallel sector ETFs, sector rotation cached 1hr, ENRICH_TOP_N 100→50, parallel news/social sentiment.
+- **Railway volume persistence 2026-04-16** — `DATA_DIR` abstraction across all runtime code. Railway volume `web-volume` mounted at `/data` via `railway volume add --mount-path /data`. `DATA_DIR=/data` env var set. users.db, users/, strategies/, and all runtime JSON now persist across redeploys. Solved ephemeral filesystem wipeouts.
+- **SOXL orphan recovery 2026-04-16** — First-day trade (SOXL 117@$85.11, stop@$76.60) lost strategy file due to Railway redeploy before volume was set up. `recover_soxl.py` script rebuilds strategy file from live Alpaca position data.
 
 ## Future Improvements (User-Deferred)
 

@@ -1500,11 +1500,29 @@ def fetch_all_data():
     else:
         news_signals = {"actionable": []}
 
-    # Feature 5: Options flow for top 20 picks
+    # Feature 5: Options flow for top 20 picks (PARALLELIZED)
     if scan_options_flow:
         try:
+            from options_flow import analyze_options_flow as _ofa
             top_syms = [p["symbol"] for p in picks[:20]]
-            options_flow = scan_options_flow(top_syms)
+
+            def _run_one(sym):
+                try:
+                    return _ofa(sym)
+                except Exception:
+                    return {"symbol": sym, "signal": "no_data"}
+
+            options_flow_all = []
+            with ThreadPoolExecutor(max_workers=6) as executor:
+                futures = {executor.submit(_run_one, s): s for s in top_syms}
+                for future in as_completed(futures):
+                    try:
+                        options_flow_all.append(future.result())
+                    except Exception:
+                        pass
+            options_flow = [a for a in options_flow_all
+                            if a.get("signal") in ("bullish", "bearish") and a.get("confidence") != "low"]
+            options_flow.sort(key=lambda x: abs(x.get("call_put_ratio", 1) - 1), reverse=True)
             print(f"Options flow: {len(options_flow)} symbols with unusual activity")
         except Exception as e:
             print(f"  Options flow scan failed: {e}")
