@@ -158,6 +158,8 @@ def get_dashboard_data():
         data["wheel"] = load_json(os.path.join(STRATEGIES_DIR, "wheel_strategy.json")) or data.get("wheel")
         # Load scorecard for readiness score
         data["scorecard"] = load_json(os.path.join(BASE_DIR, "scorecard.json")) or data.get("scorecard", {})
+        # Load auto-deployer config for short selling toggle state
+        data["auto_deployer_config"] = load_json(os.path.join(BASE_DIR, "auto_deployer_config.json")) or {}
         return data
     # Fallback: build from strategy files and API
     trailing = load_json(os.path.join(STRATEGIES_DIR, "trailing_stop.json"))
@@ -344,6 +346,7 @@ button:active { transform: translateY(0); }
 .strategy-card.wheel::before { background: linear-gradient(90deg,var(--purple),#a78bfa); }
 .strategy-card.meanrev::before { background: linear-gradient(90deg,var(--orange),#fbbf24); }
 .strategy-card.breakout::before { background: linear-gradient(90deg,var(--red),#f87171); }
+.strategy-card.short-sell::before { background: linear-gradient(90deg,#dc2626,#7f1d1d); }
 .strategy-card h2 { font-size: 16px; margin-bottom: 4px; }
 .strategy-card .subtitle { font-size: 12px; color: var(--text-dim); margin-bottom: 16px; }
 .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -1684,6 +1687,91 @@ function buildNextActionsPanel(d) {
     '</div>';
 }
 
+function buildShortStrategyCard(d) {
+    // Determine if shorts are currently unlocked
+    var marketRegime = (d.market_regime || (d.economic_calendar && d.economic_calendar.market_regime) || 'neutral').toLowerCase();
+    var spyMom20 = d.spy_momentum_20d != null ? d.spy_momentum_20d : 0;
+    var shortsUnlocked = (marketRegime === 'bear' && spyMom20 < -3);
+    var config = d.auto_deployer_config || {};
+    var shortConfig = (config.short_selling || {});
+    var userEnabled = shortConfig.enabled !== false;  // default true
+    var effectivelyActive = userEnabled && shortsUnlocked;
+
+    // Count active short positions
+    var shortCount = 0;
+    if (d.positions) {
+        shortCount = d.positions.filter(function(p) { return parseFloat(p.qty || 0) < 0; }).length;
+    }
+    var maxShorts = shortConfig.max_short_positions || 1;
+
+    // Status badge
+    var statusBadge;
+    if (!userEnabled) {
+        statusBadge = '<span class="badge-inactive">TURNED OFF</span>';
+    } else if (effectivelyActive) {
+        statusBadge = '<span class="badge-active">ACTIVE (BEAR MKT)</span>';
+    } else {
+        statusBadge = '<span class="badge-pending">STANDBY</span>';
+    }
+
+    var spyStr = (spyMom20 >= 0 ? '+' : '') + spyMom20.toFixed(1) + '%';
+    var conditions = effectivelyActive
+        ? 'Bear market detected. Shorts will deploy on qualifying candidates.'
+        : (!userEnabled
+            ? 'Short selling is turned OFF. Enable below to allow shorts in bear markets.'
+            : 'Waiting for bear market. SPY 20d: ' + spyStr + ' (need &lt; -3%). Regime: ' + marketRegime);
+
+    // Top candidate preview
+    var topShort = (d.short_candidates && d.short_candidates.length) ? d.short_candidates[0] : null;
+    var topShortHtml = topShort
+        ? '<div class="stat"><div class="stat-label">Top Candidate</div><div class="stat-value" style="font-size:14px">' + esc(topShort.symbol) + ' (score ' + topShort.short_score + ')</div></div>'
+        : '<div class="stat"><div class="stat-label">Top Candidate</div><div class="stat-value" style="font-size:12px;color:var(--text-dim)">None scoring &ge;15</div></div>';
+
+    // Toggle button
+    var toggleBtn = userEnabled
+        ? '<button class="btn-warning btn-sm" onclick="toggleShortSelling(false)">Turn Off</button>'
+        : '<button class="btn-primary btn-sm" onclick="toggleShortSelling(true)">Turn On</button>';
+
+    return (
+        '<div class="strategy-card short-sell">' +
+            '<h2>6. Short Selling</h2>' +
+            '<div class="subtitle">Bear market plays — profit when stocks fall</div>' +
+            '<div class="stat-grid">' +
+                '<div class="stat"><div class="stat-label">Status</div><div class="stat-value">' + statusBadge + '</div></div>' +
+                '<div class="stat"><div class="stat-label">Positions</div><div class="stat-value">' + shortCount + '/' + maxShorts + '</div></div>' +
+                '<div class="stat"><div class="stat-label">SPY 20d</div><div class="stat-value">' + spyStr + '</div></div>' +
+                '<div class="stat"><div class="stat-label">Stop-Loss</div><div class="stat-value">8% (tight)</div></div>' +
+                topShortHtml +
+                '<div class="stat"><div class="stat-label">Profit Target</div><div class="stat-value">15%</div></div>' +
+            '</div>' +
+            '<div class="strategy-visual"><strong>Rules:</strong> Bear market only | Max 1 short | 5% portfolio per short | 48hr cooldown after loss | No meme stocks</div>' +
+            '<div class="strategy-visual" style="background:rgba(239,68,68,0.05);border-color:rgba(239,68,68,0.2);margin-top:8px;font-size:11px">' + conditions + '</div>' +
+            '<div class="strategy-actions">' +
+                toggleBtn +
+                '<button class="btn-warning btn-sm" onclick="if(confirm(\'Pause short selling? The bot will not deploy new shorts.\')) fetch(\'/api/pause-strategy\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({strategy:\'short_sell\'})}).then(r=>r.json()).then(d=>{toast(d.message||\'Paused\',\'info\');addLog(\'Paused short selling\',\'info\');refreshData();})">Pause</button>' +
+                '<button class="btn-danger btn-sm" onclick="if(confirm(\'Stop short selling? This will cover (buy back) any open short positions.\')) fetch(\'/api/stop-strategy\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({strategy:\'short_sell\'})}).then(r=>r.json()).then(d=>{toast(d.message||\'Stopped\',\'info\');addLog(\'Stopped short selling\',\'info\');refreshData();})">Stop</button>' +
+            '</div>' +
+        '</div>'
+    );
+}
+
+function toggleShortSelling(enable) {
+    var msg = enable
+        ? 'Turn ON short selling? Shorts will only deploy in bear market conditions with tight 8% stops.'
+        : 'Turn OFF short selling? The bot will not deploy any new short positions.';
+    if (!confirm(msg)) return;
+    fetch(API_BASE + '/api/toggle-short-selling', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        credentials: 'same-origin',
+        body: JSON.stringify({enabled: enable})
+    }).then(function(r){ return r.json(); }).then(function(d){
+        toast(d.message || (enable ? 'Short selling enabled' : 'Short selling disabled'), 'info');
+        addLog((enable ? 'Enabled' : 'Disabled') + ' short selling', enable ? 'success' : 'info');
+        refreshData();
+    }).catch(function(e){ toast('Error: ' + e.message, 'error'); });
+}
+
 function renderDashboard() {
     const d = dashboardData;
     if (!d) return;
@@ -2193,6 +2281,7 @@ function renderDashboard() {
                     '<button class="btn-danger btn-sm" onclick="if(confirm(\'Stop breakout strategy?\')) fetch(\'/api/stop-strategy\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({strategy:\'breakout\'})}).then(r=>r.json()).then(d=>{toast(d.message||\'Stopped\',\'info\');addLog(\'Stopped breakout strategy\',\'info\');refreshData();})">Stop</button>' +
                 '</div>' +
             '</div>' +
+            buildShortStrategyCard(d) +
         '</div>' +
         '</div>' +
         readinessHtml +
@@ -2817,6 +2906,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         elif path == "/api/apply-preset":
             self.handle_apply_preset(body)
+
+        elif path == "/api/toggle-short-selling":
+            self.handle_toggle_short_selling(body)
 
         else:
             self.send_json({"error": "Not found"}, 404)
@@ -3461,6 +3553,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
         save_json(config_path, config)
 
         self.send_json({"message": f"Preset applied: {preset_name}", "settings": settings})
+
+    def handle_toggle_short_selling(self, body):
+        """Toggle short selling ON/OFF in auto_deployer_config.json."""
+        enabled = bool(body.get("enabled", True))
+        config_path = os.path.join(BASE_DIR, "auto_deployer_config.json")
+        config = load_json(config_path) or {}
+        if "short_selling" not in config:
+            config["short_selling"] = {
+                "enabled": enabled,
+                "only_in_bear_market": True,
+                "max_short_positions": 1,
+                "min_short_score": 15,
+                "max_portfolio_pct_per_short": 0.05,
+                "stop_loss_pct": 0.08,
+                "profit_target_pct": 0.15,
+                "require_spy_20d_below": -3,
+                "skip_if_meme_warning": True,
+            }
+        else:
+            config["short_selling"]["enabled"] = enabled
+        save_json(config_path, config)
+        msg = "Short selling ENABLED — will deploy in bear markets" if enabled else "Short selling DISABLED — no new shorts will deploy"
+        self.send_json({"message": msg, "enabled": enabled})
 
 
 def main():
