@@ -804,12 +804,18 @@ def run_auto_deployer(user):
     if not os.path.exists(picks_path):
         picks_path = os.path.join(BASE_DIR, "dashboard_data.json")
     picks_data = load_json(picks_path) or {}
-    top_picks = picks_data.get("picks", [])[:5]
+    # Expanded candidate pool: search up to top 20 picks. If guardrails block
+    # the top picks (earnings warning, sector concentration, etc.) the deployer
+    # will fall back to the next eligible candidate instead of giving up early.
+    CANDIDATE_POOL = config.get("candidate_pool_size", 20)
+    top_picks = picks_data.get("picks", [])[:CANDIDATE_POOL]
     market_regime = picks_data.get("market_regime", "neutral")
     spy_mom = picks_data.get("spy_momentum_20d", 0)
 
     max_per_day = config.get("max_new_per_day", 2)
     deployed = 0
+    candidates_evaluated = 0
+    skip_reasons = []
 
     positions = user_api_get(user, "/positions")
     existing_syms = set()
@@ -820,18 +826,24 @@ def run_auto_deployer(user):
 
     sdir = user_strategies_dir(user)
 
+    log(f"[{user['username']}] Evaluating {len(top_picks)} candidates from filtered screener list", "deployer")
+
     for pick in top_picks:
         if deployed >= max_per_day:
             break
         symbol = pick.get("symbol")
         best_strat = pick.get("best_strategy", "").lower().replace(" ", "_")
+        candidates_evaluated += 1
 
         if symbol in existing_syms:
+            skip_reasons.append(f"{symbol}: already held")
             continue
         if pick.get("earnings_warning"):
-            log(f"[{user['username']}] {symbol}: Skipped (earnings warning)", "deployer")
+            log(f"[{user['username']}] {symbol}: Skipped (earnings warning) — trying next pick", "deployer")
+            skip_reasons.append(f"{symbol}: earnings warning")
             continue
         if best_strat not in ("trailing_stop", "breakout", "mean_reversion"):
+            skip_reasons.append(f"{symbol}: unsupported strategy ({best_strat})")
             continue
 
         # Feature 10: Correlation check
@@ -839,7 +851,8 @@ def run_auto_deployer(user):
         current_positions = current_positions if isinstance(current_positions, list) else []
         allowed, reason = check_correlation_allowed(symbol, current_positions)
         if not allowed:
-            log(f"[{user['username']}] {symbol}: Skipped ({reason})", "deployer")
+            log(f"[{user['username']}] {symbol}: Skipped ({reason}) — trying next pick", "deployer")
+            skip_reasons.append(f"{symbol}: {reason}")
             continue
 
         # Do NOT use `or 1` here — if screener said recommended_shares=0
@@ -919,6 +932,16 @@ def run_auto_deployer(user):
             deployed += 1
         else:
             log(f"[{user['username']}] Order failed for {symbol}: {order}", "deployer")
+            skip_reasons.append(f"{symbol}: order API error")
+
+    # Summary if nothing deployed — shows full fallback chain
+    if deployed == 0 and candidates_evaluated > 0:
+        log(f"[{user['username']}] No deploys after evaluating {candidates_evaluated} candidates. Skip chain: "
+            + " | ".join(skip_reasons[:10]), "deployer")
+        notify_user(user,
+            f"Auto-deployer found no eligible picks (evaluated {candidates_evaluated}, all blocked by guardrails). "
+            f"Top reasons: {'; '.join(skip_reasons[:3])}",
+            "info")
 
     # Short selling if bear market
     short_config = config.get("short_selling", {})

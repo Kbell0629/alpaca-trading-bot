@@ -1022,7 +1022,124 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
 .nav-tab:hover { color: var(--text); background: rgba(255,255,255,0.05); }
 .nav-tab.active { color: #fff; background: var(--accent); }
 
-/* Trading Session Badge */
+/* ===== Header V2 (cleaner 2-row layout) ===== */
+.header-v2 {
+    display: block !important; padding: 14px 20px;
+    background: linear-gradient(180deg, rgba(17,24,39,0.9), rgba(10,14,23,0.95));
+    border-bottom: 1px solid var(--border);
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    position: sticky; top: 0; z-index: 100; margin: -24px -24px 24px -24px;
+}
+.header-row-1 {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 12px; margin-bottom: 12px; flex-wrap: wrap;
+}
+.header-row-2 {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+}
+.header-brand { display: flex; align-items: center; gap: 10px; }
+.header-brand h1 {
+    font-size: 22px; font-weight: 800; margin: 0;
+    background: linear-gradient(135deg, var(--accent), var(--purple));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+.header-brand .paper-badge {
+    background: var(--orange); color: #000; padding: 3px 10px;
+    border-radius: 12px; font-size: 10px; font-weight: 800; letter-spacing: 1px;
+}
+.header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.header-icon-btn {
+    background: rgba(30,41,59,0.6); border: 1px solid var(--border);
+    color: var(--text); padding: 8px 12px; border-radius: 10px;
+    font-size: 14px; cursor: pointer; transition: all 0.15s;
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 40px; height: 38px;
+}
+.header-icon-btn:hover { background: rgba(59,130,246,0.15); border-color: var(--accent); transform: translateY(-1px); }
+.header-icon-btn.force-deploy-btn { background: rgba(16,185,129,0.15); border-color: rgba(16,185,129,0.4); color: var(--green); }
+.header-icon-btn.force-deploy-btn:hover { background: rgba(16,185,129,0.3); }
+.kill-switch-btn-v2 {
+    background: var(--red); color: #fff; border: none;
+    padding: 8px 16px; border-radius: 10px; font-size: 13px; font-weight: 700;
+    cursor: pointer; letter-spacing: 0.5px; height: 38px;
+    transition: all 0.15s; box-shadow: 0 2px 8px rgba(239,68,68,0.3);
+}
+.kill-switch-btn-v2:hover { background: #dc2626; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(239,68,68,0.5); }
+.kill-switch-indicator-v2 {
+    background: var(--red); color: #fff; padding: 8px 14px; border-radius: 10px;
+    font-size: 12px; font-weight: 800; letter-spacing: 1px;
+    animation: killPulseV2 1.5s infinite;
+}
+@keyframes killPulseV2 { 0%,100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.6); } 50% { box-shadow: 0 0 0 10px rgba(239,68,68,0); } }
+.user-btn-v2 {
+    background: rgba(139,92,246,0.15); color: #c4b5fd;
+    border: 1px solid rgba(139,92,246,0.3); padding: 8px 14px;
+    border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer;
+    height: 38px; transition: all 0.15s;
+}
+.user-btn-v2:hover { background: rgba(139,92,246,0.3); }
+
+/* Status chips (row 2) */
+.status-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 12px; border-radius: 20px; font-size: 11px;
+    font-weight: 600; background: rgba(30,41,59,0.5);
+    border: 1px solid var(--border); color: var(--text-dim);
+    letter-spacing: 0.3px;
+}
+.status-chip.subtle { opacity: 0.7; font-size: 10px; }
+.status-chip.session-market { background: rgba(16,185,129,0.12); color: var(--green); border-color: rgba(16,185,129,0.3); }
+.status-chip.session-pre, .status-chip.session-after { background: rgba(245,158,11,0.12); color: var(--orange); border-color: rgba(245,158,11,0.3); }
+.status-chip.session-closed { background: rgba(148,163,184,0.12); color: var(--text-dim); }
+.status-chip.scheduler-on { background: rgba(16,185,129,0.12); color: var(--green); border-color: rgba(16,185,129,0.3); }
+.status-chip.scheduler-off { background: rgba(239,68,68,0.12); color: var(--red); border-color: rgba(239,68,68,0.3); }
+.status-chip.regime-chip.bull { background: rgba(16,185,129,0.12); color: var(--green); border-color: rgba(16,185,129,0.3); }
+.status-chip.regime-chip.bear { background: rgba(239,68,68,0.12); color: var(--red); border-color: rgba(239,68,68,0.3); }
+.status-chip.regime-chip.neutral { background: rgba(245,158,11,0.12); color: var(--orange); border-color: rgba(245,158,11,0.3); }
+
+.readiness-chip {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 5px 12px; border-radius: 20px; font-size: 11px;
+    font-weight: 600; background: rgba(30,41,59,0.5);
+    border: 1px solid var(--border); color: var(--text-dim);
+}
+.readiness-chip .readiness-bar-bg { width: 60px; height: 6px; background: rgba(0,0,0,0.4); border-radius: 3px; overflow: hidden; }
+.readiness-chip .readiness-bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
+.readiness-chip .readiness-val { font-size: 10px; color: var(--text); font-weight: 700; }
+
+.auto-deployer-chip {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 5px 12px; border-radius: 20px; font-size: 11px;
+    font-weight: 600; background: rgba(30,41,59,0.5);
+    border: 1px solid var(--border); color: var(--text-dim);
+}
+.toggle-switch-sm { position: relative; width: 32px; height: 18px; display: inline-block; }
+.toggle-switch-sm input { opacity: 0; width: 0; height: 0; }
+.toggle-slider-sm {
+    position: absolute; cursor: pointer; inset: 0;
+    background: #374151; border-radius: 18px; transition: 0.3s;
+}
+.toggle-slider-sm::before {
+    position: absolute; content: ""; height: 14px; width: 14px; left: 2px; top: 2px;
+    background: #fff; border-radius: 50%; transition: 0.3s;
+}
+.toggle-switch-sm input:checked + .toggle-slider-sm { background: var(--green); }
+.toggle-switch-sm input:checked + .toggle-slider-sm::before { transform: translateX(14px); }
+.auto-status.on { color: var(--green); font-weight: 700; }
+.auto-status.off { color: var(--red); font-weight: 700; }
+
+.countdown-chip { font-variant-numeric: tabular-nums; }
+
+@media (max-width: 768px) {
+    .header-v2 { padding: 10px; margin: -12px -12px 16px -12px; }
+    .header-brand h1 { font-size: 18px; }
+    .header-icon-btn { min-width: 36px; height: 34px; padding: 6px 10px; font-size: 13px; }
+    .kill-switch-btn-v2, .user-btn-v2 { height: 34px; padding: 6px 10px; font-size: 12px; }
+    .status-chip { font-size: 10px; padding: 4px 10px; }
+}
+
+/* Trading Session Badge (legacy, kept for backward compat) */
 .session-badge {
     padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 700;
     letter-spacing: 1px; text-transform: uppercase;
@@ -2811,42 +2928,48 @@ function renderDashboard() {
     '</div>';
 
     document.getElementById('app').innerHTML =
-        '<div class="header">' +
-            '<div class="header-left">' +
-                '<h1>Stock Trading Bot Dashboard</h1>' +
-                '<div class="updated">Last updated: ' + (d.updated_at||'N/A') + ' &nbsp; <span class="' + regimeClass + ' regime-badge">' + regimeLabel + '</span></div>' +
-            '</div>' +
-            '<div class="header-right">' +
-                '<span class="session-badge ' + sessionClass + '">' + sessionLabel + '</span>' +
-                '<span id="schedulerBadge" class="scheduler-badge" title="Loading..."><span class="scheduler-pulse"></span>...</span>' +
-                '<div class="readiness-mini">' +
-                    '<span class="readiness-label">Ready: ' + readinessScore + '/100</span>' +
-                    '<div class="readiness-bar-bg"><div class="readiness-bar-fill" style="width:' + readinessScore + '%;background:' + readBarColor + '"></div></div>' +
+        '<div class="header header-v2">' +
+            '<div class="header-row-1">' +
+                '<div class="header-brand">' +
+                    '<h1>\ud83d\udcc8 Stock Trading Bot</h1>' +
+                    '<span class="paper-badge">PAPER</span>' +
                 '</div>' +
-                '<div class="auto-deployer-toggle">' +
-                    '<span class="toggle-label">Auto-Deployer</span>' +
-                    '<label class="toggle-switch">' +
-                        '<input type="checkbox" id="autoDeployerCheckbox" ' + (autoDeployerEnabled ? 'checked' : '') + ' onchange="toggleAutoDeployer()">' +
-                        '<span class="toggle-slider"></span>' +
-                    '</label>' +
-                    '<span class="toggle-status ' + (autoDeployerEnabled ? 'on' : 'off') + '" id="autoDeployerStatus">' + (autoDeployerEnabled ? 'ON' : 'OFF') + '</span>' +
-                '</div>' +
-                (killSwitchActive
-                    ? '<span class="kill-switch-indicator">KILL SWITCH ACTIVE</span>'
-                    : '<button class="kill-switch-btn" onclick="openKillSwitchModal()">KILL SWITCH</button>') +
-                '<button id="voiceBtn" class="voice-btn" onclick="toggleVoice()" title="Voice Control">\ud83c\udfa4</button>' +
-                '<button class="help-btn" onclick="forceAutoDeploy()" title="Force auto-deployer to run NOW" style="background:rgba(16,185,129,0.15);color:var(--green);border-color:rgba(16,185,129,0.3)">\u26A1 Force Deploy</button>' +
-                '<button class="help-btn" onclick="openReadme()" title="User Guide / README">\ud83d\udcd6 Help</button>' +
-                '<span class="countdown" id="countdown">Next refresh: ' + countdown + 's</span>' +
-                '<button class="btn-primary" onclick="forceRefresh()">\u21BB Refresh</button>' +
-                '<span class="paper-badge">PAPER TRADING</span>' +
-                '<div class="user-menu">' +
-                    '<button class="user-btn" onclick="toggleUserMenu(event)">' + (window.currentUsername || 'Account') + ' \u25BE</button>' +
-                    '<div class="user-dropdown" id="userDropdown" style="display:none">' +
-                        '<a href="#" onclick="event.preventDefault();alert(\'Settings modal coming soon. To change your Alpaca keys or password, POST to /api/update-settings or /api/change-password.\');">Settings</a>' +
-                        '<a href="/api/logout" onclick="return confirm(\'Log out?\')">Logout</a>' +
+                '<div class="header-actions">' +
+                    '<button class="header-icon-btn force-deploy-btn" onclick="forceAutoDeploy()" title="Force auto-deployer to run now">\u26A1</button>' +
+                    '<button class="header-icon-btn voice-btn-v2" id="voiceBtn" onclick="toggleVoice()" title="Voice commands">\ud83c\udfa4</button>' +
+                    '<button class="header-icon-btn help-btn-v2" onclick="openReadme()" title="User guide">\ud83d\udcd6</button>' +
+                    '<button class="header-icon-btn refresh-btn-v2" onclick="forceRefresh()" title="Refresh dashboard"><span id="refreshIcon">\u21BB</span></button>' +
+                    (killSwitchActive
+                        ? '<span class="kill-switch-indicator-v2">\ud83d\udea8 HALTED</span>'
+                        : '<button class="kill-switch-btn-v2" onclick="openKillSwitchModal()" title="Emergency stop — closes all positions">\ud83d\uded1 KILL</button>') +
+                    '<div class="user-menu">' +
+                        '<button class="user-btn-v2" onclick="toggleUserMenu(event)">' + esc(window.currentUsername || 'Account') + ' \u25BE</button>' +
+                        '<div class="user-dropdown" id="userDropdown" style="display:none">' +
+                            '<a href="#" onclick="event.preventDefault();alert(\'Settings modal coming soon. POST to /api/update-settings or /api/change-password.\');">Settings</a>' +
+                            '<a href="/api/logout" onclick="return confirm(\'Log out?\')">Logout</a>' +
+                        '</div>' +
                     '</div>' +
                 '</div>' +
+            '</div>' +
+            '<div class="header-row-2">' +
+                '<div class="status-chip ' + sessionClass + '" title="Market session">\ud83d\udd52 ' + sessionLabel + '</div>' +
+                '<div class="status-chip" id="schedulerBadgeV2" title="Cloud scheduler status"><span class="scheduler-pulse"></span>Loading...</div>' +
+                '<div class="status-chip regime-chip ' + regimeClass + '" title="Market regime">\ud83d\udcca ' + regimeLabel + '</div>' +
+                '<div class="readiness-chip" title="Paper-to-live readiness score">' +
+                    '<span>\ud83c\udfaf Ready</span>' +
+                    '<div class="readiness-bar-bg"><div class="readiness-bar-fill" style="width:' + readinessScore + '%;background:' + readBarColor + '"></div></div>' +
+                    '<span class="readiness-val">' + readinessScore + '/100</span>' +
+                '</div>' +
+                '<div class="auto-deployer-chip">' +
+                    '<span>\ud83e\udd16 Auto</span>' +
+                    '<label class="toggle-switch-sm">' +
+                        '<input type="checkbox" id="autoDeployerCheckbox" ' + (autoDeployerEnabled ? 'checked' : '') + ' onchange="toggleAutoDeployer()">' +
+                        '<span class="toggle-slider-sm"></span>' +
+                    '</label>' +
+                    '<span class="auto-status ' + (autoDeployerEnabled ? 'on' : 'off') + '" id="autoDeployerStatus">' + (autoDeployerEnabled ? 'ON' : 'OFF') + '</span>' +
+                '</div>' +
+                '<div class="status-chip countdown-chip" title="Next auto-refresh"><span id="countdown">' + countdown + 's</span></div>' +
+                '<div class="status-chip subtle" title="Last data refresh">Updated ' + (d.updated_at ? d.updated_at.split(' ')[1] : 'N/A') + '</div>' +
             '</div>' +
         '</div>' +
         (killSwitchActive
@@ -3054,24 +3177,24 @@ function renderDashboard() {
         }
     }, 300);
 
-    // Fetch cloud scheduler status and update header badge
+    // Fetch cloud scheduler status and update header badge (v2)
     fetch(API_BASE + '/api/scheduler-status', {credentials: 'same-origin'})
         .then(function(r){ return r.json(); })
         .then(function(s){
-            var el = document.getElementById('schedulerBadge');
+            var el = document.getElementById('schedulerBadgeV2') || document.getElementById('schedulerBadge');
             if (!el) return;
             if (s.running) {
-                el.className = 'scheduler-badge';
-                el.innerHTML = '<span class="scheduler-pulse"></span>24/7 CLOUD';
+                el.className = 'status-chip scheduler-on';
+                el.innerHTML = '<span class="scheduler-pulse"></span>\u2601\ufe0f 24/7 LIVE';
                 el.title = 'Scheduler is running autonomously on Railway. Market: ' + (s.market_open ? 'open' : 'closed');
             } else {
-                el.className = 'scheduler-badge off';
-                el.innerHTML = 'SCHEDULER OFF';
-                el.title = 'Cloud scheduler not running — tasks depend on Claude Code';
+                el.className = 'status-chip scheduler-off';
+                el.innerHTML = '\u26a0\ufe0f SCHEDULER OFF';
+                el.title = 'Cloud scheduler not running';
             }
         }).catch(function(){
-            var el = document.getElementById('schedulerBadge');
-            if (el) { el.className = 'scheduler-badge off'; el.innerHTML = '—'; }
+            var el = document.getElementById('schedulerBadgeV2') || document.getElementById('schedulerBadge');
+            if (el) { el.className = 'status-chip scheduler-off'; el.innerHTML = '—'; }
         });
 }
 
