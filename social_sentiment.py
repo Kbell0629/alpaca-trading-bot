@@ -79,6 +79,7 @@ def get_social_sentiment(symbol):
     if stocktwits["sentiment"] == "bullish" and stocktwits["score"] > 50:
         result["strategy_adjustments"] = {
             "trailing_stop": 3,
+            "copy_trading": 0,
             "breakout": 5,  # Social buzz + breakout = meme potential
             "mean_reversion": -3,  # Don't buy dips on hyped stocks
             "wheel": -5,  # Don't sell puts on meme stocks (too volatile)
@@ -86,7 +87,9 @@ def get_social_sentiment(symbol):
     elif stocktwits["sentiment"] == "bearish" and stocktwits["score"] < -50:
         result["strategy_adjustments"] = {
             "trailing_stop": -3,
+            "copy_trading": 0,
             "mean_reversion": 3,  # Oversold + bearish sentiment = contrarian opportunity
+            "breakout": 0,
             "wheel": -3,
         }
 

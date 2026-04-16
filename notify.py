@@ -90,32 +90,39 @@ def send_notification(message, notify_type="info"):
 def queue_email(subject, body, notify_type="info"):
     """Queue an email notification with file locking for concurrency safety."""
     queue_file = os.path.join(BASE_DIR, "email_queue.json")
-    with open(queue_file, "a+") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        try:
-            f.seek(0)
+    lock_file = queue_file + ".lock"
+    lock_fd = None
+    try:
+        lock_fd = open(lock_file, "w")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
+        # Read existing queue
+        queue = []
+        if os.path.exists(queue_file):
             try:
-                queue = json.load(f)
-            except:
+                with open(queue_file) as f:
+                    queue = json.load(f)
+            except (json.JSONDecodeError, OSError):
                 queue = []
 
-            queue.append({
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "to": EMAIL_RECIPIENT,
-                "subject": f"[Trading Bot] {subject}",
-                "body": body,
-                "type": notify_type,
-                "sent": False
-            })
+        queue.append({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "to": EMAIL_RECIPIENT,
+            "subject": f"[Trading Bot] {subject}",
+            "body": body,
+            "type": notify_type,
+            "sent": False
+        })
 
-            # Keep last 50 queued emails
-            queue = queue[-50:]
+        # Keep last 50 queued emails
+        queue = queue[-50:]
 
-            f.seek(0)
-            f.truncate()
-            json.dump(queue, f, indent=2)
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+        # Atomic write
+        safe_save_json(queue_file, queue)
+    finally:
+        if lock_fd:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
     print(f"Email queued for {EMAIL_RECIPIENT}: {subject}")
 
 
@@ -127,7 +134,7 @@ def log_notification(message, notify_type="info"):
         try:
             with open(log_file) as f:
                 log = json.load(f)
-        except:
+        except (OSError, json.JSONDecodeError):
             log = []
 
     log.append({

@@ -54,18 +54,32 @@ EVENT_KEYWORDS = {
                        "trade balance", "oil inventory", "fed chair", "treasury"],
 }
 
-def api_get(url, timeout=10):
-    req = urllib.request.Request(url, headers=HEADERS)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
-    except Exception as e:
-        return {"error": str(e)}
+def api_get(url, timeout=10, max_retries=2):
+    for attempt in range(max_retries):
+        req = urllib.request.Request(url, headers=HEADERS)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode())
+        except Exception as e:
+            if attempt < max_retries - 1:
+                import time
+                time.sleep(1)
+                continue
+            return {"error": str(e)}
 
 def check_upcoming_events(days_ahead=3):
     """Check for market-moving events in the next N days."""
     today = date.today()
     events = []
+
+    # Pre-calculate opex dates for the months we'll check (avoids recalculating per day)
+    fomc_set = set(FOMC_DATES_2026)
+    opex_cache = {}
+    for i in range(days_ahead + 1):
+        check_date = today + timedelta(days=i)
+        key = (check_date.year, check_date.month)
+        if key not in opex_cache:
+            opex_cache[key] = get_monthly_opex(check_date.year, check_date.month)
 
     for i in range(days_ahead + 1):
         check_date = today + timedelta(days=i)
@@ -73,7 +87,7 @@ def check_upcoming_events(days_ahead=3):
         days_away = i
 
         # FOMC meetings
-        if date_str in FOMC_DATES_2026:
+        if date_str in fomc_set:
             events.append({
                 "date": date_str,
                 "days_away": days_away,
@@ -83,11 +97,9 @@ def check_upcoming_events(days_ahead=3):
             })
 
         # Options expiration
-        year = check_date.year
-        month = check_date.month
-        opex = get_monthly_opex(year, month)
+        opex = opex_cache[(check_date.year, check_date.month)]
         if date_str == opex:
-            is_quad = month in QUAD_WITCHING_MONTHS
+            is_quad = check_date.month in QUAD_WITCHING_MONTHS
             events.append({
                 "date": date_str,
                 "days_away": days_away,

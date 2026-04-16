@@ -735,6 +735,7 @@ def fetch_all_data():
     if top_candidates:
         # Improvement 1 & 2: Fetch 20-day bars for momentum + relative volume
         print(f"Enriching top {len(top_candidates)} candidates with 20-day historical bars...")
+        from indicators import analyze_stock
         for i, pick in enumerate(top_candidates):
             sym = pick["symbol"]
             if (i + 1) % 20 == 0 or i == 0:
@@ -744,8 +745,7 @@ def fetch_all_data():
                 enrich_with_momentum(pick, bars_20d)
 
                 # Technical Indicators (uses the same bars we already fetched)
-                from indicators import analyze_stock
-                if bars_20d and len(bars_20d) >= 14:
+                if bars_20d and len(bars_20d) >= 26:
                     tech = analyze_stock(bars_20d)
                     pick["technical"] = tech
                     pick["rsi"] = tech.get("rsi", 50)
@@ -1192,7 +1192,7 @@ def generate_html(data):
     rank_labels = ["TOP PICK", "RUNNER UP", "STRONG OPTION"]
 
     picks_cards = ""
-    max_score = max((p["best_score"] for p in picks), default=1)
+    max_score = max((abs(p["best_score"]) for p in picks), default=1)
     if max_score <= 0:
         max_score = 1
 
@@ -1202,9 +1202,9 @@ def generate_html(data):
         vs_class = "positive" if p["volume_surge"] > 0 else "negative"
         rank = rank_labels[i] if i < 3 else ""
 
-        t_pct = max(5, min(100, p["trailing_score"] / max_score * 100))
-        c_pct = max(5, min(100, p["copy_score"] / max_score * 100))
-        w_pct = max(5, min(100, p["wheel_score"] / max_score * 100))
+        t_pct = max(5, min(100, abs(p["trailing_score"]) / max_score * 100))
+        c_pct = max(5, min(100, abs(p["copy_score"]) / max_score * 100))
+        w_pct = max(5, min(100, abs(p["wheel_score"]) / max_score * 100))
 
         picks_cards += f"""
         <div class="pick-card" style="border-top: 3px solid {color}">
@@ -1552,8 +1552,16 @@ def main():
 
     print("Generating dashboard HTML...")
     html = generate_html(data)
-    with open(DASHBOARD_PATH, "w") as f:
-        f.write(html)
+    # Atomic write for dashboard HTML
+    fd, tmp_path = tempfile.mkstemp(dir=BASE_DIR, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(html)
+        os.rename(tmp_path, DASHBOARD_PATH)
+    except Exception:
+        try: os.unlink(tmp_path)
+        except: pass
+        raise
     print(f"Dashboard saved: {DASHBOARD_PATH}")
 
     print("Saving enhanced data JSON...")

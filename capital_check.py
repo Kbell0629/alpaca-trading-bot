@@ -106,7 +106,7 @@ def check_capital():
     try:
         with open(os.path.join(BASE_DIR, "guardrails.json")) as f:
             guardrails = json.load(f)
-    except:
+    except (OSError, json.JSONDecodeError):
         pass
 
     max_positions = guardrails.get("max_positions", 5)

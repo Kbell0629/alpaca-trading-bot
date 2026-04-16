@@ -24,7 +24,7 @@ def load_dotenv():
                     os.environ.setdefault(key.strip(), val.strip())
 load_dotenv()
 
-DATA_ENDPOINT = os.environ.get("ALPACA_DATA_ENDPOINT", "")
+DATA_ENDPOINT = os.environ.get("ALPACA_DATA_ENDPOINT", "https://data.alpaca.markets/v2")
 API_KEY = os.environ.get("ALPACA_API_KEY", "")
 API_SECRET = os.environ.get("ALPACA_API_SECRET", "")
 HEADERS = {"APCA-API-KEY-ID": API_KEY, "APCA-API-SECRET-KEY": API_SECRET}

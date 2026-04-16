@@ -30,8 +30,8 @@ def load_dotenv():
                     os.environ.setdefault(key.strip(), val.strip())
 load_dotenv()
 
-API_ENDPOINT = os.environ.get("ALPACA_ENDPOINT", "")
-DATA_ENDPOINT = os.environ.get("ALPACA_DATA_ENDPOINT", "")
+API_ENDPOINT = os.environ.get("ALPACA_ENDPOINT", "https://paper-api.alpaca.markets/v2")
+DATA_ENDPOINT = os.environ.get("ALPACA_DATA_ENDPOINT", "https://data.alpaca.markets/v2")
 API_KEY = os.environ.get("ALPACA_API_KEY", "")
 API_SECRET = os.environ.get("ALPACA_API_SECRET", "")
 HEADERS = {"APCA-API-KEY-ID": API_KEY, "APCA-API-SECRET-KEY": API_SECRET}
@@ -91,13 +91,14 @@ def save_json(path, data):
     fd, tmp = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
-            json.dump(data, f, indent=2)
+            json.dump(data, f, indent=2, default=str)
         os.rename(tmp, path)
     except Exception:
         try:
             os.unlink(tmp)
         except Exception:
             pass
+        raise
 
 
 def notify(message, notify_type="info"):

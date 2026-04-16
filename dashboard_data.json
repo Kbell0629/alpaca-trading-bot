@@ -53,26 +53,24 @@
       "daily_volume": 1738713,
       "volume_surge": 84344.53618261292,
       "best_strategy": "Breakout",
-      "best_score": 5083.754368185764,
+      "best_score": 5078.754368185764,
       "scores": {
-        "Trailing Stop": 371.44612558838975,
+        "Trailing Stop": 368.44612558838975,
         "Copy Trading": 167.90551181102364,
-        "Wheel Strategy": -8.0,
-        "Mean Reversion": 2.0,
-        "Breakout": 5083.754368185764
+        "Wheel Strategy": -3.0,
+        "Mean Reversion": 5.0,
+        "Breakout": 5078.754368185764
       },
-      "trailing_score": 371.44612558838975,
+      "trailing_score": 368.44612558838975,
       "copy_score": 167.90551181102364,
-      "wheel_score": -8.0,
-      "mean_reversion_score": 2.0,
-      "breakout_score": 5083.754368185764,
+      "wheel_score": -3.0,
+      "mean_reversion_score": 5.0,
+      "breakout_score": 5078.754368185764,
       "sector": "Other",
       "momentum_5d": 2.4193548387096753,
       "momentum_20d": -21.118012422360255,
       "relative_volume": 619.784697096619,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -80,7 +78,7 @@
       "sentiment_score": 1,
       "news_sentiment": "positive",
       "social_sentiment": "bullish",
-      "social_score": 81.8,
+      "social_score": 27.3,
       "social_volume": 30,
       "social_trending": true,
       "meme_warning": false,
@@ -152,9 +150,7 @@
       "momentum_5d": 5.240907260770378,
       "momentum_20d": 23.17781966698085,
       "relative_volume": 18.17257699944636,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -280,9 +276,7 @@
       "momentum_5d": -44.29404414827156,
       "momentum_20d": -34.08082799408575,
       "relative_volume": 18.831880179199256,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -364,9 +358,7 @@
       "momentum_5d": 36.656151419558356,
       "momentum_20d": 19.80088495575223,
       "relative_volume": 2.2891131903436523,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -444,9 +436,7 @@
       "momentum_5d": 5.720620842572055,
       "momentum_20d": 7.001795332136429,
       "relative_volume": 6.6703924770538885,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -510,92 +500,6 @@
       ]
     },
     {
-      "symbol": "QBTS",
-      "price": 20.805,
-      "daily_change": 22.454384932313133,
-      "volatility": 18.401800787844678,
-      "daily_volume": 3550171,
-      "volume_surge": 70.90503577519993,
-      "best_strategy": "Breakout",
-      "best_score": 91.86618091274764,
-      "scores": {
-        "Trailing Stop": 32.236672050387114,
-        "Copy Trading": 11.736315479693939,
-        "Wheel Strategy": 11.598199212155322,
-        "Mean Reversion": 0.0,
-        "Breakout": 91.86618091274764
-      },
-      "trailing_score": 32.236672050387114,
-      "copy_score": 11.736315479693939,
-      "wheel_score": 11.598199212155322,
-      "mean_reversion_score": 0.0,
-      "breakout_score": 91.86618091274764,
-      "sector": "Other",
-      "momentum_5d": 16.64950223137658,
-      "momentum_20d": -2.803203661327247,
-      "relative_volume": 3.7989849494141366,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
-      "rsi": 50,
-      "macd_histogram": 0,
-      "overall_bias": "neutral",
-      "earnings_warning": false,
-      "sentiment_score": 0,
-      "news_sentiment": "neutral",
-      "social_sentiment": "bullish",
-      "social_score": 53.8,
-      "social_volume": 30,
-      "social_trending": true,
-      "meme_warning": false,
-      "meme_note": "",
-      "backtest_return": -10.38,
-      "backtest_detail": {
-        "entry": 19.12,
-        "exit": 17.14,
-        "return_pct": -10.38,
-        "stopped_out": true,
-        "days": 4,
-        "equity_curve": [
-          19.12,
-          18.9,
-          17.84,
-          17.56,
-          17.14
-        ],
-        "stop_levels": [
-          17.21,
-          17.21,
-          17.21,
-          17.21,
-          17.21
-        ]
-      },
-      "recommended_shares": 480,
-      "profit_ladder": [
-        {
-          "gain_pct": 10,
-          "sell_pct": 25,
-          "note": "Lock in early gains"
-        },
-        {
-          "gain_pct": 20,
-          "sell_pct": 25,
-          "note": "Take more off the table"
-        },
-        {
-          "gain_pct": 30,
-          "sell_pct": 25,
-          "note": "Secure majority profit"
-        },
-        {
-          "gain_pct": 50,
-          "sell_pct": 25,
-          "note": "Let the rest ride"
-        }
-      ]
-    },
-    {
       "symbol": "OKLL",
       "price": 9.45,
       "daily_change": 16.09336609336607,
@@ -620,9 +524,7 @@
       "momentum_5d": 33.771569433032056,
       "momentum_20d": -13.496280552603611,
       "relative_volume": 2.9975184103806156,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -680,6 +582,90 @@
       ]
     },
     {
+      "symbol": "QBTS",
+      "price": 20.805,
+      "daily_change": 22.454384932313133,
+      "volatility": 18.401800787844678,
+      "daily_volume": 3550171,
+      "volume_surge": 70.90503577519993,
+      "best_strategy": "Breakout",
+      "best_score": 86.86618091274764,
+      "scores": {
+        "Trailing Stop": 29.236672050387114,
+        "Copy Trading": 11.736315479693939,
+        "Wheel Strategy": 16.598199212155322,
+        "Mean Reversion": 3.0,
+        "Breakout": 86.86618091274764
+      },
+      "trailing_score": 29.236672050387114,
+      "copy_score": 11.736315479693939,
+      "wheel_score": 16.598199212155322,
+      "mean_reversion_score": 3.0,
+      "breakout_score": 86.86618091274764,
+      "sector": "Other",
+      "momentum_5d": 16.64950223137658,
+      "momentum_20d": -2.803203661327247,
+      "relative_volume": 3.7989849494141366,
+      "technical": {},
+      "rsi": 50,
+      "macd_histogram": 0,
+      "overall_bias": "neutral",
+      "earnings_warning": false,
+      "sentiment_score": 0,
+      "news_sentiment": "neutral",
+      "social_sentiment": "bullish",
+      "social_score": 45.5,
+      "social_volume": 30,
+      "social_trending": true,
+      "meme_warning": false,
+      "meme_note": "",
+      "backtest_return": -10.38,
+      "backtest_detail": {
+        "entry": 19.12,
+        "exit": 17.14,
+        "return_pct": -10.38,
+        "stopped_out": true,
+        "days": 4,
+        "equity_curve": [
+          19.12,
+          18.9,
+          17.84,
+          17.56,
+          17.14
+        ],
+        "stop_levels": [
+          17.21,
+          17.21,
+          17.21,
+          17.21,
+          17.21
+        ]
+      },
+      "recommended_shares": 480,
+      "profit_ladder": [
+        {
+          "gain_pct": 10,
+          "sell_pct": 25,
+          "note": "Lock in early gains"
+        },
+        {
+          "gain_pct": 20,
+          "sell_pct": 25,
+          "note": "Take more off the table"
+        },
+        {
+          "gain_pct": 30,
+          "sell_pct": 25,
+          "note": "Secure majority profit"
+        },
+        {
+          "gain_pct": 50,
+          "sell_pct": 25,
+          "note": "Let the rest ride"
+        }
+      ]
+    },
+    {
       "symbol": "QUBT",
       "price": 9.39,
       "daily_change": 15.782983970406917,
@@ -704,9 +690,7 @@
       "momentum_5d": 16.774658027357802,
       "momentum_20d": 7.559681697612719,
       "relative_volume": 3.6858517816957606,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -796,9 +780,7 @@
       "momentum_5d": -29.51559934318554,
       "momentum_20d": -22.90076335877862,
       "relative_volume": 12.287979901075607,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -880,9 +862,7 @@
       "momentum_5d": 3.516483516483526,
       "momentum_20d": 2.8384279475982543,
       "relative_volume": 3.9775046178717393,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -978,9 +958,7 @@
       "momentum_5d": 11.791237113402065,
       "momentum_20d": 11.289288005131514,
       "relative_volume": 3.8570255169737067,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -1044,9 +1022,7 @@
       "momentum_5d": 2.0449897750511425,
       "momentum_20d": 0.0,
       "relative_volume": 4.191897766734626,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -1110,9 +1086,7 @@
       "momentum_5d": -1.6044708851631562,
       "momentum_20d": 9.072741806554752,
       "relative_volume": 2.66266894028946,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -1176,9 +1150,7 @@
       "momentum_5d": 49.38949522510232,
       "momentum_20d": 36.79262960649594,
       "relative_volume": 1.6501338654850881,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -1242,9 +1214,7 @@
       "momentum_5d": 8.055657268399873,
       "momentum_20d": 6.036651095939649,
       "relative_volume": 2.5853026185491115,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -1308,9 +1278,7 @@
       "momentum_5d": 32.603904282115856,
       "momentum_20d": 51.73842550891732,
       "relative_volume": 2.3397263766323055,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -1374,9 +1342,7 @@
       "momentum_5d": 44.62068340433245,
       "momentum_20d": 53.408326122488226,
       "relative_volume": 1.631305723751881,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -1440,9 +1406,7 @@
       "momentum_5d": 31.896939693969408,
       "momentum_20d": 42.79797795237226,
       "relative_volume": 2.261450363934066,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -1506,9 +1470,7 @@
       "momentum_5d": 12.48210707128543,
       "momentum_20d": -18.349958437240232,
       "relative_volume": 1.83466835176137,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -1572,9 +1534,7 @@
       "momentum_5d": -11.497105045492152,
       "momentum_20d": 15.67567567567567,
       "relative_volume": 0.40428195507953074,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -1638,9 +1598,7 @@
       "momentum_5d": 12.147716229348893,
       "momentum_20d": -19.413407821229058,
       "relative_volume": 1.7447980184652883,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -1704,9 +1662,7 @@
       "momentum_5d": 19.989209603452917,
       "momentum_20d": 14.75748194014448,
       "relative_volume": 1.9163726089870996,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -1770,9 +1726,7 @@
       "momentum_5d": 10.000000000000009,
       "momentum_20d": 14.348462664714479,
       "relative_volume": 1.7892340994119469,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -1836,9 +1790,7 @@
       "momentum_5d": 10.123647604327669,
       "momentum_20d": -14.551269238456932,
       "relative_volume": 1.85344107110076,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -1902,9 +1854,7 @@
       "momentum_5d": 5.04488330341113,
       "momentum_20d": 10.77243468383189,
       "relative_volume": 2.493638428479538,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -1968,9 +1918,7 @@
       "momentum_5d": 4.428904428904423,
       "momentum_20d": -11.671924290220826,
       "relative_volume": 2.1659723276921095,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -2034,9 +1982,7 @@
       "momentum_5d": -5.016077170417999,
       "momentum_20d": 1.0375099760574713,
       "relative_volume": 2.158157047728521,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -2100,9 +2046,7 @@
       "momentum_5d": -0.14088475626937713,
       "momentum_20d": -5.240641711229954,
       "relative_volume": 2.1946201216989976,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -2166,9 +2110,7 @@
       "momentum_5d": 7.356979405034325,
       "momentum_20d": 18.12917033866297,
       "relative_volume": 2.7359099356298313,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -2232,9 +2174,7 @@
       "momentum_5d": -21.921364985163205,
       "momentum_20d": -44.70711846598371,
       "relative_volume": 1.4205557435677045,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -2298,9 +2238,7 @@
       "momentum_5d": 6.896551724137923,
       "momentum_20d": -3.616086515714767,
       "relative_volume": 2.1150134241054155,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -2364,9 +2302,7 @@
       "momentum_5d": -0.047326076668252615,
       "momentum_20d": 0.18224940706528248,
       "relative_volume": 2.17760428041057,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -2430,9 +2366,7 @@
       "momentum_5d": 4.307983989888364,
       "momentum_20d": -2.6253687315634266,
       "relative_volume": 3.7547558526686475,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -2496,9 +2430,7 @@
       "momentum_5d": 0.23731446323784766,
       "momentum_20d": 4.156205164992821,
       "relative_volume": 0.9975565894942812,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -2562,9 +2494,7 @@
       "momentum_5d": 2.6083467094702995,
       "momentum_20d": 5.661157024793395,
       "relative_volume": 1.5234533811963964,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -2628,9 +2558,7 @@
       "momentum_5d": -0.0914076782449702,
       "momentum_20d": 2.3887587822013945,
       "relative_volume": 2.7649187188817534,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -2694,9 +2622,7 @@
       "momentum_5d": -4.250405692173265,
       "momentum_20d": 6.5569215808849,
       "relative_volume": 1.0914019846703775,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -2760,9 +2686,7 @@
       "momentum_5d": 11.864586649686926,
       "momentum_20d": -20.270781332728237,
       "relative_volume": 0.4511864106558888,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -2826,9 +2750,7 @@
       "momentum_5d": 4.211715346135225,
       "momentum_20d": -5.83260425780111,
       "relative_volume": 1.5368066986422206,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -2892,9 +2814,7 @@
       "momentum_5d": -5.3908219358365645,
       "momentum_20d": 26.42928650666956,
       "relative_volume": 1.0916776679491893,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -2958,9 +2878,7 @@
       "momentum_5d": 4.607095289986662,
       "momentum_20d": 33.007466707720724,
       "relative_volume": 1.0196273608299622,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -3024,9 +2942,7 @@
       "momentum_5d": 14.425157356412255,
       "momentum_20d": 0.7773928107405847,
       "relative_volume": 0.5539006599473998,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -3090,9 +3006,7 @@
       "momentum_5d": 36.00796812749003,
       "momentum_20d": 33.84301732925585,
       "relative_volume": 1.274763512492678,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -3156,9 +3070,7 @@
       "momentum_5d": 1.1936635430611187,
       "momentum_20d": -8.188259109311746,
       "relative_volume": 0.9246008168406502,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -3222,9 +3134,7 @@
       "momentum_5d": -8.244749805548357,
       "momentum_20d": -7.564122655801087,
       "relative_volume": 1.0974589915544768,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -3288,9 +3198,7 @@
       "momentum_5d": 6.002265005662499,
       "momentum_20d": -9.214354995150353,
       "relative_volume": 1.3380082730906557,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -3354,9 +3262,7 @@
       "momentum_5d": -0.8530343650987149,
       "momentum_20d": -17.983870967741943,
       "relative_volume": 1.2276918590188963,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -3420,9 +3326,7 @@
       "momentum_5d": -3.608979823813574,
       "momentum_20d": -12.515313688825835,
       "relative_volume": 1.085436757144597,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -3486,9 +3390,7 @@
       "momentum_5d": 28.542345276872936,
       "momentum_20d": 10.179153094462535,
       "relative_volume": 0.986941097499765,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -3552,9 +3454,7 @@
       "momentum_5d": 11.391168425166075,
       "momentum_20d": 27.606625427315645,
       "relative_volume": 0.8013184582885539,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -3618,9 +3518,7 @@
       "momentum_5d": 16.779288447447694,
       "momentum_20d": 38.45559845559847,
       "relative_volume": 1.1544569679106056,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -3684,9 +3582,7 @@
       "momentum_5d": 5.2818689690198095,
       "momentum_20d": -0.33653846153846034,
       "relative_volume": 1.6887156131061367,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -3750,9 +3646,7 @@
       "momentum_5d": 24.815789473684212,
       "momentum_20d": 0.850520944078248,
       "relative_volume": 0.9217440166825863,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -3816,9 +3710,7 @@
       "momentum_5d": 5.489945738908397,
       "momentum_20d": -8.245419211549155,
       "relative_volume": 1.0447230688573537,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -3882,9 +3774,7 @@
       "momentum_5d": 2.0529100529100397,
       "momentum_20d": -4.020700636942687,
       "relative_volume": 0.6101732536551204,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -3948,9 +3838,7 @@
       "momentum_5d": 1.8450884598965933,
       "momentum_20d": 8.269463493344098,
       "relative_volume": 1.6356730878410162,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -4014,9 +3902,7 @@
       "momentum_5d": -1.5445879087727765,
       "momentum_20d": 32.32241323386313,
       "relative_volume": 0.977492144296635,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -4080,9 +3966,7 @@
       "momentum_5d": -1.810926949048497,
       "momentum_20d": -28.4500111831805,
       "relative_volume": 1.7519741150186818,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -4146,9 +4030,7 @@
       "momentum_5d": 29.467749030271516,
       "momentum_20d": 39.22167275854653,
       "relative_volume": 0.6443100472164226,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -4212,9 +4094,7 @@
       "momentum_5d": -9.547038327526137,
       "momentum_20d": -12.592592592592588,
       "relative_volume": 0.7064029703885909,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -4278,9 +4158,7 @@
       "momentum_5d": 8.826815642458087,
       "momentum_20d": 26.32944228274967,
       "relative_volume": 1.7701098525806398,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -4344,9 +4222,7 @@
       "momentum_5d": -7.07928248664933,
       "momentum_20d": 25.249169435215958,
       "relative_volume": 0.5530677739010021,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -4474,9 +4350,7 @@
       "momentum_5d": 1.8013856812933104,
       "momentum_20d": 11.08870967741935,
       "relative_volume": 1.9144349942343808,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -4540,9 +4414,7 @@
       "momentum_5d": 13.27815761065132,
       "momentum_20d": 14.389534883720923,
       "relative_volume": 1.1345133492280493,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -4606,9 +4478,7 @@
       "momentum_5d": 4.53920220082531,
       "momentum_20d": -8.119114278442341,
       "relative_volume": 0.9408538681199681,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -4672,9 +4542,7 @@
       "momentum_5d": 5.361733382298928,
       "momentum_20d": -3.245932046201838,
       "relative_volume": 0.900648075108657,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -4738,9 +4606,7 @@
       "momentum_5d": -4.051927616050355,
       "momentum_20d": 48.719512195121936,
       "relative_volume": 1.317344757987172,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -4804,9 +4670,7 @@
       "momentum_5d": 2.0499859590003,
       "momentum_20d": -2.061716749764164,
       "relative_volume": 1.6263065882766372,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -4870,9 +4734,7 @@
       "momentum_5d": 26.36874815034036,
       "momentum_20d": 55.38573508005824,
       "relative_volume": 0.7515489376803651,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -4936,9 +4798,7 @@
       "momentum_5d": 10.3669102689671,
       "momentum_20d": 69.78442280945758,
       "relative_volume": 0.8779438350354575,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -5002,9 +4862,7 @@
       "momentum_5d": 14.04892330940688,
       "momentum_20d": 23.80049210580273,
       "relative_volume": 1.3030603973916155,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -5068,9 +4926,7 @@
       "momentum_5d": 2.448979591836742,
       "momentum_20d": 2.180866530968295,
       "relative_volume": 1.0980690219620732,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -5134,9 +4990,7 @@
       "momentum_5d": -4.659090909090913,
       "momentum_20d": -4.659090909090913,
       "relative_volume": 1.6474974646191307,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -5200,9 +5054,7 @@
       "momentum_5d": -0.08802816901408717,
       "momentum_20d": -11.224090731325775,
       "relative_volume": 1.2500306578640246,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -5266,9 +5118,7 @@
       "momentum_5d": 1.0252029047415512,
       "momentum_20d": 25.099180111081722,
       "relative_volume": 0.8705751021766415,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -5332,9 +5182,7 @@
       "momentum_5d": 12.351778656126488,
       "momentum_20d": -18.727662616154404,
       "relative_volume": 1.4202411532609927,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -5398,9 +5246,7 @@
       "momentum_5d": 0.3490401396160525,
       "momentum_20d": -5.037159372419486,
       "relative_volume": 1.292631615804109,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -5464,9 +5310,7 @@
       "momentum_5d": 3.836150845253572,
       "momentum_20d": 20.0751879699248,
       "relative_volume": 0.5492249834178006,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -5530,9 +5374,7 @@
       "momentum_5d": -3.5284350352843608,
       "momentum_20d": 12.026994456495533,
       "relative_volume": 1.1295019305653957,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -5596,9 +5438,7 @@
       "momentum_5d": 5.293501048218041,
       "momentum_20d": 6.071805702217525,
       "relative_volume": 1.2154779969650986,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -5662,9 +5502,7 @@
       "momentum_5d": 1.9407558733401498,
       "momentum_20d": -2.4437927663734094,
       "relative_volume": 0.6947952277206854,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -5728,9 +5566,7 @@
       "momentum_5d": 3.245348334054521,
       "momentum_20d": -0.04189359028069495,
       "relative_volume": 1.0570934854461211,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -5794,9 +5630,7 @@
       "momentum_5d": 1.081943951755937,
       "momentum_20d": 13.673082676772719,
       "relative_volume": 1.5183100917864136,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -5860,9 +5694,7 @@
       "momentum_5d": -9.671284976908456,
       "momentum_20d": -16.415284062342884,
       "relative_volume": 1.5286254598207347,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -5926,9 +5758,7 @@
       "momentum_5d": 10.012360939431385,
       "momentum_20d": 13.346917982679575,
       "relative_volume": 0.9847093330975265,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -5992,9 +5822,7 @@
       "momentum_5d": 12.850524262375028,
       "momentum_20d": 30.734463276836177,
       "relative_volume": 1.046824327205426,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -6058,9 +5886,7 @@
       "momentum_5d": -2.67780756288144,
       "momentum_20d": -16.267144294231674,
       "relative_volume": 1.4523822265242528,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -6124,9 +5950,7 @@
       "momentum_5d": 7.482305358948427,
       "momentum_20d": 11.718339464004202,
       "relative_volume": 1.171482300247344,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -6190,9 +6014,7 @@
       "momentum_5d": -1.1119969787251938,
       "momentum_20d": -12.873410233658689,
       "relative_volume": 0.8260496064942265,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -6256,9 +6078,7 @@
       "momentum_5d": 0.7599834185435972,
       "momentum_20d": -6.278516804832601,
       "relative_volume": 1.524032193599828,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -6322,9 +6142,7 @@
       "momentum_5d": 23.723041997729855,
       "momentum_20d": 20.044052863436136,
       "relative_volume": 1.1286568955391987,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -6388,9 +6206,7 @@
       "momentum_5d": 7.767517653449207,
       "momentum_20d": 6.409224993295792,
       "relative_volume": 1.5504764775061342,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -6454,9 +6270,7 @@
       "momentum_5d": -1.500087214372925,
       "momentum_20d": 3.4533296693230797,
       "relative_volume": 4.506096657945402,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -6520,9 +6334,7 @@
       "momentum_5d": 0.5988023952095967,
       "momentum_20d": -3.669724770642202,
       "relative_volume": 1.2916061444447955,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -6586,9 +6398,7 @@
       "momentum_5d": 5.1155115511551275,
       "momentum_20d": -2.53551912568305,
       "relative_volume": 1.3685209750136853,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -6652,9 +6462,7 @@
       "momentum_5d": 3.2133676092544805,
       "momentum_20d": 10.911602209944737,
       "relative_volume": 1.0750968840208557,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -6718,9 +6526,7 @@
       "momentum_5d": 19.714656290531774,
       "momentum_20d": 22.373218428902874,
       "relative_volume": 1.4158471934829595,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -6784,9 +6590,7 @@
       "momentum_5d": 4.146730462519943,
       "momentum_20d": 4.410393071285812,
       "relative_volume": 1.894063543137889,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -6850,9 +6654,7 @@
       "momentum_5d": 10.845295055821392,
       "momentum_20d": 31.58725149889556,
       "relative_volume": 1.3345904489853573,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -6901,26 +6703,24 @@
       "daily_volume": 1738713,
       "volume_surge": 84344.53618261292,
       "best_strategy": "Breakout",
-      "best_score": 5083.754368185764,
+      "best_score": 5078.754368185764,
       "scores": {
-        "Trailing Stop": 371.44612558838975,
+        "Trailing Stop": 368.44612558838975,
         "Copy Trading": 167.90551181102364,
-        "Wheel Strategy": -8.0,
-        "Mean Reversion": 2.0,
-        "Breakout": 5083.754368185764
+        "Wheel Strategy": -3.0,
+        "Mean Reversion": 5.0,
+        "Breakout": 5078.754368185764
       },
-      "trailing_score": 371.44612558838975,
+      "trailing_score": 368.44612558838975,
       "copy_score": 167.90551181102364,
-      "wheel_score": -8.0,
-      "mean_reversion_score": 2.0,
-      "breakout_score": 5083.754368185764,
+      "wheel_score": -3.0,
+      "mean_reversion_score": 5.0,
+      "breakout_score": 5078.754368185764,
       "sector": "Other",
       "momentum_5d": 2.4193548387096753,
       "momentum_20d": -21.118012422360255,
       "relative_volume": 619.784697096619,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -6928,7 +6728,7 @@
       "sentiment_score": 1,
       "news_sentiment": "positive",
       "social_sentiment": "bullish",
-      "social_score": 81.8,
+      "social_score": 27.3,
       "social_volume": 30,
       "social_trending": true,
       "meme_warning": false,
@@ -7000,9 +6800,7 @@
       "momentum_5d": 5.240907260770378,
       "momentum_20d": 23.17781966698085,
       "relative_volume": 18.17257699944636,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -7128,9 +6926,7 @@
       "momentum_5d": -3.608979823813574,
       "momentum_20d": -12.515313688825835,
       "relative_volume": 1.085436757144597,
-      "technical": {
-        "error": "Need at least 26 bars for full analysis"
-      },
+      "technical": {},
       "rsi": 50,
       "macd_histogram": 0,
       "overall_bias": "neutral",
@@ -7195,7 +6991,7 @@
     "daily_pnl_pct": 0.0,
     "alert_triggered": false
   },
-  "updated_at": "2026-04-16 02:52:24 UTC",
+  "updated_at": "2026-04-16 03:10:17 UTC",
   "trailing_strategy": {
     "symbol": null,
     "strategy": "trailing_stop",

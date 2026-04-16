@@ -26,7 +26,7 @@ def load_dotenv():
                     os.environ.setdefault(key.strip(), val.strip())
 load_dotenv()
 
-API_ENDPOINT = os.environ.get("ALPACA_ENDPOINT", "")
+API_ENDPOINT = os.environ.get("ALPACA_ENDPOINT", "https://paper-api.alpaca.markets/v2")
 API_KEY = os.environ.get("ALPACA_API_KEY", "")
 API_SECRET = os.environ.get("ALPACA_API_SECRET", "")
 HEADERS = {"APCA-API-KEY-ID": API_KEY, "APCA-API-SECRET-KEY": API_SECRET}
@@ -50,13 +50,18 @@ REPLACEMENT_MAP = {
     "NIO": ["RIVN", "LCID"],
 }
 
-def api_get(url, timeout=10):
-    req = urllib.request.Request(url, headers=HEADERS)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
-    except Exception as e:
-        return {"error": str(e)}
+def api_get(url, timeout=10, max_retries=2):
+    import time as _time
+    for attempt in range(max_retries):
+        req = urllib.request.Request(url, headers=HEADERS)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode())
+        except Exception as e:
+            if attempt < max_retries - 1:
+                _time.sleep(1)
+                continue
+            return {"error": str(e)}
 
 def scan_for_harvest_opportunities(min_loss_pct=5.0, min_loss_dollars=50):
     """Scan current positions for tax-loss harvesting opportunities."""

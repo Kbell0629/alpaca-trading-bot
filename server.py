@@ -9,8 +9,10 @@ the client and Railway is encrypted via TLS. The app itself listens on plain HTT
 """
 
 import base64
+import glob
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -1490,6 +1492,7 @@ async function deactivateKillSwitch() {
         toast('Kill switch deactivated. Auto-deployer remains off - re-enable it manually.', 'info');
         addLog('Kill switch deactivated', 'success');
         renderDashboard();
+        setTimeout(refreshData, 1500);
     } catch(e) {
         toast('Error deactivating kill switch: ' + e.message, 'error');
     }
@@ -1508,13 +1511,20 @@ async function loadGuardrails() {
 /* ---- Data loading ---- */
 async function refreshData() {
     try {
-        const resp = await fetch(API_BASE + '/api/data');
+        const resp = await fetch(API_BASE + '/api/data', {credentials: 'same-origin'});
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
         dashboardData = await resp.json();
         lastData = dashboardData;
         renderDashboard();
         countdown = 60;
     } catch(e) {
-        toast('Failed to load data: ' + e.message, 'error');
+        // Only show error once per 5 failures to prevent spam
+        if (!window._fetchFailCount) window._fetchFailCount = 0;
+        window._fetchFailCount++;
+        if (window._fetchFailCount % 5 === 1) {
+            toast('Failed to load data: ' + e.message, 'error');
+        }
+        countdown = 60;  // Reset even on failure so we don't spam
     }
 }
 
@@ -2338,7 +2348,7 @@ function handleVoiceCommand(text) {
 
     if (text.includes('kill') || text.includes('emergency') || text.includes('stop everything')) {
         if (confirm('Voice command: Activate Kill Switch? This will close all positions.')) {
-            activateKillSwitch();
+            executeKillSwitch();
         }
     }
     else if (text.includes('refresh') || text.includes('update')) {
@@ -2482,8 +2492,9 @@ function applyPreset(preset) {
     countdownInterval = setInterval(() => {
         countdown--;
         const el = document.getElementById('countdown');
-        if (el) el.textContent = 'Next refresh: ' + countdown + 's';
+        if (el) el.textContent = 'Next refresh: ' + Math.max(0, countdown) + 's';
         if (countdown <= 0) {
+            countdown = 60;  // Reset BEFORE calling refresh to prevent spam on failure
             refreshData();
             addLog('Auto-refresh triggered', 'info');
         }
@@ -2536,6 +2547,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def send_json(self, data, status=200):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
         cors = self._cors_origin()
         if cors:
             self.send_header("Access-Control-Allow-Origin", cors)
@@ -2547,12 +2559,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def send_html(self, html, status=200):
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(html.encode("utf-8"))
 
     def _serve_icon_placeholder(self, size):
         """Generate a simple PNG icon placeholder (solid blue square)."""
-        import struct, zlib
+        import struct
+        import zlib
         # Create a minimal valid PNG: solid #3b82f6 square
         width = height = size
         # Build raw image data: filter byte + RGB pixels per row
@@ -2580,6 +2595,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def read_body(self):
         length = int(self.headers.get("Content-Length", 0))
         if length == 0:
+            return {}
+        if length > 1_000_000:  # 1MB max body size
             return {}
         raw = self.rfile.read(length)
         try:
@@ -2732,6 +2749,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not symbol:
             self.send_json({"error": "Missing symbol"}, 400)
             return
+        # Validate symbol is alphanumeric (1-10 chars)
+        if not re.match(r'^[A-Z]{1,10}$', symbol):
+            return self.send_json({"error": "Invalid symbol format"}, 400)
 
         if qty < 1 or qty > 1000:
             return self.send_json({"error": "Invalid quantity. Must be 1-1000."}, 400)
@@ -3101,6 +3121,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not order_id:
             self.send_json({"error": "Missing order_id"}, 400)
             return
+        # Validate order_id is a UUID to prevent path traversal
+        if not re.match(r'^[0-9a-f\-]{36}$', order_id):
+            return self.send_json({"error": "Invalid order_id format"}, 400)
 
         result = alpaca_delete(f"{API_ENDPOINT}/orders/{order_id}")
         if isinstance(result, dict) and "error" in result:
@@ -3114,6 +3137,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not symbol:
             self.send_json({"error": "Missing symbol"}, 400)
             return
+        # Validate symbol is alphanumeric (1-10 chars) to prevent path traversal
+        if not re.match(r'^[A-Z]{1,10}$', symbol):
+            return self.send_json({"error": "Invalid symbol format"}, 400)
 
         result = alpaca_delete(f"{API_ENDPOINT}/positions/{symbol}")
         if isinstance(result, dict) and "error" in result:
@@ -3124,10 +3150,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def handle_sell(self, body):
         """Place a market sell order."""
         symbol = body.get("symbol", "").upper()
-        qty = int(body.get("qty", 1))
+        try:
+            qty = int(body.get("qty", 1))
+        except (TypeError, ValueError):
+            return self.send_json({"error": "Invalid quantity."}, 400)
         if not symbol:
             self.send_json({"error": "Missing symbol"}, 400)
             return
+        if qty < 1 or qty > 10000:
+            return self.send_json({"error": "Invalid quantity. Must be 1-10000."}, 400)
 
         result = alpaca_post(f"{API_ENDPOINT}/orders", {
             "symbol": symbol,
@@ -3223,7 +3254,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _find_strategy_files(self, strategy_key):
         """Find strategy JSON files matching the given strategy key."""
-        import glob
         patterns = {
             "trailing_stop": "trailing_stop*.json",
             "copy_trading": "copy_trading.json",
