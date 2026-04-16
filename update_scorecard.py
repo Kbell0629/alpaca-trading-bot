@@ -61,25 +61,10 @@ HEADERS = {
     "APCA-API-SECRET-KEY": API_SECRET,
 }
 
-# Sector map from update_dashboard.py (Improvement 9: Correlation Guard)
-SECTOR_MAP = {
-    "AAPL": "Tech", "MSFT": "Tech", "GOOG": "Tech", "GOOGL": "Tech", "META": "Tech",
-    "NVDA": "Tech", "AMD": "Tech", "INTC": "Tech", "CRM": "Tech", "ORCL": "Tech",
-    "ADBE": "Tech", "NOW": "Tech", "SHOP": "Tech", "SQ": "Tech", "PLTR": "Tech",
-    "NET": "Tech", "SNOW": "Tech", "DDOG": "Tech", "MDB": "Tech", "CRWD": "Tech",
-    "AMZN": "Consumer", "TSLA": "Consumer", "NKE": "Consumer", "SBUX": "Consumer",
-    "MCD": "Consumer", "HD": "Consumer", "LOW": "Consumer", "TGT": "Consumer",
-    "COST": "Consumer", "WMT": "Consumer", "DIS": "Consumer", "NFLX": "Consumer",
-    "JPM": "Finance", "BAC": "Finance", "GS": "Finance", "MS": "Finance",
-    "WFC": "Finance", "C": "Finance", "BLK": "Finance", "SCHW": "Finance",
-    "COIN": "Finance", "SOFI": "Finance", "V": "Finance", "MA": "Finance",
-    "JNJ": "Healthcare", "UNH": "Healthcare", "PFE": "Healthcare", "ABBV": "Healthcare",
-    "MRK": "Healthcare", "LLY": "Healthcare", "BMY": "Healthcare", "AMGN": "Healthcare",
-    "MRNA": "Healthcare", "GILD": "Healthcare",
-    "XOM": "Energy", "CVX": "Energy", "COP": "Energy", "SLB": "Energy", "OXY": "Energy",
-    "BA": "Industrial", "CAT": "Industrial", "DE": "Industrial", "GE": "Industrial",
-    "HON": "Industrial", "LMT": "Industrial", "RTX": "Industrial", "UPS": "Industrial",
-}
+# Sector map now lives in constants.py — single source of truth shared
+# with update_dashboard.py and cloud_scheduler.py. Previously this was
+# a separate copy that could drift out of sync on sector edits.
+from constants import SECTOR_MAP
 
 
 def api_get(url, timeout=15):

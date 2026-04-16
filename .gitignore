@@ -38,3 +38,8 @@ email_queue.json.lock
 data/
 
 .claude/worktrees/
+
+# Test artefacts
+.pytest_cache/
+.coverage
+htmlcov/

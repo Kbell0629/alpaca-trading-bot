@@ -948,11 +948,13 @@ def check_correlation_allowed(new_symbol, existing_positions):
 
     Uses the sector map to check if we'd have too many positions in same sector.
     """
-    # Import the sector map from update_dashboard (has 80+ stocks mapped)
-    try:
-        from update_dashboard import SECTOR_MAP
-    except ImportError:
-        SECTOR_MAP = {}
+    # Shared sector map — constants.py. Previously imported from
+    # update_dashboard which silently fell back to {} on ImportError,
+    # disabling the correlation guard entirely if the screener module
+    # ever failed to import. With the dedicated constants module, the
+    # import is near-impossible to fail (stdlib only), and a hard crash
+    # here is preferable to a silent guardrail bypass.
+    from constants import SECTOR_MAP
 
     new_sector = SECTOR_MAP.get(new_symbol, "Other")
 

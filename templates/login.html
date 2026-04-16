@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Login - Stock Trading Bot</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root { --bg:#0a0e17; --card:#111827; --border:#1e293b; --text:#e2e8f0; --text-dim:#94a3b8; --accent:#3b82f6; --green:#10b981; --red:#ef4444; }
+* { box-sizing:border-box; margin:0; padding:0; }
+body { font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',sans-serif; background:linear-gradient(135deg,var(--bg) 0%,#1e1b4b 100%); color:var(--text); min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+.auth-box { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:40px; width:100%; max-width:400px; box-shadow:0 20px 60px rgba(0,0,0,0.5); }
+.auth-box h1 { font-size:24px; margin-bottom:8px; background:linear-gradient(135deg,var(--accent),#8b5cf6); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.auth-box p { color:var(--text-dim); font-size:13px; margin-bottom:24px; }
+.form-group { margin-bottom:16px; }
+label { display:block; font-size:12px; color:var(--text-dim); margin-bottom:6px; text-transform:uppercase; letter-spacing:0.5px; }
+input { width:100%; padding:12px; background:rgba(10,14,23,0.5); border:1px solid var(--border); border-radius:8px; color:var(--text); font-size:14px; transition:border 0.2s; }
+input:focus { outline:none; border-color:var(--accent); }
+button { width:100%; padding:14px; background:linear-gradient(135deg,var(--accent),#8b5cf6); color:white; border:none; border-radius:8px; font-size:14px; font-weight:700; cursor:pointer; transition:transform 0.15s; }
+button:hover { transform:translateY(-1px); }
+button:disabled { opacity:0.5; cursor:not-allowed; }
+.auth-links { margin-top:20px; text-align:center; font-size:13px; color:var(--text-dim); }
+.auth-links a { color:var(--accent); text-decoration:none; }
+.auth-links a:hover { text-decoration:underline; }
+.error { background:rgba(239,68,68,0.15); color:var(--red); padding:10px; border-radius:8px; font-size:13px; margin-bottom:16px; display:none; }
+.success { background:rgba(16,185,129,0.15); color:var(--green); padding:10px; border-radius:8px; font-size:13px; margin-bottom:16px; display:none; }
+</style></head><body>
+<div class="auth-box">
+  <h1>Stock Bot Login</h1>
+  <p>Sign in to your trading dashboard</p>
+  <div id="error" class="error"></div>
+  <div id="success" class="success"></div>
+  <form id="loginForm">
+    <div class="form-group">
+      <label for="username">Username or Email</label>
+      <input type="text" id="username" name="username" required autofocus>
+    </div>
+    <div class="form-group">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" required>
+    </div>
+    <button type="submit">Sign In</button>
+  </form>
+  <div class="auth-links">
+    <a href="/forgot">Forgot password?</a>
+    <br><br>
+    Don't have an account? <a href="/signup">Sign up</a>
+  </div>
+</div>
+<script>
+document.getElementById('loginForm').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  var btn = e.target.querySelector('button');
+  btn.disabled = true;
+  btn.textContent = 'Signing in...';
+  var err = document.getElementById('error');
+  err.style.display = 'none';
+  try {
+    var resp = await fetch('/api/login', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        username: document.getElementById('username').value,
+        password: document.getElementById('password').value
+      })
+    });
+    var data = await resp.json();
+    if (resp.ok) {
+      window.location.href = '/';
+    } else {
+      err.textContent = data.error || 'Login failed';
+      err.style.display = 'block';
+      btn.disabled = false;
+      btn.textContent = 'Sign In';
+    }
+  } catch(e) {
+    err.textContent = 'Network error: ' + e.message;
+    err.style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = 'Sign In';
+  }
+});
+</script></body></html>

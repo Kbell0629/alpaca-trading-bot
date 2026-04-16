@@ -223,10 +223,95 @@ try:
 except Exception:
     _HAS_AESGCM = False
 
+# zxcvbn password strength estimator — optional pip dep. Silently falls
+# back to the 8-char minimum if not installed so dev envs aren't blocked.
+try:
+    from zxcvbn import zxcvbn as _zxcvbn
+    _HAS_ZXCVBN = True
+except Exception:
+    _HAS_ZXCVBN = False
+
+
+# Minimum zxcvbn strength score (0-4). 3 = "safely unguessable without
+# throttling" per zxcvbn's scoring guide — blocks "password", keyboard
+# walks, common leaked passwords, but permits reasonable passphrases
+# (e.g. "correct horse battery" scores 4).
+MIN_PASSWORD_SCORE = 3
+
+
+def check_password_strength(password, user_inputs=None):
+    """Return (ok, message). `user_inputs` is a list of username/email
+    fragments that should not appear in the password (zxcvbn weights these
+    heavily).
+
+    Policy:
+      - at least 10 characters
+      - zxcvbn score >= MIN_PASSWORD_SCORE when zxcvbn is installed
+      - if zxcvbn not installed (dev env without deps), falls back to 8 chars
+    """
+    if not password:
+        return False, "Password required"
+    min_len = 10 if _HAS_ZXCVBN else 8
+    if len(password) < min_len:
+        return False, f"Password must be at least {min_len} characters"
+    if not _HAS_ZXCVBN:
+        return True, None
+    try:
+        result = _zxcvbn(password, user_inputs=user_inputs or [])
+    except Exception:
+        return True, None  # don't fail-closed on zxcvbn internal error
+    score = int(result.get("score", 0))
+    if score < MIN_PASSWORD_SCORE:
+        fb = result.get("feedback") or {}
+        warn = fb.get("warning") or "Password is too guessable."
+        suggestions = fb.get("suggestions") or []
+        hint = (suggestions[0] if suggestions else
+                "Try a passphrase like four random words.")
+        return False, f"{warn} {hint}"
+    return True, None
+
 
 def _derive_aesgcm_key(master):
-    """Derive a 32-byte AES-256 key from the master secret."""
+    """Derive a 32-byte AES-256 key from the master secret (ENCv2 legacy).
+
+    Used only for decrypting rows written before the ENCv3 (HKDF) rollout.
+    New encryptions go through _derive_aesgcm_key_v3.
+    """
     return hashlib.sha256(f"{master}:aesgcm-v2".encode()).digest()
+
+
+# HKDF-SHA256 for ENCv3. Single-SHA256 derivation (v2) was fine as long as
+# MASTER_KEY wasn't compromised, but HKDF gives strict extract-then-expand
+# guarantees and allows per-purpose keying without re-using the derivation
+# (e.g. if we later need separate keys for different credential types).
+# Info string must be stable — changing it invalidates every ENCv3 row.
+_ENCv3_SALT = b"alpaca-trading-bot/credential-kdf/v3"
+_ENCv3_INFO = b"aesgcm-256-alpaca-creds"
+
+
+def _derive_aesgcm_key_v3(master):
+    """HKDF-SHA256(salt, MASTER_KEY, info) → 32-byte AES-256 key."""
+    # Try to use the `cryptography` HKDF primitive when available; fall
+    # back to a stdlib HKDF implementation (RFC 5869) so the code works
+    # even in the unlikely case cryptography install is incomplete.
+    try:
+        from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+        from cryptography.hazmat.primitives import hashes as _hashes
+        hkdf = HKDF(
+            algorithm=_hashes.SHA256(),
+            length=32,
+            salt=_ENCv3_SALT,
+            info=_ENCv3_INFO,
+        )
+        return hkdf.derive(master.encode() if isinstance(master, str) else master)
+    except Exception:
+        pass
+    # stdlib fallback — RFC 5869 HKDF-SHA256
+    m = master.encode() if isinstance(master, str) else master
+    prk = hmac.new(_ENCv3_SALT, m, hashlib.sha256).digest()
+    # Expand to 32 bytes (single block since L=32 ≤ HashLen=32)
+    t = hmac.new(prk, _ENCv3_INFO + b"\x01", hashlib.sha256).digest()
+    return t[:32]
 
 
 def encrypt_secret(plaintext):
@@ -234,23 +319,28 @@ def encrypt_secret(plaintext):
 
     Format tiers (encoded as prefix):
       "PLAIN:..."  -> dev-mode cleartext fallback (no MASTER_KEY set)
-      "ENC:..."    -> legacy HMAC-stream cipher (encrypt-then-MAC)
-      "ENCv2:..."  -> AES-256-GCM (authenticated, IETF standard)
-    New writes use ENCv2 when cryptography is available; decrypt supports
-    all three so existing DB rows keep working without migration.
+      "ENC:..."    -> legacy HMAC-stream cipher (deprecated; decrypt-only)
+      "ENCv2:..."  -> AES-256-GCM with SHA256-derived key (decrypt-only
+                      going forward; still valid)
+      "ENCv3:..."  -> AES-256-GCM with HKDF-SHA256-derived key (current)
+
+    New writes use ENCv3 when cryptography is available; decrypt supports
+    all four. `needs_cipher_upgrade()` now returns True for both ENC: and
+    ENCv2: so the transparent-upgrade-on-login machinery slowly migrates
+    everyone to ENCv3 without forcing a flag-day re-encrypt.
     """
     if not plaintext:
         return ""
     if not MASTER_KEY:
         return "PLAIN:" + plaintext
     if _HAS_AESGCM:
-        key = _derive_aesgcm_key(MASTER_KEY)
+        key = _derive_aesgcm_key_v3(MASTER_KEY)
         aes = AESGCM(key)
         nonce = secrets.token_bytes(12)  # 96-bit nonce is standard for GCM
-        ct = aes.encrypt(nonce, plaintext.encode(), associated_data=b"alpaca-cred-v2")
+        ct = aes.encrypt(nonce, plaintext.encode(), associated_data=b"alpaca-cred-v3")
         # Store nonce || ciphertext+tag (the cryptography lib appends the 16-byte tag)
-        return "ENCv2:" + base64.b64encode(nonce + ct).decode()
-    # Fallback: legacy HMAC stream cipher
+        return "ENCv3:" + base64.b64encode(nonce + ct).decode()
+    # Fallback: legacy HMAC stream cipher (only if cryptography not installed)
     enc_key = _derive_key(MASTER_KEY, "encrypt")
     mac_key = _derive_key(MASTER_KEY, "mac")
     nonce = secrets.token_bytes(16)
@@ -267,13 +357,27 @@ def encrypt_secret(plaintext):
 
 
 def decrypt_secret(encrypted):
-    """Decrypt a secret back to plaintext. Supports PLAIN / ENC / ENCv2."""
+    """Decrypt a secret back to plaintext. Supports PLAIN / ENC / ENCv2 / ENCv3."""
     if not encrypted:
         return ""
     if encrypted.startswith("PLAIN:"):
         return encrypted[6:]
 
-    # ENCv2: AES-GCM (current format)
+    # ENCv3: AES-GCM with HKDF-derived key (current format)
+    if encrypted.startswith("ENCv3:"):
+        if not MASTER_KEY or not _HAS_AESGCM:
+            return ""
+        try:
+            blob = base64.b64decode(encrypted[6:])
+            nonce, ct = blob[:12], blob[12:]
+            key = _derive_aesgcm_key_v3(MASTER_KEY)
+            aes = AESGCM(key)
+            pt = aes.decrypt(nonce, ct, associated_data=b"alpaca-cred-v3")
+            return pt.decode()
+        except Exception:
+            return ""
+
+    # ENCv2: AES-GCM with SHA256-derived key (legacy, decrypt-only)
     if encrypted.startswith("ENCv2:"):
         if not MASTER_KEY or not _HAS_AESGCM:
             return ""
@@ -317,14 +421,22 @@ def decrypt_secret(encrypted):
 
 def needs_cipher_upgrade(encrypted):
     """Return True if the ciphertext is in an older format that should be
-    re-encrypted under the current (ENCv2) scheme on next opportunity.
+    re-encrypted under the current (ENCv3) scheme on next opportunity.
+
+    All of PLAIN, ENC (legacy HMAC stream), and ENCv2 (SHA256-derived
+    AES-GCM key) are considered upgradable. ENCv3 (HKDF-derived AES-GCM
+    key) is the current target.
     """
     if not encrypted:
         return False
+    if not (_HAS_AESGCM and MASTER_KEY):
+        return False
     if encrypted.startswith("PLAIN:"):
-        return bool(MASTER_KEY) and _HAS_AESGCM
+        return True
     if encrypted.startswith("ENC:"):
-        return _HAS_AESGCM
+        return True
+    if encrypted.startswith("ENCv2:"):
+        return True
     return False
 
 # ===== User CRUD =====
@@ -344,8 +456,14 @@ def create_user(email, username, password, alpaca_key, alpaca_secret,
         return None, "Username must be 3-30 chars (letters, digits, _, -)"
     if not email or "@" not in email:
         return None, "Invalid email"
-    if len(password or "") < 8:
-        return None, "Password must be at least 8 characters"
+    # Use the shared strength check — enforces length + zxcvbn score with
+    # username/email as user_inputs so "kevinbell2026" is flagged.
+    ok, pw_err = check_password_strength(
+        password,
+        user_inputs=[username, email, email.split("@")[0] if email else ""],
+    )
+    if not ok:
+        return None, pw_err
     try:
         conn = _get_db()
         cur = conn.cursor()
@@ -358,6 +476,14 @@ def create_user(email, username, password, alpaca_key, alpaca_secret,
         pwhash, salt = hash_password(password)
         now = now_et().isoformat()
 
+        # ntfy.sh topics are world-readable — anyone who knows the topic
+        # string can subscribe and see every trade notification. Guessable
+        # topics ("alpaca-bot-kevin") are therefore a trade-signal leak.
+        # Default to an unguessable random token for new signups; existing
+        # users are unaffected (this is only the default for new rows).
+        # Users can still override via the Settings modal.
+        default_topic = ntfy_topic or f"alpaca-bot-{secrets.token_urlsafe(12)}"
+
         cur.execute("""
             INSERT INTO users (email, username, password_hash, password_salt,
                               alpaca_key_encrypted, alpaca_secret_encrypted,
@@ -368,7 +494,7 @@ def create_user(email, username, password, alpaca_key, alpaca_secret,
         """, (email.lower(), username, pwhash, salt,
               encrypt_secret(alpaca_key), encrypt_secret(alpaca_secret),
               alpaca_endpoint, alpaca_data_endpoint,
-              ntfy_topic or f"alpaca-bot-{username.lower()}",
+              default_topic,
               notification_email or email,
               1 if is_admin else 0, now))
         user_id = cur.lastrowid
@@ -454,11 +580,25 @@ def update_user_credentials(user_id, alpaca_key=None, alpaca_secret=None,
     conn.close()
     return True
 
-def change_password(user_id, new_password, invalidate_sessions=True):
+def change_password(user_id, new_password, invalidate_sessions=True, enforce_strength=True):
     """Update a user's password. By default invalidates all existing sessions
     so a compromised cookie can't be used after the user changes their
     password. `consume_reset_token` already does this separately.
+
+    Enforces password strength when `enforce_strength=True` (the default).
+    Callers that have already run the check (e.g. reset flow) can pass
+    False to skip it. Returns (True, None) on success or (False, msg).
     """
+    if enforce_strength:
+        user = get_user_by_id(user_id) or {}
+        email = user.get("email") or ""
+        ok, pw_err = check_password_strength(
+            new_password,
+            user_inputs=[user.get("username") or "", email,
+                         email.split("@")[0] if email else ""],
+        )
+        if not ok:
+            return False, pw_err
     conn = _get_db()
     cur = conn.cursor()
     pwhash, salt = hash_password(new_password)
@@ -467,7 +607,7 @@ def change_password(user_id, new_password, invalidate_sessions=True):
         cur.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
-    return True
+    return True, None
 
 def authenticate(username_or_email, password):
     """Return user dict if credentials valid, None otherwise.
@@ -661,11 +801,14 @@ def validate_reset_token(token):
     return row[0] if row else None
 
 def consume_reset_token(token, new_password):
-    """Use a reset token to set a new password. Returns True on success."""
+    """Use a reset token to set a new password.
+    Returns (True, None) on success, (False, err_msg) otherwise."""
     user_id = validate_reset_token(token)
     if not user_id:
-        return False
-    change_password(user_id, new_password)
+        return False, "Invalid or expired reset link"
+    ok, err = change_password(user_id, new_password)
+    if not ok:
+        return False, err
     token_hash = _hash_reset_token(token)
     conn = _get_db()
     cur = conn.cursor()
@@ -676,7 +819,51 @@ def consume_reset_token(token, new_password):
     cur.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
-    return True
+    return True, None
+
+# ===== Legacy cipher diagnostics =====
+def count_legacy_encrypted_rows():
+    """Return dict of {format: count} for users whose credentials are stored
+    under an older cipher format. Transparent upgrade happens on login, so
+    counts trend to zero. When all three (PLAIN, ENC, ENCv2) stay at zero
+    across deploys, the corresponding decrypt paths can be safely removed.
+
+    Called opportunistically from server startup to log the state.
+    """
+    try:
+        conn = _get_db()
+        cur = conn.cursor()
+        out = {}
+        for label, pattern in (
+            ("PLAIN",  "PLAIN:%"),
+            ("ENC",    "ENC:%"),  # legacy HMAC stream, NOT ENCv2/ENCv3
+            ("ENCv2",  "ENCv2:%"),
+            ("ENCv3",  "ENCv3:%"),
+        ):
+            # For ENC: we must exclude rows that are actually ENCv2/ENCv3
+            # (they all share the "ENC" prefix).
+            if label == "ENC":
+                cur.execute(
+                    "SELECT COUNT(*) FROM users WHERE "
+                    "(alpaca_key_encrypted LIKE 'ENC:%' "
+                    " AND alpaca_key_encrypted NOT LIKE 'ENCv2:%' "
+                    " AND alpaca_key_encrypted NOT LIKE 'ENCv3:%') "
+                    "OR (alpaca_secret_encrypted LIKE 'ENC:%' "
+                    " AND alpaca_secret_encrypted NOT LIKE 'ENCv2:%' "
+                    " AND alpaca_secret_encrypted NOT LIKE 'ENCv3:%')"
+                )
+            else:
+                cur.execute(
+                    "SELECT COUNT(*) FROM users WHERE "
+                    "alpaca_key_encrypted LIKE ? OR alpaca_secret_encrypted LIKE ?",
+                    (pattern, pattern),
+                )
+            out[label] = cur.fetchone()[0]
+        conn.close()
+        return out
+    except Exception:
+        return {"error": -1}  # sentinel: check failed
+
 
 # ===== Per-user paths =====
 def user_data_dir(user_id):

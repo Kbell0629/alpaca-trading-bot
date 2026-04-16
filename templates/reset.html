@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Reset Password</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root { --bg:#0a0e17; --card:#111827; --border:#1e293b; --text:#e2e8f0; --text-dim:#94a3b8; --accent:#3b82f6; --green:#10b981; --red:#ef4444; }
+* { box-sizing:border-box; margin:0; padding:0; }
+body { font-family:-apple-system,sans-serif; background:linear-gradient(135deg,var(--bg),#1e1b4b); color:var(--text); min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+.auth-box { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:40px; max-width:400px; width:100%; }
+h1 { font-size:22px; margin-bottom:8px; }
+p { color:var(--text-dim); font-size:13px; margin-bottom:20px; }
+label { display:block; font-size:12px; color:var(--text-dim); margin-bottom:6px; text-transform:uppercase; }
+input { width:100%; padding:12px; background:rgba(10,14,23,0.5); border:1px solid var(--border); border-radius:8px; color:var(--text); margin-bottom:14px; }
+button { width:100%; padding:14px; background:var(--accent); color:white; border:none; border-radius:8px; font-weight:700; cursor:pointer; }
+.message { padding:12px; border-radius:8px; margin-top:16px; font-size:13px; display:none; }
+.message.success { background:rgba(16,185,129,0.15); color:var(--green); }
+.message.error { background:rgba(239,68,68,0.15); color:var(--red); }
+</style></head><body>
+<div class="auth-box">
+<h1>Reset Your Password</h1>
+<p>Enter a new password below.</p>
+<form id="resetForm">
+<label>New Password</label>
+<input type="password" id="password" required minlength="8" placeholder="min 8 characters">
+<button type="submit">Reset Password</button>
+</form>
+<div id="message" class="message"></div>
+</div>
+<script>
+var params = new URLSearchParams(window.location.search);
+var token = params.get('token');
+document.getElementById('resetForm').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  var msg = document.getElementById('message');
+  try {
+    var resp = await fetch('/api/reset', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({token: token, password: document.getElementById('password').value})
+    });
+    var data = await resp.json();
+    if (resp.ok) {
+      msg.className = 'message success';
+      msg.textContent = 'Password reset! Redirecting to login...';
+      msg.style.display = 'block';
+      setTimeout(function() { window.location.href = '/login'; }, 2000);
+    } else {
+      msg.className = 'message error';
+      msg.textContent = data.error || 'Reset failed';
+      msg.style.display = 'block';
+    }
+  } catch(e) {
+    msg.className = 'message error';
+    msg.textContent = 'Error: ' + e.message;
+    msg.style.display = 'block';
+  }
+});
+</script></body></html>

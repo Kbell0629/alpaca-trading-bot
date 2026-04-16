@@ -7,3 +7,10 @@
 # API changes. Review and bump when cryptography releases 46.0.0; until then,
 # Railway rebuilds pull a known-good version range.
 cryptography>=42.0.0,<46.0.0
+
+# zxcvbn — password strength estimator (Dropbox). Pure-Python, no ffi.
+# Used in auth.create_user / change_password to reject weak passwords
+# ("password", "abc12345", keyboard walks) that pass the 8-char min-length
+# check but are trivially guessable. Graceful degradation at runtime: if
+# this package fails to install, auth falls back to the 8-char minimum only.
+zxcvbn>=4.4.28,<5.0.0

@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Forgot Password</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root { --bg:#0a0e17; --card:#111827; --border:#1e293b; --text:#e2e8f0; --text-dim:#94a3b8; --accent:#3b82f6; --green:#10b981; --red:#ef4444; }
+* { box-sizing:border-box; margin:0; padding:0; }
+body { font-family:-apple-system,sans-serif; background:linear-gradient(135deg,var(--bg),#1e1b4b); color:var(--text); min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+.auth-box { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:40px; max-width:400px; width:100%; }
+h1 { font-size:22px; margin-bottom:8px; }
+p { color:var(--text-dim); font-size:13px; margin-bottom:20px; }
+label { display:block; font-size:12px; color:var(--text-dim); margin-bottom:6px; text-transform:uppercase; }
+input { width:100%; padding:12px; background:rgba(10,14,23,0.5); border:1px solid var(--border); border-radius:8px; color:var(--text); }
+button { width:100%; padding:14px; background:var(--accent); color:white; border:none; border-radius:8px; margin-top:16px; font-weight:700; cursor:pointer; }
+.message { padding:12px; border-radius:8px; margin-top:16px; font-size:13px; display:none; }
+.message.success { background:rgba(16,185,129,0.15); color:var(--green); }
+.message.error { background:rgba(239,68,68,0.15); color:var(--red); }
+.auth-links { margin-top:20px; text-align:center; font-size:13px; color:var(--text-dim); }
+.auth-links a { color:var(--accent); text-decoration:none; }
+</style></head><body>
+<div class="auth-box">
+<h1>Forgot Password</h1>
+<p>Enter your email and we'll send you a reset link.</p>
+<form id="forgotForm">
+<label>Email</label>
+<input type="email" id="email" required autofocus>
+<button type="submit">Send Reset Link</button>
+</form>
+<div id="message" class="message"></div>
+<div class="auth-links"><a href="/login">Back to login</a></div>
+</div>
+<script>
+document.getElementById('forgotForm').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  var msg = document.getElementById('message');
+  msg.style.display = 'none';
+  try {
+    var resp = await fetch('/api/forgot', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({email: document.getElementById('email').value})
+    });
+    var data = await resp.json();
+    msg.className = 'message ' + (resp.ok ? 'success' : 'error');
+    msg.textContent = data.message || data.error || 'Check your email';
+    msg.style.display = 'block';
+  } catch(e) {
+    msg.className = 'message error';
+    msg.textContent = 'Error: ' + e.message;
+    msg.style.display = 'block';
+  }
+});
+</script></body></html>
