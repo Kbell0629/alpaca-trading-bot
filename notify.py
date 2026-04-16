@@ -67,7 +67,7 @@ TYPE_CONFIG = {
 # Types that should also trigger an email notification
 EMAIL_TYPES = {"trade", "exit", "stop", "alert", "kill", "daily"}
 
-def send_notification(message, notify_type="info"):
+def send_notification(message, notify_type="info", push_only=False):
     config = TYPE_CONFIG.get(notify_type, TYPE_CONFIG["info"])
 
     # Send push notification via ntfy
@@ -85,8 +85,12 @@ def send_notification(message, notify_type="info"):
     except Exception as e:
         print(f"Failed to send push notification: {e}")
 
-    # Queue email for important notification types
-    if notify_type in EMAIL_TYPES:
+    # Queue email for important notification types — UNLESS the caller
+    # asked for push-only. The daily-close path uses --push-only so the
+    # scheduler can send the short summary via ntfy while queueing its
+    # own much richer email body separately (see cloud_scheduler
+    # run_daily_close).
+    if notify_type in EMAIL_TYPES and not push_only:
         queue_email(config["title"], message, notify_type)
 
     return push_ok
@@ -167,6 +171,13 @@ if __name__ == "__main__":
         notify_type = args[idx + 1]
         args = args[:idx] + args[idx+2:]
 
+    # --push-only skips the email queue entirely. Used by paths that
+    # will queue their own richer email directly (daily close report).
+    push_only = False
+    if "--push-only" in args:
+        args.remove("--push-only")
+        push_only = True
+
     # Sensitive messages (password resets) can be piped via stdin with --stdin
     # flag so the plaintext URL never appears in argv (which is readable via
     # /proc on the host and may be logged by process supervisors).
@@ -175,5 +186,5 @@ if __name__ == "__main__":
         message = sys.stdin.read().strip() or (" ".join(args) if args else "Notification")
     else:
         message = " ".join(args) if args else "Test notification from trading bot"
-    send_notification(message, notify_type)
+    send_notification(message, notify_type, push_only=push_only)
     log_notification(message, notify_type)

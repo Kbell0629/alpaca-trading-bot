@@ -177,11 +177,13 @@ def get_all_users_for_scheduling():
             result.append({
                 "id": u["id"],
                 "username": u["username"],
+                "email": u.get("email"),
                 "_api_key": creds["key"],
                 "_api_secret": creds["secret"],
                 "_api_endpoint": creds.get("endpoint") or "https://paper-api.alpaca.markets/v2",
                 "_data_endpoint": creds.get("data_endpoint") or "https://data.alpaca.markets/v2",
                 "_ntfy_topic": creds.get("ntfy_topic") or f"alpaca-bot-{u['username'].lower()}",
+                "_notification_email": creds.get("notification_email") or u.get("email"),
                 "_data_dir": user_dir,
                 "_strategies_dir": os.path.join(user_dir, "strategies"),
             })
@@ -193,11 +195,13 @@ def get_all_users_for_scheduling():
         return [{
             "id": "env",
             "username": os.environ.get("DASHBOARD_USER", "admin"),
+            "email": os.environ.get("DASHBOARD_EMAIL", ""),
             "_api_key": API_KEY,
             "_api_secret": API_SECRET,
             "_api_endpoint": API_ENDPOINT,
             "_data_endpoint": DATA_ENDPOINT,
             "_ntfy_topic": os.environ.get("NTFY_TOPIC", ""),
+            "_notification_email": os.environ.get("NOTIFICATION_EMAIL", os.environ.get("DASHBOARD_EMAIL", "")),
             "_data_dir": DATA_DIR,              # legacy uses DATA_DIR (was BASE_DIR)
             "_strategies_dir": STRATEGIES_DIR,  # legacy strategies dir
         }]
@@ -1632,6 +1636,7 @@ def run_daily_close(user):
 
         gpath = user_file(user, "guardrails.json")
         guardrails = load_json(gpath) or {}
+        daily_starting_value = guardrails.get("daily_starting_value")
         guardrails["daily_starting_value"] = None
         account = user_api_get(user, "/account")
         if isinstance(account, dict) and "error" not in account:
@@ -1652,10 +1657,331 @@ def run_daily_close(user):
         win_rate = scorecard.get("win_rate_pct", 0)
         readiness = scorecard.get("readiness_score", 0)
         ready_flag = " READY FOR LIVE!" if readiness >= 80 else ""
-        notify_user(user, f"Daily close: ${value:,.2f} | Win {win_rate:.0f}% | Ready {readiness}/100{ready_flag}", "daily")
+
+        # Short push for mobile (ntfy). --push-only so the auto-queued
+        # email is skipped — we queue a much richer email below.
+        short = f"Daily close: ${value:,.2f} | Win {win_rate:.0f}% | Ready {readiness}/100{ready_flag}"
+        try:
+            push_env = os.environ.copy()
+            if user.get("_ntfy_topic"):
+                push_env["NTFY_TOPIC"] = user["_ntfy_topic"]
+            subprocess.Popen(
+                [sys.executable, os.path.join(BASE_DIR, "notify.py"),
+                 "--type", "daily", "--push-only", short],
+                env=push_env,
+            )
+        except Exception as _e:
+            log(f"[{user['username']}] Daily close push failed: {_e}", "close")
+
+        # Rich email report — gathered from account, positions, orders,
+        # trade journal, strategies, guardrails. Queued directly to the
+        # user's notification_email so users get a useful end-of-day
+        # digest instead of a single-line scoreboard.
+        try:
+            report_body = _build_daily_close_report(
+                user=user,
+                account=account if isinstance(account, dict) else {},
+                scorecard=scorecard,
+                guardrails=guardrails,
+                daily_starting_value=daily_starting_value,
+            )
+            _queue_direct_email(
+                user,
+                subject=f"[Trading Bot] Daily Close — {get_et_time().strftime('%a %b %d')}",
+                body=report_body,
+                notify_type="daily",
+            )
+        except Exception as _e:
+            log(f"[{user['username']}] Rich daily-close email build failed: {_e}", "close")
+
         log(f"[{user['username']}] Daily close complete", "close")
     except Exception as e:
         log(f"[{user['username']}] Daily close error: {e}", "close")
+
+
+# ============================================================================
+# Daily-close rich report
+# ============================================================================
+def _fmt_money(v):
+    try:
+        return f"${float(v):,.2f}"
+    except (TypeError, ValueError):
+        return "$—"
+
+
+def _fmt_pct(v, decimals=2):
+    try:
+        return f"{float(v):+.{decimals}f}%"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _fmt_signed_money(v):
+    try:
+        f = float(v)
+        sign = "+" if f >= 0 else "−"
+        return f"{sign}${abs(f):,.2f}"
+    except (TypeError, ValueError):
+        return "$—"
+
+
+def _queue_direct_email(user, subject, body, notify_type="daily"):
+    """Append one email entry to the user's email_queue.json with fcntl
+    locking so we don't race with notify.queue_email or the drain task.
+    """
+    import fcntl
+    queue_file = user_file(user, "email_queue.json")
+    lock_file = queue_file + ".lock"
+    to_addr = (user.get("_notification_email")
+               or user.get("notification_email")
+               or user.get("email") or "").strip()
+    if not to_addr:
+        log(f"[{user.get('username','?')}] No notification_email — skipping rich email", "close")
+        return
+    lock_fd = None
+    try:
+        os.makedirs(os.path.dirname(queue_file) or ".", exist_ok=True)
+        lock_fd = open(lock_file, "w")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        queue = []
+        if os.path.exists(queue_file):
+            try:
+                with open(queue_file) as f:
+                    queue = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                queue = []
+        queue.append({
+            "timestamp": now_et().isoformat(),
+            "to": to_addr,
+            "subject": subject,
+            "body": body,
+            "type": notify_type,
+            "sent": False,
+        })
+        queue = queue[-50:]  # bound the queue
+        tmp = queue_file + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(queue, f, indent=2, default=str)
+        os.replace(tmp, queue_file)
+    finally:
+        if lock_fd:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
+
+
+def _build_daily_close_report(user, account, scorecard, guardrails,
+                              daily_starting_value=None):
+    """Render a plain-text end-of-day digest for the user's email.
+
+    Sections: portfolio snapshot, positions breakdown, today's activity,
+    strategy health, readiness, tomorrow's context, bot health. Gracefully
+    degrades each section when upstream data is missing.
+    """
+    et = get_et_time()
+    divider = "━" * 44
+    lines = []
+
+    # ===== Header =====
+    lines.append(f"DAILY CLOSE SUMMARY")
+    lines.append(f"{et.strftime('%A, %B %d, %Y')} — market closed at 4:00 PM ET")
+    lines.append("")
+
+    # ===== Portfolio =====
+    lines.append(divider)
+    lines.append("PORTFOLIO")
+    lines.append(divider)
+    close_val = float(account.get("portfolio_value", scorecard.get("current_value", 0)) or 0)
+    last_equity = float(account.get("last_equity", 0) or 0)
+    # Prefer the guardrails.daily_starting_value captured at open for the
+    # intraday delta; fall back to Alpaca's last_equity when it's missing.
+    start_val = float(daily_starting_value) if daily_starting_value else last_equity
+    day_chg = close_val - start_val if start_val else 0.0
+    day_pct = (day_chg / start_val * 100) if start_val else 0.0
+    peak = float(guardrails.get("peak_portfolio_value", close_val) or 0)
+    dd_pct = ((close_val - peak) / peak * 100) if peak else 0.0
+
+    lines.append(f"Closing value:     {_fmt_money(close_val)}")
+    lines.append(f"Today:             {_fmt_signed_money(day_chg)} ({_fmt_pct(day_pct)})")
+    lines.append(f"Peak portfolio:    {_fmt_money(peak)}")
+    if dd_pct < 0:
+        lines.append(f"Drawdown:          {_fmt_pct(dd_pct)} from peak")
+    lines.append(f"Cash available:    {_fmt_money(account.get('cash', 0))}")
+    lines.append(f"Buying power:      {_fmt_money(account.get('buying_power', 0))}")
+    lines.append("")
+
+    # ===== Positions =====
+    positions = user_api_get(user, "/positions")
+    if not isinstance(positions, list):
+        positions = []
+    total_unrealized = sum(float(p.get("unrealized_pl", 0) or 0) for p in positions)
+    lines.append(divider)
+    lines.append(f"POSITIONS HELD ({len(positions)})")
+    lines.append(divider)
+    if positions:
+        scored = []
+        for p in positions:
+            try:
+                pnl_pct = float(p.get("unrealized_plpc", 0) or 0) * 100
+                pnl_abs = float(p.get("unrealized_pl", 0) or 0)
+                scored.append((pnl_pct, pnl_abs, p.get("symbol", "?"), p.get("qty", 0)))
+            except (TypeError, ValueError):
+                continue
+        scored.sort(reverse=True)  # high to low
+        winners = [s for s in scored if s[0] > 0][:3]
+        losers = [s for s in reversed(scored) if s[0] < 0][:3]
+        if winners:
+            lines.append("Top winners:")
+            for pct, abs_pnl, sym, qty in winners:
+                lines.append(f"  • {sym:<6} {_fmt_pct(pct)}  {_fmt_signed_money(abs_pnl)}  ({qty} sh)")
+        if losers:
+            lines.append("Top losers:")
+            for pct, abs_pnl, sym, qty in losers:
+                lines.append(f"  • {sym:<6} {_fmt_pct(pct)}  {_fmt_signed_money(abs_pnl)}  ({qty} sh)")
+        lines.append(f"Total unrealized:  {_fmt_signed_money(total_unrealized)}")
+    else:
+        lines.append("No open positions at close.")
+    lines.append("")
+
+    # ===== Today's activity (from Alpaca closed orders) =====
+    lines.append(divider)
+    lines.append("TODAY'S ACTIVITY")
+    lines.append(divider)
+    today_str = et.strftime("%Y-%m-%d")
+    try:
+        orders = user_api_get(user, f"/orders?status=closed&after={today_str}T04:00:00Z&limit=500")
+    except Exception:
+        orders = None
+    if not isinstance(orders, list):
+        orders = []
+    filled = [o for o in orders if o.get("status") == "filled"]
+    buys = sum(1 for o in filled if (o.get("side") or "").lower() == "buy")
+    sells = sum(1 for o in filled if (o.get("side") or "").lower() == "sell")
+    buys_label = f"{buys} buy" + ("" if buys == 1 else "s")
+    sells_label = f"{sells} sell" + ("" if sells == 1 else "s")
+    lines.append(f"Trades filled:     {len(filled)}  ({buys_label}, {sells_label})")
+
+    # Realized P&L from today's closed journal entries
+    try:
+        journal = load_json(user_file(user, "trade_journal.json")) or {}
+        trades = journal.get("trades", [])
+        today_closes = [t for t in trades
+                        if t.get("status") == "closed"
+                        and (t.get("exit_timestamp") or "").startswith(today_str)]
+        realized = sum(float(t.get("pnl", 0) or 0) for t in today_closes)
+        wins = sum(1 for t in today_closes if float(t.get("pnl", 0) or 0) > 0)
+        losses = sum(1 for t in today_closes if float(t.get("pnl", 0) or 0) < 0)
+        lines.append(f"Realized P&L:      {_fmt_signed_money(realized)}")
+        if today_closes:
+            wr = (wins / len(today_closes) * 100) if today_closes else 0
+            lines.append(f"Closed trades:     {wins}W / {losses}L  ({wr:.0f}% win rate)")
+        else:
+            lines.append("Closed trades:     none today")
+    except Exception as _e:
+        lines.append(f"Realized P&L:      (journal unavailable: {_e})")
+    lines.append("")
+
+    # ===== Strategies =====
+    lines.append(divider)
+    lines.append("STRATEGY HEALTH")
+    lines.append(divider)
+    try:
+        sdir = user_strategies_dir(user)
+        strat_counts = {}
+        active = 0
+        if os.path.isdir(sdir):
+            for fn in os.listdir(sdir):
+                if not fn.endswith(".json"):
+                    continue
+                try:
+                    s = load_json(os.path.join(sdir, fn)) or {}
+                    if s.get("status") in (None, "active", "open"):
+                        active += 1
+                    stype = s.get("strategy") or s.get("type") or "unknown"
+                    strat_counts[stype] = strat_counts.get(stype, 0) + 1
+                except Exception:
+                    continue
+        if strat_counts:
+            mix = ", ".join(f"{v} {k}" for k, v in sorted(strat_counts.items()))
+            lines.append(f"Active strategies: {active} ({mix})")
+        else:
+            lines.append("Active strategies: none")
+    except Exception as _e:
+        lines.append(f"Active strategies: (read failed: {_e})")
+    kill = guardrails.get("kill_switch_active") or guardrails.get("kill_switch") or False
+    lines.append(f"Kill switch:       {'ON — all trading halted' if kill else 'off'}")
+    cooldowns = guardrails.get("cooldowns") or {}
+    if cooldowns:
+        active_cd = [sym for sym, ts in cooldowns.items() if ts and ts > time.time()]
+        if active_cd:
+            lines.append(f"Cooldowns active:  {len(active_cd)} ({', '.join(active_cd[:6])})")
+    lines.append("")
+
+    # ===== Readiness =====
+    lines.append(divider)
+    lines.append("READINESS FOR LIVE TRADING")
+    lines.append(divider)
+    win_rate = float(scorecard.get("win_rate_pct", 0) or 0)
+    readiness = int(scorecard.get("readiness_score", 0) or 0)
+    total_trades = int(scorecard.get("total_trades", 0) or 0)
+    days_tracked = int(scorecard.get("days_tracked", 0) or 0)
+    lines.append(f"Score:             {readiness} / 100")
+    lines.append(f"Win rate:          {win_rate:.0f}% ({total_trades} total trades)")
+    lines.append(f"Days tracked:      {days_tracked}")
+    if readiness >= 80:
+        lines.append("✅ READY FOR LIVE — review the 30-day checklist before going live.")
+    else:
+        gap = 80 - readiness
+        lines.append(f"{gap} points away from GREEN. Keep the paper run going.")
+    lines.append("")
+
+    # ===== Open orders going into tomorrow =====
+    lines.append(divider)
+    lines.append("GOING INTO TOMORROW")
+    lines.append(divider)
+    try:
+        open_orders = user_api_get(user, "/orders?status=open&limit=200")
+    except Exception:
+        open_orders = None
+    if not isinstance(open_orders, list):
+        open_orders = []
+    if open_orders:
+        lines.append(f"Open orders carried over: {len(open_orders)}")
+        for o in open_orders[:8]:
+            sym = o.get("symbol", "?")
+            side = (o.get("side") or "").lower()
+            typ = (o.get("type") or "market").lower()
+            qty = o.get("qty") or o.get("notional") or "?"
+            px = o.get("limit_price") or o.get("stop_price") or "market"
+            px_fmt = _fmt_money(px) if px != "market" else "market"
+            lines.append(f"  • {sym:<6} {side:<4} {typ:<6} {qty} @ {px_fmt}")
+        if len(open_orders) > 8:
+            lines.append(f"  … +{len(open_orders) - 8} more")
+    else:
+        lines.append("No open orders — fresh start tomorrow.")
+    lines.append("")
+
+    # ===== Bot health =====
+    lines.append(divider)
+    lines.append("BOT HEALTH")
+    lines.append(divider)
+    last_beat = _last_runs.get("heartbeat")
+    if last_beat:
+        try:
+            secs = max(0, int(time.time() - float(last_beat)))
+            lines.append(f"Scheduler:         ✓ running  (heartbeat {secs}s ago)")
+        except Exception:
+            lines.append("Scheduler:         ✓ running")
+    else:
+        lines.append("Scheduler:         ✓ running")
+    lines.append("")
+
+    # ===== Footer =====
+    dash = os.environ.get("DASHBOARD_URL", "").rstrip("/")
+    if dash:
+        lines.append(f"View full dashboard: {dash}")
+    lines.append("To stop these emails, open Settings → Notifications and clear the address.")
+
+    return "\n".join(lines)
 
 # ============================================================================
 # TASK 5: WEEKLY LEARNING (per user)
