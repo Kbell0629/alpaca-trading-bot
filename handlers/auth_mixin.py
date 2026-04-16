@@ -15,6 +15,10 @@ import urllib.parse
 from datetime import datetime
 
 import auth
+import hmac
+import subprocess
+import sys
+import server  # noqa: E402 — late-bound to avoid import cycle with mixin registration
 
 
 class AuthHandlerMixin:
@@ -78,21 +82,21 @@ class AuthHandlerMixin:
         # Rate limit BEFORE calling authenticate (which runs expensive PBKDF2).
         # 5 failures per (IP, username) per 15 min then locked out.
         ip = self.client_address[0] if self.client_address else None
-        if _login_rate_limited(ip, username):
+        if server._login_rate_limited(ip, username):
             return self.send_json(
                 {"error": "Too many failed attempts. Try again in 15 minutes."}, 429
             )
 
         user = auth.authenticate(username, password)
         if not user:
-            _login_attempt_record(ip, username, success=False)
+            server._login_attempt_record(ip, username, success=False)
             auth.log_admin_action("login_failed", actor=None, ip_address=ip,
                                    detail={"attempted_username": username[:50]})
             # Small timing-safe sleep to slow down fast brute force even after
             # the lockout is cleared. Matches approximate PBKDF2 timing.
             return self.send_json({"error": "Invalid credentials"}, 401)
 
-        _login_attempt_record(ip, username, success=True)
+        server._login_attempt_record(ip, username, success=True)
         auth.log_admin_action("login_success", actor=user, target_user_id=user["id"], ip_address=ip)
         token = auth.create_session(user["id"], ip)
         self.send_response(200)
@@ -111,7 +115,7 @@ class AuthHandlerMixin:
         ntfy_topic = (body.get("ntfy_topic") or "").strip()
         invite_code = (body.get("invite_code") or "").strip()
 
-        if not is_valid_ntfy_topic(ntfy_topic):
+        if not server.is_valid_ntfy_topic(ntfy_topic):
             return self.send_json({
                 "error": "Invalid ntfy topic. Allowed: letters, digits, _, - (4-64 chars)."
             }, 400)
@@ -119,7 +123,7 @@ class AuthHandlerMixin:
         # Gate: SIGNUP_DISABLED env var blocks all signups; SIGNUP_INVITE_CODE
         # requires a matching code. Both are for sharing the deployment safely
         # with a specific friend without exposing it to the public internet.
-        allowed, reason = signup_allowed(invite_code)
+        allowed, reason = server.signup_allowed(invite_code)
         if not allowed:
             return self.send_json({"error": reason}, 403)
 
@@ -140,7 +144,7 @@ class AuthHandlerMixin:
         # an attacker could point alpaca_endpoint at an internal URL (e.g.
         # 169.254.169.254 metadata, localhost) and the server would hit it with
         # user-controlled headers and echo back the response body.
-        if not is_allowed_alpaca_endpoint(alpaca_endpoint, data=False):
+        if not server.is_allowed_alpaca_endpoint(alpaca_endpoint, data=False):
             return self.send_json({"error": "Invalid Alpaca endpoint. Must be paper or live Alpaca API."}, 400)
 
         # Verify Alpaca credentials before saving
@@ -228,7 +232,7 @@ class AuthHandlerMixin:
             # the token never appears in process listings or supervisor logs.
             p = subprocess.Popen([
                 sys.executable,
-                os.path.join(BASE_DIR, "notify.py"),
+                os.path.join(server.BASE_DIR, "notify.py"),
                 "--type", "alert", "--stdin",
             ], stdin=subprocess.PIPE)
             try:
@@ -248,7 +252,7 @@ class AuthHandlerMixin:
                 import auth as _auth
                 _uqdir = _auth.user_data_dir(user["id"])
             except Exception:
-                _uqdir = DATA_DIR
+                _uqdir = server.DATA_DIR
             email_queue_path = os.path.join(_uqdir, "email_queue.json")
             try:
                 with open(email_queue_path) as f:
@@ -260,7 +264,7 @@ class AuthHandlerMixin:
                 "subject": "Stock Bot — Password Reset",
                 "body": msg,
                 "sent": False,
-                "timestamp": now_et().isoformat(),
+                "timestamp": server.now_et().isoformat(),
             })
             with open(email_queue_path, "w") as f:
                 json.dump(queue, f, indent=2)
@@ -339,12 +343,12 @@ class AuthHandlerMixin:
         # before persisting. Without this, an attacker could set the endpoint
         # to an internal URL and every future Alpaca call for that user would
         # hit the attacker's chosen target.
-        if "alpaca_endpoint" in updates and not is_allowed_alpaca_endpoint(updates["alpaca_endpoint"], data=False):
+        if "alpaca_endpoint" in updates and not server.is_allowed_alpaca_endpoint(updates["alpaca_endpoint"], data=False):
             return self.send_json({"error": "Invalid Alpaca endpoint. Must be paper or live Alpaca API."}, 400)
-        if "alpaca_data_endpoint" in updates and not is_allowed_alpaca_endpoint(updates["alpaca_data_endpoint"], data=True):
+        if "alpaca_data_endpoint" in updates and not server.is_allowed_alpaca_endpoint(updates["alpaca_data_endpoint"], data=True):
             return self.send_json({"error": "Invalid Alpaca data endpoint. Must be data.alpaca.markets."}, 400)
         # ntfy_topic validation — prevent URL breakout and spoof-by-disclosure
-        if "ntfy_topic" in updates and not is_valid_ntfy_topic(updates["ntfy_topic"]):
+        if "ntfy_topic" in updates and not server.is_valid_ntfy_topic(updates["ntfy_topic"]):
             return self.send_json({
                 "error": "Invalid ntfy topic. Allowed: letters, digits, _, - (4-64 chars)."
             }, 400)

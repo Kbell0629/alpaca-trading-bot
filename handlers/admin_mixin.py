@@ -6,6 +6,8 @@ import json
 import urllib.parse
 
 import auth
+import os
+import server  # noqa: E402 — late-bound to avoid import cycle with mixin registration
 
 
 class AdminHandlerMixin:

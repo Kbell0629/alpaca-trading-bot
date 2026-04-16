@@ -12,6 +12,10 @@ import urllib.request
 from datetime import timedelta
 
 from et_time import now_et
+import re
+import threading
+import auth
+import server  # noqa: E402 — late-bound to avoid import cycle with mixin registration
 
 
 class ActionsHandlerMixin:
@@ -23,15 +27,15 @@ class ActionsHandlerMixin:
         user_id = self.current_user.get("id") if self.current_user else None
         if user_id is not None:
             now_ts = time.time()
-            last = _refresh_cooldowns.get(user_id, 0)
+            last = server._refresh_cooldowns.get(user_id, 0)
             if now_ts - last < 30:
                 wait = int(30 - (now_ts - last))
                 return self.send_json({
                     "error": f"Refresh cooling down — try again in {wait}s"
                 }, 429)
-            _refresh_cooldowns[user_id] = now_ts
+            server._refresh_cooldowns[user_id] = now_ts
 
-        script_path = os.path.join(BASE_DIR, "update_dashboard.py")
+        script_path = os.path.join(server.BASE_DIR, "update_dashboard.py")
         env = os.environ.copy()
         if user_id is not None:
             try:
@@ -41,14 +45,14 @@ class ActionsHandlerMixin:
                 env["ALPACA_API_SECRET"] = self.user_api_secret
                 env["ALPACA_ENDPOINT"] = self.user_api_endpoint
                 env["ALPACA_DATA_ENDPOINT"] = self.user_data_endpoint
-                env["DASHBOARD_DATA_PATH"] = os.path.join(udir, "dashboard_data.json")
+                env["server.DASHBOARD_DATA_PATH"] = os.path.join(udir, "dashboard_data.json")
                 env["DASHBOARD_HTML_PATH"] = os.path.join(udir, "dashboard.html")
             except Exception as e:
                 print(f"user env setup failed: {e}")
         try:
             result = subprocess.run(
                 ["python3", script_path],
-                cwd=BASE_DIR,
+                cwd=server.BASE_DIR,
                 capture_output=True,
                 text=True,
                 timeout=600,
@@ -60,7 +64,7 @@ class ActionsHandlerMixin:
             print(f"Error running update_dashboard.py: {e}")
 
         # Return fresh data regardless
-        data = get_dashboard_data(
+        data = server.get_dashboard_data(
             api_endpoint=self.user_api_endpoint,
             api_headers=self.user_headers(),
             user_id=user_id,
@@ -124,7 +128,7 @@ class ActionsHandlerMixin:
         """Toggle the auto-deployer on/off by updating the current user's config file."""
         enabled = body.get("enabled", False)
         config_path = self._user_file("auto_deployer_config.json")
-        config = load_json(config_path)
+        config = server.load_json(config_path)
         if not config:
             config = {
                 "enabled": False,
@@ -135,7 +139,7 @@ class ActionsHandlerMixin:
             }
         config["enabled"] = bool(enabled)
         config["last_toggled"] = now_et().strftime("%Y-%m-%d %I:%M:%S %p ET")
-        save_json(config_path, config)
+        server.save_json(config_path, config)
         self.send_json({"success": True, "enabled": config["enabled"]})
     def handle_kill_switch(self, body):
         """Activate or deactivate the kill switch FOR THE CURRENT USER ONLY.
@@ -145,7 +149,7 @@ class ActionsHandlerMixin:
         activate = body.get("activate", False)
         timestamp = now_et().strftime("%Y-%m-%d %I:%M:%S %p ET")
         guardrails_path = self._user_file("guardrails.json")
-        guardrails = load_json(guardrails_path) or {}
+        guardrails = server.load_json(guardrails_path) or {}
 
         if activate:
             # 1. Cancel ALL open orders in one atomic bulk call
@@ -164,14 +168,14 @@ class ActionsHandlerMixin:
             guardrails["kill_switch"] = True
             guardrails["kill_switch_triggered_at"] = timestamp
             guardrails["kill_switch_reason"] = "Manual activation via dashboard"
-            save_json(guardrails_path, guardrails)
+            server.save_json(guardrails_path, guardrails)
 
             # 4. Set enabled: false in THIS USER's auto_deployer_config.json
             ad_config_path = self._user_file("auto_deployer_config.json")
-            ad_config = load_json(ad_config_path) or {}
+            ad_config = server.load_json(ad_config_path) or {}
             ad_config["enabled"] = False
             ad_config["last_toggled"] = timestamp
-            save_json(ad_config_path, ad_config)
+            server.save_json(ad_config_path, ad_config)
 
             # 5. Close all open wheel options for this user — kill switch must
             # also flatten short option exposure (bulk /positions DELETE above
@@ -227,7 +231,7 @@ class ActionsHandlerMixin:
             print(f"[KILL SWITCH] Activated at {timestamp}: {orders_cancelled} orders cancelled, {positions_closed} positions closed")
 
             # Send push notification via ntfy.sh (fire-and-forget, don't block HTTP response)
-            subprocess.Popen([sys.executable, os.path.join(BASE_DIR, "notify.py"), "--type", "kill", f"Cancelled {orders_cancelled} orders, closed {positions_closed} positions. All trading halted."], cwd=BASE_DIR)
+            subprocess.Popen([sys.executable, os.path.join(server.BASE_DIR, "notify.py"), "--type", "kill", f"Cancelled {orders_cancelled} orders, closed {positions_closed} positions. All trading halted."], cwd=server.BASE_DIR)
 
             self.send_json({
                 "success": True,
@@ -241,7 +245,7 @@ class ActionsHandlerMixin:
             guardrails["kill_switch"] = False
             guardrails["kill_switch_triggered_at"] = None
             guardrails["kill_switch_reason"] = None
-            save_json(guardrails_path, guardrails)
+            server.save_json(guardrails_path, guardrails)
 
             print(f"[KILL SWITCH] Deactivated at {timestamp}")
 

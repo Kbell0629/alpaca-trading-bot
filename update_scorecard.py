@@ -225,8 +225,19 @@ def calculate_metrics(journal, scorecard, account, positions):
         "mean_reversion": {"trades": 0, "wins": 0, "pnl": 0},
         "breakout": {"trades": 0, "wins": 0, "pnl": 0},
     }
+    # Normalize strategy name to match the canonical lowercase-underscore
+    # form used as keys above. Without this, a journal entry with
+    # strategy="Copy Trading" or "trailing-stop" falls through the bucket
+    # and that trade never shows up in the per-strategy breakdown —
+    # silently undercounting performance for weeks before anyone notices.
+    # Round-7 audit find.
+    def _normalize_strategy_name(s):
+        if not s:
+            return ""
+        return str(s).strip().lower().replace(" ", "_").replace("-", "_")
+
     for t in trades:
-        strat = t.get("strategy", "")
+        strat = _normalize_strategy_name(t.get("strategy", ""))
         if strat in strategy_breakdown:
             strategy_breakdown[strat]["trades"] += 1
             if t.get("status") == "closed" and t.get("pnl") is not None:

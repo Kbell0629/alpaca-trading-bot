@@ -243,6 +243,72 @@ def test_wal_checkpoint_runs_before_backup(isolated_data_dir):
     assert cp_idx < bu_idx, "wal_checkpoint must run BEFORE the backup copy"
 
 
+def test_mixin_files_have_no_undefined_names(isolated_data_dir):
+    """Round-7 regression: the mixin decomposition in round 6.5 left behind
+    undefined names (missing imports, unprefixed module globals) that would
+    NameError at runtime. The existing decomposition test only verified
+    methods were REACHABLE on the class, not that each method's BODY
+    resolved. This test walks each mixin's AST looking for any Name node
+    loaded at runtime that is neither imported, builtin, nor locally bound.
+    """
+    import ast, builtins
+    BUILTINS = set(dir(builtins))
+    for fname in ("handlers/auth_mixin.py", "handlers/admin_mixin.py",
+                  "handlers/strategy_mixin.py", "handlers/actions_mixin.py"):
+        src = open(fname).read()
+        tree = ast.parse(src)
+
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    imported.add((a.asname or a.name).split(".")[0])
+            elif isinstance(node, ast.ImportFrom):
+                for a in node.names:
+                    imported.add(a.asname or a.name)
+
+        assigned = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                assigned.add(node.name)
+            if isinstance(node, ast.arg):
+                assigned.add(node.arg)
+            if isinstance(node, ast.Assign):
+                for t in node.targets:
+                    for sub in ast.walk(t):
+                        if isinstance(sub, ast.Name):
+                            assigned.add(sub.id)
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                assigned.add(node.target.id)
+            if isinstance(node, ast.For):
+                for sub in ast.walk(node.target):
+                    if isinstance(sub, ast.Name):
+                        assigned.add(sub.id)
+            if isinstance(node, ast.ExceptHandler) and node.name:
+                assigned.add(node.name)
+            if isinstance(node, ast.With):
+                for item in node.items:
+                    if item.optional_vars:
+                        for sub in ast.walk(item.optional_vars):
+                            if isinstance(sub, ast.Name):
+                                assigned.add(sub.id)
+            if isinstance(node, ast.comprehension):
+                for sub in ast.walk(node.target):
+                    if isinstance(sub, ast.Name):
+                        assigned.add(sub.id)
+
+        undefined = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                n = node.id
+                if n in BUILTINS or n in imported or n in assigned:
+                    continue
+                undefined.add(n)
+        undefined.discard("self")
+        undefined.discard("cls")
+        assert not undefined, f"{fname} has undefined names: {sorted(undefined)}"
+
+
 def test_dashboard_handler_mixin_decomposition(isolated_data_dir):
     """D2 fix: DashboardHandler was a 2300-line god class. Round 6.5
     decomposed it into 4 focused mixins. This test locks in the structure

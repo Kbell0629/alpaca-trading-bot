@@ -2004,7 +2004,12 @@ function openKillSwitchModal() {
     openModal('killSwitchModal');
 }
 
+let _killSwitchPending = false;
 async function executeKillSwitch() {
+    // Debounce: rapid double-click used to fire two concurrent requests
+    // (and two cancel-all-orders sweeps). One at a time.
+    if (_killSwitchPending) return;
+    _killSwitchPending = true;
     closeModal('killSwitchModal');
     toast('Activating kill switch...', 'info');
     addLog('KILL SWITCH ACTIVATED', 'error');
@@ -2015,9 +2020,13 @@ async function executeKillSwitch() {
             body: JSON.stringify({activate: true})
         });
         const data = await resp.json();
-        killSwitchActive = true;
-        autoDeployerEnabled = false;
-        updateAutoDeployerUI();
+        // Only flip local UI state if the server confirmed success. A
+        // rejected/errored response shouldn't have the button acting "armed".
+        if (resp.ok && !data.error) {
+            killSwitchActive = true;
+            autoDeployerEnabled = false;
+            updateAutoDeployerUI();
+        }
         // Show results
         let html = '';
         if (data.orders_cancelled != null) {
@@ -2027,19 +2036,25 @@ async function executeKillSwitch() {
             html += '<div class="modal-detail-row"><span class="detail-label">Positions Closed</span><span class="detail-value">' + data.positions_closed + '</span></div>';
         }
         if (data.timestamp) {
-            html += '<div class="modal-detail-row"><span class="detail-label">Timestamp</span><span class="detail-value">' + data.timestamp + '</span></div>';
+            html += '<div class="modal-detail-row"><span class="detail-label">Timestamp</span><span class="detail-value">' + esc(data.timestamp) + '</span></div>';
         }
         if (data.error) {
-            html += '<div style="color:var(--red);margin-top:8px">Error: ' + data.error + '</div>';
+            html += '<div style="color:var(--red);margin-top:8px">Error: ' + esc(data.error) + '</div>';
         }
         document.getElementById('killSwitchResults').innerHTML = html || '<div>Kill switch activated.</div>';
         openModal('killSwitchResultsModal');
-        toast('Kill switch activated - all trading halted', 'error');
-        addLog('Orders cancelled: ' + (data.orders_cancelled||0) + ', Positions closed: ' + (data.positions_closed||0), 'error');
+        if (resp.ok && !data.error) {
+            toast('Kill switch activated - all trading halted', 'error');
+            addLog('Orders cancelled: ' + (data.orders_cancelled||0) + ', Positions closed: ' + (data.positions_closed||0), 'error');
+        } else {
+            toast('Kill switch FAILED: ' + (data.error || ('HTTP ' + resp.status)), 'error');
+        }
         setTimeout(refreshData, 1500);
     } catch(e) {
         toast('Kill switch error: ' + e.message, 'error');
         addLog('Kill switch error: ' + e.message, 'error');
+    } finally {
+        _killSwitchPending = false;
     }
 }
 
@@ -2212,7 +2227,14 @@ setInterval(function() {
 }, 15000);
 
 /* ---- Data loading ---- */
+let _refreshInFlight = false;
 async function refreshData() {
+    // Debounce: auto-refresh timer + user-clicked refresh button could
+    // both call refreshData() within milliseconds. Without this, both
+    // requests race and whichever completes LAST wins — sometimes showing
+    // stale data if the later-started fetch returns first.
+    if (_refreshInFlight) return;
+    _refreshInFlight = true;
     try {
         const resp = await fetch(API_BASE + '/api/data', {credentials: 'same-origin'});
         // If server returns 401 (session expired), stop the refresh loop and
@@ -2237,6 +2259,8 @@ async function refreshData() {
             toast('Failed to load data: ' + e.message, 'error');
         }
         countdown = 60;  // Reset even on failure so we don't spam
+    } finally {
+        _refreshInFlight = false;
     }
 }
 

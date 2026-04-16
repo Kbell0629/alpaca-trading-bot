@@ -9,6 +9,8 @@ import urllib.request
 from datetime import timedelta
 
 from et_time import now_et
+import glob
+import server  # noqa: E402 — late-bound to avoid import cycle with mixin registration
 
 
 class StrategyHandlerMixin:
@@ -147,7 +149,7 @@ class StrategyHandlerMixin:
             },
         }
         # Per-symbol file so multiple trailing stops don't overwrite each other (and per-user)
-        save_json(os.path.join(self._user_strategies_dir(), f"trailing_stop_{symbol}.json"), strategy_data)
+        server.save_json(os.path.join(self._user_strategies_dir(), f"trailing_stop_{symbol}.json"), strategy_data)
 
         self.send_json({
             "success": True,
@@ -210,7 +212,7 @@ class StrategyHandlerMixin:
                 "history": [],
             },
         }
-        save_json(os.path.join(self._user_strategies_dir(), "wheel_strategy.json"), strategy_data)
+        server.save_json(os.path.join(self._user_strategies_dir(), "wheel_strategy.json"), strategy_data)
 
         self.send_json({
             "success": True,
@@ -248,7 +250,7 @@ class StrategyHandlerMixin:
                 "total_realized_pnl": 0,
             },
         }
-        save_json(os.path.join(self._user_strategies_dir(), "copy_trading.json"), strategy_data)
+        server.save_json(os.path.join(self._user_strategies_dir(), "copy_trading.json"), strategy_data)
 
         self.send_json({
             "success": True,
@@ -309,7 +311,7 @@ class StrategyHandlerMixin:
                 "entry_fill_price": None,
             },
         }
-        save_json(os.path.join(self._user_strategies_dir(), f"mean_reversion_{symbol}.json"), strategy_data)
+        server.save_json(os.path.join(self._user_strategies_dir(), f"mean_reversion_{symbol}.json"), strategy_data)
 
         self.send_json({
             "success": True,
@@ -373,7 +375,7 @@ class StrategyHandlerMixin:
                 "entry_fill_price": None,
             },
         }
-        save_json(os.path.join(self._user_strategies_dir(), f"breakout_{symbol}.json"), strategy_data)
+        server.save_json(os.path.join(self._user_strategies_dir(), f"breakout_{symbol}.json"), strategy_data)
 
         self.send_json({
             "success": True,
@@ -411,11 +413,11 @@ class StrategyHandlerMixin:
 
         paused = []
         for fpath in files:
-            data = load_json(fpath)
+            data = server.load_json(fpath)
             if data:
                 data["status"] = "paused"
                 data["paused_at"] = now_et().strftime("%Y-%m-%d %I:%M:%S %p ET")
-                save_json(fpath, data)
+                server.save_json(fpath, data)
                 paused.append(os.path.basename(fpath))
 
         self.send_json({
@@ -436,7 +438,7 @@ class StrategyHandlerMixin:
         stopped = []
         orders_cancelled = 0
         for fpath in files:
-            data = load_json(fpath)
+            data = server.load_json(fpath)
             if data:
                 # Cancel any open orders for this symbol
                 sym = data.get("symbol", "")
@@ -461,7 +463,7 @@ class StrategyHandlerMixin:
 
                 data["status"] = "stopped"
                 data["stopped_at"] = now_et().strftime("%Y-%m-%d %I:%M:%S %p ET")
-                save_json(fpath, data)
+                server.save_json(fpath, data)
                 stopped.append(os.path.basename(fpath))
 
         self.send_json({
@@ -513,19 +515,19 @@ class StrategyHandlerMixin:
 
         # Per-user guardrails and config — presets are a per-user setting
         guardrails_path = self._user_file("guardrails.json")
-        guardrails = load_json(guardrails_path) or {}
+        guardrails = server.load_json(guardrails_path) or {}
         guardrails["max_positions"] = max_positions
         guardrails["max_position_pct"] = max_position_pct
         if strategies:
             guardrails["strategies_allowed"] = strategies
-        save_json(guardrails_path, guardrails)
+        server.save_json(guardrails_path, guardrails)
 
         config_path = self._user_file("auto_deployer_config.json")
-        config = load_json(config_path) or {}
+        config = server.load_json(config_path) or {}
         config["risk_settings"] = config.get("risk_settings", {})
         config["risk_settings"]["default_stop_loss_pct"] = stop_loss_pct
         config["max_positions"] = max_positions
-        save_json(config_path, config)
+        server.save_json(config_path, config)
 
         self.send_json({"message": f"Preset applied: {preset_name}", "settings": {
             "max_positions": max_positions,
@@ -547,7 +549,7 @@ class StrategyHandlerMixin:
         enabled = raw
         # Per-user short-selling toggle
         config_path = self._user_file("auto_deployer_config.json")
-        config = load_json(config_path) or {}
+        config = server.load_json(config_path) or {}
         if "short_selling" not in config:
             config["short_selling"] = {
                 "enabled": enabled,
@@ -563,6 +565,6 @@ class StrategyHandlerMixin:
         else:
             config["short_selling"]["enabled"] = enabled
         config["short_selling"]["last_toggled"] = now_et().strftime("%Y-%m-%d %I:%M:%S %p ET")
-        save_json(config_path, config)
+        server.save_json(config_path, config)
         msg = "Short selling ENABLED — will deploy in bear markets" if enabled else "Short selling DISABLED — no new shorts will deploy"
         self.send_json({"message": msg, "enabled": enabled})
