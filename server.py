@@ -1651,13 +1651,52 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
 
 <!-- ===== ADMIN PANEL MODAL ===== -->
 <div class="modal-overlay" id="adminPanelModal">
-  <div class="modal" style="max-width:760px">
-    <h2>👥 Manage Users</h2>
-    <div class="modal-subtitle">Admin-only view of all registered accounts. Deactivating a user stops scheduled trading for them.</div>
-    <div id="adminUserList" style="margin-top:12px"><div style="color:var(--text-dim)">Loading...</div></div>
+  <div class="modal" style="max-width:900px">
+    <h2>👥 Admin</h2>
+    <div class="modal-subtitle" id="adminSubtitle">Admin-only controls — users, audit log, and volume backups</div>
+
+    <div class="settings-tabs">
+      <button type="button" class="settings-tab active" data-tab="users" onclick="switchAdminTab('users')">Users</button>
+      <button type="button" class="settings-tab" data-tab="audit" onclick="switchAdminTab('audit')">Audit Log</button>
+      <button type="button" class="settings-tab" data-tab="backups" onclick="switchAdminTab('backups')">Backups</button>
+    </div>
+
+    <div class="settings-panel active" id="adminPanel-users">
+      <div id="adminUserList" style="margin-top:4px"><div style="color:var(--text-dim)">Loading...</div></div>
+    </div>
+
+    <div class="settings-panel" id="adminPanel-audit">
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+        <label style="font-size:12px;color:var(--text-dim);margin:0">Filter:</label>
+        <select id="adminAuditFilter" onchange="loadAdminAuditLog()" style="padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">
+          <option value="">All events</option>
+          <option value="login_success">Logins (success)</option>
+          <option value="login_failed">Logins (failed)</option>
+          <option value="signup">Signups</option>
+          <option value="password_changed">Password changes</option>
+          <option value="deactivate_user">Deactivations</option>
+          <option value="reactivate_user">Reactivations</option>
+          <option value="admin_reset_password">Admin password resets</option>
+          <option value="backup_downloaded">Backup downloads</option>
+        </select>
+        <button type="button" class="btn-ghost btn-sm" onclick="loadAdminAuditLog()" style="margin-left:auto">↻ Reload</button>
+      </div>
+      <div id="adminAuditList"><div style="color:var(--text-dim)">Loading...</div></div>
+    </div>
+
+    <div class="settings-panel" id="adminPanel-backups">
+      <div class="modal-info-box" style="margin-bottom:12px">
+        Backups contain users.db and all per-user data. They are encrypted only to the extent the DB is — Alpaca credentials are <strong>encrypted at rest</strong> so downloaded archives are safe to store. Keep last <span id="backupRetention">14</span> days; older ones auto-rotate.
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+        <button type="button" class="btn-primary btn-sm" onclick="createAdminBackup()">📦 Create Backup Now</button>
+        <button type="button" class="btn-ghost btn-sm" onclick="loadAdminBackups()" style="margin-left:auto">↻ Reload</button>
+      </div>
+      <div id="adminBackupList"><div style="color:var(--text-dim)">Loading...</div></div>
+    </div>
+
     <div class="modal-actions" style="margin-top:18px">
       <button type="button" class="btn-ghost" onclick="closeModal('adminPanelModal')">Close</button>
-      <button type="button" class="btn-primary btn-sm" onclick="loadAdminUsers()">↻ Refresh</button>
     </div>
   </div>
 </div>
@@ -3722,7 +3761,130 @@ function openAdminPanel() {
     var dd = document.getElementById('userDropdown');
     if (dd) dd.style.display = 'none';
     modal.classList.add('active');
-    loadAdminUsers();
+    switchAdminTab('users');
+}
+
+function switchAdminTab(name) {
+    var tabs = document.querySelectorAll('#adminPanelModal .settings-tab');
+    for (var i = 0; i < tabs.length; i++) {
+        tabs[i].classList.toggle('active', tabs[i].getAttribute('data-tab') === name);
+    }
+    var panels = document.querySelectorAll('#adminPanelModal .settings-panel');
+    for (var j = 0; j < panels.length; j++) {
+        panels[j].classList.toggle('active', panels[j].id === 'adminPanel-' + name);
+    }
+    if (name === 'users') loadAdminUsers();
+    else if (name === 'audit') loadAdminAuditLog();
+    else if (name === 'backups') loadAdminBackups();
+}
+
+/* Format a UTC ISO timestamp as 12-hour ET for the audit log + backup list */
+function fmtAuditTime(iso) {
+    if (!iso) return '—';
+    try {
+        var d = new Date(iso);
+        if (isNaN(d.getTime())) return iso;
+        return d.toLocaleString('en-US', {
+            month: 'short', day: 'numeric',
+            hour: 'numeric', minute: '2-digit', second: '2-digit',
+            hour12: true, timeZone: 'America/New_York'
+        }) + ' ET';
+    } catch (e) { return iso; }
+}
+
+async function loadAdminAuditLog() {
+    var listEl = document.getElementById('adminAuditList');
+    if (!listEl) return;
+    listEl.innerHTML = '<div style="color:var(--text-dim)">Loading...</div>';
+    var filter = document.getElementById('adminAuditFilter');
+    var filterVal = filter ? filter.value : '';
+    var url = API_BASE + '/api/admin/audit-log?limit=200';
+    if (filterVal) url += '&action=' + encodeURIComponent(filterVal);
+    try {
+        var resp = await fetch(url, {credentials: 'same-origin'});
+        var d = await resp.json();
+        if (!resp.ok || d.error) { listEl.innerHTML = '<div style="color:var(--red)">' + esc(d.error || 'Failed') + '</div>'; return; }
+        var entries = d.entries || [];
+        if (!entries.length) { listEl.innerHTML = '<div style="color:var(--text-dim)">No audit entries</div>'; return; }
+        var actionColors = {
+            login_success: 'positive', login_failed: 'negative',
+            signup: 'positive', password_changed: 'info',
+            admin_reset_password: 'info', deactivate_user: 'negative',
+            reactivate_user: 'positive', backup_downloaded: 'info',
+            backup_created_manual: 'info', account_deleted: 'negative',
+        };
+        var html = '<table class="data-table"><thead><tr>' +
+            '<th>Time (ET)</th><th>Event</th><th>Actor</th><th>Target</th><th>IP</th><th>Detail</th>' +
+            '</tr></thead><tbody>';
+        for (var i = 0; i < entries.length; i++) {
+            var e = entries[i];
+            var cls = actionColors[e.action] || '';
+            var detailStr = '';
+            if (e.detail) {
+                try { detailStr = typeof e.detail === 'string' ? e.detail : JSON.stringify(e.detail); }
+                catch (_) { detailStr = ''; }
+                if (detailStr.length > 80) detailStr = detailStr.slice(0, 80) + '…';
+            }
+            html += '<tr>' +
+                '<td style="font-size:11px;white-space:nowrap">' + esc(fmtAuditTime(e.ts)) + '</td>' +
+                '<td class="' + cls + '"><strong>' + esc(e.action) + '</strong></td>' +
+                '<td>' + esc(e.actor_username || (e.actor_user_id ? '#' + e.actor_user_id : '—')) + '</td>' +
+                '<td>' + esc(e.target_username || (e.target_user_id ? '#' + e.target_user_id : '—')) + '</td>' +
+                '<td style="font-size:11px;color:var(--text-dim)">' + esc(e.ip_address || '—') + '</td>' +
+                '<td style="font-size:11px;color:var(--text-dim)">' + esc(detailStr) + '</td>' +
+                '</tr>';
+        }
+        html += '</tbody></table>';
+        listEl.innerHTML = html;
+    } catch (err) {
+        listEl.innerHTML = '<div style="color:var(--red)">' + esc(err.message) + '</div>';
+    }
+}
+
+async function loadAdminBackups() {
+    var listEl = document.getElementById('adminBackupList');
+    if (!listEl) return;
+    listEl.innerHTML = '<div style="color:var(--text-dim)">Loading...</div>';
+    try {
+        var resp = await fetch(API_BASE + '/api/admin/list-backups', {credentials: 'same-origin'});
+        var d = await resp.json();
+        if (!resp.ok || d.error) { listEl.innerHTML = '<div style="color:var(--red)">' + esc(d.error || 'Failed') + '</div>'; return; }
+        var rEl = document.getElementById('backupRetention');
+        if (rEl) rEl.textContent = d.retention_days || 14;
+        var backups = d.backups || [];
+        if (!backups.length) { listEl.innerHTML = '<div style="color:var(--text-dim)">No backups yet. Click "Create Backup Now" or wait for the daily 3 AM ET run.</div>'; return; }
+        var html = '<table class="data-table"><thead><tr>' +
+            '<th>Backup Name</th><th>Created (ET)</th><th>Size</th><th>Download</th>' +
+            '</tr></thead><tbody>';
+        for (var i = 0; i < backups.length; i++) {
+            var b = backups[i];
+            html += '<tr>' +
+                '<td style="font-family:monospace;font-size:11px">' + esc(b.name) + '</td>' +
+                '<td style="font-size:11px">' + esc(fmtAuditTime(b.created_at)) + '</td>' +
+                '<td>' + (b.size_mb || 0).toFixed(2) + ' MB</td>' +
+                '<td><a class="btn-ghost btn-sm" href="/api/admin/download-backup?name=' + encodeURIComponent(b.name) + '" download>⬇ Download</a></td>' +
+                '</tr>';
+        }
+        html += '</tbody></table>';
+        listEl.innerHTML = html;
+    } catch (err) {
+        listEl.innerHTML = '<div style="color:var(--red)">' + esc(err.message) + '</div>';
+    }
+}
+
+async function createAdminBackup() {
+    if (!confirm('Create a backup now? Copies users.db + all user data into /data/backups/.')) return;
+    toast('Creating backup...', 'info');
+    try {
+        var resp = await fetch(API_BASE + '/api/admin/create-backup', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin', body: '{}',
+        });
+        var d = await resp.json();
+        if (!resp.ok || d.error) { toast(d.error || 'Backup failed', 'error'); return; }
+        toast('Backup created: ' + d.name + ' (' + d.size_mb + ' MB)', 'success');
+        loadAdminBackups();
+    } catch (err) { toast(err.message, 'error'); }
 }
 
 async function loadAdminUsers() {
@@ -4799,14 +4961,53 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return DATA_DIR
 
     def _user_strategies_dir(self):
-        """Return the per-user strategies directory (creates it if needed)."""
+        """Return the per-user strategies directory (creates it if needed).
+
+        One-shot migrates any pre-existing strategy files from the shared
+        STRATEGIES_DIR the very first time this user's strategies dir is
+        created (Kevin's pre-multi-user trailing_stop_SOXL.json lives in
+        the shared dir and would otherwise never be monitored after the
+        refactor).
+        """
         d = os.path.join(self._user_dir(), "strategies")
+        first_time = not os.path.isdir(d)
         os.makedirs(d, exist_ok=True)
+        if first_time and self.current_user and self.current_user.get("id") is not None:
+            try:
+                if os.path.isdir(STRATEGIES_DIR) and STRATEGIES_DIR != d:
+                    import shutil
+                    for f in os.listdir(STRATEGIES_DIR):
+                        if f.endswith(".json"):
+                            src = os.path.join(STRATEGIES_DIR, f)
+                            dst = os.path.join(d, f)
+                            if os.path.isfile(src) and not os.path.exists(dst):
+                                shutil.copy2(src, dst)
+                    print(f"[migration] Seeded strategies dir for user {self.current_user.get('id')}", flush=True)
+            except Exception as e:
+                print(f"[migration] WARN strategies seed failed: {e}", flush=True)
         return d
 
     def _user_file(self, filename):
-        """Return an absolute path to a per-user data file."""
-        return os.path.join(self._user_dir(), filename)
+        """Return an absolute path to a per-user data file.
+
+        If the per-user file is missing but a matching file exists at the
+        legacy shared DATA_DIR, one-shot migrate it into the user's dir.
+        This keeps Kevin's existing auto-deployer config, guardrails, and
+        strategy files working after the multi-user file isolation refactor
+        without forcing a manual migration.
+        """
+        user_path = os.path.join(self._user_dir(), filename)
+        if not os.path.exists(user_path) and self.current_user and self.current_user.get("id") is not None:
+            shared_path = os.path.join(DATA_DIR, filename)
+            if os.path.exists(shared_path) and shared_path != user_path:
+                try:
+                    import shutil
+                    os.makedirs(os.path.dirname(user_path) or ".", exist_ok=True)
+                    shutil.copy2(shared_path, user_path)
+                    print(f"[migration] Copied {filename} to per-user dir for user {self.current_user.get('id')}", flush=True)
+                except Exception as e:
+                    print(f"[migration] WARN failed to migrate {filename}: {e}", flush=True)
+        return user_path
 
     def _send_error_safe(self, exc, status=500, context=""):
         """Log full exception detail server-side and return a generic
@@ -5200,6 +5401,94 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send_error_safe(e, 500, "admin-users")
 
+        elif path == "/api/admin/audit-log":
+            # Admin-only: return recent audit log entries with optional filters
+            if not self.current_user or not self.current_user.get("is_admin"):
+                self.send_json({"error": "Admin only"}, 403)
+                return
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            try:
+                limit = min(int((params.get("limit") or ["200"])[0]), 1000)
+            except (ValueError, TypeError):
+                limit = 200
+            action_filter = (params.get("action") or [None])[0]
+            user_filter_raw = (params.get("user_id") or [None])[0]
+            user_filter = None
+            if user_filter_raw:
+                try:
+                    user_filter = int(user_filter_raw)
+                except ValueError:
+                    pass
+            try:
+                entries = auth.list_audit_log(limit=limit,
+                                              action_filter=action_filter,
+                                              user_id_filter=user_filter)
+                self.send_json({"entries": entries, "count": len(entries)})
+            except Exception as e:
+                self._send_error_safe(e, 500, "audit-log")
+
+        elif path == "/api/admin/list-backups":
+            # Admin-only: list backup archives available on the Railway volume
+            if not self.current_user or not self.current_user.get("is_admin"):
+                self.send_json({"error": "Admin only"}, 403)
+                return
+            try:
+                import backup as _backup
+                backups = _backup.list_backups()
+                # Strip absolute filesystem paths from the client response
+                public = [{
+                    "name": b["name"],
+                    "size_bytes": b["size_bytes"],
+                    "size_mb": round(b["size_bytes"] / 1024 / 1024, 2),
+                    "created_at": b["created_at"],
+                } for b in backups]
+                self.send_json({"backups": public, "count": len(public),
+                                 "retention_days": _backup.RETENTION_DAYS})
+            except Exception as e:
+                self._send_error_safe(e, 500, "list-backups")
+
+        elif path == "/api/admin/download-backup":
+            # Admin-only: stream a backup archive to the caller. Validates
+            # the requested name matches "YYYY-MM-DD_HHMMSSUTC.tar.gz" to
+            # prevent any path traversal.
+            if not self.current_user or not self.current_user.get("id") or not self.current_user.get("is_admin"):
+                self.send_json({"error": "Admin only"}, 403)
+                return
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            name = (params.get("name") or [""])[0]
+            if not re.match(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}UTC\.tar\.gz$", name):
+                self.send_json({"error": "Invalid backup name"}, 400)
+                return
+            try:
+                import backup as _backup
+                path_full = os.path.join(_backup.BACKUP_DIR, name)
+                if not os.path.isfile(path_full):
+                    self.send_json({"error": "Backup not found"}, 404)
+                    return
+                # Record the download — backups contain encrypted credentials
+                # so who-downloaded-when matters for audit.
+                auth.log_admin_action("backup_downloaded",
+                                       actor=self.current_user,
+                                       ip_address=self.client_address[0] if self.client_address else None,
+                                       detail={"backup_name": name})
+                size = os.path.getsize(path_full)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/gzip")
+                self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+                self.send_header("Content-Length", str(size))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                with open(path_full, "rb") as f:
+                    while True:
+                        chunk = f.read(65536)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+            except Exception as e:
+                self._send_error_safe(e, 500, "download-backup")
+
         else:
             self.send_json({"error": "Not found"}, 404)
 
@@ -5249,6 +5538,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/admin/reset-password":
             self.handle_admin_reset_password(body)
+            return
+        if path == "/api/admin/create-backup":
+            self.handle_admin_create_backup()
             return
 
         if path == "/api/refresh":
@@ -5362,11 +5654,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         user = auth.authenticate(username, password)
         if not user:
             _login_attempt_record(ip, username, success=False)
+            auth.log_admin_action("login_failed", actor=None, ip_address=ip,
+                                   detail={"attempted_username": username[:50]})
             # Small timing-safe sleep to slow down fast brute force even after
             # the lockout is cleared. Matches approximate PBKDF2 timing.
             return self.send_json({"error": "Invalid credentials"}, 401)
 
         _login_attempt_record(ip, username, success=True)
+        auth.log_admin_action("login_success", actor=user, target_user_id=user["id"], ip_address=ip)
         token = auth.create_session(user["id"], ip)
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -5456,6 +5751,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         # Auto-login
         ip = self.client_address[0] if self.client_address else None
+        new_user = auth.get_user_by_id(user_id)
+        auth.log_admin_action("signup", actor=new_user, target_user_id=user_id,
+                               ip_address=ip,
+                               detail={"email": email, "endpoint": alpaca_endpoint})
         token = auth.create_session(user_id, ip)
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -5543,7 +5842,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if len(new_password) < 8:
             return self.send_json({"error": "Password must be at least 8 characters"}, 400)
         if not auth.consume_reset_token(token, new_password):
+            auth.log_admin_action("password_reset_failed", actor=None,
+                                   ip_address=self.client_address[0] if self.client_address else None)
             return self.send_json({"error": "Invalid or expired reset token"}, 400)
+        auth.log_admin_action("password_reset_via_token", actor=None,
+                               ip_address=self.client_address[0] if self.client_address else None)
         self.send_json({"success": True, "message": "Password reset. Please log in."})
 
     def handle_logout(self):
@@ -5568,8 +5871,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return self.send_json({"error": "New password must be at least 8 characters"}, 400)
         user = self.current_user or {}
         if not auth.verify_password(old_password, user.get("password_hash", ""), user.get("password_salt", "")):
+            auth.log_admin_action("password_change_failed", actor=user,
+                                   target_user_id=user.get("id"),
+                                   ip_address=self.client_address[0] if self.client_address else None)
             return self.send_json({"error": "Current password is incorrect"}, 400)
         auth.change_password(user["id"], new_password)
+        auth.log_admin_action("password_changed", actor=user,
+                               target_user_id=user["id"],
+                               ip_address=self.client_address[0] if self.client_address else None)
         self.send_json({"success": True, "message": "Password changed"})
 
     def handle_update_settings(self, body):
@@ -5632,6 +5941,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             cur.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
             conn.commit()
             conn.close()
+            auth.log_admin_action("account_deleted", actor=user, target_user_id=user_id,
+                                   ip_address=self.client_address[0] if self.client_address else None)
             self.send_json({"success": True, "message": "Account deactivated"})
         except Exception as e:
             self._send_error_safe(e, 500, "delete-account")
@@ -5676,6 +5987,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 cur.execute("DELETE FROM sessions WHERE user_id = ?", (target_id,))
             conn.commit()
             conn.close()
+            auth.log_admin_action(
+                "reactivate_user" if is_active else "deactivate_user",
+                actor=self.current_user,
+                target_user_id=target_id,
+                ip_address=self.client_address[0] if self.client_address else None,
+            )
             self.send_json({"success": True})
         except Exception as e:
             self._send_error_safe(e, 500, "admin-op")
@@ -5699,9 +6016,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
             cur.execute("DELETE FROM sessions WHERE user_id = ?", (target_id,))
             conn.commit()
             conn.close()
+            auth.log_admin_action(
+                "admin_reset_password",
+                actor=self.current_user,
+                target_user_id=target_id,
+                ip_address=self.client_address[0] if self.client_address else None,
+            )
             self.send_json({"success": True})
         except Exception as e:
             self._send_error_safe(e, 500, "admin-op")
+
+    def handle_admin_create_backup(self):
+        """Admin-only: create an on-demand backup of the Railway volume."""
+        if not self.current_user or not self.current_user.get("is_admin"):
+            return self.send_json({"error": "Admin only"}, 403)
+        try:
+            import backup as _backup
+            path, size, err = _backup.create_backup()
+            if err:
+                return self.send_json({"error": f"Backup failed: {err}"}, 500)
+            auth.log_admin_action("backup_created_manual",
+                                   actor=self.current_user,
+                                   ip_address=self.client_address[0] if self.client_address else None,
+                                   detail={"backup_path": os.path.basename(path),
+                                           "size_mb": round(size / 1024 / 1024, 2)})
+            self.send_json({
+                "success": True,
+                "name": os.path.basename(path),
+                "size_mb": round(size / 1024 / 1024, 2),
+            })
+        except Exception as e:
+            self._send_error_safe(e, 500, "create-backup")
 
     def handle_refresh(self):
         """Run update_dashboard.py with current user's credentials and return fresh data."""

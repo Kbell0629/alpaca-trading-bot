@@ -93,9 +93,23 @@ def init_db():
         used INTEGER DEFAULT 0,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
+    CREATE TABLE IF NOT EXISTS admin_audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL,
+        actor_user_id INTEGER,            -- NULL for system/automated actions
+        actor_username TEXT,
+        action TEXT NOT NULL,             -- e.g. 'deactivate_user', 'reset_password'
+        target_user_id INTEGER,
+        target_username TEXT,
+        ip_address TEXT,
+        detail TEXT                        -- JSON blob with additional context
+    );
     CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
     CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
     CREATE INDEX IF NOT EXISTS idx_reset_token ON password_resets(token);
+    CREATE INDEX IF NOT EXISTS idx_audit_ts ON admin_audit_log(ts DESC);
+    CREATE INDEX IF NOT EXISTS idx_audit_actor ON admin_audit_log(actor_user_id);
+    CREATE INDEX IF NOT EXISTS idx_audit_target ON admin_audit_log(target_user_id);
     """)
     conn.commit()
     conn.close()
@@ -558,6 +572,78 @@ def bootstrap_from_env():
         if user_id:
             return user_id
     return None
+
+# ===== Admin Audit Log =====
+def log_admin_action(action, actor=None, target_user_id=None, ip_address=None, detail=None):
+    """Record an admin/auth action to the audit log.
+
+    `action` is a short machine-readable string:
+      login_success, login_failed, signup, password_changed, password_reset,
+      deactivate_user, reactivate_user, admin_reset_password, account_deleted.
+    `actor` is a user dict (for authenticated actions) or None (for anonymous
+    events like login_failed).
+    `detail` is a JSON-serializable dict with action-specific context.
+    """
+    try:
+        conn = _get_db()
+        cur = conn.cursor()
+        # Resolve target username if we only have the id
+        target_username = None
+        if target_user_id and actor and actor.get("id") == target_user_id:
+            target_username = actor.get("username")
+        elif target_user_id:
+            cur.execute("SELECT username FROM users WHERE id = ?", (target_user_id,))
+            row = cur.fetchone()
+            if row:
+                target_username = row[0]
+        cur.execute("""
+            INSERT INTO admin_audit_log
+            (ts, actor_user_id, actor_username, action,
+             target_user_id, target_username, ip_address, detail)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            datetime.now(timezone.utc).isoformat(),
+            actor.get("id") if actor else None,
+            actor.get("username") if actor else None,
+            action,
+            target_user_id,
+            target_username,
+            ip_address,
+            json.dumps(detail) if detail is not None else None,
+        ))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        # Audit log failure must NEVER break the action itself.
+        print(f"[audit] WARN failed to record '{action}': {e}", flush=True)
+
+
+def list_audit_log(limit=200, action_filter=None, user_id_filter=None):
+    """Return recent audit log entries, newest first."""
+    conn = _get_db()
+    cur = conn.cursor()
+    sql = "SELECT * FROM admin_audit_log WHERE 1=1"
+    params = []
+    if action_filter:
+        sql += " AND action = ?"
+        params.append(action_filter)
+    if user_id_filter:
+        sql += " AND (actor_user_id = ? OR target_user_id = ?)"
+        params.extend([user_id_filter, user_id_filter])
+    sql += " ORDER BY ts DESC LIMIT ?"
+    params.append(int(limit))
+    cur.execute(sql, params)
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    # Parse detail JSON for convenience
+    for r in rows:
+        if r.get("detail"):
+            try:
+                r["detail"] = json.loads(r["detail"])
+            except Exception:
+                pass
+    return rows
+
 
 if __name__ == "__main__":
     init_db()

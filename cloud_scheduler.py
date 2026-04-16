@@ -52,11 +52,21 @@ _recent_logs = []  # Circular buffer for dashboard display
 _logs_lock = threading.Lock()
 
 def log(msg, task="scheduler"):
-    ts = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-    line = f"[{ts}] [{task}] {msg}"
+    # Server stdout keeps UTC for cross-reference with Railway logs, but the
+    # dashboard displays the ET-formatted 12-hour timestamp (what the user
+    # naturally reads). zoneinfo handles EDT/EST automatically.
+    utc_ts = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+    try:
+        from zoneinfo import ZoneInfo
+        et_now = datetime.now(ZoneInfo("America/New_York"))
+        et_ts = et_now.strftime("%-I:%M:%S %p ") + (et_now.tzname() or "ET")
+    except Exception:
+        et_ts = utc_ts  # fallback
+    line = f"[{utc_ts}] [{task}] {msg}"
     print(line, flush=True)
     with _logs_lock:
-        _recent_logs.append({"ts": ts, "task": task, "msg": msg})
+        # "ts" shown in the dashboard (ET 12-hour), "ts_utc" for cross-ref
+        _recent_logs.append({"ts": et_ts, "ts_utc": utc_ts, "task": task, "msg": msg})
         if len(_recent_logs) > 100:
             _recent_logs.pop(0)
 
@@ -168,12 +178,46 @@ def user_api_delete(user, url_path, timeout=10):
         return {"error": str(e)}
 
 def user_file(user, filename):
-    """Return path to a user-scoped data file."""
-    return os.path.join(user["_data_dir"], filename)
+    """Return path to a user-scoped data file.
+
+    One-shot migrates pre-multi-user shared files from DATA_DIR into the
+    user's dir when missing. Matches the server-side _user_file behavior so
+    Kevin's existing auto_deployer_config.json, guardrails.json, and so on
+    are preserved after the file-isolation refactor.
+    """
+    path = os.path.join(user["_data_dir"], filename)
+    if not os.path.exists(path) and user.get("id") != "env":
+        shared = os.path.join(DATA_DIR, filename)
+        if os.path.exists(shared) and shared != path:
+            try:
+                import shutil
+                os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+                shutil.copy2(shared, path)
+                log(f"[migration] Copied {filename} to {user['username']}'s dir", "scheduler")
+            except Exception as e:
+                log(f"[migration] WARN failed to migrate {filename} for {user.get('username')}: {e}", "scheduler")
+    return path
+
 
 def user_strategies_dir(user):
     d = user["_strategies_dir"]
+    first_time = not os.path.isdir(d)
     os.makedirs(d, exist_ok=True)
+    # One-shot seed from shared STRATEGIES_DIR on first access
+    if first_time and user.get("id") != "env":
+        try:
+            shared = STRATEGIES_DIR
+            if os.path.isdir(shared) and shared != d:
+                import shutil
+                for f in os.listdir(shared):
+                    if f.endswith(".json"):
+                        src = os.path.join(shared, f)
+                        dst = os.path.join(d, f)
+                        if os.path.isfile(src) and not os.path.exists(dst):
+                            shutil.copy2(src, dst)
+                log(f"[migration] Seeded strategies dir for {user.get('username')}", "scheduler")
+        except Exception as e:
+            log(f"[migration] WARN strategies seed failed for {user.get('username')}: {e}", "scheduler")
     return d
 
 # ============================================================================
@@ -1477,6 +1521,27 @@ def run_wheel_monitor(user):
             log(f"[{user['username']}] Wheel monitor error on {fname}: {e}", "wheel")
 
 
+# ============================================================================
+# TASK 10: DAILY BACKUP — shared across all users (one snapshot covers DB)
+# Runs at 3:00 AM ET when market is closed. Creates a tar.gz with users.db
+# and per-user directories, keeps last 14 days, rotates older ones.
+# ============================================================================
+def run_daily_backup():
+    try:
+        import backup as _backup
+        path, size, err = _backup.create_backup()
+        if err:
+            log(f"Daily backup FAILED: {err}", "backup")
+            notify_user_global(f"⚠️ Daily backup FAILED: {err}", "alert")
+            return
+        size_mb = size / 1024 / 1024
+        log(f"Daily backup created: {os.path.basename(path)} ({size_mb:.2f}MB)", "backup")
+        # Only notify user on big changes or first successful backup — silent
+        # success keeps ntfy clean (ran every day at 3 AM ET).
+    except Exception as e:
+        log(f"Daily backup error: {e}", "backup")
+
+
 def scheduler_loop():
     global _scheduler_running
     log("Cloud scheduler loop started (multi-user)", "scheduler")
@@ -1554,6 +1619,13 @@ def scheduler_loop():
                                 run_monthly_rebalance(user)
                 except Exception as e:
                     log(f"[{user.get('username','?')}] Per-user scheduler error: {e}", "scheduler")
+
+            # Daily backup — runs ONCE (not per-user) at 3 AM ET.
+            # 3 AM is well after market close and well before any pre-market
+            # activity, minimizing contention on the volume.
+            if now_et.hour == 3 and now_et.minute >= 0:
+                if should_run_daily_at("daily_backup_all", 3, 0):
+                    run_daily_backup()
         except Exception as e:
             log(f"Scheduler loop error: {e}", "scheduler")
 
