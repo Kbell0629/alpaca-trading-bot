@@ -1,408 +1,210 @@
-# Alpaca Stock Trading Bot — Complete User Guide
+# 📖 Stock Trading Bot — User Manual
 
-**What it is:** A fully autonomous stock trading bot that picks stocks, places trades, manages positions, and learns from its own performance. Runs 24/7 on Railway without your laptop.
-
-**What it does:** Screens 12,000+ US stocks every 30 minutes, picks the best 2 to trade each morning using one of 6 strategies, places orders through Alpaca, monitors positions every 60 seconds, and enforces 15+ safety guardrails to protect your money.
-
-**Dashboard:** https://stockbott.up.railway.app
-**Login:** `Kbell0629` / `We360you45$$`
-**GitHub:** https://github.com/Kbell0629/alpaca-trading-bot
+*Your complete guide to understanding, operating, and profiting from your autonomous trading bot.*
 
 ---
 
-## Table of Contents
+## 👋 Welcome
 
-1. [How To Read This README](#how-to-read-this-readme)
-2. [The Big Picture — What Happens Each Day](#the-big-picture--what-happens-each-day)
-3. [The 6 Trading Strategies](#the-6-trading-strategies)
-4. [How The Bot Picks Stocks](#how-the-bot-picks-stocks)
-5. [How The Bot Manages Positions](#how-the-bot-manages-positions)
-6. [Safety Guardrails (15+ Protections)](#safety-guardrails-15-protections)
-7. [The Dashboard — Every Section Explained](#the-dashboard--every-section-explained)
-8. [The Cloud Scheduler](#the-cloud-scheduler)
-9. [Notifications](#notifications)
-10. [The 13 Advanced Profit Features](#the-13-advanced-profit-features)
-11. [File Structure](#file-structure)
-12. [Environment Variables](#environment-variables)
-13. [When Things Go Wrong](#when-things-go-wrong)
-14. [Going Live With Real Money](#going-live-with-real-money)
-15. [Daily Operational Checklist](#daily-operational-checklist)
+This is your personal stock trading bot. It picks stocks, places trades, manages positions, and protects your money — all while you sleep. You don't need to know how to trade. You don't need to watch the market. The bot does that for you.
+
+**What you're looking at:** A cloud-hosted dashboard that shows what the bot is doing with your (fake) money. Real money is never at risk right now — this is paper trading with $100,000 in fake cash.
+
+**Your job:** Check the dashboard once a day, watch your phone for notifications, hit the red kill switch if anything goes wrong.
+
+**Bot's job:** Everything else.
 
 ---
 
-## How To Read This README
+## 🎯 Quick Answers to Common Questions
 
-- **If you want to understand what's happening right now:** Skip to [The Big Picture](#the-big-picture--what-happens-each-day)
-- **If something went wrong:** Skip to [When Things Go Wrong](#when-things-go-wrong)
-- **If you want to know what a button does:** Skip to [The Dashboard](#the-dashboard--every-section-explained)
-- **If you want to know what protections exist:** Skip to [Safety Guardrails](#safety-guardrails-15-protections)
+**"Is the bot doing anything right now?"**
+Look at the top of the dashboard. Green "24/7 CLOUD" badge = running. Check the "Scheduler" tab to see recent activity.
 
----
+**"Did I make money today?"**
+Look at the "Daily P&L" card in the account overview. Green = profit, red = loss. Your phone also gets a daily summary at 4 PM ET.
 
-## The Big Picture — What Happens Each Day
+**"Why did the bot buy this stock?"**
+Click any position in the Positions table → the strategy file shows why. Or check the Trade Journal for full reasoning.
 
-Every weekday, automatically, without you doing anything:
+**"What happens if the stock crashes?"**
+Every position has an automatic stop-loss (usually 10% below entry). If the stock drops that much, the bot sells automatically. You can't lose more than 10% on any single trade.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  9:30 AM ET - Market opens                                   │
-│  Railway scheduler detects via Alpaca /v2/clock              │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│  9:30-9:35 AM ET - First screener run (~60 seconds)          │
-│  Scans 12,000+ stocks, applies 20+ filters and signals       │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│  9:35 AM ET - Auto-deployer fires                            │
-│  1. Checks kill switch, daily loss limit, drawdown           │
-│  2. Checks cooldown from previous losses                     │
-│  3. Checks capital availability                              │
-│  4. Picks top 2 stocks from screener                         │
-│  5. Runs correlation check (no sector over-concentration)    │
-│  6. Skips stocks with earnings warnings                      │
-│  7. Places market buy orders                                 │
-│  8. Logs to trade_journal.json                               │
-│  9. Sends you a push notification                            │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│  9:36 AM onwards - Strategy monitor every 60 seconds         │
-│  - Places stop-loss after each buy fills                     │
-│  - Ratchets stops up as prices climb (trailing stop)         │
-│  - Sells 25% at +10%, +20%, +30%, +50% profit targets        │
-│  - Triggers kill switch if daily loss exceeds 3%             │
-│  - Every 30 min: refreshes screener                          │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│  3:45 PM ET (Fridays only) - Weekend risk reduction          │
-│  Sells 50% of any position up 20%+ (locks in gains)          │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│  4:00 PM ET - Market closes                                  │
-│  4:05 PM ET - Daily close summary                            │
-│  - Updates performance scorecard                             │
-│  - Takes daily snapshot (for heatmap)                        │
-│  - Runs error recovery                                       │
-│  - Sends you end-of-day notification                         │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│  5:00 PM ET (Fridays only) - Weekly learning engine          │
-│  Analyzes trade journal, adjusts strategy weights            │
-│  If RSI oversold worked 70% of the time, boost that signal   │
-│  If breakouts failed 60% of the time, reduce their weight    │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│  First trading day of each month, 9:45 AM ET                 │
-│  Monthly rebalance: closes positions held 60+ days at a loss │
-│  Frees capital for better opportunities                      │
-└─────────────────────────────────────────────────────────────┘
-```
+**"What if the WHOLE market crashes?"**
+Daily loss limit of 3% triggers an automatic kill switch. Bot cancels all orders, closes all positions, and stops trading until you manually re-enable it.
 
-**You get push notifications for:** Every trade placed, every stop triggered, every profit take, kill switch activations, daily summaries.
+**"How do I stop it immediately?"**
+Big red **KILL SWITCH** button in the dashboard header. One click stops everything.
+
+**"When can I use real money?"**
+When the Readiness Score hits 80/100 (usually takes 30 days of profitable paper trading). The bot tells you when you're ready.
 
 ---
 
-## The 6 Trading Strategies
+## 📋 Table of Contents
 
-The bot has 6 different strategies. It picks the best one for each stock based on market conditions and the stock's characteristics.
-
-### 1. Trailing Stop 🔵
-**When it wins:** Stocks in strong uptrends with good momentum.
-**How it works:**
-- Buys stock at market price
-- Places stop-loss 10% below entry
-- When stock rises 10% from entry, trailing stop activates
-- Stop moves UP as price rises (locks in gains)
-- Stop never moves DOWN (floor only ratchets up)
-- When stop is hit, sells all shares
-
-**Example:** Buy NVDA at $200. Stop at $180. NVDA rises to $220 — stop moves to $209 (5% below peak). NVDA rises to $250 — stop moves to $237.50. NVDA drops to $237.50 — sells everything for +18.75% gain.
-
-### 2. Copy Trading 🟢
-**When it wins:** When US politicians disclose profitable trades via Capitol Trades.
-**How it works:**
-- Scans Capitol Trades for recent politician trades
-- Copies them with 5% of portfolio per position
-- Max 10 copy-trade positions at a time
-- 10% stop-loss on each
-- Skips trades where price already moved 15%+ since disclosure
-
-**Why it works:** Politicians often have non-public information (they sit on committees, get briefings). Their disclosures are required by law within 45 days.
-
-### 3. Wheel Strategy 🟣
-**When it wins:** High-volatility stocks in a sideways/range-bound market.
-**How it works:**
-- Stage 1: Sell cash-secured put 10% below current price, 2-4 weeks to expiration
-- If put expires worthless → collect premium, sell another put
-- If put is assigned → you own 100 shares, move to Stage 2
-- Stage 2: Sell covered call 10% above cost basis, 2-4 weeks out
-- If call expires worthless → collect premium, sell another call
-- If call is assigned → shares sold at profit, go back to Stage 1
-- **Auto-picks stocks in $10-$50 range** so 100 shares fits your account
-
-**Why it works:** You collect option premiums in any direction. Sideways markets pay you while you wait.
-
-### 4. Mean Reversion 🟠
-**When it wins:** Stocks oversold on no real bad news.
-**How it works:**
-- Buys stocks that dropped 15%+ in the last 5 days
-- BUT only if news sentiment isn't negative (skip falling knives)
-- Target: sell at 20-day moving average (mean recovery)
-- 10% stop-loss if it keeps falling
-
-**Why it works:** Stocks often overshoot on emotional selling. A 15% drop on no bad news usually bounces 5-10% within days.
-
-### 5. Breakout 🔴
-**When it wins:** Stocks breaking above resistance on massive volume.
-**How it works:**
-- Only buys stocks with 20-day high + 2x+ normal volume
-- 3x volume = even better (volume-profile confirmation)
-- Tight 5% stop-loss (if it's not a real breakout, fail fast)
-- Immediate trailing stop activation (ride the momentum)
-
-**Why it works:** Real breakouts continue. Fake breakouts fail quickly and we limit losses.
-
-### 6. Short Selling (Bear Market Only) ⚫
-**When it wins:** Stocks crashing in bear markets.
-**How it works:**
-- ONLY activates in bear markets (SPY down 5%+ in 20 days)
-- Shorts stocks with: downtrend + high volume selling + negative sentiment
-- Max 1 short position at a time
-- 8% tight stop (shorts have unlimited upside risk)
-- 15% profit target
-- 48-hour cooldown after a losing short
-
-**Why it works:** In bear markets, weak stocks fall fastest. Picks stocks likely to continue down.
+1. [Quick Start — Your First Day](#-quick-start--your-first-day)
+2. [Daily Routine — What To Do Each Day](#-daily-routine--what-to-do-each-day)
+3. [Dashboard Tour — Every Button Explained](#-dashboard-tour--every-button-explained)
+4. [The 6 Trading Strategies — Plain English](#-the-6-trading-strategies--plain-english)
+5. [How Stock Picks Work — What The Bot Looks At](#-how-stock-picks-work--what-the-bot-looks-at)
+6. [Position Management — How Trades Get Watched](#-position-management--how-trades-get-watched)
+7. [Safety Rails — How Your Money Is Protected](#-safety-rails--how-your-money-is-protected)
+8. [Push Notifications — What Your Phone Will Tell You](#-push-notifications--what-your-phone-will-tell-you)
+9. [Scheduled Actions — The Bot's Daily Timeline](#-scheduled-actions--the-bots-daily-timeline)
+10. [Strategy Presets — Conservative vs Moderate vs Aggressive](#-strategy-presets)
+11. [Reading Your Performance — Scorecard & Heatmap](#-reading-your-performance)
+12. [Advanced Features — What Makes This Bot Smart](#-advanced-features)
+13. [When Things Go Wrong — Troubleshooting](#-when-things-go-wrong)
+14. [Going Live — Switching to Real Money](#-going-live--switching-to-real-money)
+15. [Glossary — Trading Terms Explained](#-glossary)
+16. [Technical Reference](#-technical-reference)
 
 ---
 
-## How The Bot Picks Stocks
+## 🚀 Quick Start — Your First Day
 
-Every 30 minutes during market hours, the bot runs the screener. Here's the exact process:
+### Day 1 Setup (5 minutes)
 
-### Step 1: Fetch Universe (10,000+ stocks)
-All tradeable US equities from NYSE, NASDAQ, and ARCA exchanges.
+1. **Open the dashboard:** https://stockbott.up.railway.app
+2. **Log in:** username `Kbell0629`, password `We360you45$$`
+3. **Install ntfy on your phone** (for push notifications):
+   - iPhone: App Store → "ntfy" → Install → Subscribe to topic `alpaca-trading-bot-kevin`
+   - Android: Play Store → same
+4. **Install the dashboard as an app** (optional but recommended):
+   - iPhone: Safari → Share → "Add to Home Screen"
+   - Android: Chrome → menu → "Install app"
+5. **Verify everything is green:**
+   - Top-right should show **24/7 CLOUD** in green (bot is running)
+   - Trading Session badge shows the current market state
+   - Account shows $100,000 portfolio
 
-### Step 2: Quick Filters
-- Skip penny stocks (< $5)
-- Skip illiquid (< 100K daily volume)
-- Skip stocks not in Alpaca's paper feed
-
-### Step 3: Base Scoring (5 Strategy Scores Per Stock)
-Each stock gets 5 scores, one for each long strategy:
-- **Trailing score:** daily_change * 0.5 + volatility * 0.3 + volume bonus
-- **Copy score:** +15 if large cap (>$100, >1M volume) + momentum
-- **Wheel score:** Bell curve — moderate volatility wins, extreme gets penalized
-- **Mean reversion score:** Reward big drops, penalize if news-driven (3x volume = likely news)
-- **Breakout score:** Daily change + volume surge with tier multipliers (2x vol = 1.2x, 3x = 1.5x)
-
-### Step 4: Enrichment (Top 100 Candidates Only)
-For the top 100 scored stocks, fetch historical data and enrich:
-- **20-day momentum** (from bars)
-- **5-day momentum** (from bars)
-- **Relative volume** (today vs 20-day average) — 2x+ = high conviction
-- **Technical indicators:** RSI, MACD, Bollinger Bands, Stochastic, SMA 20/50
-- **News sentiment** from Alpaca news API (keyword scoring)
-- **Earnings warnings** (regex word-boundary matching for quarterly/Q1-4)
-- **Backtest** (simulate trailing stop on last 30 days of data)
-- **Social sentiment** from StockTwits (free API)
-- **Position sizing** (volatility-based, max 2% risk per trade)
-
-### Step 5: Global Filters
-Applied to all picks:
-- **Market breadth filter** — if <40% of stocks advancing, reduce long scores 15%
-- **Sector rotation** — boost 15% in strong sectors (outperforming SPY), penalize 20% in weak
-- **Market regime weights** — bull/neutral/bear multipliers per strategy
-- **Economic calendar** — if FOMC/CPI within 3 days, reduce all scores
-
-### Step 6: Diversification
-Top 5 picks across all stocks, but no more than 2 from the same sector.
-
-### Step 7: Additional Lists
-- **Short candidates** — identified separately for bear market deploys
-- **Earnings plays** — stocks showing pre-earnings momentum
-- **Options flow signals** — unusual call/put ratios
-
-### Step 8: Output
-Saves to `dashboard_data.json` with all enrichment data, ready for the auto-deployer at 9:35 AM.
+### That's it. Go to bed. The bot trades tomorrow at 9:30 AM ET.
 
 ---
 
-## How The Bot Manages Positions
+## 📅 Daily Routine — What To Do Each Day
 
-Every 60 seconds during market hours, the Strategy Monitor processes each active position:
+### Morning (optional — 2 minutes)
+- Open dashboard. Any red banners? Kill switch active? If yes, investigate.
+- Check "Top 3 Picks" for today's recommendations.
 
-### The Monitor Loop
+### During Market Hours (9:30 AM - 4:00 PM ET)
+- **Do nothing.** The bot works. You can check the dashboard anytime.
+- You'll get a push notification every time a trade is placed.
 
-```
-For each strategy JSON file in strategies/ folder:
-  ├─ Skip if status = "closed", "paused", "stopped", "template"
-  ├─ Skip if symbol is null
-  │
-  ├─ Check if entry order filled
-  │   └─ If yes: save fill price, set status to "active"
-  │
-  ├─ Fetch current market price
-  │
-  ├─ Place initial stop-loss if missing
-  │   └─ 5% below for breakouts, 10% for everything else
-  │
-  ├─ Strategy-specific logic:
-  │   ├─ Trailing Stop: track highest price, activate trail at +10%, ratchet stop up
-  │   ├─ Breakout: immediate trailing, 5% below peak
-  │   ├─ Mean Reversion: target = entry * 1.15, sell if reached
-  │   └─ Short Sell: inverse logic, stop moves DOWN as price drops
-  │
-  ├─ Check profit ladder:
-  │   ├─ +10% → sell 25% of original position
-  │   ├─ +20% → sell another 25%
-  │   ├─ +30% → sell another 25%
-  │   └─ +50% → sell final 25% (or let it ride)
-  │
-  └─ Check if stop triggered:
-      ├─ If yes: record exit, update journal, set cooldown timer
-      └─ Send notification
-```
+### After Market Close (4:05 PM ET)
+- **Daily summary notification** arrives on your phone.
+- Optional: open dashboard → Heatmap tab to see today's P&L.
 
-### Every 30 Min: Screener Refresh
-Rebuilds `dashboard_data.json` with fresh picks. No trades placed — just keeps picks current.
+### Weekly (Sundays — 5 minutes)
+- Review the Readiness Score — trending up?
+- Check the Heatmap for patterns (e.g., "Mondays are always losers").
+- Read weekly learning notification (Fridays 5 PM ET) to see what the bot learned.
 
-### Every 15 Min: Wheel Strategy Monitor
-Separate check for options wheel positions (if active).
+### Monthly
+- Monthly rebalance runs automatically on the first trading day.
+- Review Paper vs Live comparison tab to see if you're ready for real money.
 
 ---
 
-## Safety Guardrails (15+ Protections)
+## 🖥️ Dashboard Tour — Every Button Explained
 
-Every one of these is enforced automatically — you don't have to do anything.
+### Top Header Bar (always visible)
 
-### Pre-Trade Guardrails (Block New Trades)
+| Element | What It Does |
+|---|---|
+| **Stock Trading Bot** title | Click to scroll to top |
+| **PAPER TRADING** (orange) | Reminds you it's fake money |
+| **Trading Session Badge** | PRE-MARKET / MARKET OPEN / AFTER HOURS / CLOSED |
+| **Readiness Score** | Progress toward going live (need 80/100) |
+| **24/7 CLOUD** badge (green) | Cloud scheduler running — bot is alive |
+| **Auto-Deployer Toggle** | ON/OFF switch for automatic trading |
+| **KILL SWITCH** (red) | Emergency stop — cancels all orders, closes all positions |
+| **🎤 Voice** | Voice control (Chrome/Safari) — say "Kill switch", "What's my P&L" |
+| **📖 Help** | Opens this user manual |
+| **↻ Refresh** | Manually refresh dashboard data |
+| **Next refresh: Xs** | Countdown to next auto-refresh (every 60s) |
 
-1. **Kill Switch** — One-click shutoff. When active, cancels all orders, closes all positions, blocks any new trades.
+### Navigation Tabs (scrollable)
 
-2. **Daily Loss Limit (3%)** — If portfolio drops 3% from day's starting value, AUTO-TRIGGERS kill switch. Forces you to review before resuming.
+Click any tab to jump to that section:
+- **Overview** — Account metrics
+- **Picks** — Top 3 stock recommendations
+- **Strategies** — 6 strategy cards
+- **Positions** — What you currently own
+- **Screener** — Full top 50 stocks
+- **Short Sells** — Bear market plays
+- **Tax Harvest** — Tax-loss opportunities
+- **Backtest** — Historical simulation
+- **Readiness** — Progress to go live
+- **Heatmap** — Daily P&L calendar
+- **Paper vs Live** — Account comparison
+- **Scheduler** — Cloud scheduler status
+- **Settings** — Strategy presets
 
-3. **Max Drawdown (10%)** — If portfolio drops 10% from all-time peak, auto-triggers kill switch. Circuit breaker against cascading losses.
+### Account Overview (5 cards)
 
-4. **Cooldown After Loss (60 min)** — After any stop-loss triggers, bot waits 60 min before new deployments. Prevents revenge trading.
+- **Portfolio Value** — Total worth of account (cash + positions)
+- **Cash** — Uninvested money available to spend
+- **Buying Power** — Max you could buy (2x cash with margin)
+- **Long Market Value** — Total value of current positions
+- **Daily P&L Meter** — Today's profit/loss, color-coded (green → red as you approach 3% loss limit)
 
-5. **Short-Specific Cooldown (48 hours)** — After a losing short position, 48-hour pause before another short can deploy.
+### Top 3 Picks (3 cards)
 
-6. **Capital Sustainability Check** — Before every trade, verifies there's enough cash, buying power isn't overextended, and free capital is above minimum threshold.
-
-7. **Max Positions (5)** — Won't open more than 5 concurrent positions (3 in live mode with $5k).
-
-8. **Max Per Stock (10%)** — Won't risk more than 10% of portfolio on any single stock (5% in live mode).
-
-9. **Max New Per Day (2)** — Won't deploy more than 2 new trades per day (1 in live mode). Prevents overtrading.
-
-10. **Correlation Enforcement** — Won't buy a stock if it would give you 3+ positions in same sector or >40% concentration in one sector.
-
-11. **Earnings Avoidance** — Auto-skips stocks reporting earnings in next 3 days. Earnings gaps can destroy stop-losses.
-
-12. **Meme Stock Filter** — Shorts won't deploy on stocks with high StockTwits buzz. Too volatile for controlled shorting.
-
-13. **Market Hours Check** — All trading tasks check Alpaca `/v2/clock` before placing orders. Won't trade if market closed.
-
-14. **Deployment Lock** — Prevents two processes from deploying the same stock simultaneously.
-
-15. **Market Breadth Guard** — If only 40% of stocks are advancing (weak breadth = narrow market = risky), scores reduced 15%.
-
-### Strategy-Specific Guardrails
-
-16. **Bear Market Regime** — When SPY down 5% in 20 days, aggressive strategies (breakout) get score penalties.
-
-17. **Monthly Rebalance** — First trading day of each month, closes any losing position held 60+ days. Prevents dead money.
-
-18. **Friday Weekend Risk Reduction** — Fridays at 3:45 PM ET, sells 50% of any position up 20%+. Weekend gap protection.
-
-19. **Options Trading Limits** — Wheel strategy requires 100 shares worth of cash. Won't sell puts you can't cover.
-
-20. **Wheel Price Range** — Only wheels stocks between $10-$50 (affordable with $5k live account).
-
-### Authentication
-
-21. **Dashboard Basic Auth** — Username/password required for every endpoint.
-22. **No hardcoded secrets** — All API keys in environment variables (Railway + `.env`).
-
-### Request Hardening
-
-23. **Input validation** — `qty` must be 1-1000, `symbol` must match `^[A-Z]{1,10}$`, `order_id` must be UUID format.
-24. **Request size limits** — POST bodies capped at 1MB to prevent memory attacks.
-25. **Rate-limited error toasts** — Dashboard won't spam error messages.
-
----
-
-## The Dashboard — Every Section Explained
-
-Access at https://stockbott.up.railway.app
-
-### Header Bar (Top of page)
-- **Stock Trading Bot title** — clickable home link
-- **Paper Trading badge** — orange indicator this is fake money
-- **Trading Session Badge** — PRE-MARKET / MARKET OPEN / AFTER HOURS / CLOSED
-- **Readiness Score** — progress bar 0-100, must hit 80 to go live
-- **24/7 CLOUD badge** — green pulse = cloud scheduler running on Railway
-- **Auto-Deployer Toggle** — ON/OFF switch for the brain
-- **Kill Switch Button** — big red emergency button
-- **Voice Button** 🎤 — voice control (Chrome/Safari)
-
-### Navigation Tabs (Scrollable)
-Quick-jump to any section. Tabs include: Overview, Picks, Strategies, Positions, Screener, Short Sells, Tax Harvest, Backtest, Readiness, Heatmap, Paper vs Live, Scheduler, Settings.
-
-### Account Overview
-5 cards showing: Portfolio Value, Cash, Buying Power, Long Market Value, Daily P&L meter (colors change as you approach 3% daily limit).
-
-### Economic Calendar Banner
-Yellow/red banner shown when FOMC meeting, CPI release, or other market-moving event is within 3 days. Also includes earnings calendar warnings.
-
-### What Happens at Market Open
-Timeline showing all scheduled tasks with ON/OFF badges and pending orders/actions list.
-
-### Top 3 Stock Picks
 Each card shows:
-- Symbol and current price
-- 5-strategy score bars (Trailing/Copy/Wheel/MeanRev/Breakout)
-- Technical indicators: RSI, MACD signal, overall bias
-- Social sentiment (bullish/bearish) and trending badge
-- Recommended shares (volatility-based sizing)
-- 30-day backtest return
-- Earnings warning badge if applicable
-- Deploy button (opens confirmation modal with P&L estimates)
+- **Symbol & price** — The stock ticker and current price
+- **Score bars** — How good each of the 5 strategies is for this stock (higher = better)
+- **Technical indicators** — RSI (momentum), MACD (trend), bias (bullish/bearish/neutral)
+- **Social sentiment** — What retail traders on StockTwits are saying
+- **Recommended shares** — How many to buy (sized based on volatility)
+- **30d backtest** — What would have happened if you'd traded this stock the last 30 days
+- **Deploy button** — Buy this stock now (opens confirmation with max loss / profit target)
 
-### Active Strategy Cards (6 cards)
-1. Trailing Stop — entry/shares/stop/trailing status
-2. Copy Trading — politician tracked, trades copied count
-3. Wheel Strategy — current stage, premiums collected
-4. Mean Reversion — ready status, target description
-5. Breakout — ready status, trail config
-6. Short Selling — ACTIVE (bear mkt) / STANDBY / TURNED OFF, current SPY momentum, top candidate, Turn On/Off button
+### Strategy Cards (6 active strategies)
 
-Each has Pause and Stop buttons.
+Each shows status, key stats, and **Pause/Stop buttons**:
+- **Pause** — Temporarily disable this strategy
+- **Stop** — Disable and close any open positions in this strategy
+
+For Short Selling, also has **Turn On/Off** toggle since shorts are riskier.
 
 ### Positions Table
-Live P&L, AUTO/MANUAL badges, Close and Sell Half buttons (with confirmation modals).
+
+Your current holdings:
+- Symbol, Quantity, Entry Price, Current Price, P&L, P&L %
+- **AUTO/MANUAL** badge — was this deployed by the bot or you?
+- **Close button** — Sell everything (confirmation modal shows expected P&L)
+- **Sell Half button** — Sell 50% (lock in gains)
 
 ### Open Orders Table
-All pending orders with Cancel buttons.
+
+Pending orders not yet filled:
+- **Cancel button** per row — Cancel the order (no money involved)
 
 ### Full Screener (Top 50)
-Sortable columns. Per-row Deploy buttons. Shows: Price, daily change, volatility, volume, vol surge, best strategy, score.
+
+All the stocks the bot is considering:
+- Click column headers to sort
+- **Deploy button** per row to manually deploy any stock
 
 ### Short Selling Candidates
-Only shows in bear markets or when candidates exist. Reasons, stop-loss, target, R:R ratio per candidate.
+
+Only appears when the market is bearish or when candidates exist. Shows:
+- Symbol, score, 20-day momentum, stop-loss, profit target, risk/reward ratio
+- Why each candidate was flagged
 
 ### Tax-Loss Harvesting
-Positions at a loss that qualify for tax-loss harvesting. Shows: loss amount, tax savings estimate, replacement stock suggestions. "Harvest" button opens close-position modal.
+
+Positions at a loss that could be sold for tax benefits:
+- Amount of loss, estimated tax savings
+- Suggested replacement stock (avoids wash sale rule)
+- **Harvest button** — Sells the loser
 
 ### Readiness Scorecard
-6 metrics tracked toward the 80/100 threshold for going live:
+
+6 metrics tracked toward the 80/100 go-live threshold:
 - Days tracked (target: 30)
 - Total trades (target: 20)
 - Win rate (target: 50%)
@@ -410,363 +212,564 @@ Positions at a loss that qualify for tax-loss harvesting. Shows: loss amount, ta
 - Profit factor (target: 1.5)
 - Sharpe ratio (target: 0.5)
 
-### Trade Heatmap (New)
-- Daily P&L calendar for last 90 days (color-coded green/red)
-- 6-metric summary: trading days, win/loss days, total P&L, best/worst day
-- By-weekday analysis: average P&L by Monday/Tuesday/etc.
-Helps spot patterns like "Mondays are losers, skip them."
-
-### Paper vs Live Comparison (New)
-Side-by-side cards showing paper and live trading performance. While paper-only, shows setup guide for going live.
-
 ### Visual Backtest
-- Dropdown to pick ANY stock from the screener (not just top pick)
-- Summary cards: return, days held, entry→exit, stopped out or not
-- Interactive Chart.js line chart showing price + stop level
-- Plain-English explanation of what the backtest means
 
-### Cloud Scheduler
-- Task grid showing all scheduled jobs with last-run times
-- Summary bar: current ET time, market status, thread name
-- Live log box showing last 20 scheduler events
+Pick any stock from the dropdown. Chart shows:
+- Blue line: how the stock's price moved over 30 days
+- Red dashed line: where your stop-loss would have been
+- Summary cards: return %, days held, entry→exit, stopped out or held
+
+**Plain English explanation below** the chart tells you exactly what it means.
+
+### Heatmap (Trade Performance Calendar)
+
+- Color-coded daily P&L grid (dark red = big loss, bright green = big win)
+- Hover any day for details
+- **By-weekday analysis** — which days are most profitable?
+
+Example insight: "Mondays avg -$50, Tuesdays avg +$120 → maybe skip Mondays"
+
+### Paper vs Live Comparison
+
+Side-by-side cards:
+- **Paper** — Active, shows current return
+- **Live** — Not yet active, shows setup guide + readiness progress
+
+### Scheduler Panel
+
+Real-time status of all cloud tasks:
+- **Task grid** — 5 jobs with last-run times and status (Active/Market Closed/Pending)
+- **Summary bar** — Current ET time, market status, thread name
+- **Live log feed** — Last 20 scheduler events
 - Auto-refreshes every 15 seconds
 
-### Strategy Templates (Enhanced)
-3 detailed preset cards with ACTIVE badge on current:
-- **Conservative** — 5% stops, 3 positions, $5% per stock (recommended for first-timers)
-- **Moderate** — 10% stops, 5 positions, 10% per stock (default)
-- **Aggressive** — 5% tight stops, 8 positions, 15% per stock (experienced only)
+### Strategy Templates (Settings)
 
-Each card shows: stop-loss, max positions, per-stock%, new/day, strategies enabled/disabled, how it works, good for, tradeoffs, expected return, max drawdown.
+3 preset configurations:
+- **Conservative** — 5% stops, 3 positions, for beginners
+- **Moderate** — 10% stops, 5 positions, the default
+- **Aggressive** — 5% tight stops, 8 positions, experienced only
+
+The active one glows with an "ACTIVE" badge.
 
 ### Activity Log
-Last 20 actions taken with timestamps, color-coded by type. Clear button.
 
-### Voice Commands (🎤 button)
-Say: "Kill switch", "Refresh", "Portfolio", "What's the top pick", "Deploy trailing stop on NVDA"
-Bot speaks responses via text-to-speech.
-
----
-
-## The Cloud Scheduler
-
-Runs 24/7 on Railway. Laptop not required. Replaces all Claude Code scheduled tasks.
-
-### Tasks Running
-
-| Task | Schedule | What It Does |
-|------|----------|--------------|
-| Auto-Deployer | Weekdays 9:35 AM ET | Screens market, deploys top 2 picks |
-| Screener | Every 30 min during market hours | Refreshes dashboard picks |
-| Strategy Monitor | Every 60s during market hours | Manages all active positions |
-| Friday Risk Reduction | Fridays 3:45 PM ET | Scales out 50% of winners |
-| Daily Close Summary | Weekdays 4:05 PM ET | Updates scorecard, error recovery |
-| Weekly Learning | Fridays 5:00 PM ET | Analyzes trades, adjusts weights |
-| Monthly Rebalance | First trading day 9:45 AM ET | Closes stale underwater positions |
-
-### How To Monitor
-- Dashboard → Scheduler tab
-- Shows all tasks with last-run times
-- Live log feed from Railway
-- Updates every 15 seconds
-
-### To Disable
-Set `ENABLE_CLOUD_SCHEDULER=false` in Railway env vars. Redeploy.
+Recent actions taken by you or the bot. Color-coded:
+- 🟢 Green — Buys
+- 🔴 Red — Sells
+- 🟡 Yellow — Cancels
+- 🔵 Blue — Info
 
 ---
 
-## Notifications
+## 📈 The 6 Trading Strategies — Plain English
 
-All push notifications free via **ntfy.sh**.
+### 1. Trailing Stop 🔵 (Ride the uptrend)
 
-### Setup (One-Time)
-1. Install ntfy app: https://ntfy.sh
-2. Subscribe to topic: `alpaca-trading-bot-kevin`
-3. Important events also queue emails to `se2login@gmail.com`
+**In plain English:** Buy a stock that's going up. Set a floor price (stop-loss). As the stock climbs higher, the floor moves up with it — never down. When the stock eventually drops to the floor, sell automatically. You keep most of the gains.
 
-### Notification Types
+**Example:**
+- Buy NVDA at $200
+- Initial stop-loss at $180 (10% below)
+- NVDA rises to $250 → stop moves up to $237.50
+- NVDA drops to $237.50 → sell automatically for +18.75% profit
 
-| Type | Priority | Trigger |
-|------|----------|---------|
-| `trade` | Normal | New position opened |
-| `exit` | Normal | Position closed (profit take) |
-| `stop` | High | Stop-loss triggered |
-| `alert` | Urgent | Drawdown/correlation warnings |
-| `kill` | Max | Kill switch activated |
-| `daily` | Low | 4 PM close summary |
-| `learn` | Low | Weekly learning update |
-| `info` | Min | Routine info |
+**When it wins:** Stocks in strong uptrends with good momentum.
+**When it loses:** Choppy, sideways markets (gets "whipsawed").
 
----
+### 2. Copy Trading 🟢 (Follow the smart money)
 
-## The 13 Advanced Profit Features
+**In plain English:** US politicians are required to disclose their stock trades within 45 days. Some of them (senators on committees, for example) have access to information we don't. The bot watches public disclosures and buys what they buy.
 
-Built in to increase profit probability:
+**When it wins:** When politicians have information edges (committee briefings, early bill drafts).
+**When it loses:** When the trade is disclosed too late and the move already happened.
 
-### 1. Dynamic Strategy Rotation
-Market regime changes strategy weights. Bull market: boost trailing/breakout. Bear: boost shorts/mean reversion. Neutral: boost wheel. Prevents deploying the wrong strategy at the wrong time.
+### 3. Wheel Strategy 🟣 (Get paid to wait)
 
-### 2. Earnings Play Strategy
-Buys stocks with positive momentum 2-3 days before earnings, sells morning-of (never holds through earnings). Captures the "run-up" effect without gap risk.
+**In plain English:** Instead of buying a stock, "sell insurance" on it. You collect a premium payment. If the stock stays above your target price, you keep the money free. If it drops, you buy the stock at a discount (minus the premium you already collected). Repeat forever.
 
-### 3. Sector Rotation Signal
-Tracks 11 sector ETFs (XLK, XLV, XLF, etc.). Boosts picks in sectors outperforming SPY by 2%+, penalizes picks in sectors underperforming by 2%+.
+**Two stages:**
+1. Sell a "put" — collect premium, wait for stock to drop to your strike
+2. If assigned (stock drops), you own 100 shares → sell a "call" → collect more premium
 
-### 4. Post-Market News Scanner
-Scans Alpaca news for 40+ actionable patterns. Earnings beats, FDA approvals, guidance raises = bullish signals. Earnings misses, SEC probes, bankruptcies = bearish.
+**When it wins:** Choppy, sideways markets. Stocks that swing $10-$50 range.
+**When it loses:** Strong trends — you miss most of the upside.
 
-### 5. Options Flow Tracking
-Monitors call/put open interest ratios. C/P ratio > 2.0 = bullish smart money, < 0.5 = bearish. Leading indicator of stock moves.
+### 4. Mean Reversion 🟠 (Buy the oversold dip)
 
-### 6. Overnight Risk Reduction
-Fridays at 3:45 PM ET, scales out 50% of any position up 20%+. Weekend gap protection.
+**In plain English:** Stocks sometimes overreact to bad news and drop too far. If the drop is emotional (no actual bad fundamentals), the stock often bounces back to its average price within days. The bot buys the dip and sells when it recovers to the mean.
 
-### 7. Volume Profile Breakouts
-Enhanced breakout scoring: 2x normal volume = 1.2x multiplier, 3x volume = 1.5x. Fewer false breakouts, higher win rate.
+**When it wins:** Stocks drop 15%+ on weak volume with no real bad news.
+**When it loses:** "Catching falling knives" — buying stocks with real problems that keep falling.
 
-### 8. Partial Profit Taking
-Sells 25% at +10%, +20%, +30%, +50% gains. Locks in progressive profits even if the trade later reverses.
+### 5. Breakout 🔴 (Catch the explosion)
 
-### 9. Market Breadth Filter
-Tracks % of advancing stocks. Weak breadth (<40%) = reduce long scores 15%. Strong breadth (>60%) = boost 10%.
+**In plain English:** When a stock breaks above its 20-day high on 2x normal volume, it often keeps running. The bot buys the breakout, sets a tight 5% stop (breakouts fail fast if they're going to fail), and rides the move up.
 
-### 10. Position Correlation Enforcement
-Auto-deployer blocks trades that would give you 3+ positions in same sector or >40% sector concentration.
+**When it wins:** Real news catalysts create real breakouts.
+**When it loses:** "Fake breakouts" — stock pokes above and quickly falls back.
 
-### 11-13. (Lower Priority, Not Yet Built)
-Reserved for future: FedSpeak tracker, Twitter sentiment, insider trading follow.
+### 6. Short Selling ⚫ (Profit when stocks fall)
 
-### 18. Trade Heatmap
-Dashboard calendar showing daily P&L + by-weekday analysis.
+**In plain English:** Borrow shares, sell them immediately at current price. When the stock falls, buy them back cheaper and return them. You keep the difference.
 
-### 19. Monthly Rebalancing
-First trading day of each month, closes positions held 60+ days at a loss. Frees capital.
+**Gated to bear markets only** (SPY down 5%+ in 20 days) because shorts can lose infinite money if the stock shoots up.
 
-### 20. Paper vs Live Comparison
-Side-by-side panel (paper active, live pending 80/100 readiness).
+**When it wins:** Bear markets, specific stocks with bad news.
+**When it loses:** Unexpected rallies, short squeezes.
 
 ---
 
-## File Structure
+## 🎯 How Stock Picks Work — What The Bot Looks At
 
-```
-/Users/kevinbell/Alpaca Trading/
-├── README.md                    ← You are here
-├── PROJECT.md                   ← Quick reference
-├── server.py                    ← Web dashboard + API (Railway main)
-├── cloud_scheduler.py           ← 24/7 scheduler (runs in server.py thread)
-├── update_dashboard.py          ← Screener (runs every 30 min)
-│
-├── Analysis Modules
-│   ├── indicators.py            ← RSI, MACD, Bollinger, ATR, etc.
-│   ├── economic_calendar.py     ← FOMC, opex, news events
-│   ├── social_sentiment.py      ← StockTwits sentiment
-│   ├── correlation.py           ← Portfolio correlation matrix
-│   ├── options_analysis.py      ← Options chain for wheel
-│   ├── options_flow.py          ← Unusual options activity (NEW)
-│   ├── extended_hours.py        ← Pre/post-market session logic
-│   ├── short_strategy.py        ← Short selling candidates
-│   ├── earnings_play.py         ← Pre-earnings momentum (NEW)
-│   └── news_scanner.py          ← Post-market news signals (NEW)
-│
-├── Management Modules
-│   ├── capital_check.py         ← Capital sustainability check
-│   ├── tax_harvesting.py        ← Tax-loss harvesting scanner
-│   ├── error_recovery.py        ← Orphan detection + auto-fix
-│   ├── notify.py                ← Push notifications
-│   ├── learn.py                 ← Self-learning engine
-│   ├── update_scorecard.py      ← Performance metrics
-│   └── realtime.py              ← Fast price poller (local)
-│
-├── Config Files
-│   ├── .env                     ← Secrets (gitignored)
-│   ├── guardrails.json          ← Safety limits
-│   ├── auto_deployer_config.json← Auto-deployer settings
-│   ├── accounts.json            ← Paper + live accounts
-│   ├── strategies/
-│   │   ├── trailing_stop.json   ← Base template
-│   │   ├── copy_trading.json    ← State
-│   │   ├── wheel_strategy.json  ← State
-│   │   └── <strategy>_<SYMBOL>.json ← Auto-created
-│
-├── Runtime State (gitignored)
-│   ├── dashboard_data.json      ← Latest screener output
-│   ├── scorecard.json           ← Performance metrics
-│   ├── trade_journal.json       ← Every trade with reasoning
-│   ├── learned_weights.json     ← Self-learning output
-│   ├── capital_status.json      ← Latest capital check
-│   ├── notification_log.json    ← Notification history
-│   └── email_queue.json         ← Pending emails
-│
-└── Infrastructure
-    ├── Procfile                 ← Railway startup: `web: python3 server.py`
-    ├── railway.json             ← Railway config
-    ├── requirements.txt         ← Empty (stdlib only)
-    ├── manifest.json            ← PWA manifest
-    ├── icon-192.png             ← PWA icon
-    └── icon-512.png             ← PWA icon
-```
+Every 30 minutes during market hours, the bot scans **10,000+ US stocks**. Here's how it decides which to trade:
+
+### Step 1: Basic Filters
+- Skip penny stocks (< $5 — too risky)
+- Skip illiquid stocks (< 100K daily volume — can't easily sell)
+- Skip stocks not on Alpaca's paper feed
+
+### Step 2: Score Each Stock (5 Scores)
+Each stock gets a score for each strategy:
+- **Trailing Stop Score** = momentum * 0.5 + volatility * 0.3 + volume surge
+- **Copy Trading Score** = bonus for large caps + momentum
+- **Wheel Score** = moderate volatility scores highest (extreme gets penalized)
+- **Mean Reversion Score** = rewards big drops (but penalizes news-driven drops)
+- **Breakout Score** = daily change + volume surge multiplier (2x/3x volume tiers)
+
+### Step 3: Enrich Top 100 With More Data
+- **20-day momentum** (longer trend)
+- **5-day momentum** (recent trend)
+- **Relative volume** (today vs average)
+- **Technical indicators** (RSI, MACD, Bollinger, Stochastic, SMA)
+- **News sentiment** (positive, negative, neutral)
+- **Earnings warnings** (auto-skip if earnings in next 3 days)
+- **Backtest** (simulates 30 days of performance)
+- **Social sentiment** (StockTwits buzz)
+- **Position sizing** (fewer shares for volatile stocks)
+
+### Step 4: Apply Global Filters
+- **Market breadth** — if <40% of stocks advancing, reduce scores 15%
+- **Sector rotation** — boost picks in strong sectors, penalize weak ones
+- **Regime weights** — bull/neutral/bear multipliers per strategy
+- **Economic calendar** — reduce scores if FOMC or CPI within 3 days
+
+### Step 5: Diversification
+Top 5 picks, but no more than 2 stocks from the same sector.
+
+### Step 6: Deploy at 9:35 AM ET
+Bot picks top 2 and places market buy orders.
 
 ---
 
-## Environment Variables
+## 🛡️ Position Management — How Trades Get Watched
 
-### Required (set in Railway + .env)
+Every 60 seconds during market hours, the bot checks every position:
 
-| Variable | Purpose |
-|----------|---------|
-| `ALPACA_API_KEY` | Alpaca API key |
-| `ALPACA_API_SECRET` | Alpaca API secret |
-| `ALPACA_ENDPOINT` | `https://paper-api.alpaca.markets/v2` (paper) or `https://api.alpaca.markets/v2` (live) |
-| `ALPACA_DATA_ENDPOINT` | `https://data.alpaca.markets/v2` |
-| `DASHBOARD_USER` | Login username |
-| `DASHBOARD_PASS` | Login password |
-| `NTFY_TOPIC` | `alpaca-trading-bot-kevin` |
-| `NOTIFICATION_EMAIL` | `se2login@gmail.com` |
-| `PORT` | `8888` (Railway sets automatically) |
+1. **Did the buy fill yet?** If yes, note the fill price and switch status to "active".
+2. **Is the stop-loss placed?** If not (first check after fill), place it.
+3. **Is the price up 10%?** Activate the trailing stop (ratchet the floor up).
+4. **Did the floor need to move up?** Cancel old stop, place new higher one.
+5. **Hit any profit target?** At +10%, +20%, +30%, +50% → sell 25% each level.
+6. **Did the stop trigger?** Position closed, record the exit, start cooldown.
 
-### Optional
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `ENABLE_CLOUD_SCHEDULER` | `true` | Set to `false` to disable cloud scheduler |
-| `CORS_ORIGIN` | none | If set, restricts CORS to this origin |
+**Critical detail:** When the trailing stop moves up, the bot places the NEW stop BEFORE canceling the old one. This way if the API hiccups, your position is never unprotected.
 
 ---
 
-## When Things Go Wrong
+## 🛡️ Safety Rails — How Your Money Is Protected
 
-### Scenario 1: Bot Made A Trade I Didn't Want
+### Hard Stops (Bot Can't Override)
+
+1. **Kill Switch** — Manual red button. Cancels all orders, closes all positions.
+2. **Daily Loss Limit (3%)** — Auto-triggers kill switch if portfolio drops 3% in a day.
+3. **Max Drawdown (10%)** — Auto-triggers kill switch if portfolio drops 10% from peak.
+4. **Stop-Losses On Every Trade** — No exceptions. Every position gets a stop.
+
+### Position Limits
+
+5. **Max 5 concurrent positions** (3 in live mode).
+6. **Max 10% of portfolio per stock** (5% in live mode).
+7. **Max 2 new trades per day** (1 in live mode) — prevents overtrading.
+
+### Timing Rules
+
+8. **60-min cooldown after any loss** — prevents revenge trading.
+9. **48-hour cooldown after short loss** — shorts are riskier.
+10. **Market hours check** — never trades outside regular hours (except when explicitly configured).
+
+### Quality Filters
+
+11. **Earnings avoidance** — won't buy stocks reporting earnings within 3 days.
+12. **Meme stock filter** — shorts won't deploy on heavily-buzzed stocks (too volatile).
+13. **Correlation enforcement** — won't hold 3+ positions in same sector, max 40% concentration.
+14. **Market breadth filter** — reduces scores when broader market is weak.
+15. **Bear market regime** — aggressive strategies pause in bear markets, shorts activate.
+16. **Data quality guard** — rejects stocks with impossible data (e.g., +569% "daily change" from stale splits).
+
+### Capital Protection
+
+17. **Capital sustainability check** — verifies enough cash before every trade.
+18. **Won't trade if <$1,000 free capital.**
+19. **Won't sell more shares than held** (profit ladder dynamically resizes stops).
+
+### Authentication & Security
+
+20. **Basic auth with timing-safe comparison** (prevents timing attacks).
+21. **All secrets in environment variables** (not in code).
+22. **Input validation** (order IDs must be UUIDs, symbols must be letters only, qty 1-1000).
+23. **1MB POST body cap** (prevents memory attacks).
+
+### Redundancy
+
+24. **Deployment lock** — two processes can't deploy same stock simultaneously.
+25. **Atomic file writes** — no data corruption if process dies mid-save.
+26. **Error recovery** — detects orphan positions (position without strategy) and auto-fixes.
+
+---
+
+## 📱 Push Notifications — What Your Phone Will Tell You
+
+After you install the **ntfy** app and subscribe to topic `alpaca-trading-bot-kevin`:
+
+| Type | When | Example |
+|---|---|---|
+| 🟢 **Trade** | New position opened | "Deployed trailing_stop on NVDA: 25 shares @ ~$198.46" |
+| 💰 **Exit** | Position closed (profit) | "Profit take on NVDA at +20%: sold 25 shares" |
+| 🛑 **Stop** | Stop-loss triggered (LOUD) | "TSLA stopped out at $353. P&L: -$450" |
+| ⚠️ **Alert** | Warnings (URGENT) | "High correlation risk — 3 tech positions held" |
+| 🚨 **Kill** | Kill switch activated (MAX priority) | "KILL SWITCH: Daily loss 3.2% exceeded limit" |
+| 📊 **Daily** | 4 PM close summary | "Daily close: $101,200 (+1.2%) | Win rate 60%" |
+| 🧠 **Learn** | Weekly learning (Fridays) | "Weekly learning: boosted breakout strategy (70% win rate)" |
+| ℹ️ **Info** | Routine | "Morning scan complete, no qualifying trades" |
+
+**Important events** (trade, exit, stop, kill, daily) also queue **emails** to your inbox.
+
+---
+
+## ⏰ Scheduled Actions — The Bot's Daily Timeline
+
+All times **Eastern Time**. All automatic.
+
+| Time | What Happens |
+|---|---|
+| **9:30 AM** | Market opens |
+| **9:30-9:35 AM** | First screener run (~60 seconds) |
+| **9:35 AM** | Auto-deployer fires: picks top 2, places buys |
+| **9:36 AM onwards** | Strategy monitor every 60 seconds |
+| **10:00 AM, 10:30 AM, etc.** | Screener refreshes every 30 minutes |
+| **3:45 PM (Fridays only)** | Scale out 50% of positions up 20%+ |
+| **4:00 PM** | Market closes |
+| **4:05 PM** | Daily close summary → phone notification |
+| **5:00 PM (Fridays only)** | Weekly learning engine runs |
+| **9:45 AM first trading day of month** | Monthly rebalance runs |
+
+---
+
+## 🎨 Strategy Presets
+
+Switch between 3 risk profiles in the Settings section:
+
+### 🟢 Conservative
+**Good for:** First-time traders, accounts under $5k, high market uncertainty.
+- 5% tight stops (cut losses fast)
+- Max 3 positions
+- 5% per stock
+- 1 new trade/day
+- Only safe strategies (trailing stop, wheel, copy trading)
+- **Expected return:** 5-15% annually
+- **Max drawdown:** ~5-8%
+
+### 🔵 Moderate (Default)
+**Good for:** Most traders, $5k-$50k accounts, all market conditions.
+- 10% stops
+- Max 5 positions
+- 10% per stock
+- 2 new trades/day
+- All 5 long strategies
+- Shorts only in bear markets
+- **Expected return:** 15-25% annually
+- **Max drawdown:** ~10%
+
+### 🔴 Aggressive
+**Good for:** Experienced traders, $25k+ accounts, active monitoring.
+- 5% tight stops (fail fast)
+- Max 8 positions
+- 15% per stock
+- 3 new trades/day
+- All 6 strategies including shorts in any market
+- Extended hours enabled
+- **Expected return:** 20-40% (or -20% in bad year)
+- **Max drawdown:** ~15-20%
+
+---
+
+## 📊 Reading Your Performance
+
+### The Readiness Scorecard (Go-Live Indicator)
+
+6 criteria, 20 points each = 100 max. Need **80+ to go live with real money**:
+
+| Criterion | Target | Why It Matters |
+|---|---|---|
+| Days tracked | 30+ | Sample size — need enough data |
+| Total trades | 20+ | Strategy actually tested across conditions |
+| Win rate | 50%+ | More wins than losses |
+| Max drawdown | <10% | Controlled worst-case scenario |
+| Profit factor | 1.5+ | Total wins / total losses ratio |
+| Sharpe ratio | 0.5+ | Risk-adjusted returns |
+
+### The Heatmap (Pattern Recognition)
+
+- Each colored square = one trading day
+- Dark red = big loss day, bright green = big win day
+- **By-weekday analysis** helps spot patterns:
+  - "Mondays avg -0.5%, Tuesdays avg +1.2%" → consider skipping Mondays
+  - "Win rate 80% on Wednesdays" → double down
+
+### The Trade Journal
+
+Every trade logged with full reasoning:
+- Entry price, exit price, P&L
+- Which strategy was used
+- Why the bot picked this stock (score, indicators, sentiment)
+- What happened (stop triggered, profit taken, manual close)
+
+Use this to understand what's working and what isn't.
+
+---
+
+## 🧠 Advanced Features
+
+These features run automatically — you don't have to do anything, but here's what they do:
+
+### Dynamic Strategy Rotation
+Bot knows bull markets favor trailing stops and breakouts. Bear markets favor shorts and mean reversion. Adjusts strategy weights automatically based on SPY's 20-day performance.
+
+### Sector Rotation
+Tracks 11 sector ETFs (tech, healthcare, energy, etc.). Boosts picks in sectors outperforming SPY. Penalizes picks in sectors underperforming.
+
+### Market Breadth Filter
+Counts how many stocks are advancing vs declining. When breadth is weak (<40% advancing), reduces risk.
+
+### News Sentiment Analysis
+Scans Alpaca news for keywords like "beats earnings", "FDA approval", "lawsuit", "downgrade". Applies score adjustments.
+
+### Social Sentiment (StockTwits)
+Free API. Tracks bullish/bearish sentiment and trending buzz. Flags meme stocks for caution.
+
+### Options Flow Tracking
+Monitors call/put open interest ratios. High C/P = bullish smart money, low C/P = bearish. Leading indicator.
+
+### Economic Calendar
+Knows upcoming FOMC meetings and options expiration dates. Reduces position sizes before high-impact events.
+
+### Post-Market News Scanner
+After market close, scans news for earnings beats, FDA approvals, contract wins, lawsuits, downgrades. Produces actionable signals.
+
+### Earnings Play Strategy
+Stocks with positive momentum run up 2-3 days before earnings. The bot catches this pattern and always sells before the actual earnings release (no gap risk).
+
+### Self-Learning Engine
+Every Friday, analyzes your trade journal. Which strategies are winning? Which signals actually predict profits? Adjusts internal weights so next week's picks are smarter.
+
+### Error Recovery
+If a process crashes mid-trade and leaves an orphan position (no strategy file, no stop-loss), the recovery system auto-detects and fixes it.
+
+### Tax-Loss Harvesting
+Scans positions at a loss. Suggests selling for tax deduction + buying similar-but-not-identical stock (avoids wash sale rule). Free money from the IRS.
+
+---
+
+## 🚨 When Things Go Wrong
+
+### Scenario: "I hit the wrong button by accident"
+
+**Deploy button pressed?** Click the position → Close button → confirms sell at market. Usually costs a few dollars in slippage.
+
+**Kill switch activated accidentally?** Go to kill switch status → Deactivate. Then manually toggle auto-deployer back on.
+
+### Scenario: "Market is crashing, I'm panicking"
+
 1. Open dashboard
-2. Find position in Positions table
-3. Click **Close** button (confirmation modal shows P&L estimate)
-4. Confirm — position closes at market
-
-### Scenario 2: Market Is Crashing
-1. Open dashboard
-2. Click **KILL SWITCH** button (red, in header)
+2. Click **KILL SWITCH**
 3. Confirm — all orders cancel, all positions close at market
-4. Auto-deployer automatically disabled
-5. Bot won't resume until you manually toggle auto-deployer back on
+4. Done. Deep breath. You can re-enable later.
 
-### Scenario 3: Daily Loss Hit 3%
-Bot automatically triggers kill switch. You get a max-priority notification. Dashboard shows red banner. Review positions, decide if you want to resume.
+### Scenario: "Daily loss hit 3%, bot triggered kill switch"
 
-### Scenario 4: Dashboard Shows "Scheduler OFF"
-Cloud scheduler stopped. On Railway this means the deployment crashed. Check Railway logs:
-1. Railway dashboard → zestful-charm project → web service → Logs
+- Max priority notification on your phone.
+- Dashboard shows red banner.
+- Your choice: Review positions, decide if you want to resume.
+- **To resume:** Edit `guardrails.json` → set `kill_switch: false` (or use API).
+
+### Scenario: "Dashboard shows 'Scheduler OFF'"
+
+Cloud scheduler stopped. Usually means Railway deployment crashed.
+1. Check Railway dashboard → Logs
 2. Look for Python errors
-3. Usually fixed by redeploy: push any commit to main
+3. Usually fixed by a redeploy: push any commit to main branch
 
-### Scenario 5: No Trades Deployed This Morning
-Check dashboard → Scheduler tab → recent logs. Common reasons:
-- "Kill switch active" — someone triggered it, reset in guardrails.json
-- "Cannot trade: LOW CAPITAL" — not enough free cash
-- "In cooldown after recent loss" — wait 60 min
-- "No qualifying trades" — screener didn't find any picks meeting criteria
+### Scenario: "No trades deployed this morning"
 
-### Scenario 6: Position Showing Wrong Price/Value
-1. Dashboard auto-refreshes every 60 seconds
-2. Click Refresh button in header for immediate refresh
-3. If still wrong: `/api/data` endpoint returns raw data for debugging
+Check Dashboard → Scheduler tab → recent logs. Common reasons:
+- "Kill switch active" → reset in guardrails.json
+- "Cannot trade: LOW CAPITAL" → not enough free cash
+- "In cooldown after recent loss" → wait 60 min
+- "No qualifying trades" → screener didn't find picks meeting criteria
+- "Market closed" → it's a holiday or weekend
 
-### Scenario 7: I Can't Log In
-Credentials are `Kbell0629` / `We360you45$$` (case-sensitive). If changed, check Railway env vars `DASHBOARD_USER` and `DASHBOARD_PASS`.
+### Scenario: "Position showing wrong P&L"
 
-### Emergency Contacts / Resources
+Dashboard auto-refreshes every 60 seconds. Click Refresh button for immediate refresh. Position P&L comes directly from Alpaca — if still wrong, that's an Alpaca issue.
+
+### Scenario: "I can't log in"
+
+Credentials: `Kbell0629` / `We360you45$$` (case-sensitive). If changed, check Railway env vars `DASHBOARD_USER` and `DASHBOARD_PASS`.
+
+### Emergency Resources
 - Alpaca support: https://alpaca.markets/support
-- Dashboard logs: https://stockbott.up.railway.app/api/scheduler-status
+- Dashboard status: https://stockbott.up.railway.app/api/scheduler-status
 - GitHub issues: https://github.com/Kbell0629/alpaca-trading-bot/issues
 
 ---
 
-## Going Live With Real Money
+## 💵 Going Live — Switching to Real Money
 
 ### Prerequisites
-1. **Readiness score ≥ 80/100** — requires 30 days paper trading, 20+ trades, 50%+ win rate, <10% max drawdown, 1.5+ profit factor, 0.5+ Sharpe ratio
-2. **Profitable paper performance** — if paper shows losses, don't go live yet
-3. **Understand the strategies** — re-read this README
 
-### Step-By-Step
-1. Log in to Alpaca → create a **live trading account**
-2. Fund with **$5,000 minimum** (bot is sized for this amount in live mode)
-3. Go to Alpaca dashboard → API Keys → Generate new keys (MARK THEM AS LIVE)
-4. Update Railway env vars:
+1. **Readiness Score ≥ 80/100**
+2. **Profitable paper trading** (if paper is losing money, don't go live)
+3. **Understand the strategies** (re-read this manual)
+4. **$5,000 minimum** to fund live account (bot sized for this amount)
+
+### Step-by-Step Process
+
+1. **Create live Alpaca account:** https://alpaca.markets → "Open an Account" (NOT paper)
+2. **Fund with $5,000** (ACH transfer, takes 2-3 days to clear)
+3. **Generate live API keys:** Alpaca dashboard → API Keys → Generate. **IMPORTANT:** Mark them as LIVE keys.
+4. **Update Railway environment variables:**
    ```
-   ALPACA_ENDPOINT=https://api.alpaca.markets/v2
-   ALPACA_API_KEY=<your live key>
-   ALPACA_API_SECRET=<your live secret>
+   ALPACA_ENDPOINT = https://api.alpaca.markets/v2
+   ALPACA_API_KEY = <your live key>
+   ALPACA_API_SECRET = <your live secret>
    ```
-5. Update `guardrails.json` to use `live_mode_settings` (tighter limits):
-   - Max positions: 3 (instead of 5)
-   - Max per stock: 5% (instead of 10%)
-   - Max new/day: 1 (instead of 2)
-6. Keep paper account running in parallel to compare performance
-7. Watch carefully for first week — live fills may differ from paper
+5. **Update `guardrails.json`** to use `live_mode_settings`:
+   - Max positions: 3 (not 5)
+   - Max per stock: 5% (not 10%)
+   - Max new per day: 1 (not 2)
+6. **Keep paper running in parallel** for comparison (use separate Alpaca account).
+7. **Watch carefully for first week** — live fills may differ from paper due to slippage.
 
 ### What's Different in Live Mode
-- Real slippage (bid/ask spread costs ~0.1-0.5% per trade)
-- Slower fills during high volume
-- Pattern day trader rules (need $25k for unlimited day trading, or limit to 3 day trades per 5 days)
-- Tax implications (consult accountant)
+
+- **Real slippage:** bid/ask spread costs 0.1-0.5% per trade
+- **Slower fills** during high volume
+- **Pattern day trader rules:** need $25k for unlimited day trading, or limit to 3 day trades per 5-day period
+- **Tax implications** — consult an accountant
+- **Emotional pressure** — real money hits different
 
 ---
 
-## Daily Operational Checklist
+## 📖 Glossary — Trading Terms Explained
 
-You don't have to do any of this — the bot handles everything. But if you want to stay informed:
-
-### Morning (before 9:30 AM ET)
-- [ ] Check push notifications — any overnight alerts?
-- [ ] Open dashboard — any red banners or kill switch active?
-- [ ] Check Scheduler tab — all tasks green?
-
-### During Market Hours
-- [ ] Expect push notifications for trades
-- [ ] Can intervene via dashboard at any time
-
-### After Market Close (4:05 PM ET)
-- [ ] Daily close summary notification arrives
-- [ ] Check dashboard → Overview — any positions need attention?
-- [ ] Check Heatmap tab — today's P&L
-
-### Weekly (Sunday or Friday)
-- [ ] Review scorecard — readiness score trending up?
-- [ ] Check heatmap by-weekday analysis — any patterns?
-- [ ] Review Trade Journal for anomalies
-
-### Monthly
-- [ ] Paper vs Live comparison panel
-- [ ] If readiness score hits 80 + consistent profits: consider going live
-
----
-
-## Quick Reference Card
-
-### Everyone Can Say To Claude In Any Session
-- `/stock-bot` — launches the bot skill
-- "What did the bot do today?"
-- "Deploy trailing stop on NVDA"
-- "Start wheel on SOFI"
-- "Kill switch"
-- "Check readiness score"
-
-### Bot Defaults (Moderate Preset)
-- Stop-loss: 10% (5% for breakouts)
-- Max positions: 5
-- Max per stock: 10%
-- Max new per day: 2
-- Cooldown: 60 min after loss
-- Daily loss limit: 3% → kill switch
-
-### Where Everything Lives
-- **Dashboard:** https://stockbott.up.railway.app
-- **Code:** `/Users/kevinbell/Alpaca Trading/`
-- **GitHub:** https://github.com/Kbell0629/alpaca-trading-bot
-- **Railway:** auto-deploys from GitHub main branch
-- **Scheduler:** runs in Railway server.py background thread
-- **Memory:** `/Users/kevinbell/.claude/projects/-Users-kevinbell-Alpaca-Trading/memory/`
+| Term | Meaning |
+|---|---|
+| **Alpaca** | The broker (like Robinhood) that executes our trades via API |
+| **Backtest** | Simulating a strategy on historical data to see how it would have performed |
+| **Bear market** | When stocks are falling broadly (SPY down 5%+ over 20 days) |
+| **Bull market** | When stocks are rising broadly |
+| **Daily P&L** | Profit/loss since market open today |
+| **Drawdown** | % drop from your portfolio's peak value |
+| **FOMC** | Federal Open Market Committee — Fed's meetings where they set interest rates |
+| **Gap** | When a stock opens much higher/lower than it closed (overnight news) |
+| **Limit order** | Buy/sell at a specific price or better (may not fill) |
+| **Long position** | You own the stock, profit when it goes up |
+| **Market order** | Buy/sell at current price immediately (always fills) |
+| **Paper trading** | Fake money, real prices — for testing |
+| **Position size** | How much of your portfolio is in one stock |
+| **Profit factor** | Total $ won / Total $ lost (want >1.5) |
+| **RSI** | Relative Strength Index (0-100). <30 = oversold, >70 = overbought |
+| **Sharpe ratio** | Risk-adjusted return (want >0.5) |
+| **Short position** | You borrowed and sold the stock, profit when it goes down |
+| **Slippage** | Difference between expected price and actual fill price |
+| **Stop-loss** | Auto-sell if stock drops to a certain price (limits losses) |
+| **Trailing stop** | Stop-loss that moves UP as price rises, never DOWN |
+| **Volatility** | How much a stock's price moves (higher = riskier) |
+| **Wash sale** | Selling at a loss and buying back within 30 days (can't claim tax loss) |
+| **Win rate** | % of trades that were profitable |
 
 ---
 
-*Last Updated: 2026-04-16 after completing 13 profit-boosting features. Bot has 6 strategies, 20+ safety rails, 18 Python modules, cloud-hosted 24/7 autonomous operation.*
+## 🔧 Technical Reference
+
+### Environment Variables
+
+| Variable | Purpose |
+|---|---|
+| `ALPACA_API_KEY` | Alpaca API key |
+| `ALPACA_API_SECRET` | Alpaca API secret |
+| `ALPACA_ENDPOINT` | `paper-api.alpaca.markets/v2` or `api.alpaca.markets/v2` |
+| `ALPACA_DATA_ENDPOINT` | `data.alpaca.markets/v2` |
+| `DASHBOARD_USER` | Dashboard login username |
+| `DASHBOARD_PASS` | Dashboard login password |
+| `NTFY_TOPIC` | Push notification topic |
+| `NOTIFICATION_EMAIL` | Email for critical alerts |
+| `PORT` | Server port (Railway sets automatically) |
+| `ENABLE_CLOUD_SCHEDULER` | `true` to run scheduler on Railway |
+
+### Voice Commands (Click 🎤 button)
+
+- "Kill switch" → triggers emergency stop
+- "Refresh" → reloads dashboard
+- "Portfolio" → speaks current value
+- "What's the top pick" → speaks top recommendation
+- "Deploy trailing stop on NVDA" → opens deploy modal
+
+### API Endpoints (For Developers)
+
+All require basic auth.
+- `GET /api/data` — Full dashboard data
+- `GET /api/account` — Alpaca account
+- `GET /api/positions` — Current positions
+- `GET /api/orders` — Open orders
+- `GET /api/scheduler-status` — Cloud scheduler state
+- `GET /api/trade-heatmap` — Daily P&L history
+- `GET /api/guardrails` — Safety config
+- `GET /api/readme` — This user manual (raw markdown)
+- `POST /api/deploy` — Deploy a strategy
+- `POST /api/kill-switch` — Activate/deactivate kill switch
+- `POST /api/auto-deployer` — Toggle auto-deployer
+- `POST /api/apply-preset` — Apply strategy preset
+
+### File Locations
+
+| File | Purpose |
+|---|---|
+| `server.py` | Dashboard web server |
+| `cloud_scheduler.py` | 24/7 task scheduler |
+| `update_dashboard.py` | Stock screener |
+| `guardrails.json` | Safety limits |
+| `auto_deployer_config.json` | Auto-deployer settings |
+| `strategies/*.json` | Per-position strategy state |
+| `trade_journal.json` | All trade history |
+| `scorecard.json` | Performance metrics |
+
+---
+
+## 📞 Quick Reference Card
+
+**Dashboard:** https://stockbott.up.railway.app
+**Login:** Kbell0629 / We360you45$$
+**GitHub:** github.com/Kbell0629/alpaca-trading-bot
+**Notifications app:** ntfy (topic: `alpaca-trading-bot-kevin`)
+**Emergency stop:** Red KILL SWITCH button in dashboard header
+
+**Bot hours:** Weekdays 9:30 AM - 4:00 PM ET (fully automatic)
+**Your hours:** Check dashboard once a day, watch phone for notifications
+
+**If lost:** Click the 📖 Help button — opens this manual.
+
+---
+
+*Last updated: 2026-04-16. Maintained by: Claude Code. Questions or issues → open a GitHub issue.*
