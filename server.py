@@ -374,6 +374,45 @@ button:active { transform: translateY(0); }
 .sched-log-line .ts { color: var(--accent); }
 .sched-log-line .tag { color: var(--orange); }
 .sched-log-empty { color: var(--text-dim); font-style: italic; text-align: center; padding: 20px; }
+
+/* Trade Heatmap */
+.heatmap-section { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 24px; }
+.heatmap-grid { display: grid; grid-template-columns: 60px repeat(auto-fill, minmax(16px, 1fr)); gap: 2px; margin: 20px 0; font-size: 10px; }
+.heatmap-cell { aspect-ratio: 1; border-radius: 2px; cursor: pointer; transition: transform 0.15s; }
+.heatmap-cell:hover { transform: scale(1.3); z-index: 10; position: relative; }
+.heatmap-cell.empty { background: rgba(148,163,184,0.05); }
+.heatmap-cell.loss-big { background: #dc2626; }
+.heatmap-cell.loss { background: #ef4444; }
+.heatmap-cell.loss-small { background: rgba(239,68,68,0.4); }
+.heatmap-cell.flat { background: rgba(148,163,184,0.2); }
+.heatmap-cell.win-small { background: rgba(16,185,129,0.4); }
+.heatmap-cell.win { background: #10b981; }
+.heatmap-cell.win-big { background: #059669; }
+.heatmap-legend { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-dim); margin-top: 12px; }
+.heatmap-legend-box { width: 14px; height: 14px; border-radius: 2px; }
+.heatmap-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.heatmap-weekday-analysis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 20px; }
+.heatmap-weekday-card { background: rgba(10,14,23,0.5); border: 1px solid var(--border); border-radius: 8px; padding: 12px; text-align: center; }
+.heatmap-weekday-name { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+.heatmap-weekday-value { font-size: 16px; font-weight: 700; }
+
+/* Paper vs Live Comparison */
+.comparison-section { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 24px; }
+.comparison-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.comparison-card { background: rgba(10,14,23,0.5); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+.comparison-card.paper { border-top: 3px solid var(--accent); }
+.comparison-card.live { border-top: 3px solid var(--green); }
+.comparison-card.live.inactive { border-top: 3px solid var(--text-dim); opacity: 0.7; }
+.comparison-title { font-size: 14px; font-weight: 700; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center; }
+.comparison-status { font-size: 10px; padding: 2px 8px; border-radius: 4px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+.comparison-status.active { background: rgba(16,185,129,0.15); color: var(--green); }
+.comparison-status.inactive { background: rgba(148,163,184,0.15); color: var(--text-dim); }
+.comparison-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; }
+.comparison-setup { background: rgba(59,130,246,0.05); border: 1px dashed rgba(59,130,246,0.3); border-radius: 8px; padding: 16px; font-size: 12px; color: var(--text-dim); line-height: 1.6; }
+.comparison-setup ol { padding-left: 20px; margin: 8px 0; }
+.comparison-delta { font-size: 13px; color: var(--text-dim); margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+@media (max-width: 768px) { .comparison-grid { grid-template-columns: 1fr; } }
+
 .strategy-card h2 { font-size: 16px; margin-bottom: 4px; }
 .strategy-card .subtitle { font-size: 12px; color: var(--text-dim); margin-bottom: 16px; }
 .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -2509,6 +2548,8 @@ function renderDashboard() {
         '<button class="nav-tab" onclick="scrollToSection(\'section-backtest\')">Backtest</button>' +
         '<button class="nav-tab" onclick="scrollToSection(\'section-readiness\')">Readiness</button>' +
         '<button class="nav-tab" onclick="scrollToSection(\'section-scheduler\')">Scheduler</button>' +
+        '<button class="nav-tab" onclick="scrollToSection(\'section-heatmap\')">Heatmap</button>' +
+        '<button class="nav-tab" onclick="scrollToSection(\'section-comparison\')">Paper vs Live</button>' +
         '<button class="nav-tab" onclick="scrollToSection(\'section-settings\')">Settings</button>' +
     '</div>';
 
@@ -2702,6 +2743,20 @@ function renderDashboard() {
         '<div id="section-scheduler" class="scheduler-section">' +
             '<h3 style="display:flex;justify-content:space-between;align-items:center">Cloud Scheduler <button class="btn-ghost btn-sm" onclick="refreshSchedulerStatus()">Refresh</button></h3>' +
             '<div id="schedulerPanel"><div class="empty" style="padding:20px">Loading scheduler status...</div></div>' +
+        '</div>' +
+        '<div id="section-heatmap" class="heatmap-section">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:12px">' +
+                '<div>' +
+                    '<h3 style="margin:0">Trade Heatmap</h3>' +
+                    '<div style="font-size:12px;color:var(--text-dim);margin-top:4px">Daily P&L over time — spot patterns to improve your trading</div>' +
+                '</div>' +
+                '<button class="btn-ghost btn-sm" onclick="loadHeatmap()">Refresh</button>' +
+            '</div>' +
+            '<div id="heatmapContent"><div class="empty" style="padding:20px">Loading heatmap data...</div></div>' +
+        '</div>' +
+        '<div id="section-comparison" class="comparison-section">' +
+            '<h3>Paper vs Live Comparison</h3>' +
+            '<div id="comparisonContent">' + buildComparisonPanel(d) + '</div>' +
         '</div>' +
         '<div class="activity-log">' +
             '<h3>Activity Log <button class="btn-ghost btn-sm" style="margin-left:12px" onclick="activityLog=[];renderLog();">Clear</button></h3>' +
@@ -3041,12 +3096,180 @@ function applyPreset(preset) {
     }
 }
 
+async function loadHeatmap() {
+    try {
+        var resp = await fetch(API_BASE + '/api/trade-heatmap', {credentials: 'same-origin'});
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        var data = await resp.json();
+        renderHeatmap(data);
+    } catch(e) {
+        var el = document.getElementById('heatmapContent');
+        if (el) el.innerHTML = '<div class="empty" style="padding:20px;color:var(--red)">Error: ' + e.message + '</div>';
+    }
+}
+
+function heatmapColor(pct) {
+    if (pct === null || pct === undefined) return 'empty';
+    if (pct < -2) return 'loss-big';
+    if (pct < -0.5) return 'loss';
+    if (pct < -0.05) return 'loss-small';
+    if (pct < 0.05) return 'flat';
+    if (pct < 0.5) return 'win-small';
+    if (pct < 2) return 'win';
+    return 'win-big';
+}
+
+function renderHeatmap(data) {
+    var el = document.getElementById('heatmapContent');
+    if (!el) return;
+
+    var days = data.daily_pnl || [];
+    if (days.length === 0) {
+        el.innerHTML = '<div class="empty" style="padding:40px;text-align:center">' +
+            '<div style="font-size:14px;color:var(--text-dim);margin-bottom:8px">No trading history yet</div>' +
+            '<div style="font-size:12px;color:var(--text-dim)">Heatmap will populate as the bot trades. First data point after market close today.</div>' +
+            '</div>';
+        return;
+    }
+
+    // Sort by date
+    days.sort(function(a,b){ return a.date.localeCompare(b.date); });
+
+    // Compute stats
+    var totalPnl = days.reduce(function(s,d){ return s + (d.pnl||0); }, 0);
+    var winDays = days.filter(function(d){ return (d.pnl||0) > 0; }).length;
+    var lossDays = days.filter(function(d){ return (d.pnl||0) < 0; }).length;
+    var bestDay = days.reduce(function(best, d){ return (d.pnl_pct||0) > (best.pnl_pct||-999) ? d : best; }, {pnl_pct: -999});
+    var worstDay = days.reduce(function(worst, d){ return (d.pnl_pct||0) < (worst.pnl_pct||999) ? d : worst; }, {pnl_pct: 999});
+
+    var stats =
+        '<div class="heatmap-stats">' +
+            '<div class="metric"><div class="label">Trading Days</div><div class="value">' + days.length + '</div></div>' +
+            '<div class="metric"><div class="label">Win Days</div><div class="value positive">' + winDays + '</div></div>' +
+            '<div class="metric"><div class="label">Loss Days</div><div class="value negative">' + lossDays + '</div></div>' +
+            '<div class="metric"><div class="label">Total P&L</div><div class="value ' + (totalPnl >= 0 ? 'positive' : 'negative') + '">$' + totalPnl.toFixed(2) + '</div></div>' +
+            '<div class="metric"><div class="label">Best Day</div><div class="value positive">' + ((bestDay.pnl_pct||0) >= 0 ? '+' : '') + (bestDay.pnl_pct||0).toFixed(2) + '%</div></div>' +
+            '<div class="metric"><div class="label">Worst Day</div><div class="value negative">' + (worstDay.pnl_pct||0).toFixed(2) + '%</div></div>' +
+        '</div>';
+
+    // Calendar grid (last 90 days, grouped by week)
+    var grid = '<div style="overflow-x:auto"><div class="heatmap-grid" style="grid-template-columns:60px repeat(' + Math.min(days.length + 5, 90) + ', 20px)">';
+    // Just render a simple row of cells per day for now
+    grid += '<div style="color:var(--text-dim);font-size:10px;align-self:center">Daily:</div>';
+    days.slice(-90).forEach(function(d) {
+        var cls = heatmapColor(d.pnl_pct);
+        var tooltip = d.date + ': ' + (d.pnl_pct >= 0 ? '+' : '') + d.pnl_pct.toFixed(2) + '% ($' + d.pnl.toFixed(2) + ') · ' + d.trades + ' trades';
+        grid += '<div class="heatmap-cell ' + cls + '" title="' + tooltip + '"></div>';
+    });
+    grid += '</div></div>';
+
+    var legend =
+        '<div class="heatmap-legend">Loss ' +
+        '<div class="heatmap-legend-box loss-big"></div>' +
+        '<div class="heatmap-legend-box loss"></div>' +
+        '<div class="heatmap-legend-box loss-small"></div>' +
+        '<div class="heatmap-legend-box flat"></div>' +
+        '<div class="heatmap-legend-box win-small"></div>' +
+        '<div class="heatmap-legend-box win"></div>' +
+        '<div class="heatmap-legend-box win-big"></div>' +
+        ' Win</div>';
+
+    // Weekday analysis
+    var wd = data.by_weekday || {};
+    var weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+    var wdHtml = '<h4 style="margin-top:24px;margin-bottom:8px;font-size:13px;color:var(--text-dim)">By Day of Week</h4>' +
+        '<div class="heatmap-weekday-analysis">';
+    weekdays.forEach(function(day) {
+        var d = wd[day] || {avg_pnl: 0, win_rate: 0, days: 0};
+        var valClass = d.avg_pnl >= 0 ? 'positive' : 'negative';
+        wdHtml += '<div class="heatmap-weekday-card">' +
+            '<div class="heatmap-weekday-name">' + day.slice(0,3) + '</div>' +
+            '<div class="heatmap-weekday-value ' + valClass + '">$' + d.avg_pnl.toFixed(0) + '</div>' +
+            '<div style="font-size:10px;color:var(--text-dim);margin-top:2px">avg · ' + d.win_rate.toFixed(0) + '% win</div>' +
+            '<div style="font-size:10px;color:var(--text-dim)">' + d.days + ' days</div>' +
+            '</div>';
+    });
+    wdHtml += '</div>';
+
+    el.innerHTML = stats + grid + legend + wdHtml;
+}
+
+function buildComparisonPanel(d) {
+    var acct = d.account || {};
+    var sc = d.scorecard || {};
+    var paperValue = parseFloat(acct.portfolio_value || 0);
+    var paperStartValue = sc.starting_capital || 100000;
+    var paperReturn = ((paperValue - paperStartValue) / paperStartValue * 100).toFixed(2);
+    var paperReturnClass = parseFloat(paperReturn) >= 0 ? 'positive' : 'negative';
+    var winRate = sc.win_rate_pct || 0;
+    var readiness = sc.readiness_score || 0;
+    var readyForLive = readiness >= 80;
+
+    // Check if live account is configured
+    var liveActive = (d.auto_deployer_config && d.auto_deployer_config.live_mode_active) || false;
+
+    var paperHtml =
+        '<div class="comparison-card paper">' +
+            '<div class="comparison-title">Paper Trading <span class="comparison-status active">ACTIVE</span></div>' +
+            '<div style="font-size:11px;color:var(--text-dim);margin-bottom:12px">Simulated trading — no real money</div>' +
+            '<div class="comparison-metrics">' +
+                '<div><div style="font-size:10px;color:var(--text-dim)">Portfolio</div><div style="font-size:18px;font-weight:700">$' + paperValue.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) + '</div></div>' +
+                '<div><div style="font-size:10px;color:var(--text-dim)">Total Return</div><div class="' + paperReturnClass + '" style="font-size:18px;font-weight:700">' + (parseFloat(paperReturn) >= 0 ? '+' : '') + paperReturn + '%</div></div>' +
+                '<div><div style="font-size:10px;color:var(--text-dim)">Win Rate</div><div style="font-size:18px;font-weight:700">' + winRate.toFixed(0) + '%</div></div>' +
+                '<div><div style="font-size:10px;color:var(--text-dim)">Readiness</div><div style="font-size:18px;font-weight:700">' + readiness + '/100</div></div>' +
+            '</div>' +
+        '</div>';
+
+    var liveHtml;
+    if (liveActive) {
+        // Show real live account data
+        liveHtml =
+            '<div class="comparison-card live">' +
+                '<div class="comparison-title">Live Trading <span class="comparison-status active">ACTIVE</span></div>' +
+                '<div style="font-size:11px;color:var(--text-dim);margin-bottom:12px">Real money — actual trades</div>' +
+                '<div class="comparison-metrics">' +
+                    '<div><div style="font-size:10px;color:var(--text-dim)">Portfolio</div><div style="font-size:18px;font-weight:700">Coming soon</div></div>' +
+                '</div>' +
+            '</div>';
+    } else {
+        var readyMsg = readyForLive
+            ? '<strong style="color:var(--green)">\u2713 Ready for live trading!</strong> Readiness score: ' + readiness + '/100'
+            : '<strong style="color:var(--orange)">Not ready yet.</strong> Need ' + (80 - readiness) + ' more readiness points (currently ' + readiness + '/100).';
+
+        liveHtml =
+            '<div class="comparison-card live inactive">' +
+                '<div class="comparison-title">Live Trading <span class="comparison-status inactive">NOT ACTIVE</span></div>' +
+                '<div style="font-size:11px;color:var(--text-dim);margin-bottom:12px">Real money trading — not yet configured</div>' +
+                '<div class="comparison-setup">' +
+                    '<div style="margin-bottom:8px">' + readyMsg + '</div>' +
+                    '<div><strong>To activate live trading:</strong></div>' +
+                    '<ol>' +
+                        '<li>Hit 80/100 readiness score (30 days of profitable paper trading)</li>' +
+                        '<li>Create a live Alpaca account and fund with $5k</li>' +
+                        '<li>Generate live API keys at alpaca.markets</li>' +
+                        '<li>Update Railway env vars: ALPACA_ENDPOINT to https://api.alpaca.markets/v2</li>' +
+                        '<li>Update ALPACA_API_KEY and ALPACA_API_SECRET to live keys</li>' +
+                        '<li>Keep paper running in parallel to compare</li>' +
+                    '</ol>' +
+                '</div>' +
+            '</div>';
+    }
+
+    var delta = '';
+    if (liveActive) {
+        delta = '<div class="comparison-delta">Performance gap: paper returns typically exceed live by ~2-5% due to slippage and fills.</div>';
+    }
+
+    return '<div class="comparison-grid">' + paperHtml + liveHtml + '</div>' + delta;
+}
+
 // Initialize
 (async function init() {
     await refreshData();
     await loadAutoDeployerState();
     await loadGuardrails();
     renderDashboard();
+    loadHeatmap();
     addLog('Dashboard loaded', 'success');
     countdownInterval = setInterval(() => {
         countdown--;
@@ -3211,6 +3434,50 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json(get_scheduler_status())
             else:
                 self.send_json({"running": False, "error": "Scheduler module not loaded"})
+
+        elif path == "/api/trade-heatmap":
+            journal = load_json(os.path.join(BASE_DIR, "trade_journal.json")) or {}
+            snapshots = journal.get("daily_snapshots", [])
+            trades = journal.get("trades", [])
+
+            # Build daily P&L map
+            daily_pnl = {}
+            for snap in snapshots:
+                date = snap.get("date", "")
+                if date:
+                    daily_pnl[date] = {
+                        "date": date,
+                        "pnl": snap.get("daily_pnl", 0),
+                        "pnl_pct": snap.get("daily_pnl_pct", 0),
+                        "trades": snap.get("closed_today", 0),
+                        "wins": snap.get("wins_today", 0),
+                        "losses": snap.get("losses_today", 0),
+                        "weekday": datetime.strptime(date, "%Y-%m-%d").strftime("%A") if date else "",
+                    }
+
+            # Analyze patterns
+            by_weekday = {}
+            for d in daily_pnl.values():
+                wd = d.get("weekday", "")
+                if wd:
+                    if wd not in by_weekday:
+                        by_weekday[wd] = {"total_pnl": 0, "days": 0, "wins": 0}
+                    by_weekday[wd]["total_pnl"] += d.get("pnl", 0)
+                    by_weekday[wd]["days"] += 1
+                    if d.get("pnl", 0) > 0:
+                        by_weekday[wd]["wins"] += 1
+
+            for wd in by_weekday:
+                d = by_weekday[wd]
+                d["avg_pnl"] = d["total_pnl"] / d["days"] if d["days"] > 0 else 0
+                d["win_rate"] = d["wins"] / d["days"] * 100 if d["days"] > 0 else 0
+
+            self.send_json({
+                "daily_pnl": list(daily_pnl.values()),
+                "by_weekday": by_weekday,
+                "total_days": len(daily_pnl),
+                "total_trades": len(trades),
+            })
 
         elif path == "/manifest.json":
             manifest_path = os.path.join(BASE_DIR, "manifest.json")

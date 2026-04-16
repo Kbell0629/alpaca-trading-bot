@@ -76,6 +76,27 @@ BATCH_SIZE = 500
 MIN_PRICE = 5.0
 MIN_VOLUME = 100_000
 
+# --- Feature 3: Sector Rotation (sector ETFs + stock-to-ETF mapping) ---
+SECTOR_ETFS = {
+    "XLK": "Technology", "XLV": "Healthcare", "XLF": "Financials",
+    "XLE": "Energy", "XLY": "Consumer Discretionary", "XLP": "Consumer Staples",
+    "XLI": "Industrials", "XLU": "Utilities", "XLB": "Materials",
+    "XLRE": "Real Estate", "XLC": "Communication"
+}
+
+STOCK_TO_ETF = {
+    "AAPL": "XLK", "MSFT": "XLK", "GOOG": "XLK", "GOOGL": "XLK", "NVDA": "XLK",
+    "AMD": "XLK", "INTC": "XLK", "CRM": "XLK", "ORCL": "XLK", "PLTR": "XLK",
+    "AMZN": "XLY", "TSLA": "XLY", "HD": "XLY", "NKE": "XLY", "MCD": "XLY",
+    "WMT": "XLP", "COST": "XLP", "PG": "XLP", "KO": "XLP",
+    "JPM": "XLF", "BAC": "XLF", "GS": "XLF", "MS": "XLF", "WFC": "XLF",
+    "COIN": "XLF", "SOFI": "XLF", "HOOD": "XLF",
+    "JNJ": "XLV", "UNH": "XLV", "PFE": "XLV", "LLY": "XLV", "MRK": "XLV",
+    "XOM": "XLE", "CVX": "XLE", "COP": "XLE",
+    "BA": "XLI", "CAT": "XLI", "GE": "XLI", "LMT": "XLI", "RTX": "XLI",
+    "META": "XLC", "DIS": "XLC", "NFLX": "XLC",
+}
+
 # --- Improvement 3: Sector Map ---
 SECTOR_MAP = {
     # Tech
@@ -146,6 +167,21 @@ try:
     from extended_hours import get_trading_session
 except ImportError:
     get_trading_session = None
+
+try:
+    from earnings_play import score_earnings_plays
+except ImportError:
+    score_earnings_plays = None
+
+try:
+    from news_scanner import scan_post_market_news
+except ImportError:
+    scan_post_market_news = None
+
+try:
+    from options_flow import scan_options_flow
+except ImportError:
+    scan_options_flow = None
 
 
 def api_get(url, timeout=15):
@@ -304,11 +340,23 @@ def score_stocks(snapshots):
                 mean_reversion_score = abs(daily_change) * 0.8
 
             # Breakout Score: rewards stocks breaking up on high volume
+            # Feature 7: Volume Profile Breakouts -- stricter volume tiers + confirmation strength
             breakout_score = 0
+            breakout_note = None
             if daily_change > 3 and volume_surge > 50:  # up big on high volume
                 breakout_score = daily_change * 1.5 + (volume_surge / 20)
+                # Volume quality multiplier (higher relative volume = more conviction)
+                if volume_surge > 200:  # 3x normal volume
+                    breakout_score *= 1.5
+                    breakout_note = "3x_volume_confirmed"
+                elif volume_surge > 100:  # 2x normal volume
+                    breakout_score *= 1.2
+                    breakout_note = "2x_volume_confirmed"
+                else:
+                    breakout_note = "standard_breakout"
             elif daily_change > 2 and volume_surge > 30:
-                breakout_score = daily_change * 1.0 + (volume_surge / 30)
+                breakout_score = daily_change * 0.8
+                breakout_note = "weak_breakout"
 
             # Best strategy
             scores = {
@@ -339,6 +387,7 @@ def score_stocks(snapshots):
                 "wheel_score": wheel_score,
                 "mean_reversion_score": mean_reversion_score,
                 "breakout_score": breakout_score,
+                "breakout_note": breakout_note,
                 "sector": sector,
             })
         except Exception:
@@ -420,6 +469,21 @@ def enrich_with_momentum(pick, bars):
     if pick["momentum_5d"] > 5 and pick["relative_volume"] > 1.5:
         pick["breakout_score"] += pick["momentum_5d"] * 1.0 + (pick["relative_volume"] - 1) * 10
 
+    # Feature 7: Volume Profile Breakouts -- apply volume quality multiplier
+    # using ACTUAL 20-day relative volume (not snapshot approximation).
+    # Only boost if this is a real breakout candidate (daily_change > 3).
+    rvol = pick.get("relative_volume", 1.0)
+    daily_change = pick.get("daily_change", 0)
+    if pick.get("breakout_score", 0) > 0 and daily_change > 3:
+        if rvol >= 3.0:
+            pick["breakout_score"] *= 1.5
+            pick["breakout_note"] = "3x_volume_confirmed"
+        elif rvol >= 2.0:
+            pick["breakout_score"] *= 1.2
+            pick["breakout_note"] = "2x_volume_confirmed"
+        else:
+            pick.setdefault("breakout_note", "standard_breakout")
+
     # Recalculate best with ALL 5 strategies
     pick["scores"] = {
         "Trailing Stop": pick["trailing_score"],
@@ -483,6 +547,171 @@ def apply_market_regime(picks, regime):
             p["scores"]["Wheel Strategy"] = p["wheel_score"]
             p["best_strategy"] = max(p["scores"], key=p["scores"].get)
             p["best_score"] = p["scores"][p["best_strategy"]]
+
+
+# ---------------------------------------------------------------------------
+# Feature 1: Dynamic Strategy Rotation by Market Regime
+# ---------------------------------------------------------------------------
+
+def apply_strategy_rotation(picks, market_regime, vix_estimate=None):
+    """Dynamically weight strategies based on market conditions.
+    Bull market: boost trailing_stop and breakout. Reduce mean_reversion.
+    Bear market: boost short_sell and mean_reversion. Reduce breakout.
+    Neutral/choppy: boost wheel (premium income).
+    """
+    regime_weights = {
+        'bull': {
+            'trailing_stop': 1.3,
+            'breakout': 1.4,
+            'mean_reversion': 0.6,
+            'copy_trading': 1.0,
+            'wheel': 0.8,
+            'short_sell': 0.3,  # Almost never short in bull
+        },
+        'neutral': {
+            'trailing_stop': 1.0,
+            'breakout': 1.0,
+            'mean_reversion': 1.0,
+            'copy_trading': 1.0,
+            'wheel': 1.3,  # Range-bound = premium
+            'short_sell': 0.7,
+        },
+        'bear': {
+            'trailing_stop': 0.7,  # Whipsaws
+            'breakout': 0.5,  # False breakouts
+            'mean_reversion': 1.2,  # Oversold bounces
+            'copy_trading': 0.9,
+            'wheel': 1.4,  # High vol = fat premiums
+            'short_sell': 1.5,  # Bear market shorts
+        }
+    }
+    weights = regime_weights.get(market_regime, regime_weights['neutral'])
+    for pick in picks:
+        pick['trailing_score'] = pick.get('trailing_score', 0) * weights['trailing_stop']
+        pick['breakout_score'] = pick.get('breakout_score', 0) * weights['breakout']
+        pick['mean_reversion_score'] = pick.get('mean_reversion_score', 0) * weights['mean_reversion']
+        pick['copy_score'] = pick.get('copy_score', 0) * weights['copy_trading']
+        pick['wheel_score'] = pick.get('wheel_score', 0) * weights['wheel']
+        # Recalculate best strategy after weighting
+        scores = {
+            'Trailing Stop': pick.get('trailing_score', 0),
+            'Copy Trading': pick.get('copy_score', 0),
+            'Wheel Strategy': pick.get('wheel_score', 0),
+            'Mean Reversion': pick.get('mean_reversion_score', 0),
+            'Breakout': pick.get('breakout_score', 0),
+        }
+        pick['scores'] = scores
+        pick['best_strategy'] = max(scores, key=scores.get)
+        pick['best_score'] = scores[pick['best_strategy']]
+        pick['regime_weights_applied'] = weights
+    return picks, weights
+
+
+# ---------------------------------------------------------------------------
+# Feature 3: Sector Rotation Signal
+# ---------------------------------------------------------------------------
+
+def calculate_sector_rotation():
+    """Fetch sector ETF 20-day performance and rank vs SPY."""
+    results = {}
+    spy_bars = fetch_historical_bars("SPY", days=20)
+    spy_return = 0
+    if spy_bars and len(spy_bars) >= 20:
+        spy_return = (spy_bars[-1].get("c", 0) / spy_bars[-20].get("c", 1) - 1) * 100
+
+    for etf, name in SECTOR_ETFS.items():
+        bars = fetch_historical_bars(etf, days=20)
+        if bars and len(bars) >= 20:
+            etf_return = (bars[-1].get("c", 0) / bars[-20].get("c", 1) - 1) * 100
+            relative = etf_return - spy_return
+            results[etf] = {
+                "name": name,
+                "etf_return_20d": round(etf_return, 2),
+                "relative_to_spy": round(relative, 2),
+                "strength": "strong" if relative > 2 else "weak" if relative < -2 else "neutral"
+            }
+    return {"sectors": results, "spy_return_20d": round(spy_return, 2)}
+
+
+def apply_sector_rotation_filter(picks, sector_data):
+    """Penalize picks in weak sectors, boost picks in strong sectors."""
+    if not sector_data or "sectors" not in sector_data:
+        return picks
+    for pick in picks:
+        etf = STOCK_TO_ETF.get(pick.get("symbol"))
+        if etf and etf in sector_data["sectors"]:
+            s = sector_data["sectors"][etf]
+            strength = s["strength"]
+            if strength == "strong":
+                # Boost all scores 15%
+                for key in ["trailing_score", "breakout_score", "mean_reversion_score", "copy_score"]:
+                    if key in pick:
+                        pick[key] *= 1.15
+                pick["sector_signal"] = f"Strong sector ({s['name']}, +{s['relative_to_spy']:.1f}% vs SPY)"
+            elif strength == "weak":
+                # Reduce scores 20%
+                for key in ["trailing_score", "breakout_score", "mean_reversion_score", "copy_score"]:
+                    if key in pick:
+                        pick[key] *= 0.80
+                pick["sector_signal"] = f"Weak sector ({s['name']}, {s['relative_to_spy']:.1f}% vs SPY)"
+            pick["sector"] = s["name"]
+            pick["sector_etf"] = etf
+    return picks
+
+
+# ---------------------------------------------------------------------------
+# Feature 9: Market Breadth Filter
+# ---------------------------------------------------------------------------
+
+def calculate_market_breadth(all_snapshots):
+    """Calculate market breadth from the snapshot data we already have.
+    Returns % of stocks advancing on the day.
+    """
+    advancing = 0
+    declining = 0
+    for sym, snap in all_snapshots.items():
+        daily = snap.get("dailyBar", {}) or {}
+        prev = snap.get("prevDailyBar", {}) or {}
+        if daily and prev:
+            today_close = daily.get("c", 0)
+            prev_close = prev.get("c", 0)
+            if today_close > prev_close:
+                advancing += 1
+            elif today_close < prev_close:
+                declining += 1
+    total = advancing + declining
+    if total == 0:
+        return {"breadth_pct": 50, "advancing": 0, "declining": 0, "signal": "unknown"}
+    breadth = advancing / total * 100
+    signal = "strong" if breadth > 60 else "weak" if breadth < 40 else "neutral"
+    return {
+        "breadth_pct": round(breadth, 1),
+        "advancing": advancing,
+        "declining": declining,
+        "signal": signal,
+        "note": f"{round(breadth,1)}% of stocks advancing today"
+    }
+
+
+def apply_breadth_filter(picks, breadth_data):
+    """Reduce scores if market breadth is weak (divergence warning)."""
+    if not breadth_data:
+        return picks
+    signal = breadth_data.get("signal", "neutral")
+    if signal == "weak":
+        # Weak breadth = reduce long scores (market is narrow = risky)
+        for pick in picks:
+            for key in ["trailing_score", "breakout_score"]:
+                if key in pick:
+                    pick[key] *= 0.85  # 15% reduction
+            pick["breadth_warning"] = True
+    elif signal == "strong":
+        # Strong breadth = broad market strength = boost
+        for pick in picks:
+            for key in ["trailing_score", "breakout_score"]:
+                if key in pick:
+                    pick[key] *= 1.10
+    return picks
 
 
 # ---------------------------------------------------------------------------
@@ -714,12 +943,44 @@ def fetch_all_data():
     print("Running full stock screener...")
     symbols = fetch_tradeable_symbols()
     snapshots = fetch_all_snapshots(symbols) if symbols else {}
+
+    # Feature 9: Market Breadth -- compute from snapshots we already have
+    print("Calculating market breadth (advance/decline)...")
+    breadth_data = calculate_market_breadth(snapshots)
+    print(f"  Breadth: {breadth_data.get('note', 'unknown')} -- signal: {breadth_data.get('signal')}")
+
+    # Feature 3: Sector Rotation -- fetch sector ETF performance
+    print("Calculating sector rotation (sector ETFs vs SPY)...")
+    sector_data = calculate_sector_rotation()
+    if sector_data.get("sectors"):
+        strong = [f"{etf}({v['name']}) +{v['relative_to_spy']:.1f}%"
+                  for etf, v in sector_data["sectors"].items() if v["strength"] == "strong"]
+        weak = [f"{etf}({v['name']}) {v['relative_to_spy']:.1f}%"
+                for etf, v in sector_data["sectors"].items() if v["strength"] == "weak"]
+        if strong:
+            print(f"  Strong sectors: {', '.join(strong)}")
+        if weak:
+            print(f"  Weak sectors: {', '.join(weak)}")
+
     print("Scoring stocks (initial pass)...")
     picks = score_stocks(snapshots)
     print(f"  Scored {len(picks)} stocks after filtering (price >= ${MIN_PRICE}, volume >= {MIN_VOLUME:,})")
 
-    # Apply market regime to all picks (Improvement 7)
-    apply_market_regime(picks, market_info["market_regime"])
+    # Feature 9: Apply breadth filter to all picks
+    print("Applying market breadth filter...")
+    apply_breadth_filter(picks, breadth_data)
+
+    # Feature 3: Apply sector rotation filter to all picks
+    print("Applying sector rotation filter...")
+    apply_sector_rotation_filter(picks, sector_data)
+
+    # Feature 1: Apply dynamic strategy rotation weights by market regime
+    # (replaces the old static apply_market_regime additive adjustments)
+    print(f"Applying strategy rotation weights for '{market_info['market_regime']}' regime...")
+    picks, regime_weights = apply_strategy_rotation(picks, market_info["market_regime"])
+
+    # Re-sort picks after all weighting
+    picks.sort(key=lambda x: x["best_score"], reverse=True)
 
     # --- Economic Calendar: check risk level ONCE (not per stock) ---
     print("Checking economic calendar for market-moving events...")
@@ -1084,6 +1345,41 @@ def fetch_all_data():
                 print(f"  Error fetching options data: {e}")
                 options_data = None
 
+    # Feature 2: Earnings play candidates
+    if score_earnings_plays:
+        try:
+            earnings_candidates = score_earnings_plays(picks[:50])[:10]
+            print(f"Earnings play candidates: {len(earnings_candidates)}")
+        except Exception as e:
+            print(f"  Earnings play scoring failed: {e}")
+            earnings_candidates = []
+    else:
+        earnings_candidates = []
+
+    # Feature 4: Post-market news scan
+    if scan_post_market_news:
+        try:
+            news_signals = scan_post_market_news(hours_back=12, min_score=8)
+            print(f"Post-market news scan: {news_signals.get('actionable_count', 0)} actionable signals "
+                  f"from {news_signals.get('total_articles', 0)} articles")
+        except Exception as e:
+            print(f"  News scan failed: {e}")
+            news_signals = {"actionable": [], "error": str(e)}
+    else:
+        news_signals = {"actionable": []}
+
+    # Feature 5: Options flow for top 20 picks
+    if scan_options_flow:
+        try:
+            top_syms = [p["symbol"] for p in picks[:20]]
+            options_flow = scan_options_flow(top_syms)
+            print(f"Options flow: {len(options_flow)} symbols with unusual activity")
+        except Exception as e:
+            print(f"  Options flow scan failed: {e}")
+            options_flow = []
+    else:
+        options_flow = []
+
     elapsed = time.time() - start_time
     print(f"Data fetch + enrichment complete in {elapsed:.1f}s")
 
@@ -1096,10 +1392,16 @@ def fetch_all_data():
         "wheel": wheel,
         "picks": all_picks,
         "diversified_top5": diversified_top5,
+        "earnings_candidates": earnings_candidates,
+        "news_signals": news_signals,
+        "options_flow": options_flow,
         "total_screened": len(snapshots),
         "total_passed": len(all_picks),
         "market_regime": market_info["market_regime"],
         "spy_momentum_20d": market_info["spy_momentum_20d"],
+        "market_breadth": breadth_data,
+        "sector_rotation": sector_data,
+        "regime_weights": regime_weights,
         "economic_calendar": {
             "risk_level": econ_risk_level,
             "recommendation": econ_risk["recommendation"],
@@ -1532,6 +1834,9 @@ def save_data_json(data):
         "total_passed": data["total_passed"],
         "market_regime": data["market_regime"],
         "spy_momentum_20d": data["spy_momentum_20d"],
+        "market_breadth": data.get("market_breadth", {}),
+        "sector_rotation": data.get("sector_rotation", {}),
+        "regime_weights": data.get("regime_weights", {}),
         "economic_calendar": data.get("economic_calendar", {}),
         "pnl": data["pnl"],
         "updated_at": data["updated_at"],

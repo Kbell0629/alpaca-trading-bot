@@ -180,6 +180,55 @@ def monitor_strategies():
     except Exception as e:
         log(f"Monitor error: {e}", "monitor")
 
+def check_profit_ladder(filepath, strat, price, entry, shares):
+    """Sell 25% at each profit target: +10%, +20%, +30%, +50%.
+
+    Modifies strat['state']['profit_takes'] to track which levels have been hit.
+    """
+    if shares <= 0 or not entry:
+        return
+
+    profit_pct = (price / entry - 1) * 100
+    state = strat.get("state", {})
+    takes = state.get("profit_takes", []) or []
+    symbol = strat["symbol"]
+    initial_qty = strat.get("initial_qty") or shares
+
+    targets = [
+        {"level": 10, "pct": 0.25, "note": "First target: lock in early gains"},
+        {"level": 20, "pct": 0.25, "note": "Second target: take more off the table"},
+        {"level": 30, "pct": 0.25, "note": "Third target: secure majority profit"},
+        {"level": 50, "pct": 0.25, "note": "Final target: let remainder ride"},
+    ]
+
+    for target in targets:
+        level = target["level"]
+        if level in takes:
+            continue  # Already taken this level
+        if profit_pct < level:
+            continue
+
+        # Sell 25% of ORIGINAL position at this level
+        sell_qty = max(1, int(initial_qty * target["pct"]))
+        sell_qty = min(sell_qty, shares)  # Can't sell more than we have
+
+        if sell_qty < 1:
+            continue
+
+        order = api_post(f"{API_ENDPOINT}/orders", {
+            "symbol": symbol, "qty": str(sell_qty), "side": "sell",
+            "type": "market", "time_in_force": "day"
+        })
+
+        if isinstance(order, dict) and "id" in order:
+            takes.append(level)
+            state["profit_takes"] = takes
+            state["total_shares_held"] = shares - sell_qty
+            save_json(filepath, strat)
+            log(f"{symbol}: Profit take level {level}% — sold {sell_qty} shares", "monitor")
+            notify(f"Profit take on {symbol} at +{level}%: sold {sell_qty} shares. {shares - sell_qty} still held.", "exit")
+            return  # One level per check
+
 def process_strategy_file(filepath, strat):
     symbol = strat["symbol"]
     state = strat.get("state", {})
@@ -268,6 +317,11 @@ def process_strategy_file(filepath, strat):
                 log(f"{symbol}: Target hit. P&L ${pnl:.2f}", "monitor")
                 notify(f"Profit taken on {symbol}: sold at ${price:.2f} (+{((price/entry-1)*100):.1f}%)", "exit")
 
+    # Feature 8: Partial profit taking
+    check_profit_ladder(filepath, strat, price, entry, shares)
+    # Refresh shares count in case profit ladder sold some
+    shares = strat.get("state", {}).get("total_shares_held", shares)
+
     # Check stop triggered
     if state.get("stop_order_id"):
         order = api_get(f"{API_ENDPOINT}/orders/{state['stop_order_id']}")
@@ -290,6 +344,42 @@ def process_strategy_file(filepath, strat):
 # ============================================================================
 # TASK 3: AUTO-DEPLOYER
 # ============================================================================
+def check_correlation_allowed(new_symbol, existing_positions):
+    """Check if adding this symbol would create dangerous correlation.
+    Returns (allowed, reason).
+
+    Uses the sector map to check if we'd have too many positions in same sector.
+    """
+    # Import the sector map from update_dashboard (has 80+ stocks mapped)
+    try:
+        from update_dashboard import SECTOR_MAP
+    except ImportError:
+        SECTOR_MAP = {}
+
+    new_sector = SECTOR_MAP.get(new_symbol, "Other")
+
+    # Count positions already in this sector
+    same_sector_count = 0
+    for pos in existing_positions:
+        pos_symbol = pos.get("symbol", "")
+        pos_sector = SECTOR_MAP.get(pos_symbol, "Other")
+        if pos_sector == new_sector and pos_sector != "Other":
+            same_sector_count += 1
+
+    MAX_PER_SECTOR = 2
+    if same_sector_count >= MAX_PER_SECTOR:
+        return False, f"Already have {same_sector_count} positions in {new_sector} sector (max {MAX_PER_SECTOR})"
+
+    # Also check concentration: total market value in same sector
+    total_value = sum(float(p.get("market_value", 0)) for p in existing_positions)
+    sector_value = sum(float(p.get("market_value", 0)) for p in existing_positions
+                       if SECTOR_MAP.get(p.get("symbol", ""), "Other") == new_sector)
+
+    if total_value > 0 and sector_value / total_value > 0.4:
+        return False, f"{new_sector} sector already {sector_value/total_value*100:.0f}% of portfolio (max 40%)"
+
+    return True, f"Sector diversification OK ({new_sector})"
+
 def run_auto_deployer():
     log("Running auto-deployer...", "deployer")
 
@@ -365,6 +455,14 @@ def run_auto_deployer():
             log(f"{symbol}: Skipped (earnings warning)", "deployer")
             continue
         if best_strat not in ("trailing_stop", "breakout", "mean_reversion"):
+            continue
+
+        # Feature 10: Correlation check
+        current_positions = api_get(f"{API_ENDPOINT}/positions") or []
+        current_positions = current_positions if isinstance(current_positions, list) else []
+        allowed, reason = check_correlation_allowed(symbol, current_positions)
+        if not allowed:
+            log(f"{symbol}: Skipped ({reason})", "deployer")
             continue
 
         qty = int(pick.get("recommended_shares", 1) or 1)
@@ -494,6 +592,124 @@ def run_weekly_learning():
         log(f"Learning error: {e}", "learn")
 
 # ============================================================================
+# TASK 6: FRIDAY RISK REDUCTION
+# ============================================================================
+def run_friday_risk_reduction():
+    """Scale out of profitable positions before weekend gap risk."""
+    log("Running Friday risk reduction...", "friday")
+
+    positions = api_get(f"{API_ENDPOINT}/positions")
+    if not isinstance(positions, list):
+        log(f"Could not fetch positions: {positions}", "friday")
+        return
+
+    actions_taken = 0
+    for pos in positions:
+        symbol = pos.get("symbol", "")
+        qty = abs(int(float(pos.get("qty", 0))))
+        unrealized_plpc = float(pos.get("unrealized_plpc", 0)) * 100
+        avg_entry = float(pos.get("avg_entry_price", 0))
+        current = float(pos.get("current_price", 0))
+
+        # Only scale out of profitable positions (20%+ gain)
+        if unrealized_plpc < 20:
+            continue
+        if qty < 2:  # Can't sell half of 1 share
+            continue
+
+        half_qty = qty // 2
+        log(f"{symbol}: +{unrealized_plpc:.1f}%, selling {half_qty}/{qty} before weekend", "friday")
+
+        order = api_post(f"{API_ENDPOINT}/orders", {
+            "symbol": symbol,
+            "qty": str(half_qty),
+            "side": "sell" if float(pos.get("qty", 0)) > 0 else "buy",
+            "type": "market",
+            "time_in_force": "day"
+        })
+
+        if isinstance(order, dict) and "id" in order:
+            actions_taken += 1
+            profit = (current - avg_entry) * half_qty
+            notify(f"Friday risk reduction: sold {half_qty} {symbol} locking in ~${profit:.2f} profit. {qty - half_qty} shares still held.", "exit")
+        else:
+            log(f"Failed to sell {symbol}: {order}", "friday")
+
+    if actions_taken > 0:
+        notify(f"Weekend prep complete: scaled out of {actions_taken} winning positions", "info")
+    else:
+        log("No positions met scale-out criteria", "friday")
+
+# ============================================================================
+# TASK 7: MONTHLY REBALANCE
+# ============================================================================
+def run_monthly_rebalance():
+    """Monthly review: close long-underwater positions, free capital."""
+    log("Running monthly rebalance...", "rebalance")
+
+    positions = api_get(f"{API_ENDPOINT}/positions")
+    if not isinstance(positions, list):
+        return
+
+    closed_count = 0
+    for pos in positions:
+        symbol = pos.get("symbol", "")
+        qty = abs(int(float(pos.get("qty", 0))))
+        unrealized_plpc = float(pos.get("unrealized_plpc", 0)) * 100
+
+        # Check position age via strategy file
+        strat_files = [f for f in os.listdir(STRATEGIES_DIR)
+                      if f.endswith(".json") and symbol in f]
+
+        too_old = False
+        for sf in strat_files:
+            strat = load_json(os.path.join(STRATEGIES_DIR, sf))
+            if not strat:
+                continue
+            created = strat.get("created")
+            if created:
+                try:
+                    age_days = (datetime.now(timezone.utc).date() -
+                               datetime.strptime(created, "%Y-%m-%d").date()).days
+                    if age_days >= 60:
+                        too_old = True
+                        break
+                except:
+                    pass
+
+        # Close if old AND losing
+        if too_old and unrealized_plpc < -2:
+            log(f"{symbol}: 60+ days old, {unrealized_plpc:.1f}% down — closing for rebalance", "rebalance")
+            order = api_post(f"{API_ENDPOINT}/orders", {
+                "symbol": symbol, "qty": str(qty),
+                "side": "sell" if float(pos.get("qty", 0)) > 0 else "buy",
+                "type": "market", "time_in_force": "day"
+            })
+            if isinstance(order, dict) and "id" in order:
+                closed_count += 1
+                notify(f"Monthly rebalance: closed underwater {symbol} (~{unrealized_plpc:.1f}% loss) to free capital", "info")
+
+    if closed_count > 0:
+        notify(f"Monthly rebalance: closed {closed_count} stale losing positions", "daily")
+    else:
+        notify("Monthly rebalance: all positions healthy, no changes", "info")
+
+def is_first_trading_day_of_month():
+    """Check if today is the first trading day of the month (using Alpaca clock)."""
+    now_et = get_et_time()
+    if now_et.day > 7:
+        return False  # Definitely not first trading day
+    # Check calendar via Alpaca
+    start = now_et.replace(day=1).strftime("%Y-%m-%d")
+    end = now_et.strftime("%Y-%m-%d")
+    cal = api_get(f"{API_ENDPOINT}/calendar?start={start}&end={end}")
+    if not isinstance(cal, list) or not cal:
+        return False
+    first_trading_date = cal[0].get("date", "")
+    today_str = now_et.strftime("%Y-%m-%d")
+    return first_trading_date == today_str
+
+# ============================================================================
 # SCHEDULER LOOP
 # ============================================================================
 def should_run_interval(task_name, interval_seconds):
@@ -548,6 +764,17 @@ def scheduler_loop():
             if weekday == 4 and now_et.hour == 17:
                 if should_run_daily_at("weekly_learning", 17, 0):
                     run_weekly_learning()
+
+            # Feature 6: Friday risk reduction at 3:45 PM ET
+            if weekday == 4 and now_et.hour == 15 and now_et.minute >= 45:
+                if should_run_daily_at("friday_reduction", 15, 45):
+                    run_friday_risk_reduction()
+
+            # Feature 19: Monthly rebalance on first trading day at 9:45 AM ET
+            if is_weekday and now_et.hour == 9 and now_et.minute >= 45:
+                if is_first_trading_day_of_month():
+                    if should_run_daily_at("monthly_rebalance", 9, 45):
+                        run_monthly_rebalance()
         except Exception as e:
             log(f"Scheduler loop error: {e}", "scheduler")
 
