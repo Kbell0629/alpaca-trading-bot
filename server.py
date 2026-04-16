@@ -624,6 +624,42 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
 .modal-info-box.warning {
     background: rgba(245,158,11,0.08); border-color: rgba(245,158,11,0.2);
 }
+
+/* ===== SETTINGS MODAL ===== */
+.settings-tabs {
+    display: flex; gap: 4px; border-bottom: 1px solid var(--border);
+    margin-bottom: 18px; padding-bottom: 0; overflow-x: auto;
+}
+.settings-tab {
+    background: none; border: none; padding: 10px 14px; font-size: 13px;
+    font-weight: 600; color: var(--text-dim); cursor: pointer;
+    border-bottom: 2px solid transparent; margin-bottom: -1px;
+    white-space: nowrap; transition: all 0.15s;
+}
+.settings-tab:hover { color: var(--text); }
+.settings-tab.active { color: var(--blue); border-bottom-color: var(--blue); }
+.settings-panel { display: none; animation: fadeIn 0.2s; }
+.settings-panel.active { display: block; }
+.settings-row { margin-bottom: 14px; }
+.settings-row label {
+    display: block; font-size: 12px; font-weight: 600; color: var(--text-dim);
+    margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.3px;
+}
+.settings-row input, .settings-row select {
+    width: 100%; padding: 9px 12px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px; color: var(--text);
+    font-size: 13px; font-family: inherit; box-sizing: border-box;
+}
+.settings-row input:disabled { opacity: 0.55; cursor: not-allowed; }
+.settings-row input:focus, .settings-row select:focus {
+    outline: none; border-color: var(--blue);
+    box-shadow: 0 0 0 2px rgba(59,130,246,0.15);
+}
+.settings-hint {
+    font-size: 11px; color: var(--text-dim); margin-top: 4px; line-height: 1.4;
+}
+.settings-actions { display: flex; align-items: center; margin-top: 10px; }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 .modal-info-box .info-title {
     font-weight: 700; font-size: 12px; text-transform: uppercase;
     letter-spacing: 0.5px; margin-bottom: 6px; color: var(--text-dim);
@@ -1480,6 +1516,136 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
     <div id="killSwitchResults" style="background:var(--bg);border-radius:8px;padding:14px;margin:12px 0;font-size:13px;"></div>
     <div class="modal-actions">
       <button class="btn-ghost" onclick="closeModal('killSwitchResultsModal')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== SETTINGS MODAL ===== -->
+<div class="modal-overlay" id="settingsModal">
+  <div class="modal" style="max-width:680px">
+    <h2>⚙️ Account Settings</h2>
+    <div class="modal-subtitle" id="settingsSubtitle">Manage your profile, Alpaca credentials, and notifications</div>
+
+    <!-- Tabs -->
+    <div class="settings-tabs">
+      <button type="button" class="settings-tab active" data-tab="profile" onclick="switchSettingsTab('profile')">Profile</button>
+      <button type="button" class="settings-tab" data-tab="alpaca" onclick="switchSettingsTab('alpaca')">Alpaca API</button>
+      <button type="button" class="settings-tab" data-tab="notify" onclick="switchSettingsTab('notify')">Notifications</button>
+      <button type="button" class="settings-tab" data-tab="password" onclick="switchSettingsTab('password')">Password</button>
+      <button type="button" class="settings-tab" data-tab="danger" onclick="switchSettingsTab('danger')">Danger Zone</button>
+    </div>
+
+    <!-- Profile tab -->
+    <div class="settings-panel active" id="settingsPanel-profile">
+      <div class="settings-row">
+        <label>Username</label>
+        <input type="text" id="setUsername" disabled>
+        <div class="settings-hint">Username cannot be changed after signup.</div>
+      </div>
+      <div class="settings-row">
+        <label>Email (login)</label>
+        <input type="email" id="setEmail" disabled>
+        <div class="settings-hint">Used for login and password reset. Contact admin to change.</div>
+      </div>
+      <div class="settings-row">
+        <label>Role</label>
+        <input type="text" id="setRole" disabled>
+      </div>
+    </div>
+
+    <!-- Alpaca tab -->
+    <div class="settings-panel" id="settingsPanel-alpaca">
+      <div class="modal-info-box" style="margin-bottom:12px">
+        <strong>⚠️ Paper vs Live:</strong> Only change the endpoint if you know exactly what you're doing. Using live keys here will trade real money.
+      </div>
+      <div class="settings-row">
+        <label>API Key</label>
+        <input type="text" id="setAlpacaKey" placeholder="Leave blank to keep current" autocomplete="off">
+        <div class="settings-hint">Your current key is encrypted at rest. Leave blank to keep the existing key.</div>
+      </div>
+      <div class="settings-row">
+        <label>API Secret</label>
+        <input type="password" id="setAlpacaSecret" placeholder="Leave blank to keep current" autocomplete="new-password">
+      </div>
+      <div class="settings-row">
+        <label>Trading Endpoint</label>
+        <select id="setAlpacaEndpoint">
+          <option value="https://paper-api.alpaca.markets/v2">Paper (paper-api.alpaca.markets)</option>
+          <option value="https://api.alpaca.markets/v2">LIVE ($$$) (api.alpaca.markets)</option>
+        </select>
+      </div>
+      <div class="settings-row">
+        <label>Data Endpoint</label>
+        <input type="text" id="setAlpacaDataEndpoint" placeholder="https://data.alpaca.markets/v2">
+      </div>
+      <div class="settings-actions">
+        <button type="button" class="btn-ghost btn-sm" onclick="testAlpacaCreds()">Test Connection</button>
+        <span id="settingsAlpacaTestResult" style="font-size:12px;margin-left:8px"></span>
+      </div>
+    </div>
+
+    <!-- Notifications tab -->
+    <div class="settings-panel" id="settingsPanel-notify">
+      <div class="settings-row">
+        <label>ntfy.sh Topic (push notifications)</label>
+        <input type="text" id="setNtfyTopic" placeholder="alpaca-bot-yourname">
+        <div class="settings-hint">Subscribe to this topic in the ntfy app on your phone for push alerts.</div>
+      </div>
+      <div class="settings-row">
+        <label>Notification Email</label>
+        <input type="email" id="setNotifyEmail" placeholder="you@example.com">
+        <div class="settings-hint">Used for important trade events and daily summaries.</div>
+      </div>
+    </div>
+
+    <!-- Password tab -->
+    <div class="settings-panel" id="settingsPanel-password">
+      <div class="settings-row">
+        <label>Current Password</label>
+        <input type="password" id="setOldPassword" autocomplete="current-password">
+      </div>
+      <div class="settings-row">
+        <label>New Password (minimum 8 characters)</label>
+        <input type="password" id="setNewPassword" autocomplete="new-password">
+      </div>
+      <div class="settings-row">
+        <label>Confirm New Password</label>
+        <input type="password" id="setNewPassword2" autocomplete="new-password">
+      </div>
+      <div class="settings-actions">
+        <button type="button" class="btn-primary btn-sm" onclick="changePassword()">Change Password</button>
+        <span id="settingsPasswordResult" style="font-size:12px;margin-left:8px"></span>
+      </div>
+    </div>
+
+    <!-- Danger zone tab -->
+    <div class="settings-panel" id="settingsPanel-danger">
+      <div class="modal-info-box warning" style="border-color:rgba(239,68,68,0.3);background:rgba(239,68,68,0.08)">
+        <strong>Deactivate Account</strong>
+        <p style="margin:6px 0;font-size:13px;line-height:1.5;color:var(--text-dim)">
+          This sets your account to inactive. The cloud scheduler will stop trading for you. Your strategy data and trade journal are preserved and can be reactivated by an admin. <strong>No positions will be closed automatically</strong> — close them yourself first if you want a clean exit.
+        </p>
+        <button type="button" class="btn-danger btn-sm" onclick="deactivateAccount()">Deactivate My Account</button>
+        <span id="settingsDangerResult" style="font-size:12px;margin-left:8px"></span>
+      </div>
+    </div>
+
+    <div class="modal-actions" style="margin-top:18px">
+      <button type="button" class="btn-ghost" onclick="closeModal('settingsModal')">Close</button>
+      <button type="button" class="btn-primary" id="settingsSaveBtn" onclick="saveSettings()">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== ADMIN PANEL MODAL ===== -->
+<div class="modal-overlay" id="adminPanelModal">
+  <div class="modal" style="max-width:760px">
+    <h2>👥 Manage Users</h2>
+    <div class="modal-subtitle">Admin-only view of all registered accounts. Deactivating a user stops scheduled trading for them.</div>
+    <div id="adminUserList" style="margin-top:12px"><div style="color:var(--text-dim)">Loading...</div></div>
+    <div class="modal-actions" style="margin-top:18px">
+      <button type="button" class="btn-ghost" onclick="closeModal('adminPanelModal')">Close</button>
+      <button type="button" class="btn-primary btn-sm" onclick="loadAdminUsers()">↻ Refresh</button>
     </div>
   </div>
 </div>
@@ -2964,8 +3130,9 @@ function renderDashboard() {
                     '<div class="user-menu">' +
                         '<button class="user-btn-v2" onclick="toggleUserMenu(event)">' + esc(window.currentUsername || 'Account') + ' \u25BE</button>' +
                         '<div class="user-dropdown" id="userDropdown" style="display:none">' +
-                            '<a href="#" onclick="event.preventDefault();alert(\'Settings modal coming soon. POST to /api/update-settings or /api/change-password.\');">Settings</a>' +
-                            '<a href="/api/logout" onclick="return confirm(\'Log out?\')">Logout</a>' +
+                            '<a href="#" onclick="event.preventDefault();openSettingsModal();">\u2699\ufe0f Settings</a>' +
+                            (window.currentUserIsAdmin ? '<a href="#" onclick="event.preventDefault();openAdminPanel();">\ud83d\udc65 Manage Users</a>' : '') +
+                            '<a href="/api/logout" onclick="return confirm(\'Log out?\')">\ud83d\udeaa Logout</a>' +
                         '</div>' +
                     '</div>' +
                 '</div>' +
@@ -3321,6 +3488,263 @@ function renderBacktest(symbol) {
 /* ---- Voice Interface ---- */
 var recognition = null;
 var isListening = false;
+
+/* ============================================================================
+   SETTINGS MODAL + ADMIN PANEL
+   ============================================================================ */
+function openSettingsModal() {
+    var modal = document.getElementById('settingsModal');
+    if (!modal) return;
+    var hideDropdown = document.getElementById('userDropdown');
+    if (hideDropdown) hideDropdown.style.display = 'none';
+    loadSettingsData().then(function() {
+        modal.classList.add('active');
+        switchSettingsTab('profile');
+    });
+}
+
+function switchSettingsTab(name) {
+    var tabs = document.querySelectorAll('.settings-tab');
+    for (var i = 0; i < tabs.length; i++) {
+        tabs[i].classList.toggle('active', tabs[i].getAttribute('data-tab') === name);
+    }
+    var panels = document.querySelectorAll('.settings-panel');
+    for (var j = 0; j < panels.length; j++) {
+        panels[j].classList.toggle('active', panels[j].id === 'settingsPanel-' + name);
+    }
+    // Disable the big Save button on password/danger tabs (they have their own buttons)
+    var saveBtn = document.getElementById('settingsSaveBtn');
+    if (saveBtn) saveBtn.style.display = (name === 'password' || name === 'danger') ? 'none' : 'inline-block';
+}
+
+async function loadSettingsData() {
+    try {
+        var resp = await fetch(API_BASE + '/api/me', {credentials: 'same-origin'});
+        if (!resp.ok) return;
+        var d = await resp.json();
+        setVal('setUsername', d.username || '');
+        setVal('setEmail', d.email || '');
+        setVal('setRole', d.is_admin ? 'Administrator' : 'User');
+        setVal('setAlpacaKey', '');  // Never pre-fill secrets
+        setVal('setAlpacaSecret', '');
+        var endpointSel = document.getElementById('setAlpacaEndpoint');
+        if (endpointSel) endpointSel.value = d.alpaca_endpoint || 'https://paper-api.alpaca.markets/v2';
+        setVal('setAlpacaDataEndpoint', d.alpaca_data_endpoint || 'https://data.alpaca.markets/v2');
+        setVal('setNtfyTopic', d.ntfy_topic || '');
+        setVal('setNotifyEmail', d.notification_email || '');
+        var subtitle = document.getElementById('settingsSubtitle');
+        if (subtitle) {
+            subtitle.textContent = 'Logged in as ' + (d.username || 'user') +
+                (d.has_alpaca_key ? ' · Alpaca credentials are set' : ' · No Alpaca credentials yet');
+        }
+    } catch (e) {
+        toast('Failed to load settings: ' + e.message, 'error');
+    }
+}
+
+function setVal(id, v) { var el = document.getElementById(id); if (el) el.value = v; }
+
+async function saveSettings() {
+    var payload = {};
+    var key = document.getElementById('setAlpacaKey').value.trim();
+    var secret = document.getElementById('setAlpacaSecret').value;
+    if (key) payload.alpaca_key = key;
+    if (secret) payload.alpaca_secret = secret;
+    payload.alpaca_endpoint = document.getElementById('setAlpacaEndpoint').value;
+    payload.alpaca_data_endpoint = document.getElementById('setAlpacaDataEndpoint').value.trim();
+    payload.ntfy_topic = document.getElementById('setNtfyTopic').value.trim();
+    payload.notification_email = document.getElementById('setNotifyEmail').value.trim();
+
+    // Warn on switch to LIVE endpoint
+    if (payload.alpaca_endpoint && payload.alpaca_endpoint.indexOf('paper') === -1) {
+        if (!confirm('WARNING: You are switching to the LIVE Alpaca endpoint. This will trade REAL MONEY. Are you absolutely sure?')) {
+            return;
+        }
+    }
+
+    var btn = document.getElementById('settingsSaveBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+    try {
+        var resp = await fetch(API_BASE + '/api/update-settings', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: JSON.stringify(payload),
+        });
+        var d = await resp.json();
+        if (!resp.ok || d.error) { toast(d.error || 'Save failed', 'error'); return; }
+        toast('Settings saved', 'success');
+        addLog('Account settings updated', 'success');
+        // Reload /api/me to refresh window state
+        await loadCurrentUser();
+    } catch (e) {
+        toast('Save failed: ' + e.message, 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Save Changes'; }
+    }
+}
+
+async function testAlpacaCreds() {
+    var result = document.getElementById('settingsAlpacaTestResult');
+    if (result) { result.textContent = 'Testing...'; result.style.color = 'var(--text-dim)'; }
+    try {
+        var resp = await fetch(API_BASE + '/api/account', {credentials: 'same-origin'});
+        var d = await resp.json();
+        if (!resp.ok || d.error || !d.account) {
+            if (result) { result.textContent = '✗ ' + (d.error || 'Failed'); result.style.color = 'var(--red)'; }
+            return;
+        }
+        var acct = d.account || d;
+        var cash = Number(acct.cash || 0).toLocaleString();
+        var label = (acct.status === 'ACTIVE' ? '✓ Connected' : '⚠️ ' + acct.status) + ' · $' + cash + ' cash';
+        if (result) { result.textContent = label; result.style.color = 'var(--green)'; }
+    } catch (e) {
+        if (result) { result.textContent = '✗ ' + e.message; result.style.color = 'var(--red)'; }
+    }
+}
+
+async function changePassword() {
+    var oldPw = document.getElementById('setOldPassword').value;
+    var newPw = document.getElementById('setNewPassword').value;
+    var newPw2 = document.getElementById('setNewPassword2').value;
+    var result = document.getElementById('settingsPasswordResult');
+    function showResult(msg, ok) {
+        if (!result) return;
+        result.textContent = msg;
+        result.style.color = ok ? 'var(--green)' : 'var(--red)';
+    }
+    if (!oldPw || !newPw) { showResult('Fill all fields', false); return; }
+    if (newPw.length < 8) { showResult('New password must be at least 8 characters', false); return; }
+    if (newPw !== newPw2) { showResult('New passwords do not match', false); return; }
+    try {
+        var resp = await fetch(API_BASE + '/api/change-password', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: JSON.stringify({old_password: oldPw, new_password: newPw}),
+        });
+        var d = await resp.json();
+        if (!resp.ok || d.error) { showResult(d.error || 'Change failed', false); return; }
+        showResult('✓ Password changed', true);
+        addLog('Password changed', 'success');
+        document.getElementById('setOldPassword').value = '';
+        document.getElementById('setNewPassword').value = '';
+        document.getElementById('setNewPassword2').value = '';
+    } catch (e) {
+        showResult('✗ ' + e.message, false);
+    }
+}
+
+async function deactivateAccount() {
+    if (!confirm('Are you absolutely sure you want to deactivate your account? The cloud scheduler will stop trading for you. Open positions will NOT be closed automatically.')) return;
+    if (!confirm('Final confirmation: Deactivate account now?')) return;
+    var result = document.getElementById('settingsDangerResult');
+    try {
+        var resp = await fetch(API_BASE + '/api/delete-account', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: JSON.stringify({confirm: true}),
+        });
+        var d = await resp.json();
+        if (!resp.ok || d.error) {
+            if (result) { result.textContent = '✗ ' + (d.error || 'Failed'); result.style.color = 'var(--red)'; }
+            return;
+        }
+        alert('Account deactivated. You will now be logged out.');
+        window.location.href = '/api/logout';
+    } catch (e) {
+        if (result) { result.textContent = '✗ ' + e.message; result.style.color = 'var(--red)'; }
+    }
+}
+
+/* ---- ADMIN PANEL ---- */
+function openAdminPanel() {
+    if (!window.currentUserIsAdmin) { toast('Admin only', 'error'); return; }
+    var modal = document.getElementById('adminPanelModal');
+    if (!modal) return;
+    var dd = document.getElementById('userDropdown');
+    if (dd) dd.style.display = 'none';
+    modal.classList.add('active');
+    loadAdminUsers();
+}
+
+async function loadAdminUsers() {
+    var listEl = document.getElementById('adminUserList');
+    if (!listEl) return;
+    listEl.innerHTML = '<div style="color:var(--text-dim)">Loading...</div>';
+    try {
+        var resp = await fetch(API_BASE + '/api/admin/users', {credentials: 'same-origin'});
+        var d = await resp.json();
+        if (!resp.ok || d.error) { listEl.innerHTML = '<div style="color:var(--red)">' + esc(d.error || 'Failed') + '</div>'; return; }
+        var users = d.users || [];
+        if (!users.length) { listEl.innerHTML = '<div style="color:var(--text-dim)">No users found</div>'; return; }
+        var html = '<table class="data-table"><thead><tr>' +
+            '<th>User</th><th>Email</th><th>Role</th><th>Status</th>' +
+            '<th>Last Login</th><th>Logins</th><th>Actions</th>' +
+            '</tr></thead><tbody>';
+        for (var i = 0; i < users.length; i++) {
+            var u = users[i];
+            var statusCls = u.is_active ? 'positive' : 'negative';
+            var statusTxt = u.is_active ? 'Active' : 'Inactive';
+            var lastLogin = u.last_login ? fmtUpdatedET(u.last_login.replace('T', ' ').replace('+00:00', ' UTC')) : '—';
+            var actions = '';
+            if (u.is_active) {
+                actions += '<button class="btn-warning btn-sm" onclick="adminSetActive(' + u.id + ', false)">Deactivate</button> ';
+            } else {
+                actions += '<button class="btn-primary btn-sm" onclick="adminSetActive(' + u.id + ', true)">Reactivate</button> ';
+            }
+            actions += '<button class="btn-ghost btn-sm" onclick="adminResetPassword(' + u.id + ', \'' + esc(u.username) + '\')">Reset Password</button>';
+            html += '<tr>' +
+                '<td><strong>' + esc(u.username) + '</strong>' + (u.is_admin ? ' <span class="paper-badge" style="font-size:9px">ADMIN</span>' : '') + '</td>' +
+                '<td>' + esc(u.email) + '</td>' +
+                '<td>' + (u.is_admin ? 'Admin' : 'User') + '</td>' +
+                '<td class="' + statusCls + '">' + statusTxt + '</td>' +
+                '<td style="font-size:11px">' + lastLogin + '</td>' +
+                '<td>' + (u.login_count || 0) + '</td>' +
+                '<td>' + actions + '</td>' +
+                '</tr>';
+        }
+        html += '</tbody></table>';
+        listEl.innerHTML = html;
+    } catch (e) {
+        listEl.innerHTML = '<div style="color:var(--red)">' + esc(e.message) + '</div>';
+    }
+}
+
+async function adminSetActive(userId, active) {
+    var msg = active ? 'Reactivate this user?' : 'Deactivate this user? Cloud scheduler will stop trading for them.';
+    if (!confirm(msg)) return;
+    try {
+        var resp = await fetch(API_BASE + '/api/admin/set-active', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: JSON.stringify({user_id: userId, is_active: active}),
+        });
+        var d = await resp.json();
+        if (!resp.ok || d.error) { toast(d.error || 'Failed', 'error'); return; }
+        toast('User ' + (active ? 'reactivated' : 'deactivated'), 'success');
+        loadAdminUsers();
+    } catch (e) { toast(e.message, 'error'); }
+}
+
+async function adminResetPassword(userId, username) {
+    var newPw = prompt('Set new password for ' + username + ' (minimum 8 characters). They will need to log in with the new password.');
+    if (!newPw) return;
+    if (newPw.length < 8) { toast('Password must be at least 8 characters', 'error'); return; }
+    try {
+        var resp = await fetch(API_BASE + '/api/admin/reset-password', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: JSON.stringify({user_id: userId, new_password: newPw}),
+        });
+        var d = await resp.json();
+        if (!resp.ok || d.error) { toast(d.error || 'Failed', 'error'); return; }
+        toast('Password reset for ' + username, 'success');
+    } catch (e) { toast(e.message, 'error'); }
+}
 
 /* ---- README / Help Modal ---- */
 var _readmeLoaded = false;
@@ -3809,6 +4233,9 @@ async function loadCurrentUser() {
         if (!resp.ok) return;
         var data = await resp.json();
         window.currentUsername = data.username || '';
+        window.currentUserEmail = data.email || '';
+        window.currentUserIsAdmin = !!data.is_admin;
+        window.currentUserSettings = data;
     } catch(e) { /* ignore */ }
 }
 
@@ -4493,6 +4920,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "total_trades": len(trades),
             })
 
+        elif path == "/api/admin/users":
+            # Admin only: list all users (active + inactive) with metadata.
+            if not self.current_user or not self.current_user.get("is_admin"):
+                self.send_json({"error": "Admin only"}, 403)
+                return
+            try:
+                conn = auth._get_db()
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT id, username, email, is_admin, is_active,
+                           created_at, last_login, login_count,
+                           alpaca_endpoint, ntfy_topic
+                    FROM users ORDER BY id ASC
+                """)
+                users = [dict(r) for r in cur.fetchall()]
+                conn.close()
+                self.send_json({"users": users})
+            except Exception as e:
+                self.send_json({"error": str(e)}, 500)
+
         else:
             self.send_json({"error": "Not found"}, 404)
 
@@ -4526,6 +4973,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/update-settings":
             self.handle_update_settings(body)
+            return
+        if path == "/api/delete-account":
+            self.handle_delete_account(body)
+            return
+        if path == "/api/admin/set-active":
+            self.handle_admin_set_active(body)
+            return
+        if path == "/api/admin/reset-password":
+            self.handle_admin_reset_password(body)
             return
 
         if path == "/api/refresh":
@@ -4772,11 +5228,116 @@ class DashboardHandler(BaseHTTPRequestHandler):
             val = body.get(field)
             if val is None:
                 continue
-            updates[field] = val.strip() if isinstance(val, str) else val
+            s = val.strip() if isinstance(val, str) else val
+            # Skip empty strings for secrets — means "keep existing"
+            if field in ("alpaca_key", "alpaca_secret") and not s:
+                continue
+            updates[field] = s
         if not updates:
             return self.send_json({"error": "No fields to update"}, 400)
         auth.update_user_credentials(self.current_user["id"], **updates)
         self.send_json({"success": True, "message": "Settings updated"})
+
+    def handle_delete_account(self, body):
+        """Soft-delete (deactivate) the current user. Cloud scheduler will stop
+        iterating them because list_active_users filters is_active = 1.
+        Positions are NOT closed automatically — user must do that first.
+        """
+        if not body.get("confirm"):
+            return self.send_json({"error": "Missing explicit confirmation"}, 400)
+        user = self.current_user or {}
+        user_id = user.get("id")
+        if not user_id:
+            return self.send_json({"error": "No current user"}, 400)
+        # Prevent last-admin self-lockout
+        try:
+            conn = auth._get_db()
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM users WHERE is_admin = 1 AND is_active = 1")
+            admin_count = cur.fetchone()[0]
+            conn.close()
+            if user.get("is_admin") and admin_count <= 1:
+                return self.send_json({"error":
+                    "You are the only active admin. Promote another user to admin before deactivating."}, 400)
+        except Exception:
+            pass
+        try:
+            conn = auth._get_db()
+            cur = conn.cursor()
+            cur.execute("UPDATE users SET is_active = 0 WHERE id = ?", (user_id,))
+            cur.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            conn.commit()
+            conn.close()
+            self.send_json({"success": True, "message": "Account deactivated"})
+        except Exception as e:
+            self.send_json({"error": str(e)}, 500)
+
+    def handle_admin_set_active(self, body):
+        """Admin-only: set is_active on any user."""
+        if not self.current_user or not self.current_user.get("is_admin"):
+            return self.send_json({"error": "Admin only"}, 403)
+        target_id = body.get("user_id")
+        is_active = body.get("is_active")
+        if target_id is None or is_active is None:
+            return self.send_json({"error": "user_id and is_active required"}, 400)
+        try:
+            target_id = int(target_id)
+        except (TypeError, ValueError):
+            return self.send_json({"error": "user_id must be integer"}, 400)
+
+        # Block last-admin deactivation
+        if not is_active:
+            try:
+                conn = auth._get_db()
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT COUNT(*) FROM users
+                    WHERE is_admin = 1 AND is_active = 1 AND id != ?
+                """, (target_id,))
+                others = cur.fetchone()[0]
+                cur.execute("SELECT is_admin FROM users WHERE id = ?", (target_id,))
+                row = cur.fetchone()
+                conn.close()
+                if row and row[0] and others == 0:
+                    return self.send_json({"error":
+                        "Cannot deactivate the last active admin"}, 400)
+            except Exception:
+                pass
+
+        try:
+            conn = auth._get_db()
+            cur = conn.cursor()
+            cur.execute("UPDATE users SET is_active = ? WHERE id = ?", (1 if is_active else 0, target_id))
+            if not is_active:
+                cur.execute("DELETE FROM sessions WHERE user_id = ?", (target_id,))
+            conn.commit()
+            conn.close()
+            self.send_json({"success": True})
+        except Exception as e:
+            self.send_json({"error": str(e)}, 500)
+
+    def handle_admin_reset_password(self, body):
+        """Admin-only: force a password reset for any user."""
+        if not self.current_user or not self.current_user.get("is_admin"):
+            return self.send_json({"error": "Admin only"}, 403)
+        target_id = body.get("user_id")
+        new_password = body.get("new_password") or ""
+        if target_id is None:
+            return self.send_json({"error": "user_id required"}, 400)
+        if len(new_password) < 8:
+            return self.send_json({"error": "Password must be at least 8 characters"}, 400)
+        try:
+            target_id = int(target_id)
+            auth.change_password(target_id, new_password)
+            # Invalidate all sessions for that user so they're forced to re-login
+            conn = auth._get_db()
+            cur = conn.cursor()
+            cur.execute("DELETE FROM sessions WHERE user_id = ?", (target_id,))
+            conn.commit()
+            conn.close()
+            self.send_json({"success": True})
+        except Exception as e:
+            self.send_json({"error": str(e)}, 500)
 
     def handle_refresh(self):
         """Run update_dashboard.py with current user's credentials and return fresh data."""
