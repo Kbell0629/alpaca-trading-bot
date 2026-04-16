@@ -1104,8 +1104,28 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
     .pick-symbol { font-size: 20px; }
     .timeline-item { flex-wrap: wrap; }
     .kill-switch-btn { width: 100%; }
-    .nav-tabs { gap: 2px; padding: 3px; }
+    .nav-tabs { gap: 2px; padding: 3px; position: relative; }
     .nav-tab { padding: 8px 12px; font-size: 12px; }
+    /* Scroll hint — tabs overflow off-screen (Screener, Short Sells,
+       Tax Harvest, Backtest, etc.) but the scrollbar is hidden so
+       users don't know. Fade the right edge + show a chevron to cue
+       horizontal swipe. */
+    .nav-tabs::after {
+        content: '\203A';  /* › single right-angle quote */
+        position: absolute; top: 0; bottom: 0; right: 0;
+        width: 36px;
+        display: flex; align-items: center; justify-content: flex-end;
+        padding-right: 8px;
+        background: linear-gradient(to right, transparent, var(--card) 55%);
+        color: var(--text-dim); font-size: 18px; font-weight: 800;
+        pointer-events: none;
+        border-radius: 0 var(--radius) var(--radius) 0;
+        animation: navScrollHint 1.8s ease-in-out infinite;
+    }
+    @keyframes navScrollHint {
+        0%, 100% { transform: translateX(0); opacity: 0.85; }
+        50% { transform: translateX(-3px); opacity: 1; }
+    }
     .readiness-metrics { grid-template-columns: 1fr 1fr; }
     .pick-indicators { gap: 4px; }
     .screener table { font-size: 11px; }
