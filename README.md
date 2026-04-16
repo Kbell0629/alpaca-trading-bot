@@ -67,7 +67,7 @@ When the Readiness Score hits 80/100 (usually takes 30 days of profitable paper 
 ### Day 1 Setup (5 minutes)
 
 1. **Open the dashboard:** https://stockbott.up.railway.app
-2. **Log in:** username `Kbell0629`, password `We360you45$$`
+2. **Log in:** use your username and password (set during signup)
 3. **Install ntfy on your phone** (for push notifications):
    - iPhone: App Store → "ntfy" → Install → Subscribe to topic `alpaca-trading-bot-kevin`
    - Android: Play Store → same
@@ -625,12 +625,12 @@ Dashboard auto-refreshes every 60 seconds. Click Refresh button for immediate re
 
 ### Scenario: "I can't log in"
 
-Credentials: `Kbell0629` / `We360you45$$` (case-sensitive). If changed, check Railway env vars `DASHBOARD_USER` and `DASHBOARD_PASS`.
+Credentials are case-sensitive. If you've forgotten them or they've changed, check Railway env vars `DASHBOARD_USER` and `DASHBOARD_PASS`.
 
 ### Emergency Resources
 - Alpaca support: https://alpaca.markets/support
 - Dashboard status: https://stockbott.up.railway.app/api/scheduler-status
-- GitHub issues: https://github.com/Kbell0629/alpaca-trading-bot/issues
+- GitHub issues: https://github.com/<your-username>/alpaca-trading-bot/issues
 
 ---
 
@@ -760,8 +760,8 @@ All require basic auth.
 ## 📞 Quick Reference Card
 
 **Dashboard:** https://stockbott.up.railway.app
-**Login:** Kbell0629 / We360you45$$
-**GitHub:** github.com/Kbell0629/alpaca-trading-bot
+**Login:** your username / your password (set during signup)
+**GitHub:** github.com/<your-username>/alpaca-trading-bot
 **Notifications app:** ntfy (topic: `alpaca-trading-bot-kevin`)
 **Emergency stop:** Red KILL SWITCH button in dashboard header
 

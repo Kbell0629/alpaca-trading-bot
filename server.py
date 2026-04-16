@@ -49,7 +49,13 @@ def load_dotenv():
 
 load_dotenv()
 
+# Multi-user auth module (SQLite-backed sessions, per-user encrypted creds)
+import auth  # noqa: E402
+auth.init_db()
+auth.bootstrap_from_env()
+
 # Basic auth credentials (set via env vars on Railway, or .env for local dev)
+# Kept only for backward-compat bootstrap; actual auth now goes through auth.py
 AUTH_USER = os.environ.get("DASHBOARD_USER", "")
 AUTH_PASS = os.environ.get("DASHBOARD_PASS", "")
 
@@ -128,25 +134,49 @@ def save_json(path, data):
 _api_cache = {}
 _cache_ttl = 10  # seconds
 
-def alpaca_get_cached(url, timeout=15):
-    """Cached version of alpaca_get for dashboard data."""
+def alpaca_get_cached(url, timeout=15, headers=None):
+    """Cached version of alpaca_get for dashboard data.
+
+    If headers is provided, the cache is keyed by (url, key-id) so different
+    users don't share each other's data. When headers is None, uses the
+    module-level env-var headers (backward compat).
+    """
     now = time.time()
-    if url in _api_cache and now - _api_cache[url]["time"] < _cache_ttl:
-        return _api_cache[url]["data"]
-    data = alpaca_get(url, timeout=timeout)
-    _api_cache[url] = {"data": data, "time": now}
+    cache_key = (url, (headers or {}).get("APCA-API-KEY-ID", ""))
+    if cache_key in _api_cache and now - _api_cache[cache_key]["time"] < _cache_ttl:
+        return _api_cache[cache_key]["data"]
+    if headers:
+        req_headers = dict(headers)
+        req = urllib.request.Request(url, headers=req_headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode()
+                data = json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode() if e.fp else ""
+            data = {"error": f"HTTP {e.code}: {err_body}"}
+        except Exception as e:
+            data = {"error": str(e)}
+    else:
+        data = alpaca_get(url, timeout=timeout)
+    _api_cache[cache_key] = {"data": data, "time": now}
     return data
 
 
-def get_dashboard_data():
-    """Load dashboard_data.json for screener picks, but always fetch live orders/positions from Alpaca."""
+def get_dashboard_data(api_endpoint=None, api_headers=None):
+    """Load dashboard_data.json for screener picks, but always fetch live orders/positions from Alpaca.
+
+    If api_endpoint/api_headers are provided, fetches data for that specific user.
+    Falls back to global env-var credentials otherwise (backward compat for scripts).
+    """
+    ep = api_endpoint or API_ENDPOINT
     api_errors = []
     data = load_json(DASHBOARD_DATA_PATH)
     if data:
         # Always refresh live data from Alpaca (using cached API calls)
-        account = alpaca_get_cached(f"{API_ENDPOINT}/account")
-        positions = alpaca_get_cached(f"{API_ENDPOINT}/positions")
-        orders = alpaca_get_cached(f"{API_ENDPOINT}/orders?status=open&limit=50")
+        account = alpaca_get_cached(f"{ep}/account", headers=api_headers)
+        positions = alpaca_get_cached(f"{ep}/positions", headers=api_headers)
+        orders = alpaca_get_cached(f"{ep}/orders?status=open&limit=50", headers=api_headers)
         if isinstance(account, dict) and "error" in account:
             api_errors.append("account: " + account["error"])
         if isinstance(positions, dict) and "error" in positions:
@@ -173,9 +203,9 @@ def get_dashboard_data():
     trailing = load_json(os.path.join(STRATEGIES_DIR, "trailing_stop.json"))
     copy_trading = load_json(os.path.join(STRATEGIES_DIR, "copy_trading.json"))
     wheel = load_json(os.path.join(STRATEGIES_DIR, "wheel_strategy.json"))
-    account = alpaca_get_cached(f"{API_ENDPOINT}/account")
-    positions = alpaca_get_cached(f"{API_ENDPOINT}/positions")
-    orders = alpaca_get_cached(f"{API_ENDPOINT}/orders?status=open&limit=50")
+    account = alpaca_get_cached(f"{ep}/account", headers=api_headers)
+    positions = alpaca_get_cached(f"{ep}/positions", headers=api_headers)
+    orders = alpaca_get_cached(f"{ep}/orders?status=open&limit=50", headers=api_headers)
     if isinstance(account, dict) and "error" in account:
         api_errors.append("account: " + account["error"])
     if isinstance(positions, dict) and "error" in positions:
@@ -667,6 +697,28 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
     transition: all 0.2s; display: inline-flex; align-items: center; gap: 4px;
 }
 .help-btn:hover { background: rgba(59,130,246,0.25); transform: translateY(-1px); }
+
+/* User menu */
+.user-menu { position: relative; display: inline-block; }
+.user-btn {
+    background: rgba(139,92,246,0.15); color: var(--purple);
+    border: 1px solid rgba(139,92,246,0.3); border-radius: 20px;
+    padding: 8px 14px; cursor: pointer; font-size: 13px; font-weight: 600;
+    transition: all 0.2s;
+}
+.user-btn:hover { background: rgba(139,92,246,0.25); transform: translateY(-1px); }
+.user-dropdown {
+    position: absolute; top: calc(100% + 6px); right: 0;
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    min-width: 180px; box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+    overflow: hidden; z-index: 1000;
+}
+.user-dropdown a {
+    display: block; padding: 10px 14px; color: var(--text);
+    text-decoration: none; font-size: 13px; transition: background 0.15s;
+}
+.user-dropdown a:hover { background: rgba(59,130,246,0.1); }
+.user-dropdown a + a { border-top: 1px solid var(--border); }
 .readme-modal-overlay {
     position: fixed; top: 0; left: 0; right: 0; bottom: 0;
     background: rgba(0,0,0,0.85); z-index: 10000;
@@ -1311,6 +1363,7 @@ function esc(s) {
 }
 
 const API_BASE = '';
+window.currentUsername = '';
 let dashboardData = null;
 let countdown = 60;
 let countdownInterval = null;
@@ -2719,6 +2772,13 @@ function renderDashboard() {
                 '<span class="countdown" id="countdown">Next refresh: ' + countdown + 's</span>' +
                 '<button class="btn-primary" onclick="forceRefresh()">\u21BB Refresh</button>' +
                 '<span class="paper-badge">PAPER TRADING</span>' +
+                '<div class="user-menu">' +
+                    '<button class="user-btn" onclick="toggleUserMenu(event)">' + (window.currentUsername || 'Account') + ' \u25BE</button>' +
+                    '<div class="user-dropdown" id="userDropdown" style="display:none">' +
+                        '<a href="#" onclick="event.preventDefault();alert(\'Settings modal coming soon. To change your Alpaca keys or password, POST to /api/update-settings or /api/change-password.\');">Settings</a>' +
+                        '<a href="/api/logout" onclick="return confirm(\'Log out?\')">Logout</a>' +
+                    '</div>' +
+                '</div>' +
             '</div>' +
         '</div>' +
         (killSwitchActive
@@ -3520,14 +3580,37 @@ function buildComparisonPanel(d) {
     return '<div class="comparison-grid">' + paperHtml + liveHtml + '</div>' + delta;
 }
 
+// User menu helpers
+function toggleUserMenu(e) {
+    if (e) e.stopPropagation();
+    var dd = document.getElementById('userDropdown');
+    if (!dd) return;
+    dd.style.display = (dd.style.display === 'none' ? 'block' : 'none');
+}
+document.addEventListener('click', function(e) {
+    var dd = document.getElementById('userDropdown');
+    if (dd && dd.style.display !== 'none' && !e.target.closest('.user-menu')) {
+        dd.style.display = 'none';
+    }
+});
+async function loadCurrentUser() {
+    try {
+        var resp = await fetch(API_BASE + '/api/me', {credentials: 'same-origin'});
+        if (!resp.ok) return;
+        var data = await resp.json();
+        window.currentUsername = data.username || '';
+    } catch(e) { /* ignore */ }
+}
+
 // Initialize
 (async function init() {
+    await loadCurrentUser();
     await refreshData();
     await loadAutoDeployerState();
     await loadGuardrails();
     renderDashboard();
     loadHeatmap();
-    addLog('Dashboard loaded', 'success');
+    addLog('Dashboard loaded as ' + (window.currentUsername || 'user'), 'success');
     countdownInterval = setInterval(() => {
         countdown--;
         const el = document.getElementById('countdown');
@@ -3548,6 +3631,299 @@ if ('serviceWorker' in navigator) {
 </html>"""
 
 
+# ============================================================================
+# Auth page HTML (login, signup, forgot password, reset password)
+# ============================================================================
+
+LOGIN_HTML = r"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Login - Stock Trading Bot</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root { --bg:#0a0e17; --card:#111827; --border:#1e293b; --text:#e2e8f0; --text-dim:#94a3b8; --accent:#3b82f6; --green:#10b981; --red:#ef4444; }
+* { box-sizing:border-box; margin:0; padding:0; }
+body { font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',sans-serif; background:linear-gradient(135deg,var(--bg) 0%,#1e1b4b 100%); color:var(--text); min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+.auth-box { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:40px; width:100%; max-width:400px; box-shadow:0 20px 60px rgba(0,0,0,0.5); }
+.auth-box h1 { font-size:24px; margin-bottom:8px; background:linear-gradient(135deg,var(--accent),#8b5cf6); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.auth-box p { color:var(--text-dim); font-size:13px; margin-bottom:24px; }
+.form-group { margin-bottom:16px; }
+label { display:block; font-size:12px; color:var(--text-dim); margin-bottom:6px; text-transform:uppercase; letter-spacing:0.5px; }
+input { width:100%; padding:12px; background:rgba(10,14,23,0.5); border:1px solid var(--border); border-radius:8px; color:var(--text); font-size:14px; transition:border 0.2s; }
+input:focus { outline:none; border-color:var(--accent); }
+button { width:100%; padding:14px; background:linear-gradient(135deg,var(--accent),#8b5cf6); color:white; border:none; border-radius:8px; font-size:14px; font-weight:700; cursor:pointer; transition:transform 0.15s; }
+button:hover { transform:translateY(-1px); }
+button:disabled { opacity:0.5; cursor:not-allowed; }
+.auth-links { margin-top:20px; text-align:center; font-size:13px; color:var(--text-dim); }
+.auth-links a { color:var(--accent); text-decoration:none; }
+.auth-links a:hover { text-decoration:underline; }
+.error { background:rgba(239,68,68,0.15); color:var(--red); padding:10px; border-radius:8px; font-size:13px; margin-bottom:16px; display:none; }
+.success { background:rgba(16,185,129,0.15); color:var(--green); padding:10px; border-radius:8px; font-size:13px; margin-bottom:16px; display:none; }
+</style></head><body>
+<div class="auth-box">
+  <h1>Stock Bot Login</h1>
+  <p>Sign in to your trading dashboard</p>
+  <div id="error" class="error"></div>
+  <div id="success" class="success"></div>
+  <form id="loginForm">
+    <div class="form-group">
+      <label for="username">Username or Email</label>
+      <input type="text" id="username" name="username" required autofocus>
+    </div>
+    <div class="form-group">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" required>
+    </div>
+    <button type="submit">Sign In</button>
+  </form>
+  <div class="auth-links">
+    <a href="/forgot">Forgot password?</a>
+    <br><br>
+    Don't have an account? <a href="/signup">Sign up</a>
+  </div>
+</div>
+<script>
+document.getElementById('loginForm').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  var btn = e.target.querySelector('button');
+  btn.disabled = true;
+  btn.textContent = 'Signing in...';
+  var err = document.getElementById('error');
+  err.style.display = 'none';
+  try {
+    var resp = await fetch('/api/login', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        username: document.getElementById('username').value,
+        password: document.getElementById('password').value
+      })
+    });
+    var data = await resp.json();
+    if (resp.ok) {
+      window.location.href = '/';
+    } else {
+      err.textContent = data.error || 'Login failed';
+      err.style.display = 'block';
+      btn.disabled = false;
+      btn.textContent = 'Sign In';
+    }
+  } catch(e) {
+    err.textContent = 'Network error: ' + e.message;
+    err.style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = 'Sign In';
+  }
+});
+</script></body></html>"""
+
+SIGNUP_HTML = r"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Sign Up - Stock Trading Bot</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root { --bg:#0a0e17; --card:#111827; --border:#1e293b; --text:#e2e8f0; --text-dim:#94a3b8; --accent:#3b82f6; --green:#10b981; --red:#ef4444; --orange:#f59e0b; }
+* { box-sizing:border-box; margin:0; padding:0; }
+body { font-family:-apple-system,BlinkMacSystemFont,sans-serif; background:linear-gradient(135deg,var(--bg) 0%,#1e1b4b 100%); color:var(--text); min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+.auth-box { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:32px; width:100%; max-width:520px; box-shadow:0 20px 60px rgba(0,0,0,0.5); }
+.auth-box h1 { font-size:22px; margin-bottom:6px; background:linear-gradient(135deg,var(--accent),#8b5cf6); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.auth-box p { color:var(--text-dim); font-size:12px; margin-bottom:20px; }
+.form-row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+@media (max-width:480px) { .form-row { grid-template-columns:1fr; } }
+.form-group { margin-bottom:14px; }
+label { display:block; font-size:11px; color:var(--text-dim); margin-bottom:4px; text-transform:uppercase; letter-spacing:0.5px; }
+input, select { width:100%; padding:10px; background:rgba(10,14,23,0.5); border:1px solid var(--border); border-radius:8px; color:var(--text); font-size:13px; }
+input:focus, select:focus { outline:none; border-color:var(--accent); }
+button { width:100%; padding:12px; background:linear-gradient(135deg,var(--accent),#8b5cf6); color:white; border:none; border-radius:8px; font-size:14px; font-weight:700; cursor:pointer; margin-top:8px; }
+button:disabled { opacity:0.5; cursor:not-allowed; }
+.info-box { background:rgba(59,130,246,0.08); border:1px solid rgba(59,130,246,0.2); border-radius:8px; padding:10px 12px; font-size:11px; color:var(--text-dim); margin-bottom:16px; line-height:1.5; }
+.info-box strong { color:var(--text); }
+.info-box a { color:var(--accent); }
+.section-title { font-size:12px; text-transform:uppercase; letter-spacing:0.8px; color:var(--text-dim); margin:20px 0 10px; padding-top:16px; border-top:1px solid var(--border); }
+.auth-links { margin-top:18px; text-align:center; font-size:12px; color:var(--text-dim); }
+.auth-links a { color:var(--accent); text-decoration:none; }
+.error { background:rgba(239,68,68,0.15); color:var(--red); padding:10px; border-radius:8px; font-size:12px; margin-bottom:14px; display:none; }
+.help-text { font-size:10px; color:var(--text-dim); margin-top:3px; }
+</style></head><body>
+<div class="auth-box">
+  <h1>Create Your Account</h1>
+  <p>Set up your personal trading bot in 2 minutes</p>
+  <div id="error" class="error"></div>
+  <form id="signupForm">
+    <div class="section-title">Account</div>
+    <div class="form-row">
+      <div class="form-group"><label>Username</label><input type="text" id="username" required minlength="3" maxlength="30" pattern="[A-Za-z0-9_-]+"><div class="help-text">3-30 chars, letters/numbers/_/-</div></div>
+      <div class="form-group"><label>Email</label><input type="email" id="email" required></div>
+    </div>
+    <div class="form-group"><label>Password</label><input type="password" id="password" required minlength="8"><div class="help-text">Min 8 characters</div></div>
+
+    <div class="section-title">Alpaca Credentials</div>
+    <div class="info-box">
+      Don't have an Alpaca account? Sign up free at <a href="https://alpaca.markets" target="_blank">alpaca.markets</a> then go to Paper Trading and Generate API Keys. <strong>Paper trading only</strong> - real money requires separate keys.
+    </div>
+    <div class="form-group"><label>Alpaca API Key</label><input type="text" id="alpaca_key" required></div>
+    <div class="form-group"><label>Alpaca API Secret</label><input type="password" id="alpaca_secret" required></div>
+    <div class="form-group"><label>Alpaca Endpoint</label>
+      <select id="alpaca_endpoint">
+        <option value="https://paper-api.alpaca.markets/v2" selected>Paper Trading (fake money) - recommended</option>
+        <option value="https://api.alpaca.markets/v2">Live Trading (REAL money)</option>
+      </select>
+    </div>
+
+    <div class="section-title">Notifications (optional)</div>
+    <div class="form-group"><label>Push Notification Topic</label><input type="text" id="ntfy_topic" placeholder="leave blank for auto-generated"><div class="help-text">Install ntfy app, subscribe to this topic</div></div>
+
+    <button type="submit">Create Account</button>
+  </form>
+  <div class="auth-links">Already have an account? <a href="/login">Sign in</a></div>
+</div>
+<script>
+document.getElementById('signupForm').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  var btn = e.target.querySelector('button');
+  btn.disabled = true;
+  btn.textContent = 'Creating account...';
+  var err = document.getElementById('error');
+  err.style.display = 'none';
+  try {
+    var resp = await fetch('/api/signup', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        username: document.getElementById('username').value,
+        email: document.getElementById('email').value,
+        password: document.getElementById('password').value,
+        alpaca_key: document.getElementById('alpaca_key').value,
+        alpaca_secret: document.getElementById('alpaca_secret').value,
+        alpaca_endpoint: document.getElementById('alpaca_endpoint').value,
+        ntfy_topic: document.getElementById('ntfy_topic').value
+      })
+    });
+    var data = await resp.json();
+    if (resp.ok) {
+      window.location.href = '/';
+    } else {
+      err.textContent = data.error || 'Signup failed';
+      err.style.display = 'block';
+      btn.disabled = false;
+      btn.textContent = 'Create Account';
+    }
+  } catch(e) {
+    err.textContent = 'Error: ' + e.message;
+    err.style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = 'Create Account';
+  }
+});
+</script></body></html>"""
+
+FORGOT_HTML = r"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Forgot Password</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root { --bg:#0a0e17; --card:#111827; --border:#1e293b; --text:#e2e8f0; --text-dim:#94a3b8; --accent:#3b82f6; --green:#10b981; --red:#ef4444; }
+* { box-sizing:border-box; margin:0; padding:0; }
+body { font-family:-apple-system,sans-serif; background:linear-gradient(135deg,var(--bg),#1e1b4b); color:var(--text); min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+.auth-box { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:40px; max-width:400px; width:100%; }
+h1 { font-size:22px; margin-bottom:8px; }
+p { color:var(--text-dim); font-size:13px; margin-bottom:20px; }
+label { display:block; font-size:12px; color:var(--text-dim); margin-bottom:6px; text-transform:uppercase; }
+input { width:100%; padding:12px; background:rgba(10,14,23,0.5); border:1px solid var(--border); border-radius:8px; color:var(--text); }
+button { width:100%; padding:14px; background:var(--accent); color:white; border:none; border-radius:8px; margin-top:16px; font-weight:700; cursor:pointer; }
+.message { padding:12px; border-radius:8px; margin-top:16px; font-size:13px; display:none; }
+.message.success { background:rgba(16,185,129,0.15); color:var(--green); }
+.message.error { background:rgba(239,68,68,0.15); color:var(--red); }
+.auth-links { margin-top:20px; text-align:center; font-size:13px; color:var(--text-dim); }
+.auth-links a { color:var(--accent); text-decoration:none; }
+</style></head><body>
+<div class="auth-box">
+<h1>Forgot Password</h1>
+<p>Enter your email and we'll send you a reset link.</p>
+<form id="forgotForm">
+<label>Email</label>
+<input type="email" id="email" required autofocus>
+<button type="submit">Send Reset Link</button>
+</form>
+<div id="message" class="message"></div>
+<div class="auth-links"><a href="/login">Back to login</a></div>
+</div>
+<script>
+document.getElementById('forgotForm').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  var msg = document.getElementById('message');
+  msg.style.display = 'none';
+  try {
+    var resp = await fetch('/api/forgot', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({email: document.getElementById('email').value})
+    });
+    var data = await resp.json();
+    msg.className = 'message ' + (resp.ok ? 'success' : 'error');
+    msg.textContent = data.message || data.error || 'Check your email';
+    msg.style.display = 'block';
+  } catch(e) {
+    msg.className = 'message error';
+    msg.textContent = 'Error: ' + e.message;
+    msg.style.display = 'block';
+  }
+});
+</script></body></html>"""
+
+RESET_HTML = r"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Reset Password</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root { --bg:#0a0e17; --card:#111827; --border:#1e293b; --text:#e2e8f0; --text-dim:#94a3b8; --accent:#3b82f6; --green:#10b981; --red:#ef4444; }
+* { box-sizing:border-box; margin:0; padding:0; }
+body { font-family:-apple-system,sans-serif; background:linear-gradient(135deg,var(--bg),#1e1b4b); color:var(--text); min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+.auth-box { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:40px; max-width:400px; width:100%; }
+h1 { font-size:22px; margin-bottom:8px; }
+p { color:var(--text-dim); font-size:13px; margin-bottom:20px; }
+label { display:block; font-size:12px; color:var(--text-dim); margin-bottom:6px; text-transform:uppercase; }
+input { width:100%; padding:12px; background:rgba(10,14,23,0.5); border:1px solid var(--border); border-radius:8px; color:var(--text); margin-bottom:14px; }
+button { width:100%; padding:14px; background:var(--accent); color:white; border:none; border-radius:8px; font-weight:700; cursor:pointer; }
+.message { padding:12px; border-radius:8px; margin-top:16px; font-size:13px; display:none; }
+.message.success { background:rgba(16,185,129,0.15); color:var(--green); }
+.message.error { background:rgba(239,68,68,0.15); color:var(--red); }
+</style></head><body>
+<div class="auth-box">
+<h1>Reset Your Password</h1>
+<p>Enter a new password below.</p>
+<form id="resetForm">
+<label>New Password</label>
+<input type="password" id="password" required minlength="8" placeholder="min 8 characters">
+<button type="submit">Reset Password</button>
+</form>
+<div id="message" class="message"></div>
+</div>
+<script>
+var params = new URLSearchParams(window.location.search);
+var token = params.get('token');
+document.getElementById('resetForm').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  var msg = document.getElementById('message');
+  try {
+    var resp = await fetch('/api/reset', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({token: token, password: document.getElementById('password').value})
+    });
+    var data = await resp.json();
+    if (resp.ok) {
+      msg.className = 'message success';
+      msg.textContent = 'Password reset! Redirecting to login...';
+      msg.style.display = 'block';
+      setTimeout(function() { window.location.href = '/login'; }, 2000);
+    } else {
+      msg.className = 'message error';
+      msg.textContent = data.error || 'Reset failed';
+      msg.style.display = 'block';
+    }
+  } catch(e) {
+    msg.className = 'message error';
+    msg.textContent = 'Error: ' + e.message;
+    msg.style.display = 'block';
+  }
+});
+</script></body></html>"""
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     """HTTP request handler for the dashboard server."""
 
@@ -3555,37 +3931,123 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """Override to add timestamp prefix."""
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {args[0]}")
 
-    def check_auth(self):
-        """Check HTTP Basic Auth. Returns True if authorized.
+    # Instance defaults populated by check_auth()
+    current_user = None
+    user_api_key = ""
+    user_api_secret = ""
+    user_api_endpoint = ""
+    user_data_endpoint = ""
 
-        Uses hmac.compare_digest for timing-safe comparison to prevent
-        timing attacks against the credentials.
+    def get_current_user(self):
+        """Return current logged-in user dict, or None.
+
+        Checks session cookie first, then falls back to HTTP Basic Auth
+        (for API clients and backward compatibility with existing scripts).
         """
-        import hmac
+        cookie_header = self.headers.get("Cookie", "")
+        session_token = None
+        for cookie in cookie_header.split(";"):
+            cookie = cookie.strip()
+            if cookie.startswith("session="):
+                session_token = cookie[8:]
+                break
+        if session_token:
+            user = auth.validate_session(session_token)
+            if user:
+                return user
+        # Fallback to basic auth for API clients / backward compat
         auth_header = self.headers.get("Authorization", "")
-        if not auth_header.startswith("Basic "):
+        if auth_header.startswith("Basic "):
+            try:
+                decoded = base64.b64decode(auth_header[6:]).decode("utf-8")
+                username, password = decoded.split(":", 1)
+                user = auth.authenticate(username, password)
+                if user:
+                    return user
+            except Exception:
+                pass
+        return None
+
+    def check_auth(self):
+        """Check auth and set self.current_user. Returns True if authenticated.
+
+        On failure: redirects HTML requests to /login, returns 401 JSON for /api/* requests.
+        """
+        user = self.get_current_user()
+        if user:
+            self.current_user = user
+            # Load per-user Alpaca credentials (decrypted) for this request
+            creds = auth.get_user_alpaca_creds(user["id"])
+            self.user_api_key = creds["key"] if creds else ""
+            self.user_api_secret = creds["secret"] if creds else ""
+            self.user_api_endpoint = (creds.get("endpoint") if creds else None) or API_ENDPOINT
+            self.user_data_endpoint = (creds.get("data_endpoint") if creds else None) or DATA_ENDPOINT
+            return True
+        # Not authenticated — decide response by path
+        path = self.path.split("?")[0]
+        if path.startswith("/api/"):
             self.send_response(401)
-            self.send_header("WWW-Authenticate", 'Basic realm="Stock Trading Bot"')
-            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
-            self.wfile.write(b"<h1>Login Required</h1>")
-            return False
-        try:
-            decoded = base64.b64decode(auth_header[6:]).decode("utf-8")
-            user, passwd = decoded.split(":", 1)
-            # Timing-safe comparison for both username and password
-            user_ok = hmac.compare_digest(user.encode("utf-8"), AUTH_USER.encode("utf-8"))
-            pass_ok = hmac.compare_digest(passwd.encode("utf-8"), AUTH_PASS.encode("utf-8"))
-            if user_ok and pass_ok:
-                return True
-        except Exception:
-            pass
-        self.send_response(401)
-        self.send_header("WWW-Authenticate", 'Basic realm="Stock Trading Bot"')
-        self.send_header("Content-Type", "text/html")
-        self.end_headers()
-        self.wfile.write(b"<h1>Invalid credentials</h1>")
+            self.wfile.write(b'{"error": "Not authenticated"}')
+        else:
+            self.send_response(302)
+            self.send_header("Location", "/login")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
         return False
+
+    def user_headers(self):
+        """Return Alpaca auth headers for the current user (falls back to env vars)."""
+        return {
+            "APCA-API-KEY-ID": self.user_api_key or API_KEY,
+            "APCA-API-SECRET-KEY": self.user_api_secret or API_SECRET,
+        }
+
+    def user_api_get(self, url, timeout=15):
+        """GET an Alpaca API URL using the current user's credentials."""
+        req = urllib.request.Request(url, headers=self.user_headers())
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode()
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode() if e.fp else ""
+            return {"error": f"HTTP {e.code}: {err_body}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def user_api_post(self, url, body=None, timeout=15):
+        """POST to an Alpaca API URL using the current user's credentials."""
+        headers = dict(self.user_headers())
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode()
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode() if e.fp else ""
+            return {"error": f"HTTP {e.code}: {err_body}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def user_api_delete(self, url, timeout=15):
+        """DELETE an Alpaca API URL using the current user's credentials."""
+        req = urllib.request.Request(url, headers=self.user_headers(), method="DELETE")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode()
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode() if e.fp else ""
+            return {"error": f"HTTP {e.code}: {err_body}"}
+        except Exception as e:
+            return {"error": str(e)}
 
     def _cors_origin(self):
         """Return the allowed CORS origin (same-origin by default, configurable via env)."""
@@ -3661,27 +4123,90 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        path = self.path.split("?")[0]
+
+        # PUBLIC routes — no auth required
+        if path == "/login":
+            self.send_html(LOGIN_HTML)
+            return
+        if path == "/signup":
+            self.send_html(SIGNUP_HTML)
+            return
+        if path == "/forgot":
+            self.send_html(FORGOT_HTML)
+            return
+        if path == "/reset":
+            self.send_html(RESET_HTML)
+            return
+        if path == "/manifest.json":
+            manifest_path = os.path.join(BASE_DIR, "manifest.json")
+            manifest = load_json(manifest_path)
+            if manifest:
+                self.send_json(manifest)
+            else:
+                self.send_json({
+                    "name": "Stock Trading Bot",
+                    "short_name": "StockBot",
+                    "start_url": "/",
+                    "display": "standalone",
+                    "background_color": "#0a0e17",
+                    "theme_color": "#3b82f6",
+                    "orientation": "any"
+                })
+            return
+        if path == "/sw.js":
+            sw = "self.addEventListener('fetch', e => e.respondWith(fetch(e.request)));"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/javascript")
+            self.end_headers()
+            self.wfile.write(sw.encode())
+            return
+        if path in ("/icon-192.png", "/icon-512.png"):
+            size = 192 if "192" in path else 512
+            self._serve_icon_placeholder(size)
+            return
+        if path == "/api/logout":
+            # Support GET for user-menu link clicks (the handler clears cookie + redirects)
+            self.handle_logout()
+            return
+
+        # AUTH required below this line
         if not self.check_auth():
             return
-        path = self.path.split("?")[0]
 
         if path == "/":
             self.send_html(DASHBOARD_HTML)
 
+        elif path == "/api/me":
+            u = self.current_user or {}
+            self.send_json({
+                "username": u.get("username", ""),
+                "email": u.get("email", ""),
+                "is_admin": bool(u.get("is_admin", 0)),
+                "alpaca_endpoint": u.get("alpaca_endpoint", ""),
+                "alpaca_data_endpoint": u.get("alpaca_data_endpoint", ""),
+                "ntfy_topic": u.get("ntfy_topic", ""),
+                "notification_email": u.get("notification_email", ""),
+                "has_alpaca_key": bool(self.user_api_key),
+            })
+
         elif path == "/api/data":
-            data = get_dashboard_data()
+            data = get_dashboard_data(
+                api_endpoint=self.user_api_endpoint,
+                api_headers=self.user_headers(),
+            )
             self.send_json(data)
 
         elif path == "/api/account":
-            result = alpaca_get(f"{API_ENDPOINT}/account")
+            result = self.user_api_get(f"{self.user_api_endpoint}/account")
             self.send_json(result)
 
         elif path == "/api/positions":
-            result = alpaca_get(f"{API_ENDPOINT}/positions")
+            result = self.user_api_get(f"{self.user_api_endpoint}/positions")
             self.send_json(result if isinstance(result, list) else [])
 
         elif path == "/api/orders":
-            result = alpaca_get(f"{API_ENDPOINT}/orders?status=open&limit=50")
+            result = self.user_api_get(f"{self.user_api_endpoint}/orders?status=open&limit=50")
             self.send_json(result if isinstance(result, list) else [])
 
         elif path == "/api/auto-deployer-config":
@@ -3757,42 +4282,40 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "total_trades": len(trades),
             })
 
-        elif path == "/manifest.json":
-            manifest_path = os.path.join(BASE_DIR, "manifest.json")
-            manifest = load_json(manifest_path)
-            if manifest:
-                self.send_json(manifest)
-            else:
-                self.send_json({
-                    "name": "Stock Trading Bot",
-                    "short_name": "StockBot",
-                    "start_url": "/",
-                    "display": "standalone",
-                    "background_color": "#0a0e17",
-                    "theme_color": "#3b82f6",
-                    "orientation": "any"
-                })
-
-        elif path == "/sw.js":
-            sw = "self.addEventListener('fetch', e => e.respondWith(fetch(e.request)));"
-            self.send_response(200)
-            self.send_header("Content-Type", "application/javascript")
-            self.end_headers()
-            self.wfile.write(sw.encode())
-
-        elif path in ("/icon-192.png", "/icon-512.png"):
-            # Serve a simple colored square as a PNG placeholder
-            size = 192 if "192" in path else 512
-            self._serve_icon_placeholder(size)
-
         else:
             self.send_json({"error": "Not found"}, 404)
 
     def do_POST(self):
-        if not self.check_auth():
-            return
         path = self.path.split("?")[0]
         body = self.read_body()
+
+        # PUBLIC auth endpoints (no auth required)
+        if path == "/api/login":
+            self.handle_login(body)
+            return
+        if path == "/api/signup":
+            self.handle_signup(body)
+            return
+        if path == "/api/forgot":
+            self.handle_forgot_password(body)
+            return
+        if path == "/api/reset":
+            self.handle_reset_password(body)
+            return
+        if path == "/api/logout":
+            self.handle_logout()
+            return
+
+        # AUTH required below this line
+        if not self.check_auth():
+            return
+
+        if path == "/api/change-password":
+            self.handle_change_password(body)
+            return
+        if path == "/api/update-settings":
+            self.handle_update_settings(body)
+            return
 
         if path == "/api/refresh":
             self.handle_refresh()
@@ -3830,6 +4353,217 @@ class DashboardHandler(BaseHTTPRequestHandler):
         else:
             self.send_json({"error": "Not found"}, 404)
 
+    # ===== Auth handlers =====
+
+    def _set_session_cookie(self, token):
+        """Send a Set-Cookie header for a fresh session token."""
+        max_age = 30 * 86400
+        self.send_header(
+            "Set-Cookie",
+            f"session={token}; Path=/; HttpOnly; Max-Age={max_age}; SameSite=Lax",
+        )
+
+    def handle_login(self, body):
+        username = (body.get("username") or "").strip()
+        password = body.get("password") or ""
+        if not username or not password:
+            return self.send_json({"error": "Username and password required"}, 400)
+        user = auth.authenticate(username, password)
+        if not user:
+            return self.send_json({"error": "Invalid credentials"}, 401)
+        ip = self.client_address[0] if self.client_address else None
+        token = auth.create_session(user["id"], ip)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self._set_session_cookie(token)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(json.dumps({"success": True, "username": user["username"]}).encode("utf-8"))
+
+    def handle_signup(self, body):
+        email = (body.get("email") or "").strip().lower()
+        username = (body.get("username") or "").strip()
+        password = body.get("password") or ""
+        alpaca_key = (body.get("alpaca_key") or "").strip()
+        alpaca_secret = (body.get("alpaca_secret") or "").strip()
+        alpaca_endpoint = (body.get("alpaca_endpoint") or "https://paper-api.alpaca.markets/v2").strip()
+        ntfy_topic = (body.get("ntfy_topic") or "").strip()
+
+        # Validation
+        if not all([email, username, password, alpaca_key, alpaca_secret]):
+            return self.send_json(
+                {"error": "All fields required (email, username, password, Alpaca API key, Alpaca API secret)"},
+                400,
+            )
+        if len(password) < 8:
+            return self.send_json({"error": "Password must be at least 8 characters"}, 400)
+        if "@" not in email:
+            return self.send_json({"error": "Invalid email"}, 400)
+        if not re.match(r"^[A-Za-z0-9_-]{3,30}$", username):
+            return self.send_json({"error": "Username must be 3-30 chars, alphanumeric/_/-"}, 400)
+
+        # Verify Alpaca credentials before saving
+        test_headers = {
+            "APCA-API-KEY-ID": alpaca_key,
+            "APCA-API-SECRET-KEY": alpaca_secret,
+        }
+        try:
+            req = urllib.request.Request(f"{alpaca_endpoint}/account", headers=test_headers)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                test_data = json.loads(resp.read().decode())
+                if test_data.get("status") != "ACTIVE":
+                    return self.send_json(
+                        {"error": f"Alpaca account is not active (status: {test_data.get('status')})"},
+                        400,
+                    )
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                return self.send_json(
+                    {"error": "Invalid Alpaca API credentials. Check your key and secret."}, 400
+                )
+            return self.send_json({"error": f"Alpaca API error: {e.code}"}, 400)
+        except Exception as e:
+            return self.send_json(
+                {"error": f"Could not verify Alpaca credentials: {str(e)[:100]}"}, 400
+            )
+
+        # Derive data endpoint from trading endpoint (paper vs live share the same data host)
+        data_endpoint = "https://data.alpaca.markets/v2"
+
+        user_id, err = auth.create_user(
+            email=email,
+            username=username,
+            password=password,
+            alpaca_key=alpaca_key,
+            alpaca_secret=alpaca_secret,
+            alpaca_endpoint=alpaca_endpoint,
+            alpaca_data_endpoint=data_endpoint,
+            ntfy_topic=ntfy_topic or None,
+            notification_email=email,
+        )
+        if err:
+            return self.send_json({"error": err}, 400)
+
+        # Auto-login
+        ip = self.client_address[0] if self.client_address else None
+        token = auth.create_session(user_id, ip)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self._set_session_cookie(token)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(
+            json.dumps({"success": True, "user_id": user_id, "username": username}).encode("utf-8")
+        )
+
+    def handle_forgot_password(self, body):
+        email = (body.get("email") or "").strip().lower()
+        if not email:
+            return self.send_json({"error": "Email required"}, 400)
+        token, user = auth.create_password_reset(email)
+        # Do not reveal whether the email exists (security)
+        generic_ok = {"success": True, "message": "If that email exists, a reset link has been sent."}
+        if not token:
+            return self.send_json(generic_ok)
+
+        # Build reset URL — prefer configured base, fall back to request Host
+        base_url = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
+        if not base_url:
+            host = self.headers.get("Host", "")
+            # Assume HTTPS on Railway (edge TLS), HTTP locally
+            scheme = "https" if host and "localhost" not in host and "127.0.0.1" not in host else "http"
+            base_url = f"{scheme}://{host}" if host else "https://stockbott.up.railway.app"
+        reset_url = f"{base_url}/reset?token={token}"
+        msg = (
+            f"Password reset requested. Click to reset (expires in 1 hour):\n{reset_url}\n\n"
+            f"If you did not request this, ignore this email."
+        )
+
+        try:
+            subprocess.Popen([
+                sys.executable,
+                os.path.join(BASE_DIR, "notify.py"),
+                "--type", "alert",
+                f"Password reset: {reset_url}",
+            ])
+        except Exception as e:
+            print(f"[auth] notify.py launch failed: {e}")
+
+        # Also queue a direct email for the notification_email if one is set
+        try:
+            email_queue_path = os.path.join(BASE_DIR, "email_queue.json")
+            try:
+                with open(email_queue_path) as f:
+                    queue = json.load(f)
+            except Exception:
+                queue = []
+            queue.append({
+                "to": user.get("notification_email") or email,
+                "subject": "Stock Bot — Password Reset",
+                "body": msg,
+                "sent": False,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+            with open(email_queue_path, "w") as f:
+                json.dump(queue, f, indent=2)
+        except Exception as e:
+            print(f"[auth] Failed to queue reset email: {e}")
+
+        self.send_json(generic_ok)
+
+    def handle_reset_password(self, body):
+        token = (body.get("token") or "").strip()
+        new_password = body.get("password") or ""
+        if not token or not new_password:
+            return self.send_json({"error": "Token and new password required"}, 400)
+        if len(new_password) < 8:
+            return self.send_json({"error": "Password must be at least 8 characters"}, 400)
+        if not auth.consume_reset_token(token, new_password):
+            return self.send_json({"error": "Invalid or expired reset token"}, 400)
+        self.send_json({"success": True, "message": "Password reset. Please log in."})
+
+    def handle_logout(self):
+        cookie_header = self.headers.get("Cookie", "")
+        for cookie in cookie_header.split(";"):
+            cookie = cookie.strip()
+            if cookie.startswith("session="):
+                auth.delete_session(cookie[8:])
+                break
+        self.send_response(302)
+        self.send_header("Location", "/login")
+        self.send_header("Set-Cookie", "session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
+    def handle_change_password(self, body):
+        old_password = body.get("old_password") or ""
+        new_password = body.get("new_password") or ""
+        if not old_password or not new_password:
+            return self.send_json({"error": "Old and new password required"}, 400)
+        if len(new_password) < 8:
+            return self.send_json({"error": "New password must be at least 8 characters"}, 400)
+        user = self.current_user or {}
+        if not auth.verify_password(old_password, user.get("password_hash", ""), user.get("password_salt", "")):
+            return self.send_json({"error": "Current password is incorrect"}, 400)
+        auth.change_password(user["id"], new_password)
+        self.send_json({"success": True, "message": "Password changed"})
+
+    def handle_update_settings(self, body):
+        """Update the current user's Alpaca keys, endpoints, or notification settings."""
+        updates = {}
+        for field in (
+            "alpaca_key", "alpaca_secret", "alpaca_endpoint",
+            "alpaca_data_endpoint", "ntfy_topic", "notification_email",
+        ):
+            val = body.get(field)
+            if val is None:
+                continue
+            updates[field] = val.strip() if isinstance(val, str) else val
+        if not updates:
+            return self.send_json({"error": "No fields to update"}, 400)
+        auth.update_user_credentials(self.current_user["id"], **updates)
+        self.send_json({"success": True, "message": "Settings updated"})
+
     def handle_refresh(self):
         """Run update_dashboard.py and return fresh data."""
         script_path = os.path.join(BASE_DIR, "update_dashboard.py")
@@ -3847,7 +4581,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             print(f"Error running update_dashboard.py: {e}")
 
         # Return fresh data regardless
-        data = get_dashboard_data()
+        data = get_dashboard_data(
+            api_endpoint=self.user_api_endpoint,
+            api_headers=self.user_headers(),
+        )
         self.send_json(data)
 
     def handle_deploy(self, body):
@@ -3885,12 +4622,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def deploy_trailing_stop(self, symbol, qty):
         """Deploy trailing stop strategy: buy shares, set stop loss, place ladder buys."""
         # 1. Get current price
-        snap_url = f"{DATA_ENDPOINT}/stocks/{symbol}/snapshot?feed=iex"
-        snap = alpaca_get(snap_url)
+        snap_url = f"{self.user_data_endpoint}/stocks/{symbol}/snapshot?feed=iex"
+        snap = self.user_api_get(snap_url)
         if "error" in snap:
             # Try SIP feed
-            snap_url = f"{DATA_ENDPOINT}/stocks/{symbol}/snapshot"
-            snap = alpaca_get(snap_url)
+            snap_url = f"{self.user_data_endpoint}/stocks/{symbol}/snapshot"
+            snap = self.user_api_get(snap_url)
         price = 0
         if isinstance(snap, dict):
             lt = snap.get("latestTrade", {})
@@ -3900,7 +4637,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         # 2. Market buy
-        buy_order = alpaca_post(f"{API_ENDPOINT}/orders", {
+        buy_order = self.user_api_post(f"{self.user_api_endpoint}/orders", {
             "symbol": symbol,
             "qty": str(qty),
             "side": "buy",
@@ -3919,7 +4656,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         # 3. Ladder buy orders at -12%, -20%, -30%, -40%
         # Check buying power first so we don't place ladders we can't afford
-        acct = alpaca_get(f"{API_ENDPOINT}/account")
+        acct = self.user_api_get(f"{self.user_api_endpoint}/account")
         buying_power = float(acct.get("buying_power", 0)) if isinstance(acct, dict) else 0
         ladder_levels = [
             {"drop_pct": 0.12, "qty": max(1, qty // 2), "note": "re-entry just below stop-out"},
@@ -3941,7 +4678,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         ladder_orders = []
         for level in ladder_levels:
             ladder_price = round(price * (1 - level["drop_pct"]), 2)
-            ladder_order = alpaca_post(f"{API_ENDPOINT}/orders", {
+            ladder_order = self.user_api_post(f"{self.user_api_endpoint}/orders", {
                 "symbol": symbol,
                 "qty": str(level["qty"]),
                 "side": "buy",
@@ -4001,11 +4738,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def deploy_wheel(self, symbol, qty):
         """Deploy wheel strategy: check cash for 100 shares, place first put."""
-        snap_url = f"{DATA_ENDPOINT}/stocks/{symbol}/snapshot?feed=iex"
-        snap = alpaca_get(snap_url)
+        snap_url = f"{self.user_data_endpoint}/stocks/{symbol}/snapshot?feed=iex"
+        snap = self.user_api_get(snap_url)
         if "error" in snap:
-            snap_url = f"{DATA_ENDPOINT}/stocks/{symbol}/snapshot"
-            snap = alpaca_get(snap_url)
+            snap_url = f"{self.user_data_endpoint}/stocks/{symbol}/snapshot"
+            snap = self.user_api_get(snap_url)
         price = 0
         if isinstance(snap, dict):
             lt = snap.get("latestTrade", {})
@@ -4015,7 +4752,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         # Check account for enough cash for 100 shares
-        acct = alpaca_get(f"{API_ENDPOINT}/account")
+        acct = self.user_api_get(f"{self.user_api_endpoint}/account")
         cash = float(acct.get("cash", 0)) if isinstance(acct, dict) else 0
         needed = price * 100
         if cash < needed:
@@ -4100,11 +4837,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def deploy_mean_reversion(self, symbol, qty):
         """Deploy mean reversion: buy shares, set limit sell at 20-day avg estimate, set stop-loss."""
-        snap_url = f"{DATA_ENDPOINT}/stocks/{symbol}/snapshot?feed=iex"
-        snap = alpaca_get(snap_url)
+        snap_url = f"{self.user_data_endpoint}/stocks/{symbol}/snapshot?feed=iex"
+        snap = self.user_api_get(snap_url)
         if "error" in snap:
-            snap_url = f"{DATA_ENDPOINT}/stocks/{symbol}/snapshot"
-            snap = alpaca_get(snap_url)
+            snap_url = f"{self.user_data_endpoint}/stocks/{symbol}/snapshot"
+            snap = self.user_api_get(snap_url)
         price = 0
         if isinstance(snap, dict):
             lt = snap.get("latestTrade", {})
@@ -4114,7 +4851,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         # 1. Market buy
-        buy_order = alpaca_post(f"{API_ENDPOINT}/orders", {
+        buy_order = self.user_api_post(f"{self.user_api_endpoint}/orders", {
             "symbol": symbol,
             "qty": str(qty),
             "side": "buy",
@@ -4166,11 +4903,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def deploy_breakout(self, symbol, qty):
         """Deploy breakout: buy shares, set tight 5% stop-loss, trailing stop."""
-        snap_url = f"{DATA_ENDPOINT}/stocks/{symbol}/snapshot?feed=iex"
-        snap = alpaca_get(snap_url)
+        snap_url = f"{self.user_data_endpoint}/stocks/{symbol}/snapshot?feed=iex"
+        snap = self.user_api_get(snap_url)
         if "error" in snap:
-            snap_url = f"{DATA_ENDPOINT}/stocks/{symbol}/snapshot"
-            snap = alpaca_get(snap_url)
+            snap_url = f"{self.user_data_endpoint}/stocks/{symbol}/snapshot"
+            snap = self.user_api_get(snap_url)
         price = 0
         if isinstance(snap, dict):
             lt = snap.get("latestTrade", {})
@@ -4180,7 +4917,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         # 1. Market buy
-        buy_order = alpaca_post(f"{API_ENDPOINT}/orders", {
+        buy_order = self.user_api_post(f"{self.user_api_endpoint}/orders", {
             "symbol": symbol,
             "qty": str(qty),
             "side": "buy",
@@ -4238,7 +4975,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not re.match(r'^[0-9a-f\-]{36}$', order_id):
             return self.send_json({"error": "Invalid order_id format"}, 400)
 
-        result = alpaca_delete(f"{API_ENDPOINT}/orders/{order_id}")
+        result = self.user_api_delete(f"{self.user_api_endpoint}/orders/{order_id}")
         if isinstance(result, dict) and "error" in result:
             self.send_json({"error": result["error"]}, 400)
         else:
@@ -4254,7 +4991,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not re.match(r'^[A-Z]{1,10}$', symbol):
             return self.send_json({"error": "Invalid symbol format"}, 400)
 
-        result = alpaca_delete(f"{API_ENDPOINT}/positions/{symbol}")
+        result = self.user_api_delete(f"{self.user_api_endpoint}/positions/{symbol}")
         if isinstance(result, dict) and "error" in result:
             self.send_json({"error": result["error"]}, 400)
         else:
@@ -4273,7 +5010,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if qty < 1 or qty > 10000:
             return self.send_json({"error": "Invalid quantity. Must be 1-10000."}, 400)
 
-        result = alpaca_post(f"{API_ENDPOINT}/orders", {
+        result = self.user_api_post(f"{self.user_api_endpoint}/orders", {
             "symbol": symbol,
             "qty": str(qty),
             "side": "sell",
@@ -4312,16 +5049,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         if activate:
             # 1. Cancel ALL open orders in one atomic bulk call
-            orders_before = alpaca_get(f"{API_ENDPOINT}/orders?status=open")
+            orders_before = self.user_api_get(f"{self.user_api_endpoint}/orders?status=open")
             orders_cancelled = len(orders_before) if isinstance(orders_before, list) else 0
-            alpaca_delete(f"{API_ENDPOINT}/orders")
+            self.user_api_delete(f"{self.user_api_endpoint}/orders")
 
             # 2. Close ALL positions (Alpaca supports closing all with one call)
             positions_closed = 0
-            positions_before = alpaca_get(f"{API_ENDPOINT}/positions")
+            positions_before = self.user_api_get(f"{self.user_api_endpoint}/positions")
             if isinstance(positions_before, list):
                 positions_closed = len(positions_before)
-            close_result = alpaca_delete(f"{API_ENDPOINT}/positions")
+            close_result = self.user_api_delete(f"{self.user_api_endpoint}/positions")
 
             # 3. Set kill_switch: true in guardrails.json
             guardrails["kill_switch"] = True
@@ -4434,7 +5171,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             order_ids.append(oid)
 
                 for oid in order_ids:
-                    result = alpaca_delete(f"{API_ENDPOINT}/orders/{oid}")
+                    result = self.user_api_delete(f"{self.user_api_endpoint}/orders/{oid}")
                     if not (isinstance(result, dict) and "error" in result):
                         orders_cancelled += 1
 

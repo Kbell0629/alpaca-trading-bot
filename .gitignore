@@ -20,3 +20,11 @@ strategies/breakout_*.json
 strategies/wheel_*.json
 !strategies/wheel_strategy.json
 strategies/.deploying
+
+# Multi-user auth
+users.db
+users.db-journal
+users.db-wal
+users.db-shm
+users/
+

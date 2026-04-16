@@ -1,8 +1,19 @@
 #!/usr/bin/env python3
 """
-Cloud-native scheduler for the Alpaca trading bot.
+Cloud-native scheduler for the Alpaca trading bot — MULTI-USER.
 Runs as a background thread in server.py, replacing Claude Code scheduled tasks.
 All trading logic runs on Railway 24/7 without needing user's laptop.
+
+For each active user in the auth DB (with valid Alpaca creds), runs:
+  - Screener (every 30 min during market hours)
+  - Strategy monitor (every 60s during market hours)
+  - Auto-deployer (weekdays 9:35 AM ET)
+  - Daily close (weekdays 4:05 PM ET)
+  - Weekly learning (Fridays 5:00 PM ET)
+  - Friday risk reduction (Fridays 3:45 PM ET)
+  - Monthly rebalance (first trading day, 9:45 AM ET)
+
+Falls back to env-var single-user mode if auth module is unavailable.
 """
 import json
 import os
@@ -16,13 +27,19 @@ import urllib.parse
 from datetime import datetime, timezone, timedelta
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STRATEGIES_DIR = os.path.join(BASE_DIR, "strategies")
+STRATEGIES_DIR = os.path.join(BASE_DIR, "strategies")  # legacy / fallback
 
+# Legacy env vars (used only when auth module is unavailable)
 API_ENDPOINT = os.environ.get("ALPACA_ENDPOINT", "https://paper-api.alpaca.markets/v2")
 DATA_ENDPOINT = os.environ.get("ALPACA_DATA_ENDPOINT", "https://data.alpaca.markets/v2")
 API_KEY = os.environ.get("ALPACA_API_KEY", "")
 API_SECRET = os.environ.get("ALPACA_API_SECRET", "")
-HEADERS = {"APCA-API-KEY-ID": API_KEY, "APCA-API-SECRET-KEY": API_SECRET}
+
+try:
+    import auth
+    AUTH_AVAILABLE = True
+except ImportError:
+    AUTH_AVAILABLE = False
 
 _scheduler_thread = None
 _scheduler_running = False
@@ -39,25 +56,106 @@ def log(msg, task="scheduler"):
         if len(_recent_logs) > 100:
             _recent_logs.pop(0)
 
-def api_get(url, timeout=10):
-    req = urllib.request.Request(url, headers=HEADERS)
+# ============================================================================
+# MULTI-USER CONTEXT HELPERS
+# ============================================================================
+def get_all_users_for_scheduling():
+    """Return all active users with valid Alpaca credentials.
+    Falls back to env var single-user mode if auth not available or no users.
+    Each user dict has the private keys we need to run tasks on their behalf.
+    """
+    if AUTH_AVAILABLE:
+        try:
+            users = auth.list_active_users()
+        except Exception as e:
+            log(f"auth.list_active_users failed: {e}. Falling back to env mode.", "scheduler")
+            users = []
+        result = []
+        for u in users:
+            try:
+                creds = auth.get_user_alpaca_creds(u["id"])
+            except Exception as e:
+                log(f"get_user_alpaca_creds failed for user {u.get('id')}: {e}", "scheduler")
+                continue
+            if not creds or not creds.get("key") or not creds.get("secret"):
+                continue
+            user_dir = auth.user_data_dir(u["id"])
+            result.append({
+                "id": u["id"],
+                "username": u["username"],
+                "_api_key": creds["key"],
+                "_api_secret": creds["secret"],
+                "_api_endpoint": creds.get("endpoint") or "https://paper-api.alpaca.markets/v2",
+                "_data_endpoint": creds.get("data_endpoint") or "https://data.alpaca.markets/v2",
+                "_ntfy_topic": creds.get("ntfy_topic") or f"alpaca-bot-{u['username'].lower()}",
+                "_data_dir": user_dir,
+                "_strategies_dir": os.path.join(user_dir, "strategies"),
+            })
+        if result:
+            return result
+
+    # Env-var fallback (single-user legacy mode)
+    if API_KEY and API_SECRET:
+        return [{
+            "id": "env",
+            "username": os.environ.get("DASHBOARD_USER", "admin"),
+            "_api_key": API_KEY,
+            "_api_secret": API_SECRET,
+            "_api_endpoint": API_ENDPOINT,
+            "_data_endpoint": DATA_ENDPOINT,
+            "_ntfy_topic": os.environ.get("NTFY_TOPIC", ""),
+            "_data_dir": BASE_DIR,              # legacy uses root BASE_DIR
+            "_strategies_dir": STRATEGIES_DIR,  # legacy strategies dir
+        }]
+    return []
+
+def _user_headers(user):
+    return {
+        "APCA-API-KEY-ID": user["_api_key"],
+        "APCA-API-SECRET-KEY": user["_api_secret"],
+    }
+
+def user_api_get(user, url_path, timeout=10):
+    """GET from this user's Alpaca endpoint.
+    url_path can be relative (e.g., '/account') or a full URL.
+    """
+    if url_path.startswith("http"):
+        url = url_path
+    else:
+        if "/stocks/" in url_path or "/options/" in url_path or "/news" in url_path:
+            url = user["_data_endpoint"] + url_path
+        else:
+            url = user["_api_endpoint"] + url_path
+    req = urllib.request.Request(url, headers=_user_headers(user))
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode())
     except Exception as e:
         return {"error": str(e)}
 
-def api_post(url, data, timeout=10):
-    req = urllib.request.Request(url, data=json.dumps(data).encode(),
-        headers={**HEADERS, "Content-Type": "application/json"}, method="POST")
+def user_api_post(user, url_path, data, timeout=10):
+    if url_path.startswith("http"):
+        url = url_path
+    else:
+        url = user["_api_endpoint"] + url_path
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(data).encode(),
+        headers={**_user_headers(user), "Content-Type": "application/json"},
+        method="POST",
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode())
     except Exception as e:
         return {"error": str(e)}
 
-def api_delete(url, timeout=10):
-    req = urllib.request.Request(url, headers=HEADERS, method="DELETE")
+def user_api_delete(user, url_path, timeout=10):
+    if url_path.startswith("http"):
+        url = url_path
+    else:
+        url = user["_api_endpoint"] + url_path
+    req = urllib.request.Request(url, headers=_user_headers(user), method="DELETE")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read()
@@ -65,6 +163,18 @@ def api_delete(url, timeout=10):
     except Exception as e:
         return {"error": str(e)}
 
+def user_file(user, filename):
+    """Return path to a user-scoped data file."""
+    return os.path.join(user["_data_dir"], filename)
+
+def user_strategies_dir(user):
+    d = user["_strategies_dir"]
+    os.makedirs(d, exist_ok=True)
+    return d
+
+# ============================================================================
+# GENERIC FILE HELPERS
+# ============================================================================
 def load_json(path):
     try:
         with open(path) as f:
@@ -74,6 +184,7 @@ def load_json(path):
 
 def save_json(path, data):
     dir_name = os.path.dirname(path) or "."
+    os.makedirs(dir_name, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
     try:
         with os.fdopen(fd, 'w') as f:
@@ -84,18 +195,37 @@ def save_json(path, data):
         except: pass
         raise
 
-def notify(message, notify_type="info"):
+# ============================================================================
+# NOTIFICATIONS
+# ============================================================================
+def notify_user(user, message, notify_type="info"):
+    """Send a notification tagged with the user's ntfy topic."""
     try:
-        subprocess.Popen([sys.executable, os.path.join(BASE_DIR, "notify.py"),
-                         "--type", notify_type, message])
+        env = os.environ.copy()
+        if user.get("_ntfy_topic"):
+            env["NTFY_TOPIC"] = user["_ntfy_topic"]
+        subprocess.Popen(
+            [sys.executable, os.path.join(BASE_DIR, "notify.py"),
+             "--type", notify_type, message],
+            env=env,
+        )
     except Exception as e:
         log(f"Notification failed: {e}")
 
-def is_market_open():
-    result = api_get(f"{API_ENDPOINT}/clock")
-    if isinstance(result, dict) and "error" not in result:
-        return result.get("is_open", False)
-    return False
+def notify_user_global(message, notify_type="info"):
+    """Global notification — routed to first user's ntfy topic (or env fallback)."""
+    users = get_all_users_for_scheduling()
+    if users:
+        notify_user(users[0], message, notify_type)
+    else:
+        # No users — best effort with env-var topic
+        try:
+            subprocess.Popen(
+                [sys.executable, os.path.join(BASE_DIR, "notify.py"),
+                 "--type", notify_type, message]
+            )
+        except Exception as e:
+            log(f"Global notification failed: {e}")
 
 def get_et_time():
     # Rough ET — March to November is EDT (UTC-4), rest is EST (UTC-5)
@@ -105,43 +235,57 @@ def get_et_time():
     return now_utc + timedelta(hours=offset)
 
 # ============================================================================
-# TASK 1: SCREENER
+# TASK 1: SCREENER (per user)
 # ============================================================================
-def run_screener(max_age_seconds=0):
-    """Run the stock screener. If max_age_seconds > 0, skip if last run was within that window."""
+def run_screener(user, max_age_seconds=0):
+    """Run the stock screener for ONE user. Uses user's Alpaca creds via env vars
+    passed to the update_dashboard.py subprocess. Output is written to the user's
+    data dir (if update_dashboard.py supports DASHBOARD_DATA_PATH/_HTML_PATH env
+    vars); otherwise it falls back to writing to BASE_DIR (legacy behavior).
+    """
+    key = f"screener_{user['id']}"
     if max_age_seconds > 0:
-        last = _last_runs.get("screener", 0)
+        last = _last_runs.get(key, 0)
         if isinstance(last, (int, float)) and time.time() - last < max_age_seconds:
             age = int(time.time() - last)
-            log(f"Screener data is {age}s old (< {max_age_seconds}s). Skipping duplicate run.", "screener")
+            log(f"[{user['username']}] Screener data is {age}s old (< {max_age_seconds}s). Skipping duplicate run.", "screener")
             return
-    log("Starting screener...", "screener")
+    log(f"[{user['username']}] Starting screener...", "screener")
+    env = os.environ.copy()
+    env["ALPACA_API_KEY"] = user["_api_key"]
+    env["ALPACA_API_SECRET"] = user["_api_secret"]
+    env["ALPACA_ENDPOINT"] = user["_api_endpoint"]
+    env["ALPACA_DATA_ENDPOINT"] = user["_data_endpoint"]
+    # Pass preferred output paths; update_dashboard.py may or may not honor them.
+    env["DASHBOARD_DATA_PATH"] = user_file(user, "dashboard_data.json")
+    env["DASHBOARD_HTML_PATH"] = user_file(user, "dashboard.html")
     try:
         result = subprocess.run(
             [sys.executable, os.path.join(BASE_DIR, "update_dashboard.py")],
-            cwd=BASE_DIR, capture_output=True, text=True, timeout=180
+            cwd=BASE_DIR, capture_output=True, text=True, timeout=180, env=env,
         )
         if result.returncode == 0:
-            log("Screener completed", "screener")
-            _last_runs["screener"] = time.time()
+            log(f"[{user['username']}] Screener completed", "screener")
+            _last_runs[key] = time.time()
         else:
-            log(f"Screener failed: {result.stderr[:200]}", "screener")
+            log(f"[{user['username']}] Screener failed: {result.stderr[:200]}", "screener")
     except subprocess.TimeoutExpired:
-        log("Screener timed out (>180s)", "screener")
+        log(f"[{user['username']}] Screener timed out (>180s)", "screener")
     except Exception as e:
-        log(f"Screener error: {e}", "screener")
+        log(f"[{user['username']}] Screener error: {e}", "screener")
 
 # ============================================================================
-# TASK 2: STRATEGY MONITOR
+# TASK 2: STRATEGY MONITOR (per user)
 # ============================================================================
-def monitor_strategies():
+def monitor_strategies(user):
     try:
-        guardrails = load_json(os.path.join(BASE_DIR, "guardrails.json")) or {}
+        guardrails_path = user_file(user, "guardrails.json")
+        guardrails = load_json(guardrails_path) or {}
         if guardrails.get("kill_switch"):
             return
 
         # Daily loss check
-        account = api_get(f"{API_ENDPOINT}/account")
+        account = user_api_get(user, "/account")
         if isinstance(account, dict) and "error" not in account:
             current_val = float(account.get("portfolio_value", 0))
             daily_start = guardrails.get("daily_starting_value")
@@ -150,7 +294,7 @@ def monitor_strategies():
             # current value so the kill-switch safety is always armed.
             if not daily_start and current_val > 0:
                 guardrails["daily_starting_value"] = current_val
-                save_json(os.path.join(BASE_DIR, "guardrails.json"), guardrails)
+                save_json(guardrails_path, guardrails)
                 daily_start = current_val
             if daily_start:
                 loss_pct = (daily_start - current_val) / daily_start
@@ -158,21 +302,22 @@ def monitor_strategies():
                     guardrails["kill_switch"] = True
                     guardrails["kill_switch_triggered_at"] = datetime.now(timezone.utc).isoformat()
                     guardrails["kill_switch_reason"] = f"Daily loss {loss_pct*100:.1f}%"
-                    save_json(os.path.join(BASE_DIR, "guardrails.json"), guardrails)
-                    api_delete(f"{API_ENDPOINT}/orders")
-                    api_delete(f"{API_ENDPOINT}/positions")
-                    notify(f"KILL SWITCH: Daily loss {loss_pct*100:.1f}% exceeded.", "kill")
-                    log(f"KILL SWITCH triggered: {loss_pct*100:.1f}% loss", "monitor")
+                    save_json(guardrails_path, guardrails)
+                    user_api_delete(user, "/orders")
+                    user_api_delete(user, "/positions")
+                    notify_user(user, f"KILL SWITCH: Daily loss {loss_pct*100:.1f}% exceeded.", "kill")
+                    log(f"[{user['username']}] KILL SWITCH triggered: {loss_pct*100:.1f}% loss", "monitor")
                     return
 
-        if not os.path.isdir(STRATEGIES_DIR):
+        sdir = user_strategies_dir(user)
+        if not os.path.isdir(sdir):
             return
-        for fname in os.listdir(STRATEGIES_DIR):
+        for fname in os.listdir(sdir):
             if not fname.endswith(".json"):
                 continue
             if fname in ("copy_trading.json", "wheel_strategy.json"):
                 continue
-            filepath = os.path.join(STRATEGIES_DIR, fname)
+            filepath = os.path.join(sdir, fname)
             strat = load_json(filepath)
             if not strat:
                 continue
@@ -181,13 +326,13 @@ def monitor_strategies():
             if status not in ("active", "awaiting_fill") or not symbol:
                 continue
             try:
-                process_strategy_file(filepath, strat)
+                process_strategy_file(user, filepath, strat)
             except Exception as e:
-                log(f"Error processing {fname}: {e}", "monitor")
+                log(f"[{user['username']}] Error processing {fname}: {e}", "monitor")
     except Exception as e:
-        log(f"Monitor error: {e}", "monitor")
+        log(f"[{user['username']}] Monitor error: {e}", "monitor")
 
-def check_profit_ladder(filepath, strat, price, entry, shares):
+def check_profit_ladder(user, filepath, strat, price, entry, shares):
     """Sell 25% at each profit target: +10%, +20%, +30%, +50%.
 
     Modifies strat['state']['profit_takes'] to track which levels have been hit.
@@ -222,7 +367,7 @@ def check_profit_ladder(filepath, strat, price, entry, shares):
         if sell_qty < 1:
             continue
 
-        order = api_post(f"{API_ENDPOINT}/orders", {
+        order = user_api_post(user, "/orders", {
             "symbol": symbol, "qty": str(sell_qty), "side": "sell",
             "type": "market", "time_in_force": "day"
         })
@@ -239,8 +384,8 @@ def check_profit_ladder(filepath, strat, price, entry, shares):
             old_stop_id = state.get("stop_order_id")
             current_stop_price = state.get("current_stop_price")
             if old_stop_id and remaining > 0 and current_stop_price:
-                api_delete(f"{API_ENDPOINT}/orders/{old_stop_id}")
-                new_stop = api_post(f"{API_ENDPOINT}/orders", {
+                user_api_delete(user, f"/orders/{old_stop_id}")
+                new_stop = user_api_post(user, "/orders", {
                     "symbol": symbol, "qty": str(remaining), "side": "sell",
                     "type": "stop", "stop_price": str(current_stop_price),
                     "time_in_force": "gtc"
@@ -251,33 +396,33 @@ def check_profit_ladder(filepath, strat, price, entry, shares):
                     # Stop replacement failed — clear stop_order_id so next
                     # monitor tick will re-place a fresh stop.
                     state["stop_order_id"] = None
-                    log(f"{symbol}: WARN stop resize failed after profit-take — will re-place next tick", "monitor")
+                    log(f"[{user['username']}] {symbol}: WARN stop resize failed after profit-take — will re-place next tick", "monitor")
             elif old_stop_id and remaining <= 0:
-                api_delete(f"{API_ENDPOINT}/orders/{old_stop_id}")
+                user_api_delete(user, f"/orders/{old_stop_id}")
                 state["stop_order_id"] = None
 
             # Ensure state is attached to strat before save (defensive)
             strat["state"] = state
             save_json(filepath, strat)
-            log(f"{symbol}: Profit take level {level}% — sold {sell_qty} shares", "monitor")
-            notify(f"Profit take on {symbol} at +{level}%: sold {sell_qty} shares. {remaining} still held.", "exit")
+            log(f"[{user['username']}] {symbol}: Profit take level {level}% — sold {sell_qty} shares", "monitor")
+            notify_user(user, f"Profit take on {symbol} at +{level}%: sold {sell_qty} shares. {remaining} still held.", "exit")
             return  # One level per check
 
-def process_short_strategy(filepath, strat, state, rules):
+def process_short_strategy(user, filepath, strat, state, rules):
     """Manage a short_sell position (inverse logic — we profit when price falls)."""
     symbol = strat["symbol"]
 
     # Check entry fill — shares_shorted is positive magnitude, Alpaca reports negative qty
     entry_order_id = state.get("entry_order_id")
     if entry_order_id and not state.get("entry_fill_price"):
-        order = api_get(f"{API_ENDPOINT}/orders/{entry_order_id}")
+        order = user_api_get(user, f"/orders/{entry_order_id}")
         if isinstance(order, dict) and order.get("status") == "filled":
             state["entry_fill_price"] = float(order.get("filled_avg_price", 0))
             qty = int(float(order.get("filled_qty", 0)))
             state["shares_shorted"] = qty
             state["total_shares_held"] = qty  # Keep magnitude for consistency
             strat["status"] = "active"
-            log(f"{symbol}: SHORT entry filled at ${state['entry_fill_price']:.2f}", "monitor")
+            log(f"[{user['username']}] {symbol}: SHORT entry filled at ${state['entry_fill_price']:.2f}", "monitor")
 
     entry = state.get("entry_fill_price")
     shares = state.get("shares_shorted", 0)
@@ -286,7 +431,7 @@ def process_short_strategy(filepath, strat, state, rules):
         return
 
     # Get current price
-    trade = api_get(f"{DATA_ENDPOINT}/stocks/{symbol}/trades/latest?feed=iex")
+    trade = user_api_get(user, f"/stocks/{symbol}/trades/latest?feed=iex")
     if not isinstance(trade, dict) or "trade" not in trade:
         save_json(filepath, strat)
         return
@@ -299,28 +444,28 @@ def process_short_strategy(filepath, strat, state, rules):
     if not state.get("cover_order_id"):
         stop_pct = rules.get("stop_loss_pct", 0.08)
         stop_price = round(entry * (1 + stop_pct), 2)
-        order = api_post(f"{API_ENDPOINT}/orders", {
+        order = user_api_post(user, "/orders", {
             "symbol": symbol, "qty": str(shares), "side": "buy",
             "type": "stop", "stop_price": str(stop_price), "time_in_force": "gtc"
         })
         if isinstance(order, dict) and "id" in order:
             state["cover_order_id"] = order["id"]
             state["current_stop_price"] = stop_price
-            log(f"{symbol}: SHORT cover-stop placed at ${stop_price}", "monitor")
-            notify(f"Short cover-stop on {symbol} at ${stop_price:.2f}", "info")
+            log(f"[{user['username']}] {symbol}: SHORT cover-stop placed at ${stop_price}", "monitor")
+            notify_user(user, f"Short cover-stop on {symbol} at ${stop_price:.2f}", "info")
 
     # Place profit target (limit buy below entry)
     if not state.get("target_order_id"):
         target_pct = rules.get("profit_target_pct", 0.15)
         target_price = round(entry * (1 - target_pct), 2)
-        order = api_post(f"{API_ENDPOINT}/orders", {
+        order = user_api_post(user, "/orders", {
             "symbol": symbol, "qty": str(shares), "side": "buy",
             "type": "limit", "limit_price": str(target_price), "time_in_force": "gtc"
         })
         if isinstance(order, dict) and "id" in order:
             state["target_order_id"] = order["id"]
             state["current_target_price"] = target_price
-            log(f"{symbol}: SHORT target-buy placed at ${target_price}", "monitor")
+            log(f"[{user['username']}] {symbol}: SHORT target-buy placed at ${target_price}", "monitor")
 
     # Trailing stop for shorts: track LOWEST price, lower the stop as price falls
     lowest = state.get("lowest_price_seen") or entry
@@ -331,28 +476,28 @@ def process_short_strategy(filepath, strat, state, rules):
         trail_pct = rules.get("short_trail_distance_pct", 0.05)
         if not state.get("trailing_activated") and lowest <= entry * (1 - activation_pct):
             state["trailing_activated"] = True
-            log(f"{symbol}: SHORT trailing activated", "monitor")
+            log(f"[{user['username']}] {symbol}: SHORT trailing activated", "monitor")
         if state.get("trailing_activated"):
             new_stop = round(lowest * (1 + trail_pct), 2)
             current_stop = state.get("current_stop_price", 99999) or 99999
             # For shorts: stop moves DOWN as price falls (locks in gains)
             if new_stop < current_stop:
                 old_id = state.get("cover_order_id")
-                new_order = api_post(f"{API_ENDPOINT}/orders", {
+                new_order = user_api_post(user, "/orders", {
                     "symbol": symbol, "qty": str(shares), "side": "buy",
                     "type": "stop", "stop_price": str(new_stop), "time_in_force": "gtc"
                 })
                 if isinstance(new_order, dict) and "id" in new_order:
                     if old_id:
-                        api_delete(f"{API_ENDPOINT}/orders/{old_id}")
+                        user_api_delete(user, f"/orders/{old_id}")
                     state["cover_order_id"] = new_order["id"]
                     state["current_stop_price"] = new_stop
-                    log(f"{symbol}: SHORT stop lowered ${current_stop:.2f} -> ${new_stop:.2f}", "monitor")
-                    notify(f"Short stop tightened on {symbol}: ${current_stop:.2f} -> ${new_stop:.2f}", "info")
+                    log(f"[{user['username']}] {symbol}: SHORT stop lowered ${current_stop:.2f} -> ${new_stop:.2f}", "monitor")
+                    notify_user(user, f"Short stop tightened on {symbol}: ${current_stop:.2f} -> ${new_stop:.2f}", "info")
 
     # Check if cover (stop) triggered — loss scenario
     if state.get("cover_order_id"):
-        order = api_get(f"{API_ENDPOINT}/orders/{state['cover_order_id']}")
+        order = user_api_get(user, f"/orders/{state['cover_order_id']}")
         if isinstance(order, dict) and order.get("status") == "filled":
             cover_price = float(order.get("filled_avg_price", state.get("current_stop_price", 0)))
             pnl = (entry - cover_price) * shares  # Short profit = entry - cover
@@ -361,22 +506,23 @@ def process_short_strategy(filepath, strat, state, rules):
             state["cover_order_id"] = None
             # Cancel target order too
             if state.get("target_order_id"):
-                api_delete(f"{API_ENDPOINT}/orders/{state['target_order_id']}")
+                user_api_delete(user, f"/orders/{state['target_order_id']}")
                 state["target_order_id"] = None
             state["exit_price"] = cover_price
             state["exit_reason"] = "short_stop_covered"
             strat["status"] = "closed"
-            log(f"{symbol}: SHORT stopped out at ${cover_price}. P&L ${pnl:.2f}", "monitor")
-            notify(f"{symbol} short covered at ${cover_price:.2f}. P&L: ${pnl:.2f}", "stop")
+            log(f"[{user['username']}] {symbol}: SHORT stopped out at ${cover_price}. P&L ${pnl:.2f}", "monitor")
+            notify_user(user, f"{symbol} short covered at ${cover_price:.2f}. P&L: ${pnl:.2f}", "stop")
             # Record short loss for cooldown
             if pnl < 0:
-                guardrails = load_json(os.path.join(BASE_DIR, "guardrails.json")) or {}
+                gpath = user_file(user, "guardrails.json")
+                guardrails = load_json(gpath) or {}
                 guardrails["last_short_loss_time"] = datetime.now(timezone.utc).isoformat()
-                save_json(os.path.join(BASE_DIR, "guardrails.json"), guardrails)
+                save_json(gpath, guardrails)
 
     # Check if target hit — profit scenario
     elif state.get("target_order_id"):
-        order = api_get(f"{API_ENDPOINT}/orders/{state['target_order_id']}")
+        order = user_api_get(user, f"/orders/{state['target_order_id']}")
         if isinstance(order, dict) and order.get("status") == "filled":
             exit_price = float(order.get("filled_avg_price", state.get("current_target_price", 0)))
             pnl = (entry - exit_price) * shares
@@ -385,13 +531,13 @@ def process_short_strategy(filepath, strat, state, rules):
             state["target_order_id"] = None
             # Cancel cover stop
             if state.get("cover_order_id"):
-                api_delete(f"{API_ENDPOINT}/orders/{state['cover_order_id']}")
+                user_api_delete(user, f"/orders/{state['cover_order_id']}")
                 state["cover_order_id"] = None
             state["exit_price"] = exit_price
             state["exit_reason"] = "short_target_hit"
             strat["status"] = "closed"
-            log(f"{symbol}: SHORT target hit at ${exit_price}. P&L ${pnl:.2f}", "monitor")
-            notify(f"Short profit on {symbol}: covered at ${exit_price:.2f}. P&L: ${pnl:.2f}", "exit")
+            log(f"[{user['username']}] {symbol}: SHORT target hit at ${exit_price}. P&L ${pnl:.2f}", "monitor")
+            notify_user(user, f"Short profit on {symbol}: covered at ${exit_price:.2f}. P&L: ${pnl:.2f}", "exit")
 
     # Force cover after max hold days (prevent indefinite short exposure)
     max_hold = rules.get("max_hold_days", 14)
@@ -400,28 +546,28 @@ def process_short_strategy(filepath, strat, state, rules):
         if created:
             age_days = (datetime.now(timezone.utc).date() - datetime.strptime(created, "%Y-%m-%d").date()).days
             if age_days >= max_hold and shares > 0:
-                log(f"{symbol}: SHORT held {age_days} days, forcing cover", "monitor")
-                order = api_post(f"{API_ENDPOINT}/orders", {
+                log(f"[{user['username']}] {symbol}: SHORT held {age_days} days, forcing cover", "monitor")
+                order = user_api_post(user, "/orders", {
                     "symbol": symbol, "qty": str(shares), "side": "buy",
                     "type": "market", "time_in_force": "day"
                 })
                 if isinstance(order, dict) and "id" in order:
                     # Cancel pending orders
                     if state.get("cover_order_id"):
-                        api_delete(f"{API_ENDPOINT}/orders/{state['cover_order_id']}")
+                        user_api_delete(user, f"/orders/{state['cover_order_id']}")
                     if state.get("target_order_id"):
-                        api_delete(f"{API_ENDPOINT}/orders/{state['target_order_id']}")
+                        user_api_delete(user, f"/orders/{state['target_order_id']}")
                     strat["status"] = "closed"
                     state["exit_reason"] = "max_hold_exceeded"
                     pnl = (entry - price) * shares
-                    notify(f"Short on {symbol} force-covered after {age_days} days. P&L ~${pnl:.2f}", "info")
+                    notify_user(user, f"Short on {symbol} force-covered after {age_days} days. P&L ~${pnl:.2f}", "info")
     except Exception as e:
-        log(f"{symbol}: Short age check error: {e}", "monitor")
+        log(f"[{user['username']}] {symbol}: Short age check error: {e}", "monitor")
 
     save_json(filepath, strat)
 
 
-def process_strategy_file(filepath, strat):
+def process_strategy_file(user, filepath, strat):
     symbol = strat["symbol"]
     state = strat.setdefault("state", {})  # ensure mutations persist in strat
     rules = strat.get("rules", {})
@@ -429,18 +575,18 @@ def process_strategy_file(filepath, strat):
 
     # Shorts have inverse logic — delegate to dedicated handler
     if strategy_type == "short_sell":
-        process_short_strategy(filepath, strat, state, rules)
+        process_short_strategy(user, filepath, strat, state, rules)
         return
 
     # Check entry fill
     entry_order_id = state.get("entry_order_id")
     if entry_order_id and not state.get("entry_fill_price"):
-        order = api_get(f"{API_ENDPOINT}/orders/{entry_order_id}")
+        order = user_api_get(user, f"/orders/{entry_order_id}")
         if isinstance(order, dict) and order.get("status") == "filled":
             state["entry_fill_price"] = float(order.get("filled_avg_price", 0))
             state["total_shares_held"] = int(float(order.get("filled_qty", 0)))
             strat["status"] = "active"
-            log(f"{symbol}: Entry filled at ${state['entry_fill_price']:.2f}", "monitor")
+            log(f"[{user['username']}] {symbol}: Entry filled at ${state['entry_fill_price']:.2f}", "monitor")
 
     entry = state.get("entry_fill_price")
     shares = state.get("total_shares_held", 0)
@@ -449,7 +595,7 @@ def process_strategy_file(filepath, strat):
         return
 
     # Get current price
-    trade = api_get(f"{DATA_ENDPOINT}/stocks/{symbol}/trades/latest?feed=iex")
+    trade = user_api_get(user, f"/stocks/{symbol}/trades/latest?feed=iex")
     if not isinstance(trade, dict) or "trade" not in trade:
         save_json(filepath, strat)
         return
@@ -462,15 +608,15 @@ def process_strategy_file(filepath, strat):
     if not state.get("stop_order_id"):
         stop_pct = rules.get("stop_loss_pct", 0.10)
         stop_price = round(entry * (1 - stop_pct), 2)
-        order = api_post(f"{API_ENDPOINT}/orders", {
+        order = user_api_post(user, "/orders", {
             "symbol": symbol, "qty": str(shares), "side": "sell",
             "type": "stop", "stop_price": str(stop_price), "time_in_force": "gtc"
         })
         if isinstance(order, dict) and "id" in order:
             state["stop_order_id"] = order["id"]
             state["current_stop_price"] = stop_price
-            log(f"{symbol}: Stop-loss placed at ${stop_price}", "monitor")
-            notify(f"Stop-loss placed on {symbol} at ${stop_price:.2f}", "info")
+            log(f"[{user['username']}] {symbol}: Stop-loss placed at ${stop_price}", "monitor")
+            notify_user(user, f"Stop-loss placed on {symbol} at ${stop_price:.2f}", "info")
 
     # Trailing stop for trailing_stop and breakout strategies
     if strategy_type in ("trailing_stop", "breakout"):
@@ -482,7 +628,7 @@ def process_strategy_file(filepath, strat):
         trail = rules.get("trailing_distance_pct", 0.05)
         if not state.get("trailing_activated") and highest >= entry * (1 + activation):
             state["trailing_activated"] = True
-            log(f"{symbol}: Trailing activated", "monitor")
+            log(f"[{user['username']}] {symbol}: Trailing activated", "monitor")
         if state.get("trailing_activated"):
             new_stop = round(highest * (1 - trail), 2)
             current_stop = state.get("current_stop_price", 0) or 0
@@ -490,25 +636,25 @@ def process_strategy_file(filepath, strat):
                 old_id = state.get("stop_order_id")
                 # Place the NEW stop before canceling the old one, so the
                 # position is never unprotected if either call fails.
-                new_order = api_post(f"{API_ENDPOINT}/orders", {
+                new_order = user_api_post(user, "/orders", {
                     "symbol": symbol, "qty": str(shares), "side": "sell",
                     "type": "stop", "stop_price": str(new_stop), "time_in_force": "gtc"
                 })
                 if isinstance(new_order, dict) and "id" in new_order:
                     if old_id:
-                        api_delete(f"{API_ENDPOINT}/orders/{old_id}")
+                        user_api_delete(user, f"/orders/{old_id}")
                     state["stop_order_id"] = new_order["id"]
                     state["current_stop_price"] = new_stop
-                    log(f"{symbol}: Stop raised ${current_stop:.2f} -> ${new_stop:.2f}", "monitor")
-                    notify(f"Stop raised on {symbol}: ${current_stop:.2f} -> ${new_stop:.2f}", "info")
+                    log(f"[{user['username']}] {symbol}: Stop raised ${current_stop:.2f} -> ${new_stop:.2f}", "monitor")
+                    notify_user(user, f"Stop raised on {symbol}: ${current_stop:.2f} -> ${new_stop:.2f}", "info")
                 else:
                     # New stop placement failed — keep the old stop in place.
-                    log(f"{symbol}: WARN stop raise failed, keeping prior stop at ${current_stop:.2f}. Err: {new_order}", "monitor")
+                    log(f"[{user['username']}] {symbol}: WARN stop raise failed, keeping prior stop at ${current_stop:.2f}. Err: {new_order}", "monitor")
 
     # Mean reversion target check
     if strategy_type == "mean_reversion":
         if price >= entry * 1.15:
-            order = api_post(f"{API_ENDPOINT}/orders", {
+            order = user_api_post(user, "/orders", {
                 "symbol": symbol, "qty": str(shares), "side": "sell",
                 "type": "market", "time_in_force": "day"
             })
@@ -516,17 +662,17 @@ def process_strategy_file(filepath, strat):
                 strat["status"] = "closed"
                 state["exit_reason"] = "target_hit"
                 pnl = (price - entry) * shares
-                log(f"{symbol}: Target hit. P&L ${pnl:.2f}", "monitor")
-                notify(f"Profit taken on {symbol}: sold at ${price:.2f} (+{((price/entry-1)*100):.1f}%)", "exit")
+                log(f"[{user['username']}] {symbol}: Target hit. P&L ${pnl:.2f}", "monitor")
+                notify_user(user, f"Profit taken on {symbol}: sold at ${price:.2f} (+{((price/entry-1)*100):.1f}%)", "exit")
 
     # Feature 8: Partial profit taking
-    check_profit_ladder(filepath, strat, price, entry, shares)
+    check_profit_ladder(user, filepath, strat, price, entry, shares)
     # Refresh shares count in case profit ladder sold some
     shares = strat.get("state", {}).get("total_shares_held", shares)
 
     # Check stop triggered
     if state.get("stop_order_id"):
-        order = api_get(f"{API_ENDPOINT}/orders/{state['stop_order_id']}")
+        order = user_api_get(user, f"/orders/{state['stop_order_id']}")
         if isinstance(order, dict) and order.get("status") == "filled":
             exit_price = float(order.get("filled_avg_price", state.get("current_stop_price", 0)))
             pnl = (exit_price - entry) * shares
@@ -535,16 +681,17 @@ def process_strategy_file(filepath, strat):
             state["exit_price"] = exit_price
             state["exit_reason"] = "stop_triggered"
             strat["status"] = "closed"
-            log(f"{symbol}: STOP TRIGGERED at ${exit_price}, P&L ${pnl:.2f}", "monitor")
-            notify(f"{symbol} stopped out at ${exit_price:.2f}. P&L: ${pnl:.2f}", "stop")
-            guardrails = load_json(os.path.join(BASE_DIR, "guardrails.json")) or {}
+            log(f"[{user['username']}] {symbol}: STOP TRIGGERED at ${exit_price}, P&L ${pnl:.2f}", "monitor")
+            notify_user(user, f"{symbol} stopped out at ${exit_price:.2f}. P&L: ${pnl:.2f}", "stop")
+            gpath = user_file(user, "guardrails.json")
+            guardrails = load_json(gpath) or {}
             guardrails["last_loss_time"] = datetime.now(timezone.utc).isoformat()
-            save_json(os.path.join(BASE_DIR, "guardrails.json"), guardrails)
+            save_json(gpath, guardrails)
 
     save_json(filepath, strat)
 
 # ============================================================================
-# TASK 3: AUTO-DEPLOYER
+# TASK 3: AUTO-DEPLOYER (per user)
 # ============================================================================
 def check_correlation_allowed(new_symbol, existing_positions):
     """Check if adding this symbol would create dangerous correlation.
@@ -582,17 +729,18 @@ def check_correlation_allowed(new_symbol, existing_positions):
 
     return True, f"Sector diversification OK ({new_sector})"
 
-def run_auto_deployer():
-    log("Running auto-deployer...", "deployer")
+def run_auto_deployer(user):
+    log(f"[{user['username']}] Running auto-deployer...", "deployer")
 
-    guardrails = load_json(os.path.join(BASE_DIR, "guardrails.json")) or {}
+    gpath = user_file(user, "guardrails.json")
+    guardrails = load_json(gpath) or {}
     if guardrails.get("kill_switch"):
-        log("Kill switch active. Skipping.", "deployer")
+        log(f"[{user['username']}] Kill switch active. Skipping.", "deployer")
         return
 
-    config = load_json(os.path.join(BASE_DIR, "auto_deployer_config.json")) or {}
+    config = load_json(user_file(user, "auto_deployer_config.json")) or {}
     if not config.get("enabled", True):
-        log("Auto-deployer disabled. Skipping.", "deployer")
+        log(f"[{user['username']}] Auto-deployer disabled. Skipping.", "deployer")
         return
 
     # Cooldown check
@@ -602,37 +750,47 @@ def run_auto_deployer():
             last_dt = datetime.fromisoformat(last_loss.replace("Z", "+00:00"))
             cooldown_min = guardrails.get("cooldown_after_loss_minutes", 60)
             if (datetime.now(timezone.utc) - last_dt).total_seconds() < cooldown_min * 60:
-                log(f"In cooldown after recent loss. Skipping.", "deployer")
+                log(f"[{user['username']}] In cooldown after recent loss. Skipping.", "deployer")
                 return
         except:
             pass
 
     # Set daily starting value
-    account = api_get(f"{API_ENDPOINT}/account")
+    account = user_api_get(user, "/account")
     if isinstance(account, dict) and "error" not in account:
         guardrails["daily_starting_value"] = float(account.get("portfolio_value", 0))
         current = float(account.get("portfolio_value", 0))
         peak = guardrails.get("peak_portfolio_value", current)
         if current > peak:
             guardrails["peak_portfolio_value"] = current
-        save_json(os.path.join(BASE_DIR, "guardrails.json"), guardrails)
+        save_json(gpath, guardrails)
 
-    # Capital check
+    # Capital check — runs in BASE_DIR with user env so it reads the right account.
     try:
+        env = os.environ.copy()
+        env["ALPACA_API_KEY"] = user["_api_key"]
+        env["ALPACA_API_SECRET"] = user["_api_secret"]
+        env["ALPACA_ENDPOINT"] = user["_api_endpoint"]
+        env["ALPACA_DATA_ENDPOINT"] = user["_data_endpoint"]
         subprocess.run([sys.executable, os.path.join(BASE_DIR, "capital_check.py")],
-            cwd=BASE_DIR, capture_output=True, text=True, timeout=30)
+            cwd=BASE_DIR, capture_output=True, text=True, timeout=30, env=env)
+        # capital_check.py writes to BASE_DIR/capital_status.json (legacy). Read from there.
         capital = load_json(os.path.join(BASE_DIR, "capital_status.json")) or {}
         if not capital.get("can_trade", True):
-            log(f"Cannot trade: {capital.get('recommendation')}", "deployer")
-            notify(f"Auto-deployer skipped: {capital.get('recommendation','insufficient capital')}", "info")
+            log(f"[{user['username']}] Cannot trade: {capital.get('recommendation')}", "deployer")
+            notify_user(user, f"Auto-deployer skipped: {capital.get('recommendation','insufficient capital')}", "info")
             return
     except Exception as e:
-        log(f"Capital check error: {e}", "deployer")
+        log(f"[{user['username']}] Capital check error: {e}", "deployer")
 
-    # Run screener to get fresh picks (skip if already ran in last 5 min to avoid duplicate API calls)
-    run_screener(max_age_seconds=300)
+    # Run screener to get fresh picks (skip if already ran in last 5 min)
+    run_screener(user, max_age_seconds=300)
 
-    picks_data = load_json(os.path.join(BASE_DIR, "dashboard_data.json")) or {}
+    # Prefer per-user dashboard data; fall back to shared BASE_DIR one if not present
+    picks_path = user_file(user, "dashboard_data.json")
+    if not os.path.exists(picks_path):
+        picks_path = os.path.join(BASE_DIR, "dashboard_data.json")
+    picks_data = load_json(picks_path) or {}
     top_picks = picks_data.get("picks", [])[:5]
     market_regime = picks_data.get("market_regime", "neutral")
     spy_mom = picks_data.get("spy_momentum_20d", 0)
@@ -640,12 +798,14 @@ def run_auto_deployer():
     max_per_day = config.get("max_new_per_day", 2)
     deployed = 0
 
-    positions = api_get(f"{API_ENDPOINT}/positions")
+    positions = user_api_get(user, "/positions")
     existing_syms = set()
     existing_positions = []
     if isinstance(positions, list):
         existing_positions = positions
         existing_syms = {p.get("symbol") for p in positions}
+
+    sdir = user_strategies_dir(user)
 
     for pick in top_picks:
         if deployed >= max_per_day:
@@ -656,35 +816,35 @@ def run_auto_deployer():
         if symbol in existing_syms:
             continue
         if pick.get("earnings_warning"):
-            log(f"{symbol}: Skipped (earnings warning)", "deployer")
+            log(f"[{user['username']}] {symbol}: Skipped (earnings warning)", "deployer")
             continue
         if best_strat not in ("trailing_stop", "breakout", "mean_reversion"):
             continue
 
         # Feature 10: Correlation check
-        current_positions = api_get(f"{API_ENDPOINT}/positions") or []
+        current_positions = user_api_get(user, "/positions") or []
         current_positions = current_positions if isinstance(current_positions, list) else []
         allowed, reason = check_correlation_allowed(symbol, current_positions)
         if not allowed:
-            log(f"{symbol}: Skipped ({reason})", "deployer")
+            log(f"[{user['username']}] {symbol}: Skipped ({reason})", "deployer")
             continue
 
         # Do NOT use `or 1` here — if screener said recommended_shares=0
         # that means "don't buy". Treat missing (None) as skip too.
         rs = pick.get("recommended_shares")
         if rs is None:
-            log(f"{symbol}: Skipped (no recommended_shares from screener)", "deployer")
+            log(f"[{user['username']}] {symbol}: Skipped (no recommended_shares from screener)", "deployer")
             continue
         try:
             qty = int(rs)
         except (TypeError, ValueError):
-            log(f"{symbol}: Skipped (bad recommended_shares: {rs!r})", "deployer")
+            log(f"[{user['username']}] {symbol}: Skipped (bad recommended_shares: {rs!r})", "deployer")
             continue
         if qty < 1:
-            log(f"{symbol}: Skipped (recommended_shares < 1)", "deployer")
+            log(f"[{user['username']}] {symbol}: Skipped (recommended_shares < 1)", "deployer")
             continue
 
-        order = api_post(f"{API_ENDPOINT}/orders", {
+        order = user_api_post(user, "/orders", {
             "symbol": symbol, "qty": str(qty), "side": "buy",
             "type": "market", "time_in_force": "day"
         })
@@ -721,10 +881,10 @@ def run_auto_deployer():
                 }
             }
             filename = f"{best_strat}_{symbol}.json"
-            save_json(os.path.join(STRATEGIES_DIR, filename), strat_file)
+            save_json(os.path.join(sdir, filename), strat_file)
 
-            # Log to trade journal
-            journal_path = os.path.join(BASE_DIR, "trade_journal.json")
+            # Log to trade journal (per-user)
+            journal_path = user_file(user, "trade_journal.json")
             journal = load_json(journal_path) or {"trades": [], "daily_snapshots": []}
             _score = pick.get("best_score")
             _rsi = pick.get("rsi", 50)
@@ -741,11 +901,11 @@ def run_auto_deployer():
             })
             save_json(journal_path, journal)
 
-            log(f"DEPLOYED: {best_strat} on {symbol} x {qty} @ ~${pick.get('price',0):.2f}", "deployer")
-            notify(f"Deployed {best_strat} on {symbol}: {qty} shares @ ~${pick.get('price',0):.2f}", "trade")
+            log(f"[{user['username']}] DEPLOYED: {best_strat} on {symbol} x {qty} @ ~${pick.get('price',0):.2f}", "deployer")
+            notify_user(user, f"Deployed {best_strat} on {symbol}: {qty} shares @ ~${pick.get('price',0):.2f}", "trade")
             deployed += 1
         else:
-            log(f"Order failed for {symbol}: {order}", "deployer")
+            log(f"[{user['username']}] Order failed for {symbol}: {order}", "deployer")
 
     # Short selling if bear market
     short_config = config.get("short_selling", {})
@@ -762,10 +922,10 @@ def run_auto_deployer():
                     last_dt = datetime.fromisoformat(last_short_loss.replace("Z", "+00:00"))
                     cooldown_hrs = guardrails.get("short_selling_cooldown_hours", 48)
                     if (datetime.now(timezone.utc) - last_dt).total_seconds() < cooldown_hrs * 3600:
-                        log(f"Short cooldown active ({cooldown_hrs}hr), skipping", "deployer")
+                        log(f"[{user['username']}] Short cooldown active ({cooldown_hrs}hr), skipping", "deployer")
                         current_shorts = max_shorts  # Force skip below
                 except Exception as e:
-                    log(f"Short cooldown parse error: {e}", "deployer")
+                    log(f"[{user['username']}] Short cooldown parse error: {e}", "deployer")
 
             short_candidates = picks_data.get("short_candidates", [])
             min_score = short_config.get("min_short_score", 15)
@@ -788,23 +948,23 @@ def run_auto_deployer():
                 # Correlation check for shorts too
                 short_allowed, short_reason = check_correlation_allowed(short_symbol, existing_positions)
                 if not short_allowed:
-                    log(f"{short_symbol}: Short skipped ({short_reason})", "deployer")
+                    log(f"[{user['username']}] {short_symbol}: Short skipped ({short_reason})", "deployer")
                     continue
 
                 # Position sizing: max 5% of portfolio
                 short_price = float(sc.get("price", 0))
                 if short_price <= 0:
                     continue
-                portfolio_val = float(account.get("portfolio_value", 0))
+                portfolio_val = float(account.get("portfolio_value", 0)) if isinstance(account, dict) else 0
                 max_dollars = portfolio_val * max_pct
                 short_qty = min(int(max_dollars / short_price), 100)
                 if short_qty < 1:
-                    log(f"{short_symbol}: Short skipped (price ${short_price} too high for 5% sizing)", "deployer")
+                    log(f"[{user['username']}] {short_symbol}: Short skipped (price ${short_price} too high for 5% sizing)", "deployer")
                     continue
 
                 # Place short (sell without existing position = short sell)
-                log(f"Deploying SHORT: {short_symbol} x{short_qty} @ ~${short_price}", "deployer")
-                short_order = api_post(f"{API_ENDPOINT}/orders", {
+                log(f"[{user['username']}] Deploying SHORT: {short_symbol} x{short_qty} @ ~${short_price}", "deployer")
+                short_order = user_api_post(user, "/orders", {
                     "symbol": short_symbol, "qty": str(short_qty), "side": "sell",
                     "type": "market", "time_in_force": "day"
                 })
@@ -846,10 +1006,10 @@ def run_auto_deployer():
                         }
                     }
                     short_filename = f"short_sell_{short_symbol}.json"
-                    save_json(os.path.join(STRATEGIES_DIR, short_filename), short_strat)
+                    save_json(os.path.join(sdir, short_filename), short_strat)
 
-                    # Log to journal
-                    journal_path = os.path.join(BASE_DIR, "trade_journal.json")
+                    # Log to per-user journal
+                    journal_path = user_file(user, "trade_journal.json")
                     journal = load_json(journal_path) or {"trades": [], "daily_snapshots": []}
                     journal["trades"].append({
                         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -862,71 +1022,86 @@ def run_auto_deployer():
                     })
                     save_json(journal_path, journal)
 
-                    notify(f"SHORT deployed: sold {short_qty} {short_symbol} @ ~${short_price:.2f}. "
+                    notify_user(user, f"SHORT deployed: sold {short_qty} {short_symbol} @ ~${short_price:.2f}. "
                            f"Stop ${stop_price}, Target ${target_price}. Bear market play.", "trade")
                     deployed += 1
                     current_shorts += 1
                     break  # Only 1 short per run
                 else:
-                    log(f"Short order failed for {short_symbol}: {short_order}", "deployer")
+                    log(f"[{user['username']}] Short order failed for {short_symbol}: {short_order}", "deployer")
 
     if deployed == 0:
-        notify("Morning scan complete. No qualifying trades today.", "info")
-    log(f"Auto-deployer done. Deployed {deployed} trades.", "deployer")
+        notify_user(user, "Morning scan complete. No qualifying trades today.", "info")
+    log(f"[{user['username']}] Auto-deployer done. Deployed {deployed} trades.", "deployer")
 
 # ============================================================================
-# TASK 4: DAILY CLOSE
+# TASK 4: DAILY CLOSE (per user)
 # ============================================================================
-def run_daily_close():
-    log("Running daily close...", "close")
+def run_daily_close(user):
+    log(f"[{user['username']}] Running daily close...", "close")
     try:
+        env = os.environ.copy()
+        env["ALPACA_API_KEY"] = user["_api_key"]
+        env["ALPACA_API_SECRET"] = user["_api_secret"]
+        env["ALPACA_ENDPOINT"] = user["_api_endpoint"]
+        env["ALPACA_DATA_ENDPOINT"] = user["_data_endpoint"]
         subprocess.run([sys.executable, os.path.join(BASE_DIR, "update_scorecard.py")],
-                      cwd=BASE_DIR, capture_output=True, text=True, timeout=60)
+                      cwd=BASE_DIR, capture_output=True, text=True, timeout=60, env=env)
         subprocess.run([sys.executable, os.path.join(BASE_DIR, "error_recovery.py")],
-                      cwd=BASE_DIR, capture_output=True, text=True, timeout=60)
+                      cwd=BASE_DIR, capture_output=True, text=True, timeout=60, env=env)
 
-        guardrails = load_json(os.path.join(BASE_DIR, "guardrails.json")) or {}
+        gpath = user_file(user, "guardrails.json")
+        guardrails = load_json(gpath) or {}
         guardrails["daily_starting_value"] = None
-        account = api_get(f"{API_ENDPOINT}/account")
+        account = user_api_get(user, "/account")
         if isinstance(account, dict) and "error" not in account:
             current = float(account.get("portfolio_value", 0))
             peak = guardrails.get("peak_portfolio_value", current)
             if current > peak:
                 guardrails["peak_portfolio_value"] = current
-        save_json(os.path.join(BASE_DIR, "guardrails.json"), guardrails)
+        save_json(gpath, guardrails)
 
-        scorecard = load_json(os.path.join(BASE_DIR, "scorecard.json")) or {}
+        # Try per-user scorecard first, fall back to shared
+        scorecard_path = user_file(user, "scorecard.json")
+        if not os.path.exists(scorecard_path):
+            scorecard_path = os.path.join(BASE_DIR, "scorecard.json")
+        scorecard = load_json(scorecard_path) or {}
         value = scorecard.get("current_value", 0)
         win_rate = scorecard.get("win_rate_pct", 0)
         readiness = scorecard.get("readiness_score", 0)
         ready_flag = " READY FOR LIVE!" if readiness >= 80 else ""
-        notify(f"Daily close: ${value:,.2f} | Win {win_rate:.0f}% | Ready {readiness}/100{ready_flag}", "daily")
-        log("Daily close complete", "close")
+        notify_user(user, f"Daily close: ${value:,.2f} | Win {win_rate:.0f}% | Ready {readiness}/100{ready_flag}", "daily")
+        log(f"[{user['username']}] Daily close complete", "close")
     except Exception as e:
-        log(f"Daily close error: {e}", "close")
+        log(f"[{user['username']}] Daily close error: {e}", "close")
 
 # ============================================================================
-# TASK 5: WEEKLY LEARNING
+# TASK 5: WEEKLY LEARNING (per user)
 # ============================================================================
-def run_weekly_learning():
-    log("Running weekly learning...", "learn")
+def run_weekly_learning(user):
+    log(f"[{user['username']}] Running weekly learning...", "learn")
     try:
+        env = os.environ.copy()
+        env["ALPACA_API_KEY"] = user["_api_key"]
+        env["ALPACA_API_SECRET"] = user["_api_secret"]
+        env["ALPACA_ENDPOINT"] = user["_api_endpoint"]
+        env["ALPACA_DATA_ENDPOINT"] = user["_data_endpoint"]
         subprocess.run([sys.executable, os.path.join(BASE_DIR, "learn.py")],
-                      cwd=BASE_DIR, capture_output=True, text=True, timeout=120)
-        notify("Weekly learning engine completed", "learn")
+                      cwd=BASE_DIR, capture_output=True, text=True, timeout=120, env=env)
+        notify_user(user, "Weekly learning engine completed", "learn")
     except Exception as e:
-        log(f"Learning error: {e}", "learn")
+        log(f"[{user['username']}] Learning error: {e}", "learn")
 
 # ============================================================================
-# TASK 6: FRIDAY RISK REDUCTION
+# TASK 6: FRIDAY RISK REDUCTION (per user)
 # ============================================================================
-def run_friday_risk_reduction():
+def run_friday_risk_reduction(user):
     """Scale out of profitable positions before weekend gap risk."""
-    log("Running Friday risk reduction...", "friday")
+    log(f"[{user['username']}] Running Friday risk reduction...", "friday")
 
-    positions = api_get(f"{API_ENDPOINT}/positions")
+    positions = user_api_get(user, "/positions")
     if not isinstance(positions, list):
-        log(f"Could not fetch positions: {positions}", "friday")
+        log(f"[{user['username']}] Could not fetch positions: {positions}", "friday")
         return
 
     actions_taken = 0
@@ -944,9 +1119,9 @@ def run_friday_risk_reduction():
             continue
 
         half_qty = qty // 2
-        log(f"{symbol}: +{unrealized_plpc:.1f}%, selling {half_qty}/{qty} before weekend", "friday")
+        log(f"[{user['username']}] {symbol}: +{unrealized_plpc:.1f}%, selling {half_qty}/{qty} before weekend", "friday")
 
-        order = api_post(f"{API_ENDPOINT}/orders", {
+        order = user_api_post(user, "/orders", {
             "symbol": symbol,
             "qty": str(half_qty),
             "side": "sell" if float(pos.get("qty", 0)) > 0 else "buy",
@@ -963,26 +1138,27 @@ def run_friday_risk_reduction():
             else:
                 # Short: profit when current < entry
                 profit = (avg_entry - current) * half_qty
-            notify(f"Friday risk reduction: trimmed {half_qty} {symbol} locking in ~${profit:.2f}. {qty - half_qty} shares still held.", "exit")
+            notify_user(user, f"Friday risk reduction: trimmed {half_qty} {symbol} locking in ~${profit:.2f}. {qty - half_qty} shares still held.", "exit")
         else:
-            log(f"Failed to trim {symbol}: {order}", "friday")
+            log(f"[{user['username']}] Failed to trim {symbol}: {order}", "friday")
 
     if actions_taken > 0:
-        notify(f"Weekend prep complete: scaled out of {actions_taken} winning positions", "info")
+        notify_user(user, f"Weekend prep complete: scaled out of {actions_taken} winning positions", "info")
     else:
-        log("No positions met scale-out criteria", "friday")
+        log(f"[{user['username']}] No positions met scale-out criteria", "friday")
 
 # ============================================================================
-# TASK 7: MONTHLY REBALANCE
+# TASK 7: MONTHLY REBALANCE (per user)
 # ============================================================================
-def run_monthly_rebalance():
+def run_monthly_rebalance(user):
     """Monthly review: close long-underwater positions, free capital."""
-    log("Running monthly rebalance...", "rebalance")
+    log(f"[{user['username']}] Running monthly rebalance...", "rebalance")
 
-    positions = api_get(f"{API_ENDPOINT}/positions")
+    positions = user_api_get(user, "/positions")
     if not isinstance(positions, list):
         return
 
+    sdir = user_strategies_dir(user)
     closed_count = 0
     for pos in positions:
         symbol = pos.get("symbol", "")
@@ -990,12 +1166,15 @@ def run_monthly_rebalance():
         unrealized_plpc = float(pos.get("unrealized_plpc", 0)) * 100
 
         # Check position age via strategy file
-        strat_files = [f for f in os.listdir(STRATEGIES_DIR)
-                      if f.endswith(".json") and symbol in f]
+        try:
+            strat_files = [f for f in os.listdir(sdir)
+                          if f.endswith(".json") and symbol in f]
+        except FileNotFoundError:
+            strat_files = []
 
         too_old = False
         for sf in strat_files:
-            strat = load_json(os.path.join(STRATEGIES_DIR, sf))
+            strat = load_json(os.path.join(sdir, sf))
             if not strat:
                 continue
             created = strat.get("created")
@@ -1013,22 +1192,22 @@ def run_monthly_rebalance():
 
         # Close if old AND losing
         if too_old and unrealized_plpc < -2:
-            log(f"{symbol}: 60+ days old, {unrealized_plpc:.1f}% down — closing for rebalance", "rebalance")
-            order = api_post(f"{API_ENDPOINT}/orders", {
+            log(f"[{user['username']}] {symbol}: 60+ days old, {unrealized_plpc:.1f}% down — closing for rebalance", "rebalance")
+            order = user_api_post(user, "/orders", {
                 "symbol": symbol, "qty": str(qty),
                 "side": "sell" if float(pos.get("qty", 0)) > 0 else "buy",
                 "type": "market", "time_in_force": "day"
             })
             if isinstance(order, dict) and "id" in order:
                 closed_count += 1
-                notify(f"Monthly rebalance: closed underwater {symbol} (~{unrealized_plpc:.1f}% loss) to free capital", "info")
+                notify_user(user, f"Monthly rebalance: closed underwater {symbol} (~{unrealized_plpc:.1f}% loss) to free capital", "info")
 
     if closed_count > 0:
-        notify(f"Monthly rebalance: closed {closed_count} stale losing positions", "daily")
+        notify_user(user, f"Monthly rebalance: closed {closed_count} stale losing positions", "daily")
     else:
-        notify("Monthly rebalance: all positions healthy, no changes", "info")
+        notify_user(user, "Monthly rebalance: all positions healthy, no changes", "info")
 
-def is_first_trading_day_of_month():
+def is_first_trading_day_of_month(user):
     """Check if today is the first trading day of the month (using Alpaca clock)."""
     now_et = get_et_time()
     if now_et.day > 7:
@@ -1036,7 +1215,7 @@ def is_first_trading_day_of_month():
     # Check calendar via Alpaca
     start = now_et.replace(day=1).strftime("%Y-%m-%d")
     end = now_et.strftime("%Y-%m-%d")
-    cal = api_get(f"{API_ENDPOINT}/calendar?start={start}&end={end}")
+    cal = user_api_get(user, f"/calendar?start={start}&end={end}")
     if not isinstance(cal, list) or not cal:
         return False
     first_trading_date = cal[0].get("date", "")
@@ -1066,49 +1245,70 @@ def should_run_daily_at(task_name, hour_et, minute_et):
 
 def scheduler_loop():
     global _scheduler_running
-    log("Cloud scheduler loop started", "scheduler")
-    notify("Cloud scheduler started — bot is autonomous on Railway", "info")
+    log("Cloud scheduler loop started (multi-user)", "scheduler")
+    notify_user_global("Cloud scheduler started — autonomous bot running on Railway", "info")
 
     while _scheduler_running:
         try:
             now_et = get_et_time()
             weekday = now_et.weekday()
             is_weekday = weekday < 5
-            market_open = is_market_open() if is_weekday else False
 
-            # Auto-deployer: weekdays 9:35 AM ET (skip on market holidays)
-            if is_weekday and now_et.hour == 9 and now_et.minute >= 35 and market_open:
-                if should_run_daily_at("auto_deployer", 9, 35):
-                    run_auto_deployer()
+            users = get_all_users_for_scheduling()
+            if not users:
+                # No users configured — sleep longer and retry
+                time.sleep(60)
+                continue
 
-            # Screener: every 30 min during market hours
-            if market_open and should_run_interval("screener", 30 * 60):
-                run_screener()
+            # Check market once per tick (shared across all users — same clock)
+            market_open_flag = False
+            if is_weekday:
+                try:
+                    clock = user_api_get(users[0], "/clock")
+                    if isinstance(clock, dict) and "error" not in clock:
+                        market_open_flag = clock.get("is_open", False)
+                except Exception:
+                    pass
 
-            # Strategy monitor: every 60s during market hours
-            if market_open and should_run_interval("monitor", 60):
-                monitor_strategies()
+            for user in users:
+                try:
+                    uid = user["id"]
 
-            # Daily close: weekdays 4:05 PM ET
-            if is_weekday and now_et.hour == 16 and now_et.minute >= 5:
-                if should_run_daily_at("daily_close", 16, 5):
-                    run_daily_close()
+                    # Auto-deployer: weekdays 9:35 AM ET (skip on market holidays)
+                    if is_weekday and now_et.hour == 9 and now_et.minute >= 35 and market_open_flag:
+                        if should_run_daily_at(f"auto_deployer_{uid}", 9, 35):
+                            run_auto_deployer(user)
 
-            # Weekly learning: Fridays 5:00 PM ET
-            if weekday == 4 and now_et.hour == 17:
-                if should_run_daily_at("weekly_learning", 17, 0):
-                    run_weekly_learning()
+                    # Screener: every 30 min during market hours
+                    if market_open_flag and should_run_interval(f"screener_{uid}", 30 * 60):
+                        run_screener(user)
 
-            # Feature 6: Friday risk reduction at 3:45 PM ET
-            if weekday == 4 and now_et.hour == 15 and now_et.minute >= 45:
-                if should_run_daily_at("friday_reduction", 15, 45):
-                    run_friday_risk_reduction()
+                    # Strategy monitor: every 60s during market hours
+                    if market_open_flag and should_run_interval(f"monitor_{uid}", 60):
+                        monitor_strategies(user)
 
-            # Feature 19: Monthly rebalance on first trading day at 9:45 AM ET
-            if is_weekday and now_et.hour == 9 and now_et.minute >= 45:
-                if is_first_trading_day_of_month():
-                    if should_run_daily_at("monthly_rebalance", 9, 45):
-                        run_monthly_rebalance()
+                    # Daily close: weekdays 4:05 PM ET
+                    if is_weekday and now_et.hour == 16 and now_et.minute >= 5:
+                        if should_run_daily_at(f"daily_close_{uid}", 16, 5):
+                            run_daily_close(user)
+
+                    # Weekly learning: Fridays 5:00 PM ET
+                    if weekday == 4 and now_et.hour == 17:
+                        if should_run_daily_at(f"weekly_learning_{uid}", 17, 0):
+                            run_weekly_learning(user)
+
+                    # Feature 6: Friday risk reduction at 3:45 PM ET
+                    if weekday == 4 and now_et.hour == 15 and now_et.minute >= 45 and market_open_flag:
+                        if should_run_daily_at(f"friday_reduction_{uid}", 15, 45):
+                            run_friday_risk_reduction(user)
+
+                    # Feature 19: Monthly rebalance on first trading day at 9:45 AM ET
+                    if is_weekday and now_et.hour == 9 and now_et.minute >= 45:
+                        if is_first_trading_day_of_month(user):
+                            if should_run_daily_at(f"monthly_rebalance_{uid}", 9, 45):
+                                run_monthly_rebalance(user)
+                except Exception as e:
+                    log(f"[{user.get('username','?')}] Per-user scheduler error: {e}", "scheduler")
         except Exception as e:
             log(f"Scheduler loop error: {e}", "scheduler")
 
@@ -1137,8 +1337,29 @@ def get_scheduler_status():
     # Send as a PRE-FORMATTED string so the browser doesn't re-convert timezones
     et_display = et_now.strftime("%-I:%M:%S %p ") + tz_label
     et_date_display = et_now.strftime("%a %b %-d")
+
+    users = get_all_users_for_scheduling()
+    user_info = []
+    for u in users:
+        user_info.append({
+            "id": u["id"],
+            "username": u["username"],
+            "endpoint": u["_api_endpoint"],
+        })
+
     with _logs_lock:
         logs = list(_recent_logs[-20:])
+
+    # Check market once via first user (all users share the same market clock)
+    market_open = False
+    if users:
+        try:
+            clock = user_api_get(users[0], "/clock")
+            if isinstance(clock, dict):
+                market_open = clock.get("is_open", False)
+        except Exception:
+            pass
+
     return {
         "running": is_alive,
         "thread_name": _scheduler_thread.name if _scheduler_thread else None,
@@ -1147,8 +1368,10 @@ def get_scheduler_status():
         "current_et_display": et_display,       # use this in UI ("3:30:00 AM EDT")
         "current_et_date": et_date_display,     # e.g. "Thu Apr 16"
         "tz_label": tz_label,
-        "market_open": is_market_open(),
+        "market_open": market_open,
         "recent_logs": logs,
+        "users": user_info,
+        "user_count": len(users),
     }
 
 if __name__ == "__main__":
