@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 import urllib.error
@@ -1776,6 +1777,35 @@ async function loadAutoDeployerState() {
 }
 
 /* ---- Kill Switch ---- */
+async function forceAutoDeploy() {
+    if (!confirm('Force auto-deployer to run NOW?\n\nThis will:\n- Run the screener (may take 30-60 sec)\n- Pick top 2 stocks\n- Deploy them immediately via market orders\n\nAll safety guardrails (kill switch, daily loss, capital check, correlation) still apply.\n\nContinue?')) return;
+    toast('Force-deploying... watch Scheduler tab for progress', 'info');
+    try {
+        var resp = await fetch(API_BASE + '/api/force-auto-deploy', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {'Content-Type': 'application/json'},
+            body: '{}'
+        });
+        var data = await resp.json();
+        if (resp.ok) {
+            toast(data.message || 'Auto-deployer triggered', 'success');
+            addLog('Force auto-deploy triggered', 'success');
+            // Refresh scheduler status every 10s for 2 min to see progress
+            var checks = 0;
+            var iv = setInterval(function() {
+                checks++;
+                refreshSchedulerStatus();
+                if (checks >= 12) clearInterval(iv);
+            }, 10000);
+        } else {
+            toast('Force deploy failed: ' + (data.error || 'unknown'), 'error');
+        }
+    } catch(e) {
+        toast('Force deploy error: ' + e.message, 'error');
+    }
+}
+
 function openKillSwitchModal() {
     openModal('killSwitchModal');
 }
@@ -2805,6 +2835,7 @@ function renderDashboard() {
                     ? '<span class="kill-switch-indicator">KILL SWITCH ACTIVE</span>'
                     : '<button class="kill-switch-btn" onclick="openKillSwitchModal()">KILL SWITCH</button>') +
                 '<button id="voiceBtn" class="voice-btn" onclick="toggleVoice()" title="Voice Control">\ud83c\udfa4</button>' +
+                '<button class="help-btn" onclick="forceAutoDeploy()" title="Force auto-deployer to run NOW" style="background:rgba(16,185,129,0.15);color:var(--green);border-color:rgba(16,185,129,0.3)">\u26A1 Force Deploy</button>' +
                 '<button class="help-btn" onclick="openReadme()" title="User Guide / README">\ud83d\udcd6 Help</button>' +
                 '<span class="countdown" id="countdown">Next refresh: ' + countdown + 's</span>' +
                 '<button class="btn-primary" onclick="forceRefresh()">\u21BB Refresh</button>' +
@@ -4388,6 +4419,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path == "/api/toggle-short-selling":
             self.handle_toggle_short_selling(body)
 
+        elif path == "/api/force-auto-deploy":
+            self.handle_force_auto_deploy()
+
         else:
             self.send_json({"error": "Not found"}, 404)
 
@@ -5336,6 +5370,43 @@ class DashboardHandler(BaseHTTPRequestHandler):
         save_json(config_path, config)
         msg = "Short selling ENABLED — will deploy in bear markets" if enabled else "Short selling DISABLED — no new shorts will deploy"
         self.send_json({"message": msg, "enabled": enabled})
+
+    def handle_force_auto_deploy(self):
+        """Admin: force the auto-deployer to run NOW for the current user.
+        Bypasses the once-per-day lock so you can see it execute on demand.
+        Guardrails (kill switch, daily loss, capital check, correlation, etc) still apply.
+        """
+        if not self.current_user:
+            return self.send_json({"error": "Not authenticated"}, 401)
+        try:
+            import cloud_scheduler as cs
+            # Build the user dict in the format cloud_scheduler expects
+            user = {
+                "id": self.current_user["id"],
+                "username": self.current_user["username"],
+                "_api_key": self.user_api_key,
+                "_api_secret": self.user_api_secret,
+                "_api_endpoint": self.user_api_endpoint,
+                "_data_endpoint": self.user_data_endpoint,
+                "_ntfy_topic": self.current_user.get("ntfy_topic", "") or f"alpaca-bot-{self.current_user['username'].lower()}",
+                "_data_dir": auth.user_data_dir(self.current_user["id"]),
+                "_strategies_dir": os.path.join(auth.user_data_dir(self.current_user["id"]), "strategies"),
+            }
+            # Clear the once-per-day lock for this user so it can run again
+            cs._last_runs.pop(f"auto_deployer_{user['id']}", None)
+            # Run in a background thread so the request returns quickly
+            def _run():
+                try:
+                    cs.run_auto_deployer(user)
+                except Exception as e:
+                    cs.log(f"Force-deploy error for {user['username']}: {e}", "deployer")
+            threading.Thread(target=_run, daemon=True, name=f"ForceDeploy-{user['id']}").start()
+            self.send_json({
+                "success": True,
+                "message": f"Auto-deployer triggered for {user['username']}. Watch the Scheduler tab for results (takes ~30-60 seconds).",
+            })
+        except Exception as e:
+            self.send_json({"error": f"Failed to start force-deploy: {e}"}, 500)
 
 
 def main():
