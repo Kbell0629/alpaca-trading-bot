@@ -18,8 +18,7 @@ python3 update_dashboard.py
 
 - **Endpoint:** `https://paper-api.alpaca.markets/v2`
 - **Data:** `https://data.alpaca.markets/v2` (requires `&feed=iex` on free tier)
-- **Key:** ``
-- **Secret:** ``
+- **Key/Secret:** Set via environment variables (`ALPACA_API_KEY`, `ALPACA_API_SECRET`). See `.env` file for local dev.
 - **Account:** PA3N3JCNBP02 ($100k paper cash, 2x margin)
 
 ## Files
@@ -151,13 +150,28 @@ Free push notifications to your phone — no account needed.
 
 The dashboard server runs on Railway for 24/7 access.
 
-**Deploy:**
+**GitHub repo:** https://github.com/Kbell0629/alpaca-trading-bot
+
+**Auto-deploy:** Railway auto-deploys from the `main` branch on every push.
+
+**Environment variables** are set on Railway (not in code):
+- `ALPACA_API_KEY`, `ALPACA_API_SECRET`
+- `ALPACA_ENDPOINT`, `ALPACA_DATA_ENDPOINT`
+- `NTFY_TOPIC`, `NOTIFICATION_EMAIL`
+
+**Local dev:** Uses `.env` file (not tracked in git). Run `python3 server.py` on localhost:8888.
+
+**Deploy manually:**
 ```bash
 cd "/Users/kevinbell/Alpaca Trading"
 railway up
 ```
 
-**Local dev:** `python3 server.py` (runs on localhost:8888)
-**Railway:** Uses PORT env variable automatically
+**Railway setup (one-time):**
+```bash
+railway login          # Opens browser for auth
+railway link           # Link this directory to your Railway project
+railway variables set ALPACA_API_KEY=<key> ALPACA_API_SECRET=<secret> ...
+```
 
 **Note:** Scheduled tasks (auto-deployer, strategy-monitor, etc.) still run locally via Claude Code. Only the dashboard/API server is on Railway. The server reads from local strategy files and dashboard_data.json, so after Railway deployment you'll need to set up a way to sync data (e.g., use the Alpaca API directly from Railway instead of reading local files).
