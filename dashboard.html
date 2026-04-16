@@ -145,7 +145,7 @@ td { padding:8px 12px; border-bottom:1px solid rgba(30,41,59,0.5); }
 <div class="header">
     <div>
         <h1>Stock Trading Bot Dashboard</h1>
-        <div class="updated">Last updated: 2026-04-16 00:36:22 UTC</div>
+        <div class="updated">Last updated: 2026-04-16 01:58:23 UTC</div>
     </div>
     <span class="paper-badge">PAPER TRADING</span>
 </div>
@@ -154,7 +154,7 @@ td { padding:8px 12px; border-bottom:1px solid rgba(30,41,59,0.5); }
 <div class="account-bar">
     <div class="metric"><div class="label">Portfolio Value</div><div class="value">$100,000.00</div></div>
     <div class="metric"><div class="label">Cash</div><div class="value">$100,000.00</div></div>
-    <div class="metric"><div class="label">Buying Power</div><div class="value">$196,238.00</div></div>
+    <div class="metric"><div class="label">Buying Power</div><div class="value">$200,000.00</div></div>
     <div class="metric"><div class="label">Long Market Value</div><div class="value">$0.00</div></div>
     <div class="metric"><div class="label">Equity</div><div class="value">$100,000.00</div></div>
 </div>
@@ -170,7 +170,7 @@ td { padding:8px 12px; border-bottom:1px solid rgba(30,41,59,0.5); }
 </div>
 
 <!-- Top 3 Picks -->
-<div class="section-title">Top 3 Stock Picks <span class="subtitle">-- Screened 10,861 stocks, scored 1,089 after filtering</span></div>
+<div class="section-title">Top 3 Stock Picks <span class="subtitle">-- Screened 10,860 stocks, scored 1,089 after filtering</span></div>
 <div class="picks">
     
         <div class="pick-card" style="border-top: 3px solid #ef4444">
@@ -285,9 +285,9 @@ td { padding:8px 12px; border-bottom:1px solid rgba(30,41,59,0.5); }
 <div class="strategies">
     <div class="strategy-card trailing">
         <h2>1. Trailing Stop</h2>
-        <div class="subtitle">TSLA -- Auto stop-loss with ratcheting floor</div>
+        <div class="subtitle">None -- Auto stop-loss with ratcheting floor</div>
         <div class="stat-grid">
-            <div class="stat"><div class="stat-label">Entry Price</div><div class="stat-value">$392.61</div></div>
+            <div class="stat"><div class="stat-label">Entry Price</div><div class="stat-value">$Pending</div></div>
             <div class="stat"><div class="stat-label">Shares Held</div><div class="stat-value">0</div></div>
             <div class="stat"><div class="stat-label">Stop Price</div><div class="stat-value">None</div></div>
             <div class="stat"><div class="stat-label">Trailing</div><div class="stat-value"><span class="badge-inactive">WAITING</span></div></div>
@@ -324,7 +324,7 @@ td { padding:8px 12px; border-bottom:1px solid rgba(30,41,59,0.5); }
     <h3>Trailing Stop -- Ladder Buy Levels</h3>
     <table>
         <thead><tr><th>Drop</th><th>Trigger Price</th><th>Shares</th><th>Status</th><th>Note</th></tr></thead>
-        <tbody><tr><td>-12%</td><td>$345</td><td>1</td><td><span class="status-pending">Pending</span></td><td class="note">re-entry just below stop-out</td></tr><tr><td>-20%</td><td>$315</td><td>2</td><td><span class="status-pending">Pending</span></td><td class="note">meaningful pullback</td></tr><tr><td>-30%</td><td>$275</td><td>3</td><td><span class="status-pending">Pending</span></td><td class="note">deep correction</td></tr><tr><td>-40%</td><td>$235</td><td>5</td><td><span class="status-pending">Pending</span></td><td class="note">crash territory, go heavy</td></tr></tbody>
+        <tbody><tr><td colspan="5" class="empty">No ladder buys configured</td></tr></tbody>
     </table>
 </div>
 
@@ -334,7 +334,7 @@ td { padding:8px 12px; border-bottom:1px solid rgba(30,41,59,0.5); }
         <h3>Open Orders</h3>
         <table>
             <thead><tr><th>Symbol</th><th>Side</th><th>Type</th><th>Qty</th><th>Price</th><th>Status</th></tr></thead>
-            <tbody><tr><td>TSLA</td><td><span class="side-buy">BUY</span></td><td>limit</td><td>5</td><td>$235</td><td>accepted</td></tr><tr><td>TSLA</td><td><span class="side-buy">BUY</span></td><td>limit</td><td>3</td><td>$275</td><td>accepted</td></tr><tr><td>TSLA</td><td><span class="side-buy">BUY</span></td><td>limit</td><td>2</td><td>$315</td><td>accepted</td></tr><tr><td>TSLA</td><td><span class="side-buy">BUY</span></td><td>limit</td><td>1</td><td>$345</td><td>accepted</td></tr><tr><td>TSLA</td><td><span class="side-buy">BUY</span></td><td>market</td><td>2</td><td>$Market</td><td>accepted</td></tr></tbody>
+            <tbody><tr><td colspan="6" class="empty">No open orders</td></tr></tbody>
         </table>
     </div>
     <div class="table-card">
@@ -350,7 +350,7 @@ td { padding:8px 12px; border-bottom:1px solid rgba(30,41,59,0.5); }
 <div class="screener">
     <h3>Full Stock Screener -- Top 50</h3>
     <div class="screener-stats">
-        Screened: <span>10,861</span> stocks &nbsp;|&nbsp;
+        Screened: <span>10,860</span> stocks &nbsp;|&nbsp;
         Passed filters: <span>1,089</span> &nbsp;|&nbsp;
         Showing: <span>Top 50</span>
     </div>

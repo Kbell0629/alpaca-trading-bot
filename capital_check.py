@@ -5,29 +5,70 @@ Ensures there's enough free capital to continue trading and flags when we're ove
 """
 import json
 import os
+import tempfile
+import time
 import urllib.request
+import urllib.error
 from datetime import datetime, timezone
 
+
+def load_dotenv():
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, val = line.split("=", 1)
+                    os.environ.setdefault(key.strip(), val.strip())
+load_dotenv()
+
+
+def safe_save_json(path, data):
+    dir_name = os.path.dirname(path) or "."
+    fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+    try:
+        with os.fdopen(fd, 'w') as f:
+            json.dump(data, f, indent=2, default=str)
+        os.rename(tmp_path, path)
+    except:
+        try: os.unlink(tmp_path)
+        except: pass
+        raise
+
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-API_ENDPOINT = "https://paper-api.alpaca.markets/v2"
+API_ENDPOINT = os.environ.get("ALPACA_ENDPOINT", "https://paper-api.alpaca.markets/v2")
 API_KEY = os.environ.get("ALPACA_API_KEY", "")
 API_SECRET = os.environ.get("ALPACA_API_SECRET", "")
 HEADERS = {"APCA-API-KEY-ID": API_KEY, "APCA-API-SECRET-KEY": API_SECRET}
 
-def api_get(url):
-    req = urllib.request.Request(url, headers=HEADERS)
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read().decode())
-    except Exception as e:
-        return {"error": str(e)}
+
+def api_get_with_retry(url, max_retries=3, timeout=15):
+    """Make an authenticated GET request with retry logic for 429/5xx."""
+    for attempt in range(max_retries):
+        try:
+            req = urllib.request.Request(url, headers=HEADERS)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            return {"error": f"HTTP {e.code}: {e.reason}"}
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            return {"error": str(e)}
+
 
 def check_capital():
-    account = api_get(f"{API_ENDPOINT}/account")
-    positions = api_get(f"{API_ENDPOINT}/positions")
-    orders = api_get(f"{API_ENDPOINT}/orders?status=open")
+    account = api_get_with_retry(f"{API_ENDPOINT}/account")
+    positions = api_get_with_retry(f"{API_ENDPOINT}/positions")
+    orders = api_get_with_retry(f"{API_ENDPOINT}/orders?status=open")
 
-    if "error" in account:
+    if isinstance(account, dict) and "error" in account:
         return {"error": account["error"]}
 
     portfolio_value = float(account.get("portfolio_value", 0))
@@ -42,13 +83,17 @@ def check_capital():
     total_position_value = sum(float(p.get("market_value", 0)) for p in positions)
     num_positions = len(positions)
 
-    # Calculate capital reserved by open orders
+    # Calculate capital reserved by open orders (including market orders)
     reserved_by_orders = 0
     for o in orders:
         if o.get("side") == "buy":
             price = float(o.get("limit_price") or o.get("stop_price") or 0)
             qty = float(o.get("qty", 0))
-            reserved_by_orders += price * qty
+            if price == 0:  # market order - estimate using notional or rough estimate
+                notional = float(o.get("notional") or 0)
+                reserved_by_orders += notional if notional else qty * 100  # rough estimate
+            else:
+                reserved_by_orders += price * qty
 
     # Key metrics
     pct_invested = (total_position_value / portfolio_value * 100) if portfolio_value > 0 else 0
@@ -76,11 +121,11 @@ def check_capital():
     additional_trades_possible = int(free_cash / avg_position_size) if avg_position_size > 0 else 0
     additional_trades_possible = min(additional_trades_possible, max_positions - num_positions)
 
-    # Warnings
+    # Warnings (use elif for overlapping thresholds)
     warnings = []
     if pct_invested > 80:
         warnings.append(f"HIGH EXPOSURE: {pct_invested:.0f}% of portfolio is invested. Consider reducing positions.")
-    if pct_invested > 60:
+    elif pct_invested > 60:
         warnings.append(f"MODERATE EXPOSURE: {pct_invested:.0f}% invested. {pct_free:.0f}% free cash remaining.")
     if free_cash < min_trade_size:
         warnings.append(f"LOW CAPITAL: Only ${free_cash:,.2f} free cash. Not enough for a new position.")
@@ -124,20 +169,22 @@ def check_capital():
     else:
         result["recommendation"] = f"Critical. Reduce exposure before opening new positions. Free cash: ${free_cash:,.2f}"
 
-    # Save to file
-    with open(os.path.join(BASE_DIR, "capital_status.json"), "w") as f:
-        json.dump(result, f, indent=2)
+    # Save to file (atomic write)
+    safe_save_json(os.path.join(BASE_DIR, "capital_status.json"), result)
 
     return result
 
 if __name__ == "__main__":
     result = check_capital()
-    print(f"Capital Check:")
-    print(f"  Portfolio: ${result['portfolio_value']:,.2f}")
-    print(f"  Invested: {result['pct_invested']}% | Reserved: {result['pct_reserved']}% | Free: {result['pct_free']}%")
-    print(f"  Positions: {result['num_positions']}/{result['max_positions']}")
-    print(f"  Additional trades possible: {result['additional_trades_possible']}")
-    print(f"  Sustainability: {result['sustainability_score']}/100")
-    print(f"  Recommendation: {result['recommendation']}")
-    for w in result.get("warnings", []):
-        print(f"  ⚠ {w}")
+    if "error" in result:
+        print(f"Error: {result['error']}")
+    else:
+        print(f"Capital Check:")
+        print(f"  Portfolio: ${result['portfolio_value']:,.2f}")
+        print(f"  Invested: {result['pct_invested']}% | Reserved: {result['pct_reserved']}% | Free: {result['pct_free']}%")
+        print(f"  Positions: {result['num_positions']}/{result['max_positions']}")
+        print(f"  Additional trades possible: {result['additional_trades_possible']}")
+        print(f"  Sustainability: {result['sustainability_score']}/100")
+        print(f"  Recommendation: {result['recommendation']}")
+        for w in result.get("warnings", []):
+            print(f"  WARNING: {w}")

@@ -3,6 +3,9 @@
 Alpaca Trading Bot — Interactive Web Dashboard Server
 Serves a fully interactive dashboard at http://localhost:8888
 with API endpoints for deploying strategies, managing orders/positions, and more.
+
+NOTE: HTTPS termination is handled by Railway's edge proxy. All traffic between
+the client and Railway is encrypted via TLS. The app itself listens on plain HTTP.
 """
 
 import base64
@@ -10,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 import urllib.error
@@ -17,16 +21,36 @@ import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timezone
 
-# Basic auth credentials (set via env vars on Railway, defaults for local dev)
-AUTH_USER = os.environ.get("DASHBOARD_USER", "Kbell0629")
-AUTH_PASS = os.environ.get("DASHBOARD_PASS", "We360you45$$")
+try:
+    from http.server import ThreadingHTTPServer  # Python 3.7+
+except ImportError:
+    import socketserver
+    class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
+        pass
+
+# Load .env file for local development
+def load_dotenv():
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, val = line.split("=", 1)
+                    os.environ.setdefault(key.strip(), val.strip())
+
+load_dotenv()
+
+# Basic auth credentials (set via env vars on Railway, or .env for local dev)
+AUTH_USER = os.environ.get("DASHBOARD_USER", "")
+AUTH_PASS = os.environ.get("DASHBOARD_PASS", "")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STRATEGIES_DIR = os.path.join(BASE_DIR, "strategies")
 DASHBOARD_DATA_PATH = os.path.join(BASE_DIR, "dashboard_data.json")
 
-API_ENDPOINT = os.environ.get("ALPACA_ENDPOINT", "https://paper-api.alpaca.markets/v2")
-DATA_ENDPOINT = os.environ.get("ALPACA_DATA_ENDPOINT", "https://data.alpaca.markets/v2")
+API_ENDPOINT = os.environ.get("ALPACA_ENDPOINT", "")
+DATA_ENDPOINT = os.environ.get("ALPACA_DATA_ENDPOINT", "")
 API_KEY = os.environ.get("ALPACA_API_KEY", "")
 API_SECRET = os.environ.get("ALPACA_API_SECRET", "")
 
@@ -76,23 +100,56 @@ def load_json(path):
 
 
 def save_json(path, data):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+    """Atomic JSON write: write to temp file then rename to avoid corruption."""
+    dir_name = os.path.dirname(path)
+    os.makedirs(dir_name, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+    try:
+        with os.fdopen(fd, 'w') as f:
+            json.dump(data, f, indent=2)
+        os.rename(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+# Fix #14: Server-side API response caching
+_api_cache = {}
+_cache_ttl = 10  # seconds
+
+def alpaca_get_cached(url, timeout=15):
+    """Cached version of alpaca_get for dashboard data."""
+    now = time.time()
+    if url in _api_cache and now - _api_cache[url]["time"] < _cache_ttl:
+        return _api_cache[url]["data"]
+    data = alpaca_get(url, timeout=timeout)
+    _api_cache[url] = {"data": data, "time": now}
+    return data
 
 
 def get_dashboard_data():
     """Load dashboard_data.json for screener picks, but always fetch live orders/positions from Alpaca."""
+    api_errors = []
     data = load_json(DASHBOARD_DATA_PATH)
     if data:
-        # Always refresh live data from Alpaca (orders, positions, account)
-        account = alpaca_get(f"{API_ENDPOINT}/account")
-        positions = alpaca_get(f"{API_ENDPOINT}/positions")
-        orders = alpaca_get(f"{API_ENDPOINT}/orders?status=open&limit=50")
+        # Always refresh live data from Alpaca (using cached API calls)
+        account = alpaca_get_cached(f"{API_ENDPOINT}/account")
+        positions = alpaca_get_cached(f"{API_ENDPOINT}/positions")
+        orders = alpaca_get_cached(f"{API_ENDPOINT}/orders?status=open&limit=50")
+        if isinstance(account, dict) and "error" in account:
+            api_errors.append("account: " + account["error"])
+        if isinstance(positions, dict) and "error" in positions:
+            api_errors.append("positions: " + str(positions.get("error", "")))
+        if isinstance(orders, dict) and "error" in orders:
+            api_errors.append("orders: " + str(orders.get("error", "")))
         data["account"] = account if isinstance(account, dict) and "error" not in account else data.get("account", {})
         data["positions"] = positions if isinstance(positions, list) else data.get("positions", [])
         data["open_orders"] = orders if isinstance(orders, list) else data.get("open_orders", [])
         data["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        data["api_errors"] = api_errors
         # Also refresh strategy files
         data["trailing"] = load_json(os.path.join(STRATEGIES_DIR, "trailing_stop.json")) or data.get("trailing")
         data["copy_trading"] = load_json(os.path.join(STRATEGIES_DIR, "copy_trading.json")) or data.get("copy_trading")
@@ -102,9 +159,15 @@ def get_dashboard_data():
     trailing = load_json(os.path.join(STRATEGIES_DIR, "trailing_stop.json"))
     copy_trading = load_json(os.path.join(STRATEGIES_DIR, "copy_trading.json"))
     wheel = load_json(os.path.join(STRATEGIES_DIR, "wheel_strategy.json"))
-    account = alpaca_get(f"{API_ENDPOINT}/account")
-    positions = alpaca_get(f"{API_ENDPOINT}/positions")
-    orders = alpaca_get(f"{API_ENDPOINT}/orders?status=open&limit=50")
+    account = alpaca_get_cached(f"{API_ENDPOINT}/account")
+    positions = alpaca_get_cached(f"{API_ENDPOINT}/positions")
+    orders = alpaca_get_cached(f"{API_ENDPOINT}/orders?status=open&limit=50")
+    if isinstance(account, dict) and "error" in account:
+        api_errors.append("account: " + account["error"])
+    if isinstance(positions, dict) and "error" in positions:
+        api_errors.append("positions: " + str(positions.get("error", "")))
+    if isinstance(orders, dict) and "error" in orders:
+        api_errors.append("orders: " + str(orders.get("error", "")))
     return {
         "account": account if isinstance(account, dict) and "error" not in account else {},
         "positions": positions if isinstance(positions, list) else [],
@@ -116,6 +179,7 @@ def get_dashboard_data():
         "total_screened": 0,
         "total_passed": 0,
         "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "api_errors": api_errors,
     }
 
 
@@ -767,6 +831,14 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
 <div id="app">Loading dashboard...</div>
 
 <script>
+/* XSS escaping helper for user/API data inserted into innerHTML */
+function esc(s) {
+    if (s == null) return '';
+    const d = document.createElement('div');
+    d.textContent = String(s);
+    return d.innerHTML;
+}
+
 const API_BASE = '';
 let dashboardData = null;
 let countdown = 60;
@@ -818,7 +890,7 @@ function toast(msg, type='info') {
     const icons = {success: '\u2713', error: '\u2717', info: '\u2139'};
     const t = document.createElement('div');
     t.className = 'toast ' + type;
-    t.innerHTML = '<span class="toast-icon">' + (icons[type]||'') + '</span><span>' + msg + '</span>';
+    t.innerHTML = '<span class="toast-icon">' + (icons[type]||'') + '</span><span>' + esc(msg) + '</span>';
     c.appendChild(t);
     setTimeout(() => t.remove(), 4000);
 }
@@ -839,7 +911,7 @@ function renderLog() {
         '<div class="log-entry ' + e.type + '">' +
         '<span class="log-time">' + e.time + '</span>' +
         '<span class="log-icon">' + (icons[e.type]||icons.info) + '</span>' +
-        '<span class="log-msg">' + e.msg + '</span></div>'
+        '<span class="log-msg">' + esc(e.msg) + '</span></div>'
     ).join('') || '<div class="empty">No activity yet</div>';
 }
 
@@ -1467,9 +1539,9 @@ function renderDashboard() {
         picksHtml += '<div class="pick-card" style="border-top:3px solid ' + color + '">' +
             '<div class="pick-header"><div>' +
             '<span class="pick-rank" style="color:' + color + '">' + (rankLabels[i]||'') + '</span>' +
-            '<div class="pick-symbol">' + p.symbol + '</div>' +
+            '<div class="pick-symbol">' + esc(p.symbol) + '</div>' +
             '<div class="pick-price">' + fmtMoney(p.price) + '</div></div>' +
-            '<div class="pick-strategy-badge" style="background:' + color + '20;color:' + color + '">' + p.best_strategy + '</div></div>' +
+            '<div class="pick-strategy-badge" style="background:' + color + '20;color:' + color + '">' + esc(p.best_strategy) + '</div></div>' +
             '<div class="pick-stats">' +
             '<div class="pick-stat"><span class="pick-stat-label">Daily Change</span><span class="pick-stat-value ' + chgCls + '">' + fmtPct(p.daily_change) + '</span></div>' +
             '<div class="pick-stat"><span class="pick-stat-label">Volatility</span><span class="pick-stat-value">' + (p.volatility||0).toFixed(1) + '%</span></div>' +
@@ -1504,7 +1576,7 @@ function renderDashboard() {
             ? '<span class="deploy-source-badge auto">AUTO</span>'
             : '<span class="deploy-source-badge manual">MANUAL</span>';
         posHtml += '<tr>' +
-            '<td><strong>' + sym + '</strong>' + srcBadge + '</td>' +
+            '<td><strong>' + esc(sym) + '</strong>' + srcBadge + '</td>' +
             '<td>' + qty + '</td>' +
             '<td>' + fmtMoney(avgEntry) + '</td>' +
             '<td>' + fmtMoney(curPrice) + '</td>' +
@@ -1524,10 +1596,10 @@ function renderDashboard() {
         const sideCls = o.side === 'buy' ? 'side-buy' : 'side-sell';
         const price = o.limit_price || o.stop_price || 'Market';
         ordHtml += '<tr>' +
-            '<td><strong>' + (o.symbol||'') + '</strong></td>' +
-            '<td><span class="' + sideCls + '">' + (o.side||'').toUpperCase() + '</span></td>' +
-            '<td>' + (o.type||'') + '</td>' +
-            '<td>' + (o.qty||'') + '</td>' +
+            '<td><strong>' + esc(o.symbol||'') + '</strong></td>' +
+            '<td><span class="' + sideCls + '">' + esc((o.side||'').toUpperCase()) + '</span></td>' +
+            '<td>' + esc(o.type||'') + '</td>' +
+            '<td>' + esc(o.qty||'') + '</td>' +
             '<td>$' + price + '</td>' +
             '<td>' + (o.status||'') + '</td>' +
             '<td><button class="btn-danger btn-sm" onclick="openCancelOrderModal(\'' + (o.id||'') + '\',\'' + (o.symbol||'') + '\',\'' + (o.side||'') + '\',\'' + (o.type||'') + '\',\'' + (o.qty||'') + '\',\'' + price + '\')">Cancel</button></td></tr>';
@@ -1551,13 +1623,13 @@ function renderDashboard() {
         const recShares = Math.max(1, Math.floor(portfolioValue * 0.05 / p.price));
         scrHtml += '<tr' + hl + '>' +
             '<td>' + (i+1) + '</td>' +
-            '<td><strong>' + p.symbol + '</strong></td>' +
+            '<td><strong>' + esc(p.symbol) + '</strong></td>' +
             '<td>' + fmtMoney(p.price) + '</td>' +
             '<td class="' + chgCls + '">' + fmtPct(p.daily_change) + '</td>' +
             '<td>' + (p.volatility||0).toFixed(1) + '%</td>' +
             '<td>' + ((p.daily_volume||0)/1e6).toFixed(1) + 'M</td>' +
             '<td class="' + vsCls + '">' + fmtPct(p.volume_surge||0).replace('.0','') + '</td>' +
-            '<td style="color:' + color + ';font-weight:600">' + p.best_strategy + '</td>' +
+            '<td style="color:' + color + ';font-weight:600">' + esc(p.best_strategy) + '</td>' +
             '<td style="font-weight:700">' + Math.round(p.best_score||0) + '</td>' +
             '<td><button class="btn-primary btn-sm" onclick="openDeployModal(\'' + p.symbol + '\',\'' + p.best_strategy + '\',' + recShares + ',' + p.price + ')">Deploy</button></td></tr>';
     });
@@ -1615,8 +1687,8 @@ function renderDashboard() {
                 '</div>' +
                 '<div class="strategy-visual"><strong>Rules:</strong> 10% stop-loss | +10% activates trailing | 5% trail distance | Floor only goes up</div>' +
                 '<div class="strategy-actions">' +
-                    '<button class="btn-warning btn-sm" onclick="toast(\'Trailing stop paused\',\'info\');addLog(\'Paused trailing stop strategy\',\'info\')">Pause</button>' +
-                    '<button class="btn-danger btn-sm" onclick="toast(\'Trailing stop stopped\',\'info\');addLog(\'Stopped trailing stop strategy\',\'info\')">Stop</button>' +
+                    '<button class="btn-warning btn-sm" onclick="if(confirm(\'Pause trailing stop? The monitor will skip this strategy until resumed.\')) fetch(\'/api/pause-strategy\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({strategy:\'trailing_stop\'})}).then(r=>r.json()).then(d=>{toast(d.message||\'Paused\',\'info\');addLog(\'Paused trailing stop strategy\',\'info\');refreshData();})">Pause</button>' +
+                    '<button class="btn-danger btn-sm" onclick="if(confirm(\'Stop trailing stop? This will cancel related orders.\')) fetch(\'/api/stop-strategy\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({strategy:\'trailing_stop\'})}).then(r=>r.json()).then(d=>{toast(d.message||\'Stopped\',\'info\');addLog(\'Stopped trailing stop strategy\',\'info\');refreshData();})">Stop</button>' +
                 '</div>' +
             '</div>' +
             '<div class="strategy-card copy">' +
@@ -1630,8 +1702,8 @@ function renderDashboard() {
                 '</div>' +
                 '<div class="strategy-visual"><strong>Rules:</strong> 5% position size | Max 10 positions | Skip if moved 15%+ | 10% stop-loss</div>' +
                 '<div class="strategy-actions">' +
-                    '<button class="btn-warning btn-sm" onclick="toast(\'Copy trading paused\',\'info\');addLog(\'Paused copy trading strategy\',\'info\')">Pause</button>' +
-                    '<button class="btn-danger btn-sm" onclick="toast(\'Copy trading stopped\',\'info\');addLog(\'Stopped copy trading strategy\',\'info\')">Stop</button>' +
+                    '<button class="btn-warning btn-sm" onclick="if(confirm(\'Pause copy trading?\')) fetch(\'/api/pause-strategy\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({strategy:\'copy_trading\'})}).then(r=>r.json()).then(d=>{toast(d.message||\'Paused\',\'info\');addLog(\'Paused copy trading strategy\',\'info\');refreshData();})">Pause</button>' +
+                    '<button class="btn-danger btn-sm" onclick="if(confirm(\'Stop copy trading?\')) fetch(\'/api/stop-strategy\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({strategy:\'copy_trading\'})}).then(r=>r.json()).then(d=>{toast(d.message||\'Stopped\',\'info\');addLog(\'Stopped copy trading strategy\',\'info\');refreshData();})">Stop</button>' +
                 '</div>' +
             '</div>' +
             '<div class="strategy-card wheel">' +
@@ -1645,8 +1717,8 @@ function renderDashboard() {
                 '</div>' +
                 '<div class="strategy-visual"><strong>Rules:</strong> Strike 10% OTM | 2-4 week exp | Close at 50% profit | Check every 15 min</div>' +
                 '<div class="strategy-actions">' +
-                    '<button class="btn-warning btn-sm" onclick="toast(\'Wheel strategy paused\',\'info\');addLog(\'Paused wheel strategy\',\'info\')">Pause</button>' +
-                    '<button class="btn-danger btn-sm" onclick="toast(\'Wheel strategy stopped\',\'info\');addLog(\'Stopped wheel strategy\',\'info\')">Stop</button>' +
+                    '<button class="btn-warning btn-sm" onclick="if(confirm(\'Pause wheel strategy?\')) fetch(\'/api/pause-strategy\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({strategy:\'wheel\'})}).then(r=>r.json()).then(d=>{toast(d.message||\'Paused\',\'info\');addLog(\'Paused wheel strategy\',\'info\');refreshData();})">Pause</button>' +
+                    '<button class="btn-danger btn-sm" onclick="if(confirm(\'Stop wheel strategy?\')) fetch(\'/api/stop-strategy\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({strategy:\'wheel\'})}).then(r=>r.json()).then(d=>{toast(d.message||\'Stopped\',\'info\');addLog(\'Stopped wheel strategy\',\'info\');refreshData();})">Stop</button>' +
                 '</div>' +
             '</div>' +
             '<div class="strategy-card meanrev">' +
@@ -1660,8 +1732,8 @@ function renderDashboard() {
                 '</div>' +
                 '<div class="strategy-visual"><strong>Rules:</strong> Buy oversold stocks | Target 20-day mean | 10% stop-loss | Skip if bad news caused drop</div>' +
                 '<div class="strategy-actions">' +
-                    '<button class="btn-warning btn-sm" onclick="toast(\'Mean reversion paused\',\'info\');addLog(\'Paused mean reversion strategy\',\'info\')">Pause</button>' +
-                    '<button class="btn-danger btn-sm" onclick="toast(\'Mean reversion stopped\',\'info\');addLog(\'Stopped mean reversion strategy\',\'info\')">Stop</button>' +
+                    '<button class="btn-warning btn-sm" onclick="if(confirm(\'Pause mean reversion?\')) fetch(\'/api/pause-strategy\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({strategy:\'mean_reversion\'})}).then(r=>r.json()).then(d=>{toast(d.message||\'Paused\',\'info\');addLog(\'Paused mean reversion strategy\',\'info\');refreshData();})">Pause</button>' +
+                    '<button class="btn-danger btn-sm" onclick="if(confirm(\'Stop mean reversion?\')) fetch(\'/api/stop-strategy\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({strategy:\'mean_reversion\'})}).then(r=>r.json()).then(d=>{toast(d.message||\'Stopped\',\'info\');addLog(\'Stopped mean reversion strategy\',\'info\');refreshData();})">Stop</button>' +
                 '</div>' +
             '</div>' +
             '<div class="strategy-card breakout">' +
@@ -1675,8 +1747,8 @@ function renderDashboard() {
                 '</div>' +
                 '<div class="strategy-visual"><strong>Rules:</strong> Tight 5% stop | Immediate trailing | Rides momentum | Fails fast if breakout fizzles</div>' +
                 '<div class="strategy-actions">' +
-                    '<button class="btn-warning btn-sm" onclick="toast(\'Breakout strategy paused\',\'info\');addLog(\'Paused breakout strategy\',\'info\')">Pause</button>' +
-                    '<button class="btn-danger btn-sm" onclick="toast(\'Breakout strategy stopped\',\'info\');addLog(\'Stopped breakout strategy\',\'info\')">Stop</button>' +
+                    '<button class="btn-warning btn-sm" onclick="if(confirm(\'Pause breakout strategy?\')) fetch(\'/api/pause-strategy\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({strategy:\'breakout\'})}).then(r=>r.json()).then(d=>{toast(d.message||\'Paused\',\'info\');addLog(\'Paused breakout strategy\',\'info\');refreshData();})">Pause</button>' +
+                    '<button class="btn-danger btn-sm" onclick="if(confirm(\'Stop breakout strategy?\')) fetch(\'/api/stop-strategy\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({strategy:\'breakout\'})}).then(r=>r.json()).then(d=>{toast(d.message||\'Stopped\',\'info\');addLog(\'Stopped breakout strategy\',\'info\');refreshData();})">Stop</button>' +
                 '</div>' +
             '</div>' +
         '</div>' +
@@ -1773,19 +1845,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"<h1>Invalid credentials</h1>")
         return False
 
+    def _cors_origin(self):
+        """Return the allowed CORS origin (same-origin by default, configurable via env)."""
+        return os.environ.get("CORS_ORIGIN", "")
+
     def send_json(self, data, status=200):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        cors = self._cors_origin()
+        if cors:
+            self.send_header("Access-Control-Allow-Origin", cors)
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
         self.wfile.write(json.dumps(data).encode("utf-8"))
 
     def send_html(self, html, status=200):
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(html.encode("utf-8"))
 
@@ -1801,9 +1878,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, DELETE")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        cors = self._cors_origin()
+        if cors:
+            self.send_header("Access-Control-Allow-Origin", cors)
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, DELETE")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
     def do_GET(self):
@@ -1870,6 +1949,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path == "/api/kill-switch":
             self.handle_kill_switch(body)
 
+        elif path == "/api/pause-strategy":
+            self.handle_pause_strategy(body)
+
+        elif path == "/api/stop-strategy":
+            self.handle_stop_strategy(body)
+
         else:
             self.send_json({"error": "Not found"}, 404)
 
@@ -1897,11 +1982,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """Deploy a strategy on a symbol."""
         symbol = body.get("symbol", "").upper()
         strategy = body.get("strategy", "trailing_stop")
-        qty = int(body.get("qty", 2))
+        try:
+            qty = int(body.get("qty", 2))
+        except (TypeError, ValueError):
+            return self.send_json({"error": "Invalid quantity."}, 400)
 
         if not symbol:
             self.send_json({"error": "Missing symbol"}, 400)
             return
+
+        if qty < 1 or qty > 1000:
+            return self.send_json({"error": "Invalid quantity. Must be 1-1000."}, 400)
 
         if strategy == "trailing_stop":
             self.deploy_trailing_stop(symbol, qty)
@@ -1947,25 +2038,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         buy_order_id = buy_order.get("id", "")
 
-        # 3. Stop-loss at 90% of price
+        # NOTE: Stop-loss is NOT placed here. The strategy-monitor will place
+        # the stop-loss AFTER the buy order fills (checks state.stop_pending).
         stop_price = round(price * 0.90, 2)
-        stop_order = alpaca_post(f"{API_ENDPOINT}/orders", {
-            "symbol": symbol,
-            "qty": str(qty),
-            "side": "sell",
-            "type": "stop",
-            "stop_price": str(stop_price),
-            "time_in_force": "gtc",
-        })
-        stop_order_id = stop_order.get("id", "") if isinstance(stop_order, dict) else ""
 
-        # 4. Ladder buy orders at -12%, -20%, -30%, -40%
+        # 3. Ladder buy orders at -12%, -20%, -30%, -40%
+        # Check buying power first so we don't place ladders we can't afford
+        acct = alpaca_get(f"{API_ENDPOINT}/account")
+        buying_power = float(acct.get("buying_power", 0)) if isinstance(acct, dict) else 0
         ladder_levels = [
             {"drop_pct": 0.12, "qty": max(1, qty // 2), "note": "re-entry just below stop-out"},
             {"drop_pct": 0.20, "qty": qty, "note": "meaningful pullback"},
             {"drop_pct": 0.30, "qty": qty + 1, "note": "deep correction"},
             {"drop_pct": 0.40, "qty": qty * 2 + 1, "note": "crash territory, go heavy"},
         ]
+        # Calculate worst-case cost (all ladders fill) and skip some if insufficient buying power
+        cumulative_cost = 0
+        affordable_levels = []
+        for level in ladder_levels:
+            ladder_price = round(price * (1 - level["drop_pct"]), 2)
+            cost = ladder_price * level["qty"]
+            if cumulative_cost + cost <= buying_power:
+                cumulative_cost += cost
+                affordable_levels.append(level)
+        ladder_levels = affordable_levels
+
         ladder_orders = []
         for level in ladder_levels:
             ladder_price = round(price * (1 - level["drop_pct"]), 2)
@@ -2004,7 +2101,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "state": {
                 "entry_fill_price": None,
                 "entry_order_id": buy_order_id,
-                "stop_order_id": stop_order_id,
+                "stop_order_id": None,
+                "stop_pending": True,
                 "highest_price_seen": None,
                 "trailing_activated": False,
                 "current_stop_price": stop_price,
@@ -2012,17 +2110,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "ladder_fills": [],
             },
         }
-        save_json(os.path.join(STRATEGIES_DIR, "trailing_stop.json"), strategy_data)
+        # Per-symbol file so multiple trailing stops don't overwrite each other
+        save_json(os.path.join(STRATEGIES_DIR, f"trailing_stop_{symbol}.json"), strategy_data)
 
         self.send_json({
             "success": True,
             "strategy": "trailing_stop",
             "symbol": symbol,
             "buy_order_id": buy_order_id,
-            "stop_order_id": stop_order_id,
             "stop_price": stop_price,
             "ladder_orders": len(ladder_orders),
             "price": price,
+            "note": "Stop-loss will be placed by strategy-monitor after buy fills.",
         })
 
     def deploy_wheel(self, symbol, qty):
@@ -2152,31 +2251,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         buy_order_id = buy_order.get("id", "")
 
-        # 2. Target = 20-day average estimate (price * 1.15 for oversold stock)
+        # NOTE: No limit sell placed here. The strategy-monitor handles the
+        # profit target by checking price vs 20-day average each cycle.
+        # NOTE: Stop-loss is NOT placed here. The strategy-monitor will place
+        # the stop-loss AFTER the buy order fills (checks state.stop_pending).
         target_price = round(price * 1.15, 2)
-        sell_order = alpaca_post(f"{API_ENDPOINT}/orders", {
-            "symbol": symbol,
-            "qty": str(qty),
-            "side": "sell",
-            "type": "limit",
-            "limit_price": str(target_price),
-            "time_in_force": "gtc",
-        })
-        sell_order_id = sell_order.get("id", "") if isinstance(sell_order, dict) else ""
-
-        # 3. Stop-loss at 10% below entry
         stop_price = round(price * 0.90, 2)
-        stop_order = alpaca_post(f"{API_ENDPOINT}/orders", {
-            "symbol": symbol,
-            "qty": str(qty),
-            "side": "sell",
-            "type": "stop",
-            "stop_price": str(stop_price),
-            "time_in_force": "gtc",
-        })
-        stop_order_id = stop_order.get("id", "") if isinstance(stop_order, dict) else ""
 
-        # 4. Save strategy state
+        # 2. Save strategy state
         strategy_data = {
             "symbol": symbol,
             "strategy": "mean_reversion",
@@ -2188,8 +2270,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "status": "awaiting_fill",
             "state": {
                 "entry_order_id": buy_order_id,
-                "sell_order_id": sell_order_id,
-                "stop_order_id": stop_order_id,
+                "sell_order_id": None,
+                "stop_order_id": None,
+                "stop_pending": True,
                 "entry_fill_price": None,
             },
         }
@@ -2203,6 +2286,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "target_price": target_price,
             "stop_price": stop_price,
             "price": price,
+            "note": "Stop-loss and profit target managed by strategy-monitor after buy fills.",
         })
 
     def deploy_breakout(self, symbol, qty):
@@ -2233,30 +2317,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         buy_order_id = buy_order.get("id", "")
 
-        # 2. Tight stop-loss at 5% below entry
+        # NOTE: No sell orders placed here. The strategy-monitor will place
+        # a trailing stop (trail_percent=5) AFTER the buy order fills
+        # (checks state.stop_pending). This avoids double sell orders and
+        # ensures the stop is placed at the correct filled price.
         stop_price = round(price * 0.95, 2)
-        stop_order = alpaca_post(f"{API_ENDPOINT}/orders", {
-            "symbol": symbol,
-            "qty": str(qty),
-            "side": "sell",
-            "type": "stop",
-            "stop_price": str(stop_price),
-            "time_in_force": "gtc",
-        })
-        stop_order_id = stop_order.get("id", "") if isinstance(stop_order, dict) else ""
 
-        # 3. Trailing stop that activates immediately (trail percent = 5%)
-        trail_order = alpaca_post(f"{API_ENDPOINT}/orders", {
-            "symbol": symbol,
-            "qty": str(qty),
-            "side": "sell",
-            "type": "trailing_stop",
-            "trail_percent": "5",
-            "time_in_force": "gtc",
-        })
-        trail_order_id = trail_order.get("id", "") if isinstance(trail_order, dict) else ""
-
-        # 4. Save strategy state
+        # 2. Save strategy state
         strategy_data = {
             "symbol": symbol,
             "strategy": "breakout",
@@ -2268,8 +2335,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "status": "awaiting_fill",
             "state": {
                 "entry_order_id": buy_order_id,
-                "stop_order_id": stop_order_id,
-                "trail_order_id": trail_order_id,
+                "stop_order_id": None,
+                "trail_order_id": None,
+                "stop_pending": True,
                 "entry_fill_price": None,
             },
         }
@@ -2281,8 +2349,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "symbol": symbol,
             "buy_order_id": buy_order_id,
             "stop_price": stop_price,
-            "trail_order_id": trail_order_id,
             "price": price,
+            "note": "Trailing stop will be placed by strategy-monitor after buy fills.",
         })
 
     def handle_cancel_order(self, body):
@@ -2357,15 +2425,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         guardrails = load_json(guardrails_path) or {}
 
         if activate:
-            # 1. Cancel ALL open orders
-            orders_cancelled = 0
-            open_orders = alpaca_get(f"{API_ENDPOINT}/orders?status=open")
-            if isinstance(open_orders, list):
-                for order in open_orders:
-                    oid = order.get("id", "")
-                    if oid:
-                        alpaca_delete(f"{API_ENDPOINT}/orders/{oid}")
-                        orders_cancelled += 1
+            # 1. Cancel ALL open orders in one atomic bulk call
+            orders_before = alpaca_get(f"{API_ENDPOINT}/orders?status=open")
+            orders_cancelled = len(orders_before) if isinstance(orders_before, list) else 0
+            alpaca_delete(f"{API_ENDPOINT}/orders")
 
             # 2. Close ALL positions (Alpaca supports closing all with one call)
             positions_closed = 0
@@ -2389,8 +2452,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             print(f"[KILL SWITCH] Activated at {timestamp}: {orders_cancelled} orders cancelled, {positions_closed} positions closed")
 
-            # Send push notification via ntfy.sh
-            subprocess.run([sys.executable, os.path.join(BASE_DIR, "notify.py"), "--type", "kill", f"Cancelled {orders_cancelled} orders, closed {positions_closed} positions. All trading halted."], cwd=BASE_DIR)
+            # Send push notification via ntfy.sh (fire-and-forget, don't block HTTP response)
+            subprocess.Popen([sys.executable, os.path.join(BASE_DIR, "notify.py"), "--type", "kill", f"Cancelled {orders_cancelled} orders, closed {positions_closed} positions. All trading halted."], cwd=BASE_DIR)
 
             self.send_json({
                 "success": True,
@@ -2416,9 +2479,96 @@ class DashboardHandler(BaseHTTPRequestHandler):
             })
 
 
+    def _find_strategy_files(self, strategy_key):
+        """Find strategy JSON files matching the given strategy key."""
+        import glob
+        patterns = {
+            "trailing_stop": "trailing_stop*.json",
+            "copy_trading": "copy_trading.json",
+            "wheel": "wheel_strategy.json",
+            "mean_reversion": "mean_reversion_*.json",
+            "breakout": "breakout_*.json",
+        }
+        pattern = patterns.get(strategy_key, f"{strategy_key}*.json")
+        return glob.glob(os.path.join(STRATEGIES_DIR, pattern))
+
+    def handle_pause_strategy(self, body):
+        """Pause a strategy by setting its status to 'paused'."""
+        strategy = body.get("strategy", "")
+        if not strategy:
+            return self.send_json({"error": "Missing strategy"}, 400)
+
+        files = self._find_strategy_files(strategy)
+        if not files:
+            return self.send_json({"error": f"No strategy files found for {strategy}"}, 404)
+
+        paused = []
+        for fpath in files:
+            data = load_json(fpath)
+            if data:
+                data["status"] = "paused"
+                data["paused_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                save_json(fpath, data)
+                paused.append(os.path.basename(fpath))
+
+        self.send_json({
+            "success": True,
+            "message": f"Paused {strategy}: {', '.join(paused)}",
+            "files_updated": paused,
+        })
+
+    def handle_stop_strategy(self, body):
+        """Stop a strategy: set status to 'stopped' and cancel related orders."""
+        strategy = body.get("strategy", "")
+        if not strategy:
+            return self.send_json({"error": "Missing strategy"}, 400)
+
+        files = self._find_strategy_files(strategy)
+        if not files:
+            return self.send_json({"error": f"No strategy files found for {strategy}"}, 404)
+
+        stopped = []
+        orders_cancelled = 0
+        for fpath in files:
+            data = load_json(fpath)
+            if data:
+                # Cancel any open orders for this symbol
+                sym = data.get("symbol", "")
+                state = data.get("state", {})
+                order_ids = []
+                for key in ["stop_order_id", "trail_order_id", "sell_order_id", "entry_order_id"]:
+                    oid = state.get(key)
+                    if oid:
+                        order_ids.append(oid)
+                # Cancel ladder orders too
+                for rule_key in ["rules"]:
+                    rules = data.get(rule_key, {})
+                    for ladder in rules.get("ladder_in", []):
+                        oid = ladder.get("order_id")
+                        if oid:
+                            order_ids.append(oid)
+
+                for oid in order_ids:
+                    result = alpaca_delete(f"{API_ENDPOINT}/orders/{oid}")
+                    if not (isinstance(result, dict) and "error" in result):
+                        orders_cancelled += 1
+
+                data["status"] = "stopped"
+                data["stopped_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                save_json(fpath, data)
+                stopped.append(os.path.basename(fpath))
+
+        self.send_json({
+            "success": True,
+            "message": f"Stopped {strategy}: {', '.join(stopped)}. Cancelled {orders_cancelled} orders.",
+            "files_updated": stopped,
+            "orders_cancelled": orders_cancelled,
+        })
+
+
 def main():
     port = int(os.environ.get("PORT", 8888))
-    server = HTTPServer(("0.0.0.0", port), DashboardHandler)
+    server = ThreadingHTTPServer(("0.0.0.0", port), DashboardHandler)
     print(f"Dashboard running at http://localhost:{port}")
     print("Press Ctrl+C to stop")
     try:

@@ -2,12 +2,12 @@
   "symbol": null,
   "strategy": "trailing_stop",
   "created": "2026-04-15",
-  "status": "waiting_for_auto_deployer",
+  "status": "paused",
   "entry_price_estimate": null,
   "initial_qty": null,
   "rules": {
-    "stop_loss_pct": 0.10,
-    "trailing_activation_pct": 0.10,
+    "stop_loss_pct": 0.1,
+    "trailing_activation_pct": 0.1,
     "trailing_distance_pct": 0.05,
     "ladder_in": []
   },
@@ -21,5 +21,6 @@
     "total_shares_held": 0,
     "ladder_fills": [],
     "profit_takes": []
-  }
+  },
+  "paused_at": "2026-04-16 02:12:50 UTC"
 }

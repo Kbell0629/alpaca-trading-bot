@@ -12,11 +12,41 @@ Schedule: Fridays at 2 PM PT (after market close)
 
 import json
 import os
+import tempfile
 from datetime import datetime, timezone
+
+
+def load_dotenv():
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, val = line.split("=", 1)
+                    os.environ.setdefault(key.strip(), val.strip())
+load_dotenv()
+
+
+def safe_save_json(path, data):
+    dir_name = os.path.dirname(path) or "."
+    fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+    try:
+        with os.fdopen(fd, 'w') as f:
+            json.dump(data, f, indent=2, default=str)
+        os.rename(tmp_path, path)
+    except:
+        try: os.unlink(tmp_path)
+        except: pass
+        raise
+
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TRADE_JOURNAL_PATH = os.path.join(BASE_DIR, "trade_journal.json")
 LEARNED_WEIGHTS_PATH = os.path.join(BASE_DIR, "learned_weights.json")
+
+# Maximum weight change per update (20%)
+MAX_CHANGE = 0.2
 
 # Strategy name mapping (journal uses these keys)
 STRATEGIES = ["trailing_stop", "mean_reversion", "breakout", "copy_trading", "wheel"]
@@ -56,13 +86,6 @@ def load_json(path):
             return json.load(f)
     except Exception:
         return None
-
-
-def save_json(path, data):
-    """Save data as JSON."""
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
-    print(f"Saved: {path}")
 
 
 def get_closed_trades(journal):
@@ -180,7 +203,7 @@ SIGNAL_NAMES = [
 # Analysis functions
 # ---------------------------------------------------------------------------
 
-def analyze_strategy_performance(closed_trades):
+def analyze_strategy_performance(closed_trades, existing):
     """Analyze win rate and P&L per strategy, return multipliers."""
     stats = {}
     for strat in STRATEGIES:
@@ -205,12 +228,20 @@ def analyze_strategy_performance(closed_trades):
         win_rate = (s["wins"] / count * 100) if count > 0 else 0
         avg_pnl = (s["total_pnl"] / count) if count > 0 else 0
 
-        if count >= 5 and win_rate > 60:
-            multipliers[strat] = 1.2
-        elif count >= 5 and win_rate < 40:
-            multipliers[strat] = 0.7
+        # Use continuous multiplier function for strategies with 5+ trades
+        if count >= 5:
+            mult = 0.5 + (win_rate / 100)  # 50% win = 1.0x, 70% win = 1.2x, 30% win = 0.8x
+            mult = max(0.5, min(1.5, mult))  # clamp
         else:
-            multipliers[strat] = 1.0
+            mult = 1.0
+
+        # Limit how much weights can change per update
+        old = existing.get("strategy_multipliers", {}).get(strat, 1.0) if existing else 1.0
+        if abs(mult - old) > MAX_CHANGE:
+            mult = old + (MAX_CHANGE if mult > old else -MAX_CHANGE)
+        mult = round(mult, 3)
+
+        multipliers[strat] = mult
 
         details[strat] = {
             "trades": count,
@@ -240,8 +271,8 @@ def analyze_signals(closed_trades):
         present_trades = [t for t in closed_trades if check_signal(t, signal)]
         absent_trades = [t for t in closed_trades if not check_signal(t, signal)]
 
-        if len(present_trades) < 3:
-            # Not enough data for this signal
+        if len(present_trades) < 10:
+            # Not enough data for this signal (increased from 3 to 10)
             continue
 
         present_wins = sum(1 for t in present_trades if is_win(t))
@@ -449,6 +480,12 @@ def run_learning_engine():
         print("No trade journal found. Initializing with defaults.")
         journal = {"trades": [], "daily_snapshots": []}
 
+    # Check for manual override
+    existing = load_json(LEARNED_WEIGHTS_PATH)
+    if existing and existing.get("manual_override"):
+        print("Manual override flag set in learned_weights.json -- skipping auto-adjustment")
+        return existing
+
     closed_trades = get_closed_trades(journal)
     total_closed = len(closed_trades)
     print(f"Trade journal loaded: {len(journal.get('trades', []))} total trades, {total_closed} closed")
@@ -465,7 +502,7 @@ def run_learning_engine():
 
     # 1. Strategy Performance
     print("--- Strategy Performance Analysis ---")
-    multipliers, details = analyze_strategy_performance(closed_trades)
+    multipliers, details = analyze_strategy_performance(closed_trades, existing)
     for strat in STRATEGIES:
         d = details.get(strat, {})
         print(
@@ -525,7 +562,7 @@ def run_learning_engine():
     }
 
     # Save
-    save_json(LEARNED_WEIGHTS_PATH, learned_weights)
+    safe_save_json(LEARNED_WEIGHTS_PATH, learned_weights)
 
     # Print summary
     print()

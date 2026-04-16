@@ -13,9 +13,40 @@ Run: python3 "/Users/kevinbell/Alpaca Trading/error_recovery.py"
 
 import json
 import os
+import os.path
+import subprocess
+import sys
+import tempfile
+import time
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone
+
+
+def load_dotenv():
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, val = line.split("=", 1)
+                    os.environ.setdefault(key.strip(), val.strip())
+load_dotenv()
+
+
+def safe_save_json(path, data):
+    dir_name = os.path.dirname(path) or "."
+    fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+    try:
+        with os.fdopen(fd, 'w') as f:
+            json.dump(data, f, indent=2, default=str)
+        os.rename(tmp_path, path)
+    except:
+        try: os.unlink(tmp_path)
+        except: pass
+        raise
+
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STRATEGIES_DIR = os.path.join(BASE_DIR, "strategies")
@@ -30,13 +61,32 @@ HEADERS = {
 
 
 def api_get(url, timeout=15):
-    """Make an authenticated GET request to Alpaca API."""
+    """Make an authenticated GET request to Alpaca API (legacy, no retry)."""
     req = urllib.request.Request(url, headers=HEADERS)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode())
     except Exception as e:
         return {"error": str(e)}
+
+
+def api_get_with_retry(url, max_retries=3, timeout=15):
+    """Make an authenticated GET request with retry logic for 429/5xx."""
+    for attempt in range(max_retries):
+        try:
+            req = urllib.request.Request(url, headers=HEADERS)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            return {"error": f"HTTP {e.code}: {e.reason}"}
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            return {"error": str(e)}
 
 
 def api_post(url, data, timeout=15):
@@ -57,12 +107,6 @@ def load_json(path):
             return json.load(f)
     except Exception:
         return None
-
-
-def save_json(path, data):
-    """Save data to a JSON file."""
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2, default=str)
 
 
 def list_strategy_files():
@@ -89,7 +133,7 @@ def list_strategy_files():
 def get_open_orders_for_symbol(symbol):
     """Get open orders for a specific symbol."""
     url = f"{API_ENDPOINT}/orders?status=open&symbols={symbol}&limit=50"
-    result = api_get(url)
+    result = api_get_with_retry(url)
     if isinstance(result, list):
         return result
     return []
@@ -161,7 +205,7 @@ def main():
 
     # Fetch current positions
     print("\nFetching current positions...")
-    positions = api_get(f"{API_ENDPOINT}/positions")
+    positions = api_get_with_retry(f"{API_ENDPOINT}/positions")
     if isinstance(positions, dict) and "error" in positions:
         print(f"  ERROR: Could not fetch positions: {positions['error']}")
         print("  Cannot proceed without position data. Exiting.")
@@ -169,6 +213,12 @@ def main():
     if not isinstance(positions, list):
         positions = []
     print(f"  Found {len(positions)} open positions")
+
+    # Fetch all open orders once for grace period checks
+    print("Fetching open orders...")
+    all_open_orders = api_get_with_retry(f"{API_ENDPOINT}/orders?status=open&limit=500")
+    if not isinstance(all_open_orders, list):
+        all_open_orders = []
 
     # Build position map: symbol -> position data
     position_map = {}
@@ -197,8 +247,14 @@ def main():
     print("\n--- Check 1: Orphan Positions ---")
     print("  (Position exists but no strategy file)")
     orphans = []
+    orphans_found = []
     for sym, pos in position_map.items():
         if sym not in strategy_symbol_map:
+            # Grace period: skip if there are pending buy orders for this symbol
+            recent_orders = [o for o in all_open_orders if o.get("symbol") == sym and o.get("side") == "buy"]
+            if recent_orders:
+                print(f"  {sym}: Has pending buy orders, skipping orphan check")
+                continue
             orphans.append((sym, pos))
 
     if not orphans:
@@ -206,6 +262,7 @@ def main():
     else:
         for sym, pos in orphans:
             issues_found += 1
+            orphans_found.append(sym)
             qty = pos.get("qty", 0)
             avg_entry = float(pos.get("avg_entry_price", 0))
             current_price = float(pos.get("current_price", 0))
@@ -215,7 +272,7 @@ def main():
             strategy = create_orphan_strategy(sym, qty, current_price, avg_entry)
             fname = f"trailing_stop_{sym}.json"
             fpath = os.path.join(STRATEGIES_DIR, fname)
-            save_json(fpath, strategy)
+            safe_save_json(fpath, strategy)
             print(f"    FIXED: Created {fname} with 10% stop-loss at ${strategy['state']['current_stop_price']:.2f}")
             issues_fixed += 1
 
@@ -227,6 +284,14 @@ def main():
                 "strategy": "trailing_stop",
                 "status": "active",
             })
+
+    # Send notification for orphans found
+    if orphans_found:
+        try:
+            subprocess.Popen([sys.executable, os.path.join(BASE_DIR, "notify.py"), "--type", "alert",
+                f"Error recovery found {len(orphans_found)} orphan positions: {', '.join(orphans_found)}"])
+        except Exception as e:
+            print(f"  Warning: Could not send orphan notification: {e}")
 
     # ---- Check 2: Missing Stop-Loss ----
     print("\n--- Check 2: Missing Stop-Loss Orders ---")
@@ -275,7 +340,7 @@ def main():
                 if strat_data.get("state"):
                     strat_data["state"]["stop_order_id"] = order_id
                     strat_data["state"]["current_stop_price"] = stop_price
-                    save_json(info["path"], strat_data)
+                    safe_save_json(info["path"], strat_data)
                     print(f"    Updated strategy file with stop order ID")
                 issues_fixed += 1
             else:
@@ -291,6 +356,22 @@ def main():
         if sym and sym not in position_map:
             status = info["status"]
             if status not in ("closed", "waiting_for_auto_deployer"):
+                # Grace period: don't mark as stale if file was modified in the last 10 minutes
+                filepath = info["path"]
+                try:
+                    file_mtime = os.path.getmtime(filepath)
+                    if time.time() - file_mtime < 600:  # 10 minutes
+                        print(f"  {sym}: Strategy file recently modified, skipping stale check")
+                        continue
+                except OSError:
+                    pass
+
+                # Check if there are open sell orders (position might have just been sold)
+                sell_orders = [o for o in all_open_orders if o.get("symbol") == sym and o.get("side") == "sell"]
+                if sell_orders:
+                    print(f"  {sym}: Has pending sell orders, skipping stale check")
+                    continue
+
                 stale.append((sym, fname, info))
 
     # Also check strategy files with no symbol assigned
@@ -313,7 +394,7 @@ def main():
             strat_data["status"] = "closed"
             strat_data["closed_reason"] = "No position found — marked closed by error_recovery.py"
             strat_data["closed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            save_json(info["path"], strat_data)
+            safe_save_json(info["path"], strat_data)
             print(f"    FIXED: Marked {fname} as closed")
             issues_fixed += 1
 

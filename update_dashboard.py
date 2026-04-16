@@ -21,11 +21,39 @@ Run: python3 update_dashboard.py
 
 import json
 import os
+import re
+import tempfile
 import time
 import urllib.request
 import urllib.error
 import urllib.parse
 from datetime import datetime, timezone, timedelta
+
+
+def load_dotenv():
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, val = line.split("=", 1)
+                    os.environ.setdefault(key.strip(), val.strip())
+load_dotenv()
+
+
+def safe_save_json(path, data):
+    dir_name = os.path.dirname(path) or "."
+    fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+    try:
+        with os.fdopen(fd, 'w') as f:
+            json.dump(data, f, indent=2, default=str)
+        os.rename(tmp_path, path)
+    except:
+        try: os.unlink(tmp_path)
+        except: pass
+        raise
+
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STRATEGIES_DIR = os.path.join(BASE_DIR, "strategies")
@@ -86,18 +114,38 @@ PROFIT_LADDER = [
 POSITIVE_KEYWORDS = ["beats", "record", "growth", "upgrade", "bullish", "raised", "strong"]
 NEGATIVE_KEYWORDS = ["misses", "decline", "downgrade", "bearish", "cut", "weak", "lawsuit", "investigation", "recall"]
 
-# --- Improvement 4: Earnings keywords ---
-EARNINGS_KEYWORDS = ["earnings", "quarterly results", "q1", "q2", "q3", "q4", "revenue report", "guidance"]
+# --- Improvement 4: Earnings keywords (word-boundary matching) ---
+EARNINGS_PATTERN = re.compile(r'\b(earnings|quarterly results|revenue report|guidance)\b', re.IGNORECASE)
+Q_PATTERN = re.compile(r'\bQ[1-4]\b')
 
 
 def api_get(url, timeout=15):
-    """Make an authenticated GET request to Alpaca API."""
+    """Make an authenticated GET request to Alpaca API (no retry, legacy)."""
     req = urllib.request.Request(url, headers=HEADERS)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode())
     except Exception as e:
         return {"error": str(e)}
+
+
+def api_get_with_retry(url, max_retries=3, timeout=15):
+    """Make an authenticated GET request with retry logic for 429/5xx."""
+    for attempt in range(max_retries):
+        try:
+            req = urllib.request.Request(url, headers=HEADERS)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            return {"error": f"HTTP {e.code}: {e.reason}"}
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            return {"error": str(e)}
 
 
 def load_json(path):
@@ -113,7 +161,7 @@ def fetch_tradeable_symbols():
     """Fetch all tradeable US equity symbols from major exchanges."""
     print("Fetching all tradeable US equity assets...")
     url = f"{API_ENDPOINT}/assets?status=active&asset_class=us_equity"
-    data = api_get(url, timeout=30)
+    data = api_get_with_retry(url, timeout=30)
     if isinstance(data, dict) and "error" in data:
         print(f"  Error fetching assets: {data['error']}")
         return []
@@ -135,7 +183,7 @@ def fetch_snapshots_batch(symbols):
     """Fetch snapshots for a batch of symbols using the bulk endpoint."""
     symbols_str = ",".join(symbols)
     url = f"{DATA_ENDPOINT}/stocks/snapshots?symbols={urllib.parse.quote(symbols_str)}&feed=iex"
-    return api_get(url, timeout=20)
+    return api_get_with_retry(url, timeout=20)
 
 
 def fetch_all_snapshots(symbols):
@@ -203,8 +251,13 @@ def score_stocks(snapshots):
             if price > 100 and daily_volume > 1_000_000:
                 copy_score += 15
 
-            # Wheel Strategy Score
-            wheel_score = volatility * 3
+            # Wheel Strategy Score (bell curve: moderate volatility scores highest)
+            if volatility <= 5:
+                wheel_score = volatility * 3
+            elif volatility <= 10:
+                wheel_score = 15 + (10 - volatility)  # tapers off
+            else:
+                wheel_score = max(0, 15 - (volatility - 10))  # penalized
             if 20 <= price <= 500:
                 wheel_score += 5
             if -5 <= daily_change <= 5:
@@ -214,7 +267,9 @@ def score_stocks(snapshots):
             mean_reversion_score = 0
             if daily_change < -5:  # stock dropped significantly today
                 mean_reversion_score = abs(daily_change) * 1.5 + volatility * 0.3
-                if volume_surge > 50:
+                if volume_surge > 200:  # 3x normal volume = likely news-driven, reduce score
+                    mean_reversion_score *= 0.5
+                elif volume_surge > 50:
                     mean_reversion_score += 5  # high volume selloff = more likely to bounce
             elif daily_change < -2:
                 mean_reversion_score = abs(daily_change) * 0.8
@@ -277,7 +332,7 @@ def fetch_historical_bars(symbol, days=20):
         f"{DATA_ENDPOINT}/stocks/{urllib.parse.quote(symbol)}/bars"
         f"?timeframe=1Day&start={start_date}&end={end_date}&limit={days}&feed=iex"
     )
-    result = api_get(url, timeout=10)
+    result = api_get_with_retry(url, timeout=10)
     if isinstance(result, dict) and "bars" in result:
         return result["bars"]
     if isinstance(result, list):
@@ -381,7 +436,16 @@ def fetch_market_regime():
 
 def apply_market_regime(picks, regime):
     """Adjust scores based on market regime (Improvement 7)."""
-    if regime == "bear":
+    if regime == "bull":
+        print("  Bull market regime: adjusting scores (+5 trailing, +3 breakout)")
+        for p in picks:
+            p["trailing_score"] += 5
+            p["breakout_score"] += 3
+            p["scores"]["Trailing Stop"] = p["trailing_score"]
+            p["scores"]["Breakout"] = p["breakout_score"]
+            p["best_strategy"] = max(p["scores"], key=p["scores"].get)
+            p["best_score"] = p["scores"][p["best_strategy"]]
+    elif regime == "bear":
         print("  Bear market regime: adjusting scores (-5 trailing, +3 wheel)")
         for p in picks:
             p["trailing_score"] -= 5
@@ -399,7 +463,7 @@ def apply_market_regime(picks, regime):
 def fetch_news_for_symbol(symbol, limit=5):
     """Fetch recent news for a symbol."""
     url = f"{NEWS_ENDPOINT}?symbols={urllib.parse.quote(symbol)}&limit={limit}"
-    result = api_get(url, timeout=10)
+    result = api_get_with_retry(url, timeout=10)
     if isinstance(result, dict) and "news" in result:
         return result["news"]
     if isinstance(result, list):
@@ -416,21 +480,22 @@ def analyze_news(pick, news_items):
         return
 
     headlines_text = " ".join(
-        (item.get("headline", "") + " " + item.get("summary", "")).lower()
+        (item.get("headline", "") + " " + item.get("summary", ""))
         for item in news_items
     )
 
-    # Improvement 4: Earnings avoidance
-    earnings_found = any(kw in headlines_text for kw in EARNINGS_KEYWORDS)
-    pick["earnings_warning"] = earnings_found
-    if earnings_found:
+    # Improvement 4: Earnings avoidance (word-boundary matching)
+    has_earnings = bool(EARNINGS_PATTERN.search(headlines_text) or Q_PATTERN.search(headlines_text))
+    pick["earnings_warning"] = has_earnings
+    if has_earnings:
         pick["trailing_score"] -= 10
         pick["copy_score"] -= 10
         pick["wheel_score"] -= 10
 
-    # Improvement 8: Sentiment
-    pos_count = sum(1 for kw in POSITIVE_KEYWORDS if kw in headlines_text)
-    neg_count = sum(1 for kw in NEGATIVE_KEYWORDS if kw in headlines_text)
+    # Improvement 8: Sentiment (case-insensitive search on lowered text)
+    headlines_lower = headlines_text.lower()
+    pos_count = sum(1 for kw in POSITIVE_KEYWORDS if kw in headlines_lower)
+    neg_count = sum(1 for kw in NEGATIVE_KEYWORDS if kw in headlines_lower)
     sentiment_score = pos_count - neg_count
 
     pick["sentiment_score"] = sentiment_score
@@ -501,10 +566,11 @@ def apply_sector_diversification(picks, max_per_sector=2, top_n=5):
 
 def backtest_trailing_stop(bars, stop_pct=0.10, trail_activation=0.10, trail_distance=0.05):
     """Simulate trailing stop on historical data. Return dict with results."""
-    if not bars or len(bars) < 2:
+    if not bars or len(bars) < 3:
         return {"entry": 0, "exit": 0, "return_pct": 0, "stopped_out": False, "days": 0}
 
-    entry = bars[0].get("c", 0)
+    # Enter at next day's open to avoid look-ahead bias
+    entry = bars[1].get("o", bars[0].get("c", 0))
     if entry <= 0:
         return {"entry": 0, "exit": 0, "return_pct": 0, "stopped_out": False, "days": 0}
 
@@ -512,20 +578,20 @@ def backtest_trailing_stop(bars, stop_pct=0.10, trail_activation=0.10, trail_dis
     stop_price = entry * (1 - stop_pct)
     trailing_active = False
 
-    for i, bar in enumerate(bars[1:], start=1):
+    for i, bar in enumerate(bars[2:], start=2):
         low = bar.get("l", 0)
         high = bar.get("h", 0)
         close = bar.get("c", 0)
 
-        # Check if stopped out
+        # Check if stopped out — use bar low as worst-case exit
         if low > 0 and low <= stop_price:
-            exit_price = stop_price
+            exit_price = bar.get("l", stop_price)  # worst-case exit
             return {
                 "entry": round(entry, 2),
                 "exit": round(exit_price, 2),
                 "return_pct": round((exit_price / entry - 1) * 100, 2),
                 "stopped_out": True,
-                "days": i,
+                "days": i - 1,
             }
 
         if high > highest:
@@ -545,7 +611,7 @@ def backtest_trailing_stop(bars, stop_pct=0.10, trail_activation=0.10, trail_dis
         "exit": round(final, 2),
         "return_pct": round((final / entry - 1) * 100, 2) if entry > 0 else 0,
         "stopped_out": False,
-        "days": len(bars) - 1,
+        "days": len(bars) - 2,
     }
 
 
@@ -582,9 +648,9 @@ def fetch_all_data():
 
     # Account, positions, orders
     print("Fetching account data...")
-    account = api_get(f"{API_ENDPOINT}/account")
-    positions = api_get(f"{API_ENDPOINT}/positions")
-    orders = api_get(f"{API_ENDPOINT}/orders?status=open&limit=50")
+    account = api_get_with_retry(f"{API_ENDPOINT}/account")
+    positions = api_get_with_retry(f"{API_ENDPOINT}/positions")
+    orders = api_get_with_retry(f"{API_ENDPOINT}/orders?status=open&limit=50")
 
     # Normalize
     account = account if isinstance(account, dict) and "error" not in account else {}
@@ -934,7 +1000,9 @@ def generate_html(data):
     rank_labels = ["TOP PICK", "RUNNER UP", "STRONG OPTION"]
 
     picks_cards = ""
-    max_score = max((p["best_score"] for p in picks), default=1) or 1
+    max_score = max((p["best_score"] for p in picks), default=1)
+    if max_score <= 0:
+        max_score = 1
 
     for i, p in enumerate(top3):
         color = strategy_colors.get(p["best_strategy"], "#3b82f6")
@@ -1278,8 +1346,7 @@ def save_data_json(data):
         "copy_trading_strategy": data["copy_trading"],
         "wheel_strategy": data["wheel"],
     }
-    with open(DATA_JSON_PATH, "w") as f:
-        json.dump(output, f, indent=2, default=str)
+    safe_save_json(DATA_JSON_PATH, output)
     print(f"Data JSON saved: {DATA_JSON_PATH}")
 
 

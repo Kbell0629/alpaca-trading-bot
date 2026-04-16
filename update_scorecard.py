@@ -11,9 +11,37 @@ Run: python3 "/Users/kevinbell/Alpaca Trading/update_scorecard.py"
 import json
 import math
 import os
+import tempfile
+import time
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone, timedelta
+
+
+def load_dotenv():
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, val = line.split("=", 1)
+                    os.environ.setdefault(key.strip(), val.strip())
+load_dotenv()
+
+
+def safe_save_json(path, data):
+    dir_name = os.path.dirname(path) or "."
+    fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+    try:
+        with os.fdopen(fd, 'w') as f:
+            json.dump(data, f, indent=2, default=str)
+        os.rename(tmp_path, path)
+    except:
+        try: os.unlink(tmp_path)
+        except: pass
+        raise
+
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 JOURNAL_PATH = os.path.join(BASE_DIR, "trade_journal.json")
@@ -50,13 +78,32 @@ SECTOR_MAP = {
 
 
 def api_get(url, timeout=15):
-    """Make an authenticated GET request to Alpaca API."""
+    """Make an authenticated GET request to Alpaca API (legacy, no retry)."""
     req = urllib.request.Request(url, headers=HEADERS)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode())
     except Exception as e:
         return {"error": str(e)}
+
+
+def api_get_with_retry(url, max_retries=3, timeout=15):
+    """Make an authenticated GET request with retry logic for 429/5xx."""
+    for attempt in range(max_retries):
+        try:
+            req = urllib.request.Request(url, headers=HEADERS)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            return {"error": f"HTTP {e.code}: {e.reason}"}
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            return {"error": str(e)}
 
 
 def load_json(path):
@@ -68,49 +115,18 @@ def load_json(path):
         return None
 
 
-def save_json(path, data):
-    """Save data to a JSON file."""
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2, default=str)
-
-
 def is_market_open():
-    """Check if current time is Mon-Fri 9:30 AM - 4:00 PM ET (Improvement 10)."""
-    try:
-        # ET is UTC-4 during EDT, UTC-5 during EST
-        # Use a simple approach: check UTC offset for US Eastern
-        now_utc = datetime.now(timezone.utc)
-        # Determine if DST is in effect (March second Sunday to November first Sunday)
-        year = now_utc.year
-        # March second Sunday
-        march_first = datetime(year, 3, 1, tzinfo=timezone.utc)
-        march_second_sunday = march_first + timedelta(days=(6 - march_first.weekday()) % 7 + 7)
-        # November first Sunday
-        nov_first = datetime(year, 11, 1, tzinfo=timezone.utc)
-        nov_first_sunday = nov_first + timedelta(days=(6 - nov_first.weekday()) % 7)
-
-        if march_second_sunday <= now_utc.replace(hour=0, minute=0, second=0, microsecond=0) < nov_first_sunday:
-            et_offset = timedelta(hours=-4)  # EDT
+    """Check if market is open using Alpaca /v2/clock endpoint."""
+    result = api_get_with_retry(f"{API_ENDPOINT}/clock")
+    if isinstance(result, dict) and "error" not in result:
+        is_open = result.get("is_open", False)
+        next_open = result.get("next_open", "")
+        next_close = result.get("next_close", "")
+        if is_open:
+            return True, f"Market OPEN (closes {next_close})"
         else:
-            et_offset = timedelta(hours=-5)  # EST
-
-        now_et = now_utc + et_offset
-        weekday = now_et.weekday()  # 0=Monday, 6=Sunday
-
-        if weekday >= 5:  # Saturday or Sunday
-            return False, f"Weekend ({now_et.strftime('%A %I:%M %p ET')})"
-
-        market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
-        market_close = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
-
-        if market_open <= now_et <= market_close:
-            return True, f"Market OPEN ({now_et.strftime('%I:%M %p ET')})"
-        elif now_et < market_open:
-            return False, f"Pre-market ({now_et.strftime('%I:%M %p ET')})"
-        else:
-            return False, f"After hours ({now_et.strftime('%I:%M %p ET')})"
-    except Exception as e:
-        return False, f"Could not determine market hours: {e}"
+            return False, f"Market CLOSED (opens {next_open})"
+    return False, f"Could not determine market hours: {result.get('error', 'unknown')}"
 
 
 def calculate_metrics(journal, scorecard, account, positions):
@@ -188,23 +204,25 @@ def calculate_metrics(journal, scorecard, account, positions):
             if prev_val > 0:
                 daily_returns.append(curr_val / prev_val - 1)
 
+    n = len(daily_returns)
     sharpe = 0
     sortino = 0
-    if len(daily_returns) >= 2:
-        mean_ret = sum(daily_returns) / len(daily_returns)
-        variance = sum((r - mean_ret) ** 2 for r in daily_returns) / len(daily_returns)
+    if n >= 2:
+        rf_daily = 0.00016  # ~4% annual risk-free rate / 252
+        mean_ret = sum(daily_returns) / n
+        variance = sum((r - mean_ret) ** 2 for r in daily_returns) / (n - 1)  # sample variance
         std_ret = math.sqrt(variance) if variance > 0 else 0
 
         if std_ret > 0:
-            sharpe = (mean_ret / std_ret) * math.sqrt(252)
+            sharpe = ((mean_ret - rf_daily) / std_ret) * math.sqrt(252)
 
-        # Sortino: only downside deviation
+        # Sortino: only downside deviation (divide by total N, not len(neg_returns))
         neg_returns = [r for r in daily_returns if r < 0]
         if neg_returns:
-            neg_variance = sum(r ** 2 for r in neg_returns) / len(neg_returns)
+            neg_variance = sum(r ** 2 for r in neg_returns) / n  # divide by total N
             neg_std = math.sqrt(neg_variance)
             if neg_std > 0:
-                sortino = (mean_ret / neg_std) * math.sqrt(252)
+                sortino = ((mean_ret - rf_daily) / neg_std) * math.sqrt(252)
 
     # Total return
     total_return_pct = ((portfolio_value - starting_capital) / starting_capital * 100) if starting_capital > 0 else 0
@@ -251,7 +269,7 @@ def calculate_metrics(journal, scorecard, account, positions):
                 ab_testing[f"{a_name}_vs_{b_name}"] = {
                     a_name: {"trades": a["trades"], "win_rate": round(a_win_rate, 1), "avg_pnl": round(a_avg_pnl, 2)},
                     b_name: {"trades": b["trades"], "win_rate": round(b_win_rate, 1), "avg_pnl": round(b_avg_pnl, 2)},
-                    "better_risk_adjusted": winner,
+                    "better_avg_pnl": winner,
                 }
 
     # Correlation Guard (Improvement 9)
@@ -412,7 +430,7 @@ def main():
     print("SCORECARD UPDATER")
     print("=" * 60)
 
-    # Market hours check (Improvement 10)
+    # Market hours check using Alpaca /v2/clock
     market_open, market_status = is_market_open()
     print(f"\nMarket status: {market_status}")
     if not market_open:
@@ -424,7 +442,7 @@ def main():
 
     # Fetch live data from Alpaca
     print("\nFetching account data from Alpaca...")
-    account = api_get(f"{API_ENDPOINT}/account")
+    account = api_get_with_retry(f"{API_ENDPOINT}/account")
     if isinstance(account, dict) and "error" in account:
         print(f"  ERROR fetching account: {account['error']}")
         account = {}
@@ -435,7 +453,7 @@ def main():
         print(f"  Cash: ${cash:,.2f}")
 
     print("Fetching positions...")
-    positions = api_get(f"{API_ENDPOINT}/positions")
+    positions = api_get_with_retry(f"{API_ENDPOINT}/positions")
     if isinstance(positions, dict) and "error" in positions:
         print(f"  ERROR fetching positions: {positions['error']}")
         positions = []
@@ -463,9 +481,9 @@ def main():
 
     # Save everything
     print("\nSaving updated files...")
-    save_json(SCORECARD_PATH, updated_scorecard)
+    safe_save_json(SCORECARD_PATH, updated_scorecard)
     print(f"  Saved: {SCORECARD_PATH}")
-    save_json(JOURNAL_PATH, journal)
+    safe_save_json(JOURNAL_PATH, journal)
     print(f"  Saved: {JOURNAL_PATH}")
 
     # Print summary
@@ -494,7 +512,7 @@ def main():
     if updated_scorecard.get("ab_testing"):
         print(f"\n  A/B Testing Results:")
         for pair, result in updated_scorecard["ab_testing"].items():
-            print(f"    {pair}: better = {result['better_risk_adjusted']}")
+            print(f"    {pair}: better = {result['better_avg_pnl']}")
 
     # Strategy breakdown
     print(f"\n  Strategy Breakdown:")
