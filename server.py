@@ -5042,52 +5042,28 @@ def is_allowed_alpaca_endpoint(url, data=False):
     pool = ALLOWED_ALPACA_DATA_ENDPOINTS if data else ALLOWED_ALPACA_ENDPOINTS
     return url in pool
 
-# Simple in-memory login rate limiter: 5 failed attempts per (ip, username)
-# per 15 minutes. Blocks further attempts for 15 min after the 5th failure.
-# Cleared on successful login.
-_LOGIN_ATTEMPTS = {}  # key: (ip, username_lower) -> [(timestamp, success), ...]
-_LOGIN_LOCK = threading.Lock()
-_LOGIN_MAX_FAILURES = 5
-_LOGIN_WINDOW_SEC = 15 * 60
+# Login rate limit is now BACKED BY SQLite (auth.login_attempts table)
+# so rate-limit state survives Railway redeploys. Previously attacker
+# could force a restart to reset the counter.
+# Thin wrapper functions below delegate to auth.py.
 
 # Per-user cooldown for /api/refresh. Spawns a 10-min subprocess if abused.
 _refresh_cooldowns = {}  # user_id -> last_refresh_ts
 
 def _login_rate_limited(ip, username):
-    """Check if this (ip, username) pair is currently locked out."""
-    now = time.time()
-    key = (ip or "unknown", (username or "").lower())
-    with _LOGIN_LOCK:
-        attempts = _LOGIN_ATTEMPTS.get(key, [])
-        # Drop old attempts outside window
-        attempts = [a for a in attempts if now - a[0] < _LOGIN_WINDOW_SEC]
-        _LOGIN_ATTEMPTS[key] = attempts
-        fails = sum(1 for ts, ok in attempts if not ok)
-        return fails >= _LOGIN_MAX_FAILURES
+    """Persistent rate limit check (delegates to auth.is_login_locked)."""
+    return auth.is_login_locked(ip, username)
 
 def _login_attempt_record(ip, username, success):
-    """Record a login attempt. On success, clears the history for this pair.
-    Prunes expired entries to bound memory (was unbounded in principle:
-    distributed brute force would grow the dict forever).
-    """
-    now = time.time()
-    key = (ip or "unknown", (username or "").lower())
-    with _LOGIN_LOCK:
-        if success:
-            _LOGIN_ATTEMPTS.pop(key, None)
-        else:
-            attempts = _LOGIN_ATTEMPTS.get(key, [])
-            attempts.append((now, False))
-            _LOGIN_ATTEMPTS[key] = attempts
-        # Periodic GC — every 50 calls, sweep keys whose timestamps are all
-        # outside the window. Bounded cost, runs rarely.
-        if len(_LOGIN_ATTEMPTS) > 200:
-            for k in list(_LOGIN_ATTEMPTS.keys()):
-                fresh = [a for a in _LOGIN_ATTEMPTS[k] if now - a[0] < _LOGIN_WINDOW_SEC]
-                if not fresh:
-                    _LOGIN_ATTEMPTS.pop(k, None)
-                else:
-                    _LOGIN_ATTEMPTS[k] = fresh
+    """Persistent attempt record (delegates to auth.record_login_attempt)."""
+    auth.record_login_attempt(ip, username, success)
+    # Opportunistic GC ~1% of calls — keeps the login_attempts table small
+    # without needing a separate scheduler task.
+    if secrets.token_bytes(1)[0] < 3:  # ~1.2% chance
+        try:
+            auth.gc_login_attempts()
+        except Exception:
+            pass
 
 # Signup invite code gate. Set SIGNUP_INVITE_CODE env var on Railway to require
 # the code for new signups. Set SIGNUP_DISABLED=1 to block all new signups.

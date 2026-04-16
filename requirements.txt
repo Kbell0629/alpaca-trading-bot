@@ -1,1 +1,5 @@
-# No external dependencies — all stdlib
+# Cryptography for AES-GCM authenticated encryption of Alpaca credentials
+# (supersedes the original stdlib-only HMAC stream cipher). Falls back to
+# the legacy cipher at runtime if this package isn't installed, so removal
+# doesn't brick existing deployments.
+cryptography>=42.0.0

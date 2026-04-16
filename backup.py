@@ -94,7 +94,13 @@ def _create_backup_inner():
         # Stage files in a temp dir so the final archive sees a consistent
         # snapshot (no half-written JSON mid-backup).
         with tempfile.TemporaryDirectory(prefix="wbkp-", dir=BACKUP_DIR) as staging:
-            # SQLite consistent snapshot via .backup API
+            # SQLite consistent snapshot via .backup API.
+            # CRITICAL: we NULL out alpaca_key_encrypted and alpaca_secret_encrypted
+            # before archiving. The admin downloads backups; without this,
+            # admin could extract every user's encrypted Alpaca credentials
+            # (which admin could then decrypt offline using MASTER_KEY).
+            # A restored backup WILL require users to re-enter their Alpaca
+            # keys via Settings — by design. Rare event (disaster recovery).
             src_db = os.path.join(DATA_DIR, "users.db")
             if os.path.exists(src_db):
                 dst_db = os.path.join(staging, "users.db")
@@ -103,6 +109,16 @@ def _create_backup_inner():
                 with dst_conn:
                     src_conn.backup(dst_conn)
                 src_conn.close()
+                # Strip Alpaca credential columns in the BACKUP copy only.
+                # Live DB keeps them — scheduler still needs to decrypt to trade.
+                try:
+                    cur = dst_conn.cursor()
+                    cur.execute("UPDATE users SET "
+                                "alpaca_key_encrypted = NULL, "
+                                "alpaca_secret_encrypted = NULL")
+                    dst_conn.commit()
+                except Exception:
+                    pass
                 dst_conn.close()
 
             # Copy remaining files
@@ -124,7 +140,14 @@ def _create_backup_inner():
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "data_dir": DATA_DIR,
                 "includes": INCLUDES,
-                "bot_version": "post-forensic-audit",
+                "bot_version": "post-forensic-audit-r4",
+                "alpaca_credentials_stripped": True,
+                "restore_note": (
+                    "This backup has Alpaca API credentials stripped from "
+                    "users.db. After restore, every user must re-enter their "
+                    "Alpaca key + secret via the Settings modal (or the bot "
+                    "will not trade for them)."
+                ),
             }
             with open(os.path.join(staging, "backup_meta.json"), "w") as f:
                 json.dump(meta, f, indent=2)

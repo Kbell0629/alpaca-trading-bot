@@ -104,12 +104,22 @@ def init_db():
         ip_address TEXT,
         detail TEXT                        -- JSON blob with additional context
     );
+    CREATE TABLE IF NOT EXISTS login_attempts (
+        -- Persistent login rate-limit storage so restart doesn't clear
+        -- the brute-force lockout window. Pruned by _gc_login_attempts.
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ip TEXT NOT NULL,
+        username TEXT NOT NULL,
+        ts REAL NOT NULL,                 -- UNIX timestamp
+        success INTEGER NOT NULL          -- 0 or 1
+    );
     CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
     CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
     CREATE INDEX IF NOT EXISTS idx_reset_token ON password_resets(token);
     CREATE INDEX IF NOT EXISTS idx_audit_ts ON admin_audit_log(ts DESC);
     CREATE INDEX IF NOT EXISTS idx_audit_actor ON admin_audit_log(actor_user_id);
     CREATE INDEX IF NOT EXISTS idx_audit_target ON admin_audit_log(target_user_id);
+    CREATE INDEX IF NOT EXISTS idx_login_attempts_key ON login_attempts(ip, username, ts);
     """)
     conn.commit()
     conn.close()
@@ -189,17 +199,47 @@ def _derive_key(master, purpose):
     """Derive a sub-key for a specific purpose (encryption vs MAC)."""
     return hashlib.sha256(f"{master}:{purpose}".encode()).digest()
 
+# Try to load cryptography (AES-GCM). Fall back to the legacy stdlib
+# HMAC-stream cipher if unavailable — backward compat preserves decrypt
+# for any existing "ENC:" ciphertexts and prevents deployments where
+# cryptography fails to install from being bricked.
+try:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    _HAS_AESGCM = True
+except Exception:
+    _HAS_AESGCM = False
+
+
+def _derive_aesgcm_key(master):
+    """Derive a 32-byte AES-256 key from the master secret."""
+    return hashlib.sha256(f"{master}:aesgcm-v2".encode()).digest()
+
+
 def encrypt_secret(plaintext):
-    """Encrypt a secret (Alpaca API key). Returns base64 string."""
+    """Encrypt a secret (Alpaca API key).
+
+    Format tiers (encoded as prefix):
+      "PLAIN:..."  -> dev-mode cleartext fallback (no MASTER_KEY set)
+      "ENC:..."    -> legacy HMAC-stream cipher (encrypt-then-MAC)
+      "ENCv2:..."  -> AES-256-GCM (authenticated, IETF standard)
+    New writes use ENCv2 when cryptography is available; decrypt supports
+    all three so existing DB rows keep working without migration.
+    """
     if not plaintext:
         return ""
     if not MASTER_KEY:
-        # Without master key, store plaintext (DB is gitignored, single-user fallback)
         return "PLAIN:" + plaintext
+    if _HAS_AESGCM:
+        key = _derive_aesgcm_key(MASTER_KEY)
+        aes = AESGCM(key)
+        nonce = secrets.token_bytes(12)  # 96-bit nonce is standard for GCM
+        ct = aes.encrypt(nonce, plaintext.encode(), associated_data=b"alpaca-cred-v2")
+        # Store nonce || ciphertext+tag (the cryptography lib appends the 16-byte tag)
+        return "ENCv2:" + base64.b64encode(nonce + ct).decode()
+    # Fallback: legacy HMAC stream cipher
     enc_key = _derive_key(MASTER_KEY, "encrypt")
     mac_key = _derive_key(MASTER_KEY, "mac")
     nonce = secrets.token_bytes(16)
-    # Generate keystream via HMAC counter mode
     plaintext_bytes = plaintext.encode()
     blocks_needed = (len(plaintext_bytes) + 31) // 32
     keystream = b""
@@ -207,40 +247,71 @@ def encrypt_secret(plaintext):
         counter = nonce + i.to_bytes(16, "big")
         keystream += hmac.new(enc_key, counter, hashlib.sha256).digest()
     ciphertext = bytes(a ^ b for a, b in zip(plaintext_bytes, keystream[:len(plaintext_bytes)]))
-    # MAC the (nonce + ciphertext)
     mac = hmac.new(mac_key, nonce + ciphertext, hashlib.sha256).digest()
     combined = nonce + mac + ciphertext
     return "ENC:" + base64.b64encode(combined).decode()
 
+
 def decrypt_secret(encrypted):
-    """Decrypt a secret back to plaintext."""
+    """Decrypt a secret back to plaintext. Supports PLAIN / ENC / ENCv2."""
     if not encrypted:
         return ""
     if encrypted.startswith("PLAIN:"):
         return encrypted[6:]
-    if not encrypted.startswith("ENC:"):
-        return encrypted  # Legacy plaintext
-    if not MASTER_KEY:
-        return ""  # Can't decrypt without key
-    try:
-        combined = base64.b64decode(encrypted[4:])
-        nonce = combined[:16]
-        mac_stored = combined[16:48]
-        ciphertext = combined[48:]
-        mac_key = _derive_key(MASTER_KEY, "mac")
-        mac_check = hmac.new(mac_key, nonce + ciphertext, hashlib.sha256).digest()
-        if not hmac.compare_digest(mac_stored, mac_check):
-            return ""  # Tampered or wrong key
-        enc_key = _derive_key(MASTER_KEY, "encrypt")
-        blocks_needed = (len(ciphertext) + 31) // 32
-        keystream = b""
-        for i in range(blocks_needed):
-            counter = nonce + i.to_bytes(16, "big")
-            keystream += hmac.new(enc_key, counter, hashlib.sha256).digest()
-        plaintext = bytes(a ^ b for a, b in zip(ciphertext, keystream[:len(ciphertext)]))
-        return plaintext.decode()
-    except Exception:
-        return ""
+
+    # ENCv2: AES-GCM (current format)
+    if encrypted.startswith("ENCv2:"):
+        if not MASTER_KEY or not _HAS_AESGCM:
+            return ""
+        try:
+            blob = base64.b64decode(encrypted[6:])
+            nonce, ct = blob[:12], blob[12:]
+            key = _derive_aesgcm_key(MASTER_KEY)
+            aes = AESGCM(key)
+            pt = aes.decrypt(nonce, ct, associated_data=b"alpaca-cred-v2")
+            return pt.decode()
+        except Exception:
+            return ""
+
+    # ENC: legacy HMAC stream cipher
+    if encrypted.startswith("ENC:"):
+        if not MASTER_KEY:
+            return ""
+        try:
+            combined = base64.b64decode(encrypted[4:])
+            nonce = combined[:16]
+            mac_stored = combined[16:48]
+            ciphertext = combined[48:]
+            mac_key = _derive_key(MASTER_KEY, "mac")
+            mac_check = hmac.new(mac_key, nonce + ciphertext, hashlib.sha256).digest()
+            if not hmac.compare_digest(mac_stored, mac_check):
+                return ""
+            enc_key = _derive_key(MASTER_KEY, "encrypt")
+            blocks_needed = (len(ciphertext) + 31) // 32
+            keystream = b""
+            for i in range(blocks_needed):
+                counter = nonce + i.to_bytes(16, "big")
+                keystream += hmac.new(enc_key, counter, hashlib.sha256).digest()
+            plaintext = bytes(a ^ b for a, b in zip(ciphertext, keystream[:len(ciphertext)]))
+            return plaintext.decode()
+        except Exception:
+            return ""
+
+    # Legacy plaintext (pre-encryption deploys)
+    return encrypted
+
+
+def needs_cipher_upgrade(encrypted):
+    """Return True if the ciphertext is in an older format that should be
+    re-encrypted under the current (ENCv2) scheme on next opportunity.
+    """
+    if not encrypted:
+        return False
+    if encrypted.startswith("PLAIN:"):
+        return bool(MASTER_KEY) and _HAS_AESGCM
+    if encrypted.startswith("ENC:"):
+        return _HAS_AESGCM
+    return False
 
 # ===== User CRUD =====
 def create_user(email, username, password, alpaca_key, alpaca_secret,
@@ -420,6 +491,29 @@ def authenticate(username_or_email, password):
             conn.close()
     except Exception:
         pass  # Rehash is best-effort, never fail login over it
+
+    # Upgrade Alpaca credentials to AES-GCM (ENCv2) if they're still on
+    # the legacy cipher. Transparent — user doesn't notice, next scheduler
+    # tick decrypts under the new format.
+    try:
+        updates = []
+        params = []
+        for col in ("alpaca_key_encrypted", "alpaca_secret_encrypted"):
+            current = user.get(col)
+            if current and needs_cipher_upgrade(current):
+                plaintext = decrypt_secret(current)
+                if plaintext:
+                    updates.append(f"{col} = ?")
+                    params.append(encrypt_secret(plaintext))
+        if updates:
+            conn = _get_db()
+            cur = conn.cursor()
+            params.append(user["id"])
+            cur.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = ?", params)
+            conn.commit()
+            conn.close()
+    except Exception:
+        pass
     # Update last login
     conn = _get_db()
     cur = conn.cursor()
@@ -584,6 +678,74 @@ def bootstrap_from_env():
         if user_id:
             return user_id
     return None
+
+# ===== Login Attempt Rate Limiting (persistent) =====
+LOGIN_WINDOW_SEC = 15 * 60
+LOGIN_MAX_FAILURES = 5
+
+
+def record_login_attempt(ip, username, success):
+    """Record a login attempt persistently. Survives server restart."""
+    try:
+        import time as _time
+        conn = _get_db()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO login_attempts (ip, username, ts, success) VALUES (?, ?, ?, ?)",
+            (ip or "unknown", (username or "").lower(), _time.time(), 1 if success else 0),
+        )
+        # On success, purge that pair's prior failures so lockout clears
+        if success:
+            cur.execute(
+                "DELETE FROM login_attempts WHERE ip = ? AND username = ? AND success = 0",
+                (ip or "unknown", (username or "").lower()),
+            )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        # Audit-style helpers must never break the calling flow
+        print(f"[auth] record_login_attempt failed: {e}", flush=True)
+
+
+def is_login_locked(ip, username):
+    """Return True if the (ip, username) pair is currently locked out due
+    to too many failures in the last LOGIN_WINDOW_SEC seconds.
+    """
+    try:
+        import time as _time
+        cutoff = _time.time() - LOGIN_WINDOW_SEC
+        conn = _get_db()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) FROM login_attempts "
+            "WHERE ip = ? AND username = ? AND success = 0 AND ts >= ?",
+            (ip or "unknown", (username or "").lower(), cutoff),
+        )
+        count = cur.fetchone()[0]
+        conn.close()
+        return count >= LOGIN_MAX_FAILURES
+    except Exception as e:
+        print(f"[auth] is_login_locked check failed: {e}", flush=True)
+        return False  # fail open on DB error so legitimate users aren't locked out
+
+
+def gc_login_attempts():
+    """Delete login_attempts rows older than 24 hours. Called periodically
+    from server side to keep table small.
+    """
+    try:
+        import time as _time
+        cutoff = _time.time() - 86400
+        conn = _get_db()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM login_attempts WHERE ts < ?", (cutoff,))
+        deleted = cur.rowcount
+        conn.commit()
+        conn.close()
+        return deleted
+    except Exception:
+        return 0
+
 
 # ===== Admin Audit Log =====
 def log_admin_action(action, actor=None, target_user_id=None, ip_address=None, detail=None):
