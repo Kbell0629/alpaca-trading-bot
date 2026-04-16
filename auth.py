@@ -390,9 +390,21 @@ def authenticate(username_or_email, password):
     Transparently upgrades legacy PBKDF2 hashes (200k) to the current cost
     (600k) on successful verification, so password strengths improve across
     the user base without requiring manual password resets.
+
+    Timing-attack mitigation: when the user doesn't exist, we still run a
+    dummy PBKDF2 with the same iteration count. Without this, an attacker
+    timing /api/login responses could enumerate registered usernames/emails
+    (~ms for non-existent, ~200-400ms for existing).
     """
     user = get_user_by_username(username_or_email) or get_user_by_email(username_or_email)
     if not user:
+        # Dummy PBKDF2 so timing matches the "user exists, wrong password"
+        # path. Uses a fixed dummy salt — doesn't matter, we discard result.
+        _DUMMY_SALT = "AAAAAAAAAAAAAAAAAAAAAAAA"  # 16 bytes base64
+        try:
+            _raw_pbkdf2(password, base64.b64decode(_DUMMY_SALT), PBKDF2_CURRENT_ITERATIONS)
+        except Exception:
+            pass
         return None
     if not verify_password(password, user["password_hash"], user["password_salt"]):
         return None

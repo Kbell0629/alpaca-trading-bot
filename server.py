@@ -140,6 +140,7 @@ def save_json(path, data):
 # Fix #14: Server-side API response caching
 _api_cache = {}
 _cache_ttl = 10  # seconds
+_API_CACHE_MAX = 500  # sweep when exceeded to prevent unbounded growth
 
 def alpaca_get_cached(url, timeout=15, headers=None):
     """Cached version of alpaca_get for dashboard data.
@@ -150,6 +151,12 @@ def alpaca_get_cached(url, timeout=15, headers=None):
     """
     now = time.time()
     cache_key = (url, (headers or {}).get("APCA-API-KEY-ID", ""))
+    # Periodic sweep of expired entries — was unbounded; long uptime with
+    # many distinct URL variants (query strings) grew the dict forever.
+    if len(_api_cache) > _API_CACHE_MAX:
+        for k in list(_api_cache.keys()):
+            if now - _api_cache[k]["time"] > _cache_ttl:
+                _api_cache.pop(k, None)
     if cache_key in _api_cache and now - _api_cache[cache_key]["time"] < _cache_ttl:
         return _api_cache[cache_key]["data"]
     if headers:
@@ -1763,6 +1770,23 @@ function esc(s) {
         .replace(/`/g, '&#96;');
 }
 
+function jsStr(s) {
+    // Encode a string so it's safe to embed inside a single-quoted JS literal
+    // INSIDE an HTML attribute. Handles both HTML entity rendering (browser
+    // HTML-decodes attribute values first, then JS parses the result) and
+    // JS string escaping (quotes, backslash, newline).
+    if (s == null) return '';
+    return String(s)
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\u0027")
+        .replace(/"/g, "\\u0022")
+        .replace(/</g, "\\u003c")
+        .replace(/>/g, "\\u003e")
+        .replace(/&/g, "\\u0026")
+        .replace(/\n/g, "\\n")
+        .replace(/\r/g, "\\r");
+}
+
 const API_BASE = '';
 
 /* ----------------------------------------------------------------------------
@@ -1915,8 +1939,17 @@ function scrollToSection(id) {
 function openModal(id) { document.getElementById(id).classList.add('active'); }
 function closeModal(id) { document.getElementById(id).classList.remove('active'); }
 
-function fmtMoney(n) { return '$' + Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }
-function fmtPct(n) { return (n>=0?'+':'') + Number(n).toFixed(1) + '%'; }
+function fmtMoney(n) {
+    // Guard against undefined/null/NaN → would render "$NaN" otherwise
+    var x = Number(n);
+    if (!isFinite(x)) x = 0;
+    return '$' + x.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+function fmtPct(n) {
+    var x = Number(n);
+    if (!isFinite(x)) x = 0;
+    return (x>=0?'+':'') + x.toFixed(1) + '%';
+}
 function pnlClass(n) { return parseFloat(n) >= 0 ? 'positive' : 'negative'; }
 
 /* Format a UTC timestamp string like "2026-04-16 14:51:28 UTC" as 12-hour ET.
@@ -2480,9 +2513,18 @@ setInterval(function() {
 async function refreshData() {
     try {
         const resp = await fetch(API_BASE + '/api/data', {credentials: 'same-origin'});
+        // If server returns 401 (session expired), stop the refresh loop and
+        // redirect to login. Previously the countdown kept firing every 60s
+        // forever, generating log spam and failed fetches.
+        if (resp.status === 401) {
+            if (countdownInterval) clearInterval(countdownInterval);
+            window.location.href = '/login';
+            return;
+        }
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         dashboardData = await resp.json();
         lastData = dashboardData;
+        window._fetchFailCount = 0;  // reset on success so future errors show again
         renderDashboard();
         countdown = 60;
     } catch(e) {
@@ -2575,42 +2617,57 @@ function buildNextActionsPanel(d) {
     const copyOn = !killSwitchActive;
     const wheelOn = !killSwitchActive;
 
-    // Timeline reflects the ACTUAL cloud_scheduler task schedule
-    // (cloud_scheduler.py:1619-1669). Earlier version had 9:35 AM for wheel
-    // + "Every 5 min" for monitor — both wrong.
+    // Timeline in CHRONOLOGICAL order (overnight -> morning deploys ->
+    // continuous monitors -> afternoon tasks). Mirrors the actual
+    // cloud_scheduler.py task schedule.
     let timelineHtml =
+        // Overnight
+        '<div class="timeline-item">' +
+            '<span class="time">3:00 AM ET</span>' +
+            '<span class="action">Daily backup: snapshots users.db + all per-user data (14-day retention)</span>' +
+            '<span class="badge-on">AUTO</span>' +
+        '</div>' +
+        // Morning deploys
         '<div class="timeline-item' + (adOn ? '' : ' off') + '">' +
             '<span class="time">9:35 AM ET</span>' +
             '<span class="action">Auto-Deployer screens ~12,000 stocks, deploys top picks (trailing stop / breakout / mean reversion)</span>' +
             '<span class="' + (adOn ? 'badge-on' : 'badge-off') + '">' + (adOn ? 'ON' : 'OFF') + '</span>' +
-        '</div>' +
-        '<div class="timeline-item' + (wheelOn ? '' : ' off') + '">' +
-            '<span class="time">9:40 AM ET</span>' +
-            '<span class="action">Wheel Strategy auto-deploy sells cash-secured puts on top wheel candidates ($10-$50 stocks)</span>' +
-            '<span class="' + (wheelOn ? 'badge-on' : 'badge-off') + '">' + (wheelOn ? 'ON' : 'OFF') + '</span>' +
         '</div>' +
         '<div class="timeline-item' + (copyOn ? '' : ' off') + '">' +
             '<span class="time">9:35 AM ET</span>' +
             '<span class="action">Copy Trading scans Capitol Trades for politician moves</span>' +
             '<span class="' + (copyOn ? 'badge-on' : 'badge-off') + '">' + (copyOn ? 'ON' : 'OFF') + '</span>' +
         '</div>' +
+        '<div class="timeline-item' + (wheelOn ? '' : ' off') + '">' +
+            '<span class="time">9:40 AM ET</span>' +
+            '<span class="action">Wheel Strategy auto-deploy sells cash-secured puts on top wheel candidates ($10-$50 stocks)</span>' +
+            '<span class="' + (wheelOn ? 'badge-on' : 'badge-off') + '">' + (wheelOn ? 'ON' : 'OFF') + '</span>' +
+        '</div>' +
+        // Monthly (9:45 AM 1st trading day)
+        '<div class="timeline-item">' +
+            '<span class="time">9:45 AM ET (1st trading day of month)</span>' +
+            '<span class="action">Monthly rebalance: closes 60+ day losers to free capital</span>' +
+            '<span class="badge-on">AUTO</span>' +
+        '</div>' +
+        // Continuous intraday (fastest first)
         '<div class="timeline-item active' + (monOn ? '' : ' off') + '">' +
-            '<span class="time">Every 60 sec</span>' +
+            '<span class="time">Every 60 sec (market hours)</span>' +
             '<span class="action">Strategy Monitor: adjusts stops, checks profit-ladder fills, ratchets trailing stops up</span>' +
             '<span class="' + (monOn ? 'badge-on' : 'badge-off') + '">' + (monOn ? 'ON' : 'OFF') + '</span>' +
         '</div>' +
         '<div class="timeline-item active' + (wheelOn ? '' : ' off') + '">' +
-            '<span class="time">Every 15 min</span>' +
+            '<span class="time">Every 15 min (market hours)</span>' +
             '<span class="action">Wheel Monitor: checks fills, assignments, sells covered calls, buys-to-close at 50% profit</span>' +
             '<span class="' + (wheelOn ? 'badge-on' : 'badge-off') + '">' + (wheelOn ? 'ON' : 'OFF') + '</span>' +
         '</div>' +
         '<div class="timeline-item active' + (adOn ? '' : ' off') + '">' +
-            '<span class="time">Every 30 min</span>' +
+            '<span class="time">Every 30 min (market hours)</span>' +
             '<span class="action">Screener refresh: 12k stocks filtered + scored</span>' +
             '<span class="' + (adOn ? 'badge-on' : 'badge-off') + '">' + (adOn ? 'ON' : 'OFF') + '</span>' +
         '</div>' +
+        // Afternoon / end-of-day
         '<div class="timeline-item">' +
-            '<span class="time">3:45 PM ET (Fri)</span>' +
+            '<span class="time">3:45 PM ET (Fridays)</span>' +
             '<span class="action">Weekly risk reduction: trim 50% off winners >20% before weekend gap</span>' +
             '<span class="badge-on">AUTO</span>' +
         '</div>' +
@@ -2620,13 +2677,8 @@ function buildNextActionsPanel(d) {
             '<span class="badge-on">AUTO</span>' +
         '</div>' +
         '<div class="timeline-item">' +
-            '<span class="time">5:00 PM ET (Fri)</span>' +
+            '<span class="time">5:00 PM ET (Fridays)</span>' +
             '<span class="action">Weekly learning: analyzes trade journal, adjusts strategy weights</span>' +
-            '<span class="badge-on">AUTO</span>' +
-        '</div>' +
-        '<div class="timeline-item">' +
-            '<span class="time">3:00 AM ET</span>' +
-            '<span class="action">Daily backup: snapshots users.db + all per-user data (14-day retention)</span>' +
             '<span class="badge-on">AUTO</span>' +
         '</div>';
 
@@ -3051,7 +3103,7 @@ function renderDashboard() {
             '<div class="backtest-result">Rec. shares: ' + recShares + ' | 30d backtest: <span class="' + (parseFloat(backtestPct)>=0?'positive':'negative') + '">' + (parseFloat(backtestPct)>=0?'+':'') + backtestPct + '%</span></div>' +
             (p.earnings_warning ? '<div class="earnings-badge">\u26A0 Earnings Soon</div>' : '') +
             '<div class="pick-actions">' +
-            '<button class="pick-deploy-btn" onclick="openDeployModal(\'' + p.symbol + '\',\'' + p.best_strategy + '\',' + recShares + ',' + p.price + ')">Deploy ' + p.best_strategy + '</button></div></div>';
+            '<button class="pick-deploy-btn" onclick="openDeployModal(\'' + jsStr(p.symbol) + '\',\'' + jsStr(p.best_strategy) + '\',' + Number(recShares||0) + ',' + Number(p.price||0) + ')">Deploy ' + esc(p.best_strategy) + '</button></div></div>';
     });
     if (!picksHtml) picksHtml = '<div class="empty" style="grid-column:1/-1">No picks available - market may be closed</div>';
 
@@ -3128,7 +3180,7 @@ function renderDashboard() {
             '<td class="' + vsCls + '">' + fmtPct(p.volume_surge||0).replace('.0','') + '</td>' +
             '<td style="color:' + color + ';font-weight:600">' + esc(p.best_strategy) + '</td>' +
             '<td style="font-weight:700">' + Math.round(p.best_score||0) + '</td>' +
-            '<td><button class="btn-primary btn-sm" onclick="openDeployModal(\'' + p.symbol + '\',\'' + p.best_strategy + '\',' + recShares + ',' + p.price + ')">Deploy</button></td></tr>';
+            '<td><button class="btn-primary btn-sm" onclick="openDeployModal(\'' + jsStr(p.symbol) + '\',\'' + jsStr(p.best_strategy) + '\',' + Number(recShares||0) + ',' + Number(p.price||0) + ')">Deploy</button></td></tr>';
     });
     if (!scrHtml) scrHtml = '<tr><td colspan="10" class="empty">No screener data - market may be closed</td></tr>';
 
@@ -3327,7 +3379,7 @@ function renderDashboard() {
                         '<div class="user-dropdown" id="userDropdown" style="display:none">' +
                             '<a href="#" onclick="event.preventDefault();openSettingsModal();">\u2699\ufe0f Settings</a>' +
                             (window.currentUserIsAdmin ? '<a href="#" onclick="event.preventDefault();openAdminPanel();">\ud83d\udc65 Manage Users</a>' : '') +
-                            '<a href="/api/logout" onclick="return confirm(\'Log out?\')">\ud83d\udeaa Logout</a>' +
+                            '<a href="#" onclick="event.preventDefault();doLogout();return false">\ud83d\udeaa Logout</a>' +
                         '</div>' +
                     '</div>' +
                 '</div>' +
@@ -4051,7 +4103,7 @@ async function loadAdminUsers() {
             } else {
                 actions += '<button class="btn-primary btn-sm" onclick="adminSetActive(' + u.id + ', true)">Reactivate</button> ';
             }
-            actions += '<button class="btn-ghost btn-sm" onclick="adminResetPassword(' + u.id + ', \'' + esc(u.username) + '\')">Reset Password</button>';
+            actions += '<button class="btn-ghost btn-sm" onclick="adminResetPassword(' + Number(u.id) + ', \'' + jsStr(u.username) + '\')">Reset Password</button>';
             html += '<tr>' +
                 '<td><strong>' + esc(u.username) + '</strong>' + (u.is_admin ? ' <span class="paper-badge" style="font-size:9px">ADMIN</span>' : '') + '</td>' +
                 '<td>' + esc(u.email) + '</td>' +
@@ -4209,17 +4261,27 @@ function searchReadme(query) {
     if (firstMatch) firstMatch.scrollIntoView({behavior: 'smooth', block: 'center'});
 }
 
-// Close modal on Escape key
+// Close any active modal on Escape key (readme, settings, admin, deploy,
+// confirm, etc.). Previously only readmeModal responded.
 document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape') {
-        var modal = document.getElementById('readmeModal');
-        if (modal && modal.classList.contains('active')) closeReadme();
+        // readme has its own close that clears search input — use it
+        var readme = document.getElementById('readmeModal');
+        if (readme && readme.classList.contains('active')) { closeReadme(); return; }
+        // Close every other modal-overlay that's active
+        var overlays = document.querySelectorAll('.modal-overlay.active');
+        for (var i = 0; i < overlays.length; i++) overlays[i].classList.remove('active');
     }
 });
 
-// Close modal when clicking overlay
+// Click-outside-to-close for all modal overlays (not just readme)
 document.addEventListener('click', function(e) {
-    if (e.target && e.target.id === 'readmeModal') closeReadme();
+    if (!e.target) return;
+    if (e.target.id === 'readmeModal') { closeReadme(); return; }
+    // modal-overlay divs are the dark backdrop; the inner .modal stopPropagates clicks
+    if (e.target.classList && e.target.classList.contains('modal-overlay')) {
+        e.target.classList.remove('active');
+    }
 });
 
 function toggleVoice() {
@@ -4311,7 +4373,8 @@ function handleVoiceCommand(text) {
         var d = lastData;
         if (d && d.picks && d.picks[0]) {
             var p = d.picks[0];
-            var msg = 'Top pick is ' + p.symbol + ' at ' + p.price.toFixed(2) + ' dollars. Recommended strategy: ' + p.best_strategy;
+            var px = Number(p.price || 0).toFixed(2);
+            var msg = 'Top pick is ' + (p.symbol||'unknown') + ' at ' + px + ' dollars. Recommended strategy: ' + (p.best_strategy||'n/a');
             toast(msg, 'info');
             speak(msg);
         }
@@ -4584,6 +4647,20 @@ document.addEventListener('click', function(e) {
         dd.style.display = 'none';
     }
 });
+async function doLogout() {
+    // Logout is now POST + CSRF (was GET; GET was CSRF-able via <img src>).
+    if (!confirm('Log out?')) return;
+    try {
+        await fetch(API_BASE + '/api/logout', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {'Content-Type': 'application/json'},
+            body: '{}',
+        });
+    } catch (e) { /* swallow — redirect anyway */ }
+    window.location.href = '/login';
+}
+
 async function loadCurrentUser() {
     try {
         var resp = await fetch(API_BASE + '/api/me', {credentials: 'same-origin'});
@@ -4942,6 +5019,21 @@ ALLOWED_ALPACA_DATA_ENDPOINTS = {
     "https://data.alpaca.markets/v1beta1",
 }
 
+def is_valid_ntfy_topic(topic):
+    """ntfy.sh is unauthenticated pub/sub — anyone who knows a topic name
+    can publish to it. Previously topic was accepted with no validation,
+    which allowed:
+      (a) URL breakout via `?`/`#`/`/` in the topic
+      (b) Admin-panel disclosure -> another user learns topic -> spoof
+          push notifications to victim's phone
+    Restrict to alphanumeric + underscore + hyphen, 4-64 chars. Empty is
+    allowed (means "use auto-generated default").
+    """
+    if not topic:
+        return True
+    return bool(re.match(r'^[A-Za-z0-9_-]{4,64}$', topic))
+
+
 def is_allowed_alpaca_endpoint(url, data=False):
     """Return True if the URL is on the Alpaca allowlist."""
     if not isinstance(url, str):
@@ -4974,7 +5066,10 @@ def _login_rate_limited(ip, username):
         return fails >= _LOGIN_MAX_FAILURES
 
 def _login_attempt_record(ip, username, success):
-    """Record a login attempt. On success, clears the history for this pair."""
+    """Record a login attempt. On success, clears the history for this pair.
+    Prunes expired entries to bound memory (was unbounded in principle:
+    distributed brute force would grow the dict forever).
+    """
     now = time.time()
     key = (ip or "unknown", (username or "").lower())
     with _LOGIN_LOCK:
@@ -4984,6 +5079,15 @@ def _login_attempt_record(ip, username, success):
             attempts = _LOGIN_ATTEMPTS.get(key, [])
             attempts.append((now, False))
             _LOGIN_ATTEMPTS[key] = attempts
+        # Periodic GC — every 50 calls, sweep keys whose timestamps are all
+        # outside the window. Bounded cost, runs rarely.
+        if len(_LOGIN_ATTEMPTS) > 200:
+            for k in list(_LOGIN_ATTEMPTS.keys()):
+                fresh = [a for a in _LOGIN_ATTEMPTS[k] if now - a[0] < _LOGIN_WINDOW_SEC]
+                if not fresh:
+                    _LOGIN_ATTEMPTS.pop(k, None)
+                else:
+                    _LOGIN_ATTEMPTS[k] = fresh
 
 # Signup invite code gate. Set SIGNUP_INVITE_CODE env var on Railway to require
 # the code for new signups. Set SIGNUP_DISABLED=1 to block all new signups.
@@ -5178,22 +5282,34 @@ class DashboardHandler(BaseHTTPRequestHandler):
         }, status)
 
     def _sanitize_alpaca_error(self, http_code, err_body):
-        """Return a dict the dashboard JS can safely render. Truncates the
-        Alpaca error body to ~200 chars, strips any embedded API key strings
-        that might be echoed back, and parses JSON error messages into a
-        clean short message where possible.
+        """Return a dict the dashboard JS can safely render. Maps upstream
+        errors to user-friendly categories instead of leaking raw Alpaca
+        detail (which can include rate-limit state, key IDs, internal codes).
+        The full error is still logged server-side via print().
         """
         body = (err_body or "")[:200]
-        # Strip any header-key-looking tokens (20+ chars uppercase/digit)
-        body = re.sub(r'PK[A-Z0-9]{18,}', '[redacted-key]', body)
-        # Try to parse a nice `message` field if Alpaca returned JSON
+        body = re.sub(r'PK[A-Z0-9]{18,}', '[redacted]', body)
+        msg = None
         try:
             parsed = json.loads(err_body)
             if isinstance(parsed, dict) and parsed.get("message"):
-                body = str(parsed["message"])[:200]
+                msg = str(parsed["message"])[:120]
         except Exception:
             pass
-        return {"error": f"HTTP {http_code}: {body}"}
+        # Categorize by HTTP code for a safe generic user message
+        if http_code == 401 or http_code == 403:
+            safe = "Alpaca authentication failed. Check API credentials in Settings."
+        elif http_code == 422:
+            safe = msg or "Invalid order parameters"
+        elif http_code == 429:
+            safe = "Alpaca rate limited — please retry in a few seconds"
+        elif 500 <= http_code < 600:
+            safe = "Alpaca service temporarily unavailable"
+        else:
+            safe = msg or f"Request failed ({http_code})"
+        # Log the full detail server-side for debugging
+        print(f"[alpaca-error] HTTP {http_code}: {body}", flush=True)
+        return {"error": safe}
 
     def user_api_get(self, url, timeout=15):
         """GET an Alpaca API URL using the current user's credentials."""
@@ -5262,7 +5378,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        # Security headers — defense in depth
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")  # prevent clickjacking
+        self.send_header("Referrer-Policy", "same-origin")
+        self.send_header("Permissions-Policy", "geolocation=(), microphone=(self), camera=()")
+        # CSP — locks down what can execute. `unsafe-inline` allowed because
+        # dashboard uses many inline onclick handlers + inline <script>; Chart.js
+        # comes from jsdelivr.
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; "
+            "connect-src 'self'; "
+            "frame-ancestors 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self'"
+        )
         self.end_headers()
         self.wfile.write(html.encode("utf-8"))
 
@@ -5318,6 +5452,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0]
 
+        # Health check for Railway / monitoring. Returns 200 if the scheduler
+        # thread is alive AND recent enough. Returns 503 if the bot is hung.
+        if path == "/healthz" or path == "/health" or path == "/ping":
+            try:
+                import cloud_scheduler as _cs
+                thread_alive = (_cs._scheduler_thread is not None
+                                 and _cs._scheduler_thread.is_alive())
+                # Scheduler should have run a log entry within the last 2 min
+                # (screener+monitor fire more often than that during market
+                # hours; after-hours the sleep is 30s so at least one log/60s)
+                with _cs._logs_lock:
+                    last_log_count = len(_cs._recent_logs)
+                healthy = thread_alive and last_log_count > 0
+                status = 200 if healthy else 503
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    "status": "ok" if healthy else "degraded",
+                    "scheduler_alive": thread_alive,
+                    "log_count": last_log_count,
+                }).encode())
+            except Exception as e:
+                self.send_response(503)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "error", "detail": str(e)[:120]}).encode())
+            return
+
         # PUBLIC routes — no auth required
         if path == "/login":
             self.send_html(LOGIN_HTML)
@@ -5358,10 +5522,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             size = 192 if "192" in path else 512
             self._serve_icon_placeholder(size)
             return
-        if path == "/api/logout":
-            # Support GET for user-menu link clicks (the handler clears cookie + redirects)
-            self.handle_logout()
-            return
+        # NOTE: /api/logout intentionally NOT handled via GET. Previously an
+        # attacker could CSRF-log-out a user via <img src="/api/logout">.
+        # The user-menu JS now calls /api/logout via POST + CSRF header.
 
         # AUTH required below this line
         if not self.check_auth():
@@ -5456,35 +5619,46 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return
                 # Take the most recent 30 trading days
                 bars = bars[-30:]
-                closes = [float(b.get("c", 0)) for b in bars if b.get("c")]
-                if len(closes) < 5:
+                # Use OHLC for realistic stop detection — stops trigger on
+                # intraday LOWS, not daily closes. Previously the backtest
+                # overstated performance on gap-down days (close $97 looked
+                # fine but the day's low $90 had already triggered the stop).
+                ohlc = []
+                for b in bars:
+                    o = float(b.get("o") or 0)
+                    h = float(b.get("h") or 0)
+                    l = float(b.get("l") or 0)
+                    c = float(b.get("c") or 0)
+                    if c:
+                        ohlc.append({"o": o or c, "h": h or c, "l": l or c, "c": c})
+                if len(ohlc) < 5:
                     self.send_json({"error": "Price data incomplete"}, 404)
                     return
-                # Simulate trailing-stop strategy (matches what the screener
-                # uses for pre-computed backtests): 10% initial stop, trails
-                # 5% below peak once +10% gain is reached.
-                entry = closes[0]
+                entry = ohlc[0]["c"]
                 peak = entry
                 stop = entry * 0.90
                 equity = []
                 stop_levels = []
                 stopped_out = False
-                exit_price = closes[-1]
+                exit_price = ohlc[-1]["c"]
                 trailing_active = False
-                for i, px in enumerate(closes):
-                    if not trailing_active and px >= entry * 1.10:
+                for i, bar in enumerate(ohlc):
+                    # Trailing activation uses high (highest seen today)
+                    if not trailing_active and bar["h"] >= entry * 1.10:
                         trailing_active = True
                     if trailing_active:
-                        if px > peak:
-                            peak = px
+                        if bar["h"] > peak:
+                            peak = bar["h"]
                         stop = max(stop, peak * 0.95)
-                    equity.append(round(px, 2))
+                    equity.append(round(bar["c"], 2))
                     stop_levels.append(round(stop, 2))
-                    if px <= stop:
+                    # Stop triggered if day's LOW breached the stop level.
+                    # Fill price = max(open, stop) to model gap-down fills
+                    # where the open is below the stop.
+                    if bar["l"] <= stop:
                         stopped_out = True
-                        exit_price = stop
-                        # Pad remaining days with exit price
-                        while len(equity) < len(closes):
+                        exit_price = max(bar["o"], stop) if bar["o"] < stop else stop
+                        while len(equity) < len(ohlc):
                             equity.append(exit_price)
                             stop_levels.append(stop)
                         break
@@ -5614,10 +5788,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             try:
                 conn = auth._get_db()
                 cur = conn.cursor()
+                # NOTE: do NOT return ntfy_topic. Admin could publish to another
+                # user's topic (ntfy.sh is public pub/sub) to spoof notifications.
+                # Return only has_ntfy_topic boolean.
                 cur.execute("""
                     SELECT id, username, email, is_admin, is_active,
                            created_at, last_login, login_count,
-                           alpaca_endpoint, ntfy_topic
+                           alpaca_endpoint,
+                           CASE WHEN ntfy_topic IS NOT NULL AND ntfy_topic != ''
+                                THEN 1 ELSE 0 END AS has_ntfy_topic
                     FROM users ORDER BY id ASC
                 """)
                 users = [dict(r) for r in cur.fetchall()]
@@ -5905,6 +6084,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         ntfy_topic = (body.get("ntfy_topic") or "").strip()
         invite_code = (body.get("invite_code") or "").strip()
 
+        if not is_valid_ntfy_topic(ntfy_topic):
+            return self.send_json({
+                "error": "Invalid ntfy topic. Allowed: letters, digits, _, - (4-64 chars)."
+            }, 400)
+
         # Gate: SIGNUP_DISABLED env var blocks all signups; SIGNUP_INVITE_CODE
         # requires a matching code. Both are for sharing the deployment safely
         # with a specific friend without exposing it to the public internet.
@@ -6132,6 +6316,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return self.send_json({"error": "Invalid Alpaca endpoint. Must be paper or live Alpaca API."}, 400)
         if "alpaca_data_endpoint" in updates and not is_allowed_alpaca_endpoint(updates["alpaca_data_endpoint"], data=True):
             return self.send_json({"error": "Invalid Alpaca data endpoint. Must be data.alpaca.markets."}, 400)
+        # ntfy_topic validation — prevent URL breakout and spoof-by-disclosure
+        if "ntfy_topic" in updates and not is_valid_ntfy_topic(updates["ntfy_topic"]):
+            return self.send_json({
+                "error": "Invalid ntfy topic. Allowed: letters, digits, _, - (4-64 chars)."
+            }, 400)
 
         auth.update_user_credentials(self.current_user["id"], **updates)
         self.send_json({"success": True, "message": "Settings updated"})
@@ -6223,7 +6412,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_error_safe(e, 500, "admin-op")
 
     def handle_admin_reset_password(self, body):
-        """Admin-only: force a password reset for any user."""
+        """Admin-only: force a password reset for any user.
+        An admin CANNOT reset another admin's password (prevents insider
+        takeover). Admins who want to change their own password use the
+        standard /api/change-password flow. Only self-reset allowed here.
+        """
         if not self.current_user or not self.current_user.get("is_admin"):
             return self.send_json({"error": "Admin only"}, 403)
         target_id = body.get("user_id")
@@ -6234,6 +6427,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return self.send_json({"error": "Password must be at least 8 characters"}, 400)
         try:
             target_id = int(target_id)
+            # Block cross-admin reset unless target == actor (self-reset OK)
+            if target_id != self.current_user.get("id"):
+                target_user = auth.get_user_by_id(target_id)
+                if target_user and target_user.get("is_admin"):
+                    return self.send_json({
+                        "error": "Cannot reset another admin's password. "
+                                 "The target admin must use password-reset themselves."
+                    }, 403)
             auth.change_password(target_id, new_password)
             # Invalidate all sessions for that user so they're forced to re-login
             conn = auth._get_db()
@@ -7159,8 +7360,55 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json({"error": f"Failed to start force-deploy: {e}"}, 500)
 
 
+def _graceful_shutdown(httpd, reason="signal"):
+    """Called on SIGTERM (Railway redeploy) or Ctrl+C. Tries to drain in-flight
+    work before the Python process exits, so orders aren't abandoned mid-POST.
+    """
+    print(f"\n[shutdown] {reason} received — stopping scheduler + server...", flush=True)
+    try:
+        if SCHEDULER_AVAILABLE:
+            stop_scheduler()
+    except Exception as e:
+        print(f"[shutdown] scheduler stop error: {e}", flush=True)
+    try:
+        httpd.shutdown()
+    except Exception:
+        pass
+    try:
+        httpd.server_close()
+    except Exception:
+        pass
+    print("[shutdown] clean exit", flush=True)
+
+
 def main():
     port = int(os.environ.get("PORT", 8888))
+
+    # Secure the SQLite DB file: 0o600 so nothing else on the container
+    # (or on a misconfigured shared volume) can read the encrypted Alpaca
+    # credentials + password hashes. Best-effort — chmod may not persist
+    # on Railway's volume but at least tightens local dev.
+    try:
+        db_path = os.path.join(DATA_DIR, "users.db")
+        if os.path.exists(db_path):
+            os.chmod(db_path, 0o600)
+    except Exception:
+        pass
+
+    # Enable SQLite WAL mode for concurrent readers+writer (scheduler thread
+    # + HTTP handler threads + backup .backup API all touch the DB). Without
+    # WAL, writers block readers via rollback journal → SQLITE_BUSY under load.
+    try:
+        _c = auth._get_db()
+        _c.execute("PRAGMA journal_mode=WAL;")
+        _c.execute("PRAGMA busy_timeout=5000;")
+        _c.execute("PRAGMA synchronous=NORMAL;")
+        _c.commit()
+        _c.close()
+        print("[init] SQLite WAL + busy_timeout enabled", flush=True)
+    except Exception as e:
+        print(f"[init] WAL setup failed: {e}", flush=True)
+
     server = ThreadingHTTPServer(("0.0.0.0", port), DashboardHandler)
     print(f"Dashboard running at http://localhost:{port}")
     print("Press Ctrl+C to stop")
@@ -7173,11 +7421,22 @@ def main():
         except Exception as e:
             print(f"[WARN] Could not start cloud scheduler: {e}", flush=True)
 
+    # Register SIGTERM (Railway redeploy) + SIGINT (Ctrl+C) handlers for
+    # graceful shutdown. Without these, Python exits immediately and any
+    # in-flight order POSTs become orphan positions.
+    import signal as _signal
+    def _sigterm_handler(signum, frame):
+        _graceful_shutdown(server, reason=f"signal {signum}")
+        sys.exit(0)
+    try:
+        _signal.signal(_signal.SIGTERM, _sigterm_handler)
+    except (ValueError, AttributeError):
+        pass  # Not in main thread / not supported
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nShutting down...")
-        server.server_close()
+        _graceful_shutdown(server, reason="KeyboardInterrupt")
 
 
 if __name__ == "__main__":

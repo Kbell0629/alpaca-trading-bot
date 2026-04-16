@@ -65,13 +65,28 @@ def _backup_filename(date_str=None):
     return os.path.join(BACKUP_DIR, f"{date_str or _ts()}.tar.gz")
 
 
+import threading as _threading
+_backup_lock = _threading.Lock()
+
 def create_backup():
     """Create a fresh tar.gz backup. Returns (path, size_bytes, error).
 
     Uses SQLite's .backup API for users.db to ensure a consistent snapshot
     even if the server is mid-transaction. Other files are copied atomically
     into a staging dir before being archived.
+
+    Concurrency: wrapped in a threading.Lock so rapid admin clicks on
+    "Create Backup Now" don't spawn competing tarfile writers.
     """
+    if not _backup_lock.acquire(blocking=False):
+        return None, 0, "Another backup is already in progress"
+    try:
+        return _create_backup_inner()
+    finally:
+        _backup_lock.release()
+
+
+def _create_backup_inner():
     try:
         timestamp = _ts()
         archive_path = os.path.join(BACKUP_DIR, f"{timestamp}.tar.gz")
@@ -190,9 +205,20 @@ def restore_backup(name, dry_run=False):
                 else:
                     os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
                     shutil.copy2(src, dst)
-        # Now extract archive on top of DATA_DIR
+        # Now extract archive on top of DATA_DIR. Use filter='data' on Py 3.12+
+        # to block path-traversal (..) and absolute paths. Fall back to manual
+        # member validation on older versions.
         with tarfile.open(archive, "r:gz") as tar:
-            tar.extractall(DATA_DIR)
+            try:
+                tar.extractall(DATA_DIR, filter="data")  # Py 3.12+
+            except TypeError:
+                # Older Python — validate manually
+                safe_members = []
+                for m in tar.getmembers():
+                    if m.name.startswith("/") or ".." in m.name.split("/"):
+                        continue  # reject
+                    safe_members.append(m)
+                tar.extractall(DATA_DIR, members=safe_members)
         return True, f"Restored from {name}. Prior state saved to {pre}"
     except Exception as e:
         return False, str(e)

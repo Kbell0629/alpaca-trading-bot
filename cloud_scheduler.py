@@ -129,9 +129,10 @@ def _user_headers(user):
         "APCA-API-SECRET-KEY": user["_api_secret"],
     }
 
-def user_api_get(user, url_path, timeout=10):
-    """GET from this user's Alpaca endpoint.
-    url_path can be relative (e.g., '/account') or a full URL.
+def user_api_get(user, url_path, timeout=10, retries=2):
+    """GET from this user's Alpaca endpoint with exponential backoff on
+    transient errors (502/503/504/timeout). Each retry waits 0.5s, 1s, 2s.
+    Returns {"error": ...} after final retry failure.
     """
     if url_path.startswith("http"):
         url = url_path
@@ -140,12 +141,26 @@ def user_api_get(user, url_path, timeout=10):
             url = user["_data_endpoint"] + url_path
         else:
             url = user["_api_endpoint"] + url_path
-    req = urllib.request.Request(url, headers=_user_headers(user))
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
-    except Exception as e:
-        return {"error": str(e)}
+    last_err = None
+    for attempt in range(retries + 1):
+        req = urllib.request.Request(url, headers=_user_headers(user))
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            # Retry on 5xx; don't retry on 4xx (bad request, auth, rate limit)
+            if 500 <= e.code < 600 and attempt < retries:
+                time.sleep(0.5 * (2 ** attempt))
+                last_err = e
+                continue
+            return {"error": f"HTTP {e.code}"}
+        except Exception as e:
+            if attempt < retries:
+                time.sleep(0.5 * (2 ** attempt))
+                last_err = e
+                continue
+            return {"error": "Request failed"}
+    return {"error": "Request failed after retries"}
 
 def user_api_post(user, url_path, data, timeout=10):
     if url_path.startswith("http"):
@@ -341,6 +356,59 @@ def run_screener(user, max_age_seconds=0):
         log(f"[{user['username']}] Screener error: {e}", "screener")
 
 # ============================================================================
+# Journal writeback helper — CRITICAL for scorecard/readiness/learning
+# ============================================================================
+# Previously every exit (stop fill, target hit, short cover, profit ladder
+# final sell) updated the per-symbol strategy file with exit details but
+# NEVER wrote back to trade_journal.json. Result: update_scorecard never
+# saw any closed trades → win_rate stayed 0, Sharpe ≈0, readiness capped
+# at ~40, learn.py never adjusted weights.
+#
+# This helper finds the most recent OPEN journal entry for the symbol
+# and marks it closed with P&L + exit details.
+def record_trade_close(user, symbol, strategy, exit_price, pnl, exit_reason,
+                        qty=None, side="sell"):
+    """Mark the matching open journal entry as closed. Idempotent:
+    if the entry is already closed, does nothing.
+    """
+    try:
+        journal_path = user_file(user, "trade_journal.json")
+        journal = load_json(journal_path) or {"trades": [], "daily_snapshots": []}
+        trades = journal.get("trades", [])
+        # Walk newest->oldest; find the most recent OPEN entry for this symbol+strategy
+        for t in reversed(trades):
+            if (t.get("symbol") == symbol
+                    and t.get("strategy") == strategy
+                    and t.get("status", "open") == "open"):
+                t["status"] = "closed"
+                t["exit_timestamp"] = datetime.now(timezone.utc).isoformat()
+                t["exit_price"] = round(float(exit_price), 4) if exit_price else None
+                t["exit_reason"] = exit_reason
+                try:
+                    t["pnl"] = round(float(pnl), 2)
+                except (TypeError, ValueError):
+                    t["pnl"] = None
+                # P&L % relative to entry price
+                try:
+                    entry_px = float(t.get("price") or 0)
+                    t_qty = int(float(qty if qty is not None else t.get("qty") or 0))
+                    if entry_px and t_qty:
+                        if side == "sell":  # long close
+                            t["pnl_pct"] = round((float(exit_price) / entry_px - 1) * 100, 2)
+                        else:  # short cover
+                            t["pnl_pct"] = round((entry_px / float(exit_price) - 1) * 100, 2)
+                except Exception:
+                    pass
+                t["exit_side"] = side
+                save_json(journal_path, journal)
+                return True
+        return False  # No matching open trade found
+    except Exception as e:
+        log(f"[{user.get('username','?')}] Journal close writeback failed for {symbol}: {e}", "monitor")
+        return False
+
+
+# ============================================================================
 # TASK 2: STRATEGY MONITOR (per user)
 # ============================================================================
 def monitor_strategies(user):
@@ -433,10 +501,30 @@ def check_profit_ladder(user, filepath, strat, price, entry, shares):
         if sell_qty < 1:
             continue
 
+        # Idempotency: client_order_id lets Alpaca reject duplicate orders if
+        # a prior attempt hit the server but the response was lost (timeout /
+        # 504). Without this, the next monitor tick would re-enter and place
+        # a second 25% sell at the same level — double-sell bug.
+        today_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+        client_order_id = f"ladder-{symbol}-L{level}-{today_str}"
         order = user_api_post(user, "/orders", {
             "symbol": symbol, "qty": str(sell_qty), "side": "sell",
-            "type": "market", "time_in_force": "day"
+            "type": "market", "time_in_force": "day",
+            "client_order_id": client_order_id,
         })
+
+        # Alpaca returns 422 with "client order id already exists" if dedup
+        # hit. Treat that as "this level was already taken on a prior tick"
+        # — mark it in state so we don't keep retrying.
+        if isinstance(order, dict) and "error" in order:
+            err = str(order.get("error", "")).lower()
+            if "client_order_id" in err or "already exists" in err:
+                log(f"[{user['username']}] {symbol}: ladder level {level} already filled (idempotency dedup)", "monitor")
+                takes.append(level)
+                state["profit_takes"] = takes
+                strat["state"] = state
+                save_json(filepath, strat)
+                continue  # skip; this level is already done
 
         if isinstance(order, dict) and "id" in order:
             takes.append(level)
@@ -584,6 +672,9 @@ def process_short_strategy(user, filepath, strat, state, rules):
             strat["status"] = "closed"
             log(f"[{user['username']}] {symbol}: SHORT stopped out at ${cover_price}. P&L ${pnl:.2f}", "monitor")
             notify_user(user, f"{symbol} short covered at ${cover_price:.2f}. P&L: ${pnl:.2f}", "stop")
+            # Writeback to journal so scorecard + learning see the close
+            record_trade_close(user, symbol, strat.get("strategy", "short_sell"),
+                                cover_price, pnl, "short_stop_covered", qty=shares, side="buy")
             # Record short loss for cooldown
             if pnl < 0:
                 gpath = user_file(user, "guardrails.json")
@@ -609,6 +700,8 @@ def process_short_strategy(user, filepath, strat, state, rules):
             strat["status"] = "closed"
             log(f"[{user['username']}] {symbol}: SHORT target hit at ${exit_price}. P&L ${pnl:.2f}", "monitor")
             notify_user(user, f"Short profit on {symbol}: covered at ${exit_price:.2f}. P&L: ${pnl:.2f}", "exit")
+            record_trade_close(user, symbol, strat.get("strategy", "short_sell"),
+                                exit_price, pnl, "short_target_hit", qty=shares, side="buy")
 
     # Force cover after max hold days (prevent indefinite short exposure)
     max_hold = rules.get("max_hold_days", 14)
@@ -631,7 +724,10 @@ def process_short_strategy(user, filepath, strat, state, rules):
                     strat["status"] = "closed"
                     state["exit_reason"] = "max_hold_exceeded"
                     pnl = (entry - price) * shares
+                    state["exit_price"] = price
                     notify_user(user, f"Short on {symbol} force-covered after {age_days} days. P&L ~${pnl:.2f}", "info")
+                    record_trade_close(user, symbol, strat.get("strategy", "short_sell"),
+                                        price, pnl, "max_hold_exceeded", qty=shares, side="buy")
     except Exception as e:
         log(f"[{user['username']}] {symbol}: Short age check error: {e}", "monitor")
 
@@ -732,9 +828,12 @@ def process_strategy_file(user, filepath, strat):
             if isinstance(order, dict) and "id" in order:
                 strat["status"] = "closed"
                 state["exit_reason"] = "target_hit"
+                state["exit_price"] = price
                 pnl = (price - entry) * shares
                 log(f"[{user['username']}] {symbol}: Target hit. P&L ${pnl:.2f}", "monitor")
                 notify_user(user, f"Profit taken on {symbol}: sold at ${price:.2f} (+{((price/entry-1)*100):.1f}%)", "exit")
+                record_trade_close(user, symbol, strategy_type, price, pnl,
+                                    "target_hit", qty=shares, side="sell")
 
     # Feature 8: Partial profit taking
     check_profit_ladder(user, filepath, strat, price, entry, shares)
@@ -754,6 +853,8 @@ def process_strategy_file(user, filepath, strat):
             strat["status"] = "closed"
             log(f"[{user['username']}] {symbol}: STOP TRIGGERED at ${exit_price}, P&L ${pnl:.2f}", "monitor")
             notify_user(user, f"{symbol} stopped out at ${exit_price:.2f}. P&L: ${pnl:.2f}", "stop")
+            record_trade_close(user, symbol, strategy_type, exit_price, pnl,
+                                "stop_triggered", qty=shares, side="sell")
             gpath = user_file(user, "guardrails.json")
             guardrails = load_json(gpath) or {}
             guardrails["last_loss_time"] = datetime.now(timezone.utc).isoformat()
@@ -826,10 +927,21 @@ def run_auto_deployer(user):
         except:
             pass
 
-    # Set daily starting value
+    # Set daily starting value — ONCE per trading day. Previously this
+    # unconditionally overwrote on every auto-deployer run (including
+    # Force Deploy), which could:
+    #   - Reset baseline to a lower value after an early drop, masking the
+    #     drawdown for the daily-loss kill switch
+    #   - Reset baseline to a higher value after an early rally, making a
+    #     subsequent pullback look worse than it was
+    # Now set only if unset OR the stored date doesn't match today's ET date.
     account = user_api_get(user, "/account")
     if isinstance(account, dict) and "error" not in account:
-        guardrails["daily_starting_value"] = float(account.get("portfolio_value", 0))
+        today_et = get_et_time().strftime("%Y-%m-%d")
+        last_reset_date = guardrails.get("daily_starting_value_date")
+        if not guardrails.get("daily_starting_value") or last_reset_date != today_et:
+            guardrails["daily_starting_value"] = float(account.get("portfolio_value", 0))
+            guardrails["daily_starting_value_date"] = today_et
         current = float(account.get("portfolio_value", 0))
         peak = guardrails.get("peak_portfolio_value", current)
         if current > peak:
