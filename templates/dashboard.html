@@ -861,6 +861,13 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
     transition: all 0.15s; box-shadow: 0 2px 8px rgba(239,68,68,0.3);
 }
 .kill-switch-btn-v2:hover { background: #dc2626; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(239,68,68,0.5); }
+.kill-switch-btn-v2 .kill-dot {
+    display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+    background: #fff; margin-right: 7px; vertical-align: middle;
+    box-shadow: 0 0 0 2px rgba(255,255,255,0.35);
+    animation: killDotPulse 1.6s infinite;
+}
+@keyframes killDotPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
 .kill-switch-indicator-v2 {
     background: var(--red); color: #fff; padding: 8px 14px; border-radius: 10px;
     font-size: 12px; font-weight: 800; letter-spacing: 1px;
@@ -3315,7 +3322,7 @@ function renderDashboard() {
                     '<button class="header-icon-btn refresh-btn-v2" onclick="forceRefresh()" title="Refresh dashboard"><span id="refreshIcon">\u21BB</span></button>' +
                     (killSwitchActive
                         ? '<span class="kill-switch-indicator-v2">\ud83d\udea8 HALTED</span>'
-                        : '<button class="kill-switch-btn-v2" onclick="openKillSwitchModal()" title="Emergency stop — closes all positions">\ud83d\uded1 KILL</button>') +
+                        : '<button class="kill-switch-btn-v2" onclick="openKillSwitchModal()" title="Emergency stop — closes all positions"><span class="kill-dot"></span>KILL</button>') +
                     '<div class="user-menu">' +
                         '<button class="user-btn-v2" onclick="toggleUserMenu(event)">' + esc(window.currentUsername || 'Account') + ' \u25BE</button>' +
                         '<div class="user-dropdown" id="userDropdown" style="display:none">' +
