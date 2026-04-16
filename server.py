@@ -59,7 +59,7 @@ import socket as _socket
 _socket.setdefaulttimeout(30)
 
 try:
-    from cloud_scheduler import start_scheduler, get_scheduler_status
+    from cloud_scheduler import start_scheduler, stop_scheduler, get_scheduler_status
     SCHEDULER_AVAILABLE = True
 except ImportError:
     SCHEDULER_AVAILABLE = False
