@@ -290,6 +290,7 @@ When readiness score hits 80/100 after 30 days:
 - **2026-04-16 (PM):** **Wheel strategy full autonomy** — wheel_strategy.py + cloud_scheduler tasks. Sell puts → assign → sell calls → repeat, fully automated with safety rails.
 - **2026-04-16 (PM):** 4 parallel forensic audits. Critical finds: cross-user migration leak (r3), trade journal writeback missing (r4 fin), profit ladder non-idempotent (r4 fin), ntfy_topic spoofing (r4 sec), logout CSRF, admin cross-admin pw reset. All fixed.
 - **2026-04-16 (PM):** Final hardening commit `e391f79`: AES-256-GCM (`ENCv2:`) for Alpaca credentials, backups now strip credential columns, login rate limit persisted to SQLite `login_attempts` table (survives Railway redeploy), SIGTERM handler, SQLite WAL, `/healthz` endpoint.
+- **2026-04-16 (PM):** Round-5 forensic audit (Opus 4.7, commit `0d1f961`): **ET-only policy** across entire codebase via new `et_time.py` helper — no `datetime.now(timezone.utc)` anywhere in runtime code; DST bug in `extended_hours.get_trading_session()` (hardcoded `-4h` broke EST) fixed; `cleanup_expired_sessions` finally wired (was dead code); `admin_audit_log` 90d rotation; `password_resets` GC; reset tokens SHA-256 hashed at rest; `/healthz` staleness check (5-min threshold); profit ladder client_order_id switched UTC-date → ET-date; cooldown parse error now fail-closed; per-user Alpaca circuit breaker (5 fails → 5-min cool-off); `socket.setdefaulttimeout(30)` safety net; email queue overflow WARN; wheel lock hardened; `cryptography<46.0.0` pin; load_json logs malformed files.
 
 ---
 
