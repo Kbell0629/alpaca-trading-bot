@@ -208,20 +208,25 @@ Weekly (Friday 2 PM PT):
 
 ---
 
-## Cloud Scheduler (Pending)
+## Cloud Scheduler (LIVE)
 
-Currently scheduled tasks run via Claude Code on laptop. For full 24/7 autonomy on Railway without laptop:
+`cloud_scheduler.py` runs as a background thread inside server.py on Railway. Bot is fully autonomous 24/7 — laptop not needed.
 
-**Status:** Proposed but not built. User decided frequency is fine at 30 min screener / 60 sec monitor / daily auto-deploy / EOD close.
+**Task schedule:**
+- Auto-deployer: weekdays 9:35 AM ET (screen + deploy top 2)
+- Screener: every 30 min during market hours
+- Strategy monitor: every 60s during market hours (stops, ladders, targets)
+- Daily close: weekdays 4:05 PM ET
+- Weekly learning: Fridays 5:00 PM ET
 
-**To build:** `cloud_scheduler.py` — Python threading-based scheduler that runs inside server.py. Implements:
-- Screener every 30 min during market hours
-- Strategy monitor every 60s during market hours
-- Auto-deployer at 9:35 AM ET daily
-- Daily close at 4:05 PM ET
-- Weekly learning Fridays 5 PM ET
+**Claude Code tasks are DISABLED** to prevent duplicate trades. Cloud scheduler is the single source of truth.
 
-When built, adds `/api/scheduler-status` endpoint and "24/7 CLOUD" badge to dashboard header.
+**Dashboard:**
+- "24/7 CLOUD" badge in header with pulse animation when running
+- "Scheduler" nav tab → full status panel with task grid, last run times, live log feed
+- `/api/scheduler-status` endpoint returns running state + recent_logs
+
+**To disable:** Set `ENABLE_CLOUD_SCHEDULER=false` in Railway env vars, redeploy.
 
 ---
 
@@ -265,7 +270,7 @@ When readiness score hits 80/100 after 30 days:
 
 ## Known Issues / Decisions Pending
 
-1. **Cloud scheduler not yet built** — tasks run via laptop Claude Code. Railway deployment shows empty screener without local `dashboard_data.json` push. User said we'll build this next.
-2. **PWA icons** — gradient placeholders. Could design proper icons later.
-3. **Options API** — wheel strategy falls back to simulation if Alpaca options API unavailable.
-4. **Duplicate SECTOR_MAP** — exists in update_dashboard.py and update_scorecard.py. Not a bug, could refactor to shared module.
+1. **PWA icons** — gradient placeholders. Could design proper icons later.
+2. **Options API** — wheel strategy falls back to simulation if Alpaca options API unavailable.
+3. **Duplicate SECTOR_MAP** — exists in update_dashboard.py and update_scorecard.py. Not a bug, could refactor to shared module.
+4. **Short selling auto-deploy** — cloud scheduler logs short candidates but doesn't auto-deploy yet (TODO marker in code). Manual deploy from dashboard works.
