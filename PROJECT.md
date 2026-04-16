@@ -96,6 +96,7 @@ All secrets in `.env` (gitignored) and Railway variables. No hardcoded defaults.
 - `manifest.json` — PWA manifest
 - `icon-192.png` / `icon-512.png` — PWA icons
 - `templates/` — `dashboard.html`, `login.html`, `signup.html`, `forgot.html`, `reset.html`. Loaded once at server import.
+- `handlers/` — `auth_mixin.py`, `admin_mixin.py`, `strategy_mixin.py`, `actions_mixin.py`. DashboardHandler inherits from all four via MRO. Add new endpoints to the matching mixin, not to server.py.
 - `tests/` — pytest suite (run: `python3 -m pytest tests/`)
 - `et_time.py` — shared ET helper. **Never reach for `datetime.now(timezone.utc)`; use `from et_time import now_et`.**
 - `constants.py` — SECTOR_MAP + PROFIT_LADDER + keyword lists (single source of truth for all consumers)
