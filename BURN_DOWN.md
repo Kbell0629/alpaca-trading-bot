@@ -64,6 +64,14 @@ Tracker for remaining improvements. Updated 2026-04-16.
 - [x] **Wheel strategy full autonomy** (2026-04-16) — cash-secured puts → covered calls → repeat, fully automated
 - [x] **Settings modal + admin panel** (2026-04-16) — multi-user management, per-user Alpaca creds, admin user list
 - [x] **Auto-deployer fallback pool 5→20** (2026-04-16) — doesn't give up when top picks blocked by guardrails
+- [x] **4-round forensic audit + fix** (2026-04-16) — auth, API isolation, UX, edge cases, financial math, client JS, operational resilience, security deep-dive. All P0/P1/critical P2 findings fixed.
+- [x] **AES-256-GCM encryption for Alpaca credentials** (2026-04-16, commit `e391f79`) — via `cryptography` pip dep, backward-compat with legacy `ENC:` HMAC cipher, transparent upgrade on login.
+- [x] **Credential-free backups** (2026-04-16) — admin downloadable backups have `alpaca_key_encrypted`/`alpaca_secret_encrypted` NULLED. Live DB keeps them for scheduler runtime.
+- [x] **Persistent login rate limit** (2026-04-16) — SQLite `login_attempts` table. Brute-force lockout survives Railway redeploy.
+- [x] **Operational hardening** (2026-04-16) — SIGTERM handler (clean scheduler shutdown + orphan-order prevention), SQLite WAL mode, `/healthz` endpoint, `python3 -u` for unbuffered Railway logs, Alpaca retry+backoff.
+- [x] **Trade journal close writeback** (2026-04-16) — FIXES critical bug: win_rate/Sharpe/readiness/learning were all 0 forever because exits never wrote back. Now every exit path calls `record_trade_close()`.
+- [x] **Profit ladder idempotency** (2026-04-16) — `client_order_id` prevents double-sell on transient Alpaca errors.
+- [x] **Backtest uses OHLC** (2026-04-16) — intraday LOW for stop detection + open clamp for gap-down fills. Previously overstated returns.
 - [x] Market breadth filter
 - [x] Volume profile breakouts
 - [x] Partial profit taking

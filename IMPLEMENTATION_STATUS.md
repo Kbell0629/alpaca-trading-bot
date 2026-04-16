@@ -51,7 +51,34 @@ Tracker for the 20 profit-enhancement features proposed after the initial build.
 - **Session chip bug fix 2026-04-16** — Header showed "CLOSED" during market hours because `extended_hours.py` returns `'market'` but chip only recognized `'open'/'market_open'/'regular'`. Added `'market'` to matching set.
 - **Time format fix 2026-04-16** — "Updated 14:51:28" (UTC 24hr) → "Updated 10:51:28 AM ET" (12-hour Eastern) via `toLocaleTimeString` with `timeZone: America/New_York`.
 - **Settings modal + Admin panel 2026-04-16** — Replaced "coming soon" alert with full 5-tab settings modal (Profile / Alpaca API / Notifications / Password / Danger Zone). Includes Test Connection button against `/api/account`, live endpoint confirmation warning, empty-field = keep-existing semantics. Admin-only Manage Users dropdown shows all users, deactivate/reactivate/force-reset-password with last-admin lockout prevention. New endpoints: `/api/delete-account`, `/api/admin/users`, `/api/admin/set-active`, `/api/admin/reset-password`.
-- **Wheel strategy full autonomy 2026-04-16** ⭐ — `wheel_strategy.py` (~700 lines) implements complete state machine: sell cash-secured puts → handle assignment → sell covered calls → handle called-away → repeat. Cloud scheduler runs `run_wheel_auto_deploy` at 9:40 AM weekdays + `run_wheel_monitor` every 15 min. Safety rails: options level 2+, cash coverage, never sell call below cost basis, earnings avoidance 30d, max 2 concurrent, price $10-$50, min 0.5% premium yield, 50% profit buy-to-close (Tasty Trade rule), min 50 open interest. State files: `wheel_{SYMBOL}.json` per user with full audit trail. API endpoint `/api/wheel-status` returns active wheels + totals + rails config. Tested against today's screener: 20 viable candidates (SOFI/HIMS/CLSK top). Kevin's paper account confirmed options level 3 approved with $90k cash.
+- **Wheel strategy full autonomy 2026-04-16** ⭐ — `wheel_strategy.py` (~900 lines) implements complete state machine: sell cash-secured puts → handle assignment → sell covered calls → handle called-away → repeat. Cloud scheduler runs `run_wheel_auto_deploy` at 9:40 AM weekdays + `run_wheel_monitor` every 15 min. Safety rails, per-symbol file locking, `_wheel_deploy_in_flight` dedup, assignment detection via share-delta vs baseline (not presence check), HISTORY_MAX=500 cap.
+
+## Forensic Audits (4 rounds, 2026-04-16 PM)
+
+### Round 1 — Auth + API + multi-user isolation
+Found and fixed: shared file storage across users, SSRF via alpaca_endpoint, unauthenticated signup, Basic Auth brute-forceable, MASTER_KEY silent plaintext fallback, session invalidation, Secure cookie flag, esc() quote escaping, username regex enforcement, XSS in admin panel, wheel file locking, history cap.
+
+### Round 2 — P2 cleanup
+PBKDF2 200k → 600k (versioned hash, transparent rehash on login), DST via zoneinfo, CSRF double-submit cookie + global fetch wrapper, error message sanitization, reset URL via stdin (not argv), wheel malformed file warning, Friday risk reduction strategy-file update, auto-deployer N+1 fix.
+
+### Round 3 — UX + edge cases + E2E flows
+Critical catch: my own "Auto Deploy OFF fix" introduced cross-user migration leak — friend signing up would inherit Kevin's `auto_deployer_config.json` with `enabled:true` and strategy files. **Would have caused real financial harm.** Fixed: migration restricted to user_id=1. Also fixed: get_dashboard_data fell back to shared picks; learn.py bypassed per-user paths; wheel open_short_put race with Force Deploy; Force Deploy cleared daily lock; nav Settings tab pointed to wrong section; --blue CSS var undefined; Scheduler panel stuck loading; Kill switch didn't close options; market clock fate-shared users[0]; /api/refresh unrate-limited; correlation_id never surfaced.
+
+### Round 4 — Four parallel deep-dives
+**Financial math**: `record_trade_close()` helper wired into every exit path (stop fill, target hit, short cover, max-hold, mean-rev target). Previously win_rate/Sharpe/readiness/learning were all stuck at 0 forever because journal entries never flipped to closed. Profit ladder uses `client_order_id` for idempotency (double-sell bug on transient errors fixed). daily_starting_value set once per ET date. Backtest uses OHLC with intraday LOW for stop detection (not daily close).
+
+**Client JS**: fmtMoney guards NaN, voice command guards null price, jsStr() helper for onclick user data, Escape key closes any modal, click-outside closes any modal, 401 response stops countdown + redirects to /login.
+
+**Operational**: SIGTERM handler (stop scheduler + shutdown server cleanly on Railway redeploy), SQLite WAL mode + busy_timeout, `/healthz` endpoint wired to `railway.json.healthcheckPath`, `python -u` in Procfile + railway.json, Alpaca retry+backoff (0.5s/1s/2s on 5xx + timeouts), memory caps on `_LOGIN_ATTEMPTS` + `_api_cache`.
+
+**Security**: ntfy_topic regex validation, admin panel masks ntfy_topic, admin can't reset another admin's password, logout moved to POST+CSRF, login timing-safe (dummy PBKDF2 on user-not-found), security headers (X-Frame-Options DENY, CSP, Referrer-Policy, Permissions-Policy), users.db chmod 0600, tar extract filter, backup concurrent lock, Alpaca error responses sanitized.
+
+### Round 4 cleanup (final) — commit `e391f79`
+- **AES-256-GCM** replaces custom HMAC stream cipher. `cryptography>=42.0.0` pip dep. Ciphertext prefix `ENCv2:`. Legacy `ENC:` still decrypts; transparent upgrade on next login.
+- **Backup archives strip Alpaca credentials** — admin can't extract keys offline via backup download. Live DB keeps them for runtime decrypt.
+- **Login attempts persisted to SQLite** (`login_attempts` table) — brute-force lockout survives Railway redeploys. 24hr retention, opportunistic GC.
+
+**UI fixes Day 1 PM**: Timeline chronological ordering, scroll offset for sticky header, dashboard schedule matches actual scheduler times, Settings tab renamed to Templates + new ⚙️ Account tab opens modal, backtest dropdown shows all top-50 picks with on-demand `/api/compute-backtest` endpoint.
 
 ## Future Improvements (User-Deferred)
 

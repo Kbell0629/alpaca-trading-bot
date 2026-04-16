@@ -30,6 +30,13 @@ All secrets in `.env` (gitignored) and Railway variables. No hardcoded defaults.
 | `NOTIFICATION_EMAIL` | `se2login@gmail.com` |
 | `DASHBOARD_USER` / `DASHBOARD_PASS` | Basic auth for dashboard |
 | `DATA_DIR` | `/data` on Railway (volume mount for persistent storage). Locally unset (defaults to project dir). Holds `users.db`, `users/`, strategy files, `*.json` runtime data. |
+| `MASTER_ENCRYPTION_KEY` | 64-char random key used to derive AES-256-GCM encryption key for Alpaca credentials. Required in production (`REQUIRE_MASTER_KEY=1`). |
+| `REQUIRE_MASTER_KEY` | Set to `1` to fail-closed at import if `MASTER_ENCRYPTION_KEY` unset. Prevents silent plaintext fallback. |
+| `SIGNUP_INVITE_CODE` | If set, new signups must provide matching code. Prevents public account creation. Current: `CDjKmmrQr_x4MKnjPb0fGw`. |
+| `SIGNUP_DISABLED` | Set to `1` to block all new signups. |
+| `FORCE_SECURE_COOKIE` | Set to `1` to always add `Secure` flag on session cookie (Railway adds automatically via `X-Forwarded-Proto`). |
+| `ENABLE_BASIC_AUTH` | Set to `1` to re-enable Basic Auth fallback (disabled by default). |
+| `ENABLE_CLOUD_SCHEDULER` | Default `true`. Set to `false` to disable background scheduler (debugging only). |
 | `PORT` | `8888` (Railway sets automatically) |
 
 **Account:** PA3N3JCNBP02 ($100k paper, 2x margin)
@@ -83,9 +90,9 @@ All secrets in `.env` (gitignored) and Railway variables. No hardcoded defaults.
 - `email_queue.json` — Pending email notifications
 
 ### Infrastructure
-- `Procfile` — Railway startup command
-- `railway.json` — Railway deploy config
-- `requirements.txt` — Empty (stdlib only)
+- `Procfile` — `python3 -u server.py` (unbuffered for Railway log forwarding)
+- `railway.json` — Railway deploy config. `healthcheckPath: /healthz`.
+- `requirements.txt` — `cryptography>=42.0.0` (for AES-GCM encryption of Alpaca keys). Falls back to stdlib HMAC cipher if not installed.
 - `manifest.json` — PWA manifest
 - `icon-192.png` / `icon-512.png` — PWA icons
 
@@ -281,6 +288,8 @@ When readiness score hits 80/100 after 30 days:
 - **2026-04-16 (PM):** Header v2 redesign + time format fixes
 - **2026-04-16 (PM):** **Settings modal + Admin panel** — full multi-user UI
 - **2026-04-16 (PM):** **Wheel strategy full autonomy** — wheel_strategy.py + cloud_scheduler tasks. Sell puts → assign → sell calls → repeat, fully automated with safety rails.
+- **2026-04-16 (PM):** 4 parallel forensic audits. Critical finds: cross-user migration leak (r3), trade journal writeback missing (r4 fin), profit ladder non-idempotent (r4 fin), ntfy_topic spoofing (r4 sec), logout CSRF, admin cross-admin pw reset. All fixed.
+- **2026-04-16 (PM):** Final hardening commit `e391f79`: AES-256-GCM (`ENCv2:`) for Alpaca credentials, backups now strip credential columns, login rate limit persisted to SQLite `login_attempts` table (survives Railway redeploy), SIGTERM handler, SQLite WAL, `/healthz` endpoint.
 
 ---
 
