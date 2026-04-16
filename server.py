@@ -167,15 +167,26 @@ def alpaca_get_cached(url, timeout=15, headers=None):
     return data
 
 
-def get_dashboard_data(api_endpoint=None, api_headers=None):
+def get_dashboard_data(api_endpoint=None, api_headers=None, user_id=None):
     """Load dashboard_data.json for screener picks, but always fetch live orders/positions from Alpaca.
 
     If api_endpoint/api_headers are provided, fetches data for that specific user.
+    If user_id is provided, reads picks from the user's per-user path first.
     Falls back to global env-var credentials otherwise (backward compat for scripts).
     """
     ep = api_endpoint or API_ENDPOINT
     api_errors = []
-    data = load_json(DASHBOARD_DATA_PATH)
+    # Look for per-user dashboard data first, then shared, then legacy
+    data = None
+    if user_id is not None:
+        try:
+            import auth as _auth
+            user_path = os.path.join(_auth.user_data_dir(user_id), "dashboard_data.json")
+            data = load_json(user_path)
+        except Exception:
+            pass
+    if not data:
+        data = load_json(DASHBOARD_DATA_PATH)
     if data:
         # Always refresh live data from Alpaca (using cached API calls)
         account = alpaca_get_cached(f"{ep}/account", headers=api_headers)
@@ -4220,6 +4231,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             data = get_dashboard_data(
                 api_endpoint=self.user_api_endpoint,
                 api_headers=self.user_headers(),
+                user_id=self.current_user.get("id") if self.current_user else None,
             )
             self.send_json(data)
 
@@ -4591,18 +4603,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_json({"success": True, "message": "Settings updated"})
 
     def handle_refresh(self):
-        """Run update_dashboard.py and return fresh data."""
+        """Run update_dashboard.py with current user's credentials and return fresh data."""
         script_path = os.path.join(BASE_DIR, "update_dashboard.py")
+        env = os.environ.copy()
+        user_id = self.current_user.get("id") if self.current_user else None
+        if user_id is not None:
+            try:
+                import auth as _auth
+                udir = _auth.user_data_dir(user_id)
+                env["ALPACA_API_KEY"] = self.user_api_key
+                env["ALPACA_API_SECRET"] = self.user_api_secret
+                env["ALPACA_ENDPOINT"] = self.user_api_endpoint
+                env["ALPACA_DATA_ENDPOINT"] = self.user_data_endpoint
+                env["DASHBOARD_DATA_PATH"] = os.path.join(udir, "dashboard_data.json")
+                env["DASHBOARD_HTML_PATH"] = os.path.join(udir, "dashboard.html")
+            except Exception as e:
+                print(f"user env setup failed: {e}")
         try:
             result = subprocess.run(
                 ["python3", script_path],
                 cwd=BASE_DIR,
                 capture_output=True,
                 text=True,
-                timeout=120,
+                timeout=600,
+                env=env,
             )
             if result.returncode != 0:
-                print(f"update_dashboard.py stderr: {result.stderr}")
+                print(f"update_dashboard.py stderr: {result.stderr[:500]}")
         except Exception as e:
             print(f"Error running update_dashboard.py: {e}")
 
@@ -4610,6 +4637,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         data = get_dashboard_data(
             api_endpoint=self.user_api_endpoint,
             api_headers=self.user_headers(),
+            user_id=user_id,
         )
         self.send_json(data)
 
