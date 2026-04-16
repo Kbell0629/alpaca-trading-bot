@@ -1247,6 +1247,21 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
     .table-card { padding: 12px; }
     .table-card table { min-width: 420px; font-size: 11px; }
 
+    /* Short Selling + Tax-Loss Harvesting sections — raw 8/6-column
+       tables inside a card with no overflow handling. On phones the
+       table pushed past the card's rounded edges and columns ran off
+       the right side. Add horizontal scroll at the section level with
+       a sensible min-width so rows stay legible. */
+    .short-section, .tax-section { padding: 14px 12px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .short-section table, .tax-section table { min-width: 720px; font-size: 11px; }
+    .short-section th, .short-section td,
+    .tax-section th, .tax-section td { padding: 6px 8px; white-space: nowrap; }
+    /* Reasons / replace-with columns are naturally long — allow wrap. */
+    .short-section td:last-child { white-space: normal; min-width: 160px; }
+    .tax-section td:nth-child(5) { white-space: normal; min-width: 140px; }
+    /* Section headers shouldn't inherit nowrap/scroll quirks. */
+    .short-section h3, .tax-section h3 { flex-wrap: wrap; font-size: 13px; }
+
     /* Scheduler panel task grid — stack cards single-column. */
     .scheduler-task-grid { grid-template-columns: 1fr !important; gap: 8px; }
 
