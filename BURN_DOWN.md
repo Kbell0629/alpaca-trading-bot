@@ -4,6 +4,38 @@ Tracker for remaining improvements. Updated 2026-04-16.
 
 ---
 
+## 🛑 CLASSIFICATION GUIDE FOR AUDITORS — READ FIRST
+
+**Everything in this file is a FEATURE ITEM, not a code defect.** New
+audit passes (round 9+) should treat the open items below as
+user-deferred product decisions, NOT as bugs to re-surface.
+
+Key distinctions:
+- **BUG / DEFECT** = code that behaves incorrectly vs its stated intent
+  (e.g., "stop_scheduler was never imported and SIGTERM silently
+  failed"). These belong in PROJECT.md's recent-changes log and get
+  fixed immediately.
+- **FEATURE / MATURITY ITEM** = code works as designed but the design
+  could be smarter (e.g., "market orders work, but limit-at-mid would
+  save slippage"). These live HERE. An auditor finding one should NOT
+  file it as a bug.
+
+**Blanket rule for future audits:** if an "issue" is already listed
+in this file with a `Status:` line saying it's deferred, skipped, or
+awaiting a user decision, DO NOT re-report it as a finding. List
+reference number (e.g., "item #14 — deferred") and move on.
+
+The explicit decisions the user has made:
+
+| Status tag | Meaning |
+|---|---|
+| `DECISION: DEFERRED` | User chose not to implement; may revisit after N days of paper trading |
+| `DECISION: SKIPPED` | User chose not to implement indefinitely (e.g., paid API they won't pay for) |
+| `DECISION: PENDING` | Needs alignment with user before coding |
+| `DONE` | Shipped — should be in the ✅ DONE list below |
+
+---
+
 ## ✅ DONE (43 features delivered)
 
 ### Core Platform
@@ -72,6 +104,27 @@ Tracker for remaining improvements. Updated 2026-04-16.
 - [x] **Trade journal close writeback** (2026-04-16) — FIXES critical bug: win_rate/Sharpe/readiness/learning were all 0 forever because exits never wrote back. Now every exit path calls `record_trade_close()`.
 - [x] **Profit ladder idempotency** (2026-04-16) — `client_order_id` prevents double-sell on transient Alpaca errors.
 - [x] **Backtest uses OHLC** (2026-04-16) — intraday LOW for stop detection + open clamp for gap-down fills. Previously overstated returns.
+- [x] **Round 5 — ET-only policy + 10 hardening fixes** (2026-04-16, `0d1f961`) — single ET timezone across the app, DST bug fix, healthz staleness, hashed reset tokens, audit log rotation.
+- [x] **Round 5.2 — 10 decision-item fixes** (2026-04-16, `7c2c013`) — SECTOR_MAP consolidation, HTML extraction to templates/, 30-test pytest suite, HKDF ENCv3, zxcvbn password strength, random ntfy topics, partial god-function decomposition.
+- [x] **Round 6 — thread safety + observability + partial-fill reconcile** (2026-04-16, `5e63488`) — `_cb_state`/`_api_cache` locked, circuit-breaker push alert, /api/version, WAL checkpoint before backup, 0o700 perms, 40 tests.
+- [x] **Round 6.5 — DashboardHandler decomposition** (2026-04-16, `7016808`) — 4 mixin files, server.py 2927 → 1573 lines.
+- [x] **Round 7 — P0 regression hotfix + subprocess boot test** (2026-04-16, `7708af3`+`af7db0a`) — lazy server proxy to fix circular import, subprocess healthz test that catches the launch-path class of bug.
+- [x] **Round 8 — 11 to-do items closed** (2026-04-16, `a90ff83`) — see section below. 49 tests passing.
+
+#### Round 8 (2026-04-16) — items closed from the to-do list
+
+- [x] **#1 Legacy ENC cipher removed** — Railway CLI confirmed 0 rows. ~30 LOC of dead crypto deleted. ENCv2 kept decrypt-only as safety net.
+- [x] **#2 Wheel dashboard card migration** — card now reads per-symbol state from /api/wheel-status instead of legacy single-cycle template.
+- [x] **#3 Strategy-file locking** — new `strategy_file_lock` context manager (same pattern as wheel lock) wired into monitor_strategies + pause/stop handlers.
+- [x] **#4 News signals → auto-deployer** — bearish news now skips deploys.
+- [x] **#5 Per-strategy confidence in learn.py** — each strategy carries its own low/medium/high + weight_frozen flag.
+- [x] **#6 E2E integration tests** — 4 subprocess-based tests covering signup/auth/weak-password paths.
+- [x] **#7 Client-side zxcvbn meter** — signup + reset forms show strength as user types.
+- [x] **#8 Test-Connection error hardening** — no more raw Alpaca/server text echoed to UI.
+- [x] **#9 Task-staleness watchdog + heartbeat log** — per-task alerts during market hours; 2min heartbeat keeps /healthz green after-hours.
+- [x] **#10 Market-breadth div/0** — verified already safe (false positive from agent).
+- [x] **#11 Dashboard TZ (addLog)** — now renders ET explicitly.
+- [x] **Bonus: SIGTERM handler fixed** — `stop_scheduler` was never imported; SIGTERM silently swallowed the NameError for months.
 - [x] Market breadth filter
 - [x] Volume profile breakouts
 - [x] Partial profit taking
@@ -86,23 +139,37 @@ Tracker for remaining improvements. Updated 2026-04-16.
 
 ## 🟡 HIGH PRIORITY (Would Meaningfully Improve Performance)
 
-### 1. News Signals → Auto-Deployer Integration
-**Status:** Data exists but not wired into deployer
-**Impact:** Medium — per-pick news_sentiment already captures most of this
-**Effort:** 30 min
-**Plan:** In `run_auto_deployer`, check if `pick.symbol` appears in `dashboard_data.news_signals.actionable`. Boost score if bullish news, skip if bearish.
+### ✅ 1. News Signals → Auto-Deployer Integration — DONE (Round 8, 2026-04-16)
+**Status:** SHIPPED (commit `a90ff83`)
+**Implementation:** `run_auto_deployer` in cloud_scheduler.py now reads
+`picks_data.news_signals.actionable` and skips picks flagged **bearish**.
+Per-pick `news_sentiment` remains as the softer signal layer.
+NOT a bug anymore — do not re-flag.
 
 ### 2. Pre-Market Gap Trading
-**Status:** Extended hours module exists but unused by deployer
-**Impact:** High — capture 2-5% gap moves on news
+**Status:** `DECISION: DEFERRED` (user, 2026-04-16)
+**Why deferred:** Adds complexity to a system just stabilized after 8
+audit rounds. User wants to see 30 days of live-paper performance from
+the existing 6 strategies before adding gap trading.
+**Impact if built:** High — capture 2-5% gap moves on news
 **Effort:** 2-3 hours
-**Plan:** Before market open, scan news_signals for overnight catalysts. Place pre-market limit orders that execute at open.
+**Plan (when user approves):** Before market open, scan news_signals
+for overnight catalysts. Place pre-market limit orders that execute
+at open.
+**NOT a bug** — do not file as an audit finding.
 
 ### 3. Earnings Play Auto-Deploy
-**Status:** `earnings_play.py` generates candidates but deployer doesn't use them
-**Impact:** Medium — limited to pre-earnings window
-**Effort:** 1 hour
-**Plan:** Separate auto-deploy path that buys 2-3 days before earnings, sells morning of. Track `earnings_date` field.
+**Status:** `DECISION: DEFERRED` (user, 2026-04-16) — blocked on data source
+**Blocker:** `earnings_play.py` filters candidates by momentum but has
+**no actual earnings-date data**. The current `find_upcoming_earnings()`
+scans news headlines for "will report" which is too noisy to deploy
+real money on. Safe auto-deploy requires an earnings-date calendar.
+**Options the user must choose between:**
+  - (a) Add AlphaVantage / FMP free-tier API key for earnings calendar
+  - (b) Keep scanning Alpaca news with stricter regex (risky — false positives)
+  - (c) Defer indefinitely (current choice)
+**NOT a bug** — the module works for its current purpose (scoring);
+auto-deploy just isn't wired pending the data source decision.
 
 ### ✅ Wheel Strategy Auto-Deploy (DONE 2026-04-16)
 **Status:** COMPLETE — fully autonomous wheel cycle in `wheel_strategy.py` + cloud_scheduler tasks.
@@ -113,17 +180,30 @@ Tracker for remaining improvements. Updated 2026-04-16.
 - `/api/wheel-status` endpoint.
 - Config toggle: `auto_deployer_config.wheel.enabled` (default true).
 
-### 4. Dividend Capture Strategy
-**Status:** Not built
-**Impact:** Medium — ~0.5-1% per capture, multiple per month
+### 4. Dividend Capture Strategy (NEW strategy — not built)
+**Status:** `DECISION: DEFERRED` (user, 2026-04-16)
+**Why deferred:** (a) Tax-treatment rules (61-day holding for "qualified
+dividends") only matter with real money — irrelevant for paper. (b) Needs
+ex-div calendar data source. (c) User wants to let the existing 6 strategies
+prove themselves for 30 days first.
+**Impact if built:** ~0.5-1% per capture, multiple per month
 **Effort:** 2 hours
-**Plan:** Track ex-dividend dates. Buy day before, sell day after (if tax-favorable for "qualified dividends" — hold 61 days).
+**Plan (if approved later):** Track ex-dividend dates. Buy day before,
+sell day after. For live trading, enforce 61-day hold to qualify for
+favorable tax treatment.
+**NOT a bug** — feature request, not code defect.
 
-### 5. Pairs Trading
-**Status:** Not built
-**Impact:** Medium — market-neutral income
+### 5. Pairs Trading (NEW strategy — not built)
+**Status:** `DECISION: DEFERRED` (user, 2026-04-16)
+**Why deferred:** User wants to see the existing 6 strategies run for
+30+ days before adding a market-neutral overlay. Also requires decision
+on which pairs to track and their spread thresholds.
+**Impact if built:** Medium — market-neutral income stream
 **Effort:** 4-5 hours
-**Plan:** Identify correlated pairs (e.g., KO/PEP, AMD/NVDA). Go long laggard + short leader when spread diverges.
+**Plan (if approved later):** Identify correlated pairs (e.g., KO/PEP,
+AMD/NVDA). Go long laggard + short leader when spread diverges by N
+standard deviations.
+**NOT a bug** — feature request.
 
 ---
 
@@ -159,11 +239,19 @@ Tracker for remaining improvements. Updated 2026-04-16.
 **Effort:** 1 hour
 **Plan:** When portfolio drops 5%, auto-switch to Conservative preset for 7 days.
 
-### 11. Advanced Entry Orders
-**Status:** Bot uses market orders only
-**Impact:** Medium — save 0.1-0.3% slippage per trade
+### 11. Advanced Entry Orders (limit vs market)
+**Status:** `DECISION: DEFERRED` for paper (user, 2026-04-16). Revisit before going live.
+**Why deferred:** User prefers simple/reliable market orders during paper
+phase. Trade-off: limit orders save 0.1-0.3% slippage but fills can fail,
+requiring every strategy to handle "entry didn't fill" branch. 12 market-
+order sites across cloud_scheduler, actions_mixin, strategy_mixin would
+need updating — high blast radius during a stabilization period.
+**Impact if built:** Medium — save 0.1-0.3% slippage per trade
 **Effort:** 2 hours
-**Plan:** Use limit orders at midpoint of bid/ask, wait 2 min for fill, fall back to market if not filled.
+**Plan (when user approves):** Limit at midpoint of bid/ask, wait 2
+min for fill, fall back to market if not filled. Test on paper for a
+week before enabling on live.
+**NOT a bug** — market orders are the explicit current design.
 
 ### 12. Position Scaling In
 **Status:** Not built (have scaling OUT via profit ladder)
@@ -233,11 +321,15 @@ Current safeguards: cold-start protection (needs 5+ trades per strategy), 20% ma
 ### After 60 Days (~100-130 trades)
 
 #### Failed Opportunity Tracking
+**Status:** `DECISION: DEFERRED` (user, 2026-04-16) — revisit at ~60 days of trade history
+**Why deferred:** Low value before ~60 days of real trades (need
+enough skipped-picks data for the analysis to mean anything).
 **What:** Log stocks the screener rated highly but didn't deploy (hit position limits, earnings warning, correlation block, etc). Track their 30-day performance.
 **Why:** Bot currently only learns from trades that happened. Missing half the signal — stocks we ALMOST bought that then went up 20% are valuable training data too.
 **Plan:** Add `near_misses.json` that stores top 5-10 picks that were skipped each day with reason. After 30 days, check their actual performance. If consistently profitable, the screener's scoring is validated. If losses, something's off.
 **Effort:** 3-4 hours
 **Impact:** Medium — doubles effective training data.
+**NOT a bug** — future feature.
 
 #### Time-of-Day Pattern Analysis
 **What:** Analyze trade journal by entry time-of-day.
@@ -249,11 +341,17 @@ Current safeguards: cold-start protection (needs 5+ trades per strategy), 20% ma
 ### After 90 Days (~150 trades)
 
 #### Regime-Conditional Learning
+**Status:** `DECISION: DEFERRED` (user, 2026-04-16) — revisit at ~100+ trades
+**Why deferred:** Small-sample learning with regime splits amplifies
+noise. Need ~100 trades across regimes before splitting is meaningful.
+Also needs hysteresis rule decision (how much must SPY move before we
+consider the regime flipped) to avoid flapping.
 **What:** Learn separate weights for bull vs bear vs neutral markets instead of one global weight set.
 **Why:** Current system learns "breakout has 67% win rate" — but that might be 80% in bull and 20% in bear markets, averaged together. Separating them would expose the real edge.
 **Plan:** Track `market_regime` in journal entries (already stored). learn.py builds 3 separate weight sets. Screener applies the right set based on current regime.
 **Effort:** 4-5 hours
 **Impact:** High — addresses the biggest weakness of the current learner.
+**NOT a bug** — future feature; current single-weights learning is intentional.
 
 #### Signal Discovery
 **What:** Don't just boost/penalize EXISTING signals — discover NEW ones.
@@ -314,10 +412,18 @@ Current safeguards: cold-start protection (needs 5+ trades per strategy), 20% ma
 **Plan:** ETFs vs component stocks, ADRs vs home-country stocks. Low margin, high speed requirements.
 
 ### 24. Real-Time WebSocket Streaming
-**Status:** Currently polling every 60s
-**Impact:** Low — 60s is fast enough
+**Status:** `DECISION: DEFERRED` (user, 2026-04-16)
+**Why deferred:** 60s polling is sufficient for paper trading. Slippage
+at 60s-latency stop triggers is noise-level at the stop distances this
+bot uses. Real-time WebSocket adds operational complexity (reconnect
+logic, missed-event recovery, heartbeat handling) without material
+upside until strategies prove tighter stop behavior matters.
+**Currently polling:** every 60s during market hours
+**Impact if built:** Low — 60s is fast enough
 **Effort:** 6 hours
-**Plan:** Alpaca has WebSocket for live quotes. Would reduce latency on stop triggers from 60s to milliseconds.
+**Plan (if approved later):** Alpaca has WebSocket for live quotes.
+Would reduce latency on stop triggers from 60s to milliseconds.
+**NOT a bug** — 60s polling is the explicit current design.
 
 ### 25. Brokerage Diversification
 **Plan:** Run parallel on Alpaca + IBKR + Robinhood. Complex, marginal benefit.
