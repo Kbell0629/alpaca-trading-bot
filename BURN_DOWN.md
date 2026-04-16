@@ -4,6 +4,23 @@ Tracker for remaining improvements. Updated 2026-04-16.
 
 ---
 
+## 📆 30-DAY PAPER-TRADING REVIEW — 2026-05-16
+
+**When the 30-day window ends (first market day was 2026-04-16), the
+review framework lives in the user's memory file
+`thirty_day_review.md`**. Don't improvise the review — that file has:
+
+- GREEN/YELLOW/RED outcome thresholds (win rate, Sharpe, drawdown)
+- Which deferred features to build NEXT based on how the 30 days went
+- Go-live migration checklist (endpoint swap, guardrails tuning,
+  parallel run procedure)
+- Rollback plan if the first live week goes sideways
+
+Load that memory file FIRST if the user asks for a 30-day review,
+readiness check, or "time to go live."
+
+---
+
 ## 🛑 CLASSIFICATION GUIDE FOR AUDITORS — READ FIRST
 
 **Everything in this file is a FEATURE ITEM, not a code defect.** New

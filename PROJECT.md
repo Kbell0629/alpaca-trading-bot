@@ -250,6 +250,13 @@ Weekly (Friday 2 PM PT):
 
 ## Going Live ($5k Account)
 
+> **Full 30-day review + go-live framework lives in memory:**
+> `~/.claude/projects/-Users-kevinbell-Alpaca-Trading/memory/thirty_day_review.md`.
+> That file has the GREEN/YELLOW/RED outcome thresholds, the
+> deferred-feature revisit priority, and a detailed live-migration
+> checklist. Load it first when the 30-day window ends (2026-05-16)
+> or when the user asks about going live.
+
 When readiness score hits 80/100 after 30 days:
 1. Create live Alpaca account, fund $5k
 2. Generate live API keys
