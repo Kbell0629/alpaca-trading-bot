@@ -1587,7 +1587,13 @@ function toastFromApiError(data, fallback) {
 
 function addLog(msg, type='info') {
     const now = new Date();
-    const time = now.toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    // Match the ET-only policy everywhere else in the dashboard. Without
+    // timeZone: 'America/New_York' this would render in the browser's
+    // local TZ — confusing when correlating with Railway/server logs.
+    const time = now.toLocaleTimeString('en-US', {
+        hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit',
+        timeZone: 'America/New_York'
+    });
     activityLog.unshift({time, msg, type});
     if (activityLog.length > 50) activityLog.length = 50;
     renderLog();
@@ -2249,6 +2255,19 @@ async function refreshData() {
         dashboardData = await resp.json();
         lastData = dashboardData;
         window._fetchFailCount = 0;  // reset on success so future errors show again
+        // Wheel-strategy card uses the per-symbol state from /api/wheel-status
+        // (introduced when wheel cycles went multi-symbol). Kick off the fetch
+        // in parallel with rendering — the card shows legacy fields first,
+        // then re-renders once the fresh per-symbol data arrives.
+        fetch(API_BASE + '/api/wheel-status', {credentials: 'same-origin'})
+            .then(function(r) { return r.ok ? r.json() : null; })
+            .then(function(w) {
+                if (w && dashboardData) {
+                    dashboardData.wheels_live = w;
+                    renderDashboard();
+                }
+            })
+            .catch(function(_) { /* stale card is fine, not fatal */ });
         renderDashboard();
         countdown = 60;
     } catch(e) {
@@ -2737,16 +2756,47 @@ function renderDashboard() {
         ? '<span class="badge-active">ACTIVE</span>'
         : '<span class="badge-pending">SETUP NEEDED</span>';
 
-    // Wheel
-    const ws = d.wheel || {};
-    const wsState = ws.state || {};
-    const wsStage = wsState.current_stage || 'stage_1_sell_puts';
-    const wsStageLabel = wsStage.includes('stage_1') ? 'Stage 1: Selling Puts' : 'Stage 2: Selling Calls';
-    const wsPremiums = wsState.total_premiums_collected || 0;
-    const wsCycles = wsState.cycles_completed || 0;
-    const wsBadge = wsCycles > 0
-        ? '<span class="badge-active">ACTIVE</span>'
-        : '<span class="badge-pending">SETUP NEEDED</span>';
+    // Wheel card — prefers the round-3 per-symbol state (wheel_{SYMBOL}.json
+    // aggregated via /api/wheel-status into d.wheels_live). Falls back to the
+    // legacy single-cycle template (d.wheel) so the card still renders on
+    // the first paint before the wheel-status fetch resolves.
+    const wLive = d.wheels_live || null;
+    let wsStageLabel, wsPremiums, wsCycles, wsBadge, wsActiveCount;
+    if (wLive && Array.isArray(wLive.wheels)) {
+        wsActiveCount = wLive.total_active || 0;
+        wsPremiums = wLive.total_premium_collected || 0;
+        wsCycles = wLive.wheels.reduce(function(sum, w) {
+            return sum + (w.cycles_completed || 0);
+        }, 0);
+        if (wsActiveCount === 0) {
+            wsStageLabel = 'No active wheel';
+            wsBadge = '<span class="badge-pending">IDLE</span>';
+        } else if (wsActiveCount === 1) {
+            const one = wLive.wheels[0];
+            const stage = one.stage || 'stage_1_searching';
+            const sym = one.symbol || '?';
+            wsStageLabel = stage.indexOf('stage_1') !== -1
+                ? (sym + ': Selling Puts')
+                : (sym + ': Selling Calls');
+            wsBadge = '<span class="badge-active">ACTIVE</span>';
+        } else {
+            wsStageLabel = wsActiveCount + ' active cycles';
+            wsBadge = '<span class="badge-active">ACTIVE</span>';
+        }
+    } else {
+        // Legacy fallback (first paint before wheels_live loads, or no
+        // wheels ever deployed on this account).
+        const ws = d.wheel || {};
+        const wsState = ws.state || {};
+        const wsStage = wsState.current_stage || 'stage_1_sell_puts';
+        wsStageLabel = wsStage.indexOf('stage_1') !== -1 ? 'Stage 1: Selling Puts' : 'Stage 2: Selling Calls';
+        wsPremiums = wsState.total_premiums_collected || 0;
+        wsCycles = wsState.cycles_completed || 0;
+        wsActiveCount = wsCycles > 0 ? 1 : 0;
+        wsBadge = wsCycles > 0
+            ? '<span class="badge-active">ACTIVE</span>'
+            : '<span class="badge-pending">SETUP NEEDED</span>';
+    }
 
     // Top 3 Picks
     const picks = d.picks || [];
@@ -3603,7 +3653,19 @@ async function testAlpacaCreds() {
         var resp = await fetch(API_BASE + '/api/account', {credentials: 'same-origin'});
         var d = await resp.json();
         if (!resp.ok || d.error || !d.account) {
-            if (result) { result.textContent = '✗ ' + (d.error || 'Failed'); result.style.color = 'var(--red)'; }
+            // Show a generic, user-friendly message rather than piping
+            // raw server/Alpaca error text into the UI. Keep the detail
+            // in console for the user to inspect if they're debugging.
+            // (Alpaca errors are already server-sanitized per round-4
+            // audit, so this is defense-in-depth only.)
+            var why = 'Could not verify credentials. Check API key, secret, and endpoint.';
+            if (resp.status === 401 || resp.status === 403) {
+                why = 'Authentication rejected by Alpaca. Double-check your API key + secret.';
+            } else if (resp.status >= 500) {
+                why = 'Alpaca service error — try again in a minute.';
+            }
+            if (d && d.error) { try { console.warn('[test-connection]', d.error); } catch(_){} }
+            if (result) { result.textContent = '✗ ' + why; result.style.color = 'var(--red)'; }
             return;
         }
         var acct = d.account || d;
@@ -3611,7 +3673,9 @@ async function testAlpacaCreds() {
         var label = (acct.status === 'ACTIVE' ? '✓ Connected' : '⚠️ ' + acct.status) + ' · $' + cash + ' cash';
         if (result) { result.textContent = label; result.style.color = 'var(--green)'; }
     } catch (e) {
-        if (result) { result.textContent = '✗ ' + e.message; result.style.color = 'var(--red)'; }
+        // Network errors — show a generic message; details to console.
+        try { console.warn('[test-connection] network error', e); } catch(_){}
+        if (result) { result.textContent = '✗ Network error — check your connection.'; result.style.color = 'var(--red)'; }
     }
 }
 

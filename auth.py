@@ -205,18 +205,15 @@ def needs_rehash(stored_hash):
     iters, _ = _parse_hash_blob(stored_hash)
     return iters < PBKDF2_CURRENT_ITERATIONS
 
-# ===== Encryption (Fernet-like using stdlib) =====
-# Uses HMAC-SHA256 for auth + simple XOR stream cipher derived from master key.
-# Not as strong as AES-GCM, but stdlib-only and adequate when master key is secret.
+# ===== Encryption (AES-256-GCM via cryptography pip dep) =====
+# Round-7 cleanup: the pre-AES-GCM HMAC-stream cipher (_derive_key helper
+# and its ENC: decrypt/encrypt paths) was removed after Railway confirmed
+# 0 credentials remained on that format. Current encryption path is
+# ENCv3 (AES-GCM with HKDF key derivation); ENCv2 kept decrypt-only for
+# one more deploy cycle as a safety net.
 
-def _derive_key(master, purpose):
-    """Derive a sub-key for a specific purpose (encryption vs MAC)."""
-    return hashlib.sha256(f"{master}:{purpose}".encode()).digest()
-
-# Try to load cryptography (AES-GCM). Fall back to the legacy stdlib
-# HMAC-stream cipher if unavailable — backward compat preserves decrypt
-# for any existing "ENC:" ciphertexts and prevents deployments where
-# cryptography fails to install from being bricked.
+# Try to load cryptography (AES-GCM). Required in production; PLAIN:
+# fallback is used only when MASTER_KEY is unset (dev environments).
 try:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     _HAS_AESGCM = True
@@ -319,45 +316,46 @@ def encrypt_secret(plaintext):
 
     Format tiers (encoded as prefix):
       "PLAIN:..."  -> dev-mode cleartext fallback (no MASTER_KEY set)
-      "ENC:..."    -> legacy HMAC-stream cipher (deprecated; decrypt-only)
       "ENCv2:..."  -> AES-256-GCM with SHA256-derived key (decrypt-only
-                      going forward; still valid)
+                      safety net; new writes use ENCv3)
       "ENCv3:..."  -> AES-256-GCM with HKDF-SHA256-derived key (current)
 
-    New writes use ENCv3 when cryptography is available; decrypt supports
-    all four. `needs_cipher_upgrade()` now returns True for both ENC: and
-    ENCv2: so the transparent-upgrade-on-login machinery slowly migrates
-    everyone to ENCv3 without forcing a flag-day re-encrypt.
+    Round-7 cleanup: the pre-AES-GCM "ENC:" HMAC-stream cipher was
+    removed after Railway confirmed 0 rows on that format (startup log:
+    "[auth] credential cipher distribution: {'ENC': 0, ...}"). The
+    decrypt side follows in decrypt_secret().
+
+    `needs_cipher_upgrade()` still returns True for ENCv2 so the login
+    re-encrypt migration keeps running.
     """
     if not plaintext:
         return ""
     if not MASTER_KEY:
         return "PLAIN:" + plaintext
-    if _HAS_AESGCM:
-        key = _derive_aesgcm_key_v3(MASTER_KEY)
-        aes = AESGCM(key)
-        nonce = secrets.token_bytes(12)  # 96-bit nonce is standard for GCM
-        ct = aes.encrypt(nonce, plaintext.encode(), associated_data=b"alpaca-cred-v3")
-        # Store nonce || ciphertext+tag (the cryptography lib appends the 16-byte tag)
-        return "ENCv3:" + base64.b64encode(nonce + ct).decode()
-    # Fallback: legacy HMAC stream cipher (only if cryptography not installed)
-    enc_key = _derive_key(MASTER_KEY, "encrypt")
-    mac_key = _derive_key(MASTER_KEY, "mac")
-    nonce = secrets.token_bytes(16)
-    plaintext_bytes = plaintext.encode()
-    blocks_needed = (len(plaintext_bytes) + 31) // 32
-    keystream = b""
-    for i in range(blocks_needed):
-        counter = nonce + i.to_bytes(16, "big")
-        keystream += hmac.new(enc_key, counter, hashlib.sha256).digest()
-    ciphertext = bytes(a ^ b for a, b in zip(plaintext_bytes, keystream[:len(plaintext_bytes)]))
-    mac = hmac.new(mac_key, nonce + ciphertext, hashlib.sha256).digest()
-    combined = nonce + mac + ciphertext
-    return "ENC:" + base64.b64encode(combined).decode()
+    if not _HAS_AESGCM:
+        # Production must have `cryptography` installed. Dev without it
+        # can use the PLAIN: fallback via missing MASTER_KEY. No middle
+        # ground — there is no longer a handrolled-cipher path.
+        raise RuntimeError(
+            "cryptography package required for encrypt_secret(). Install "
+            "it (pip install 'cryptography>=42.0.0') or unset MASTER_ENCRYPTION_KEY "
+            "to use the PLAIN: dev fallback."
+        )
+    key = _derive_aesgcm_key_v3(MASTER_KEY)
+    aes = AESGCM(key)
+    nonce = secrets.token_bytes(12)  # 96-bit nonce is standard for GCM
+    ct = aes.encrypt(nonce, plaintext.encode(), associated_data=b"alpaca-cred-v3")
+    # Store nonce || ciphertext+tag (the cryptography lib appends the 16-byte tag)
+    return "ENCv3:" + base64.b64encode(nonce + ct).decode()
 
 
 def decrypt_secret(encrypted):
-    """Decrypt a secret back to plaintext. Supports PLAIN / ENC / ENCv2 / ENCv3."""
+    """Decrypt a secret back to plaintext. Supports PLAIN / ENCv2 / ENCv3.
+
+    Round-7: the pre-AES-GCM ENC: HMAC-stream path was removed once
+    Railway confirmed 0 rows remained on that format. ENCv2 is kept as
+    a decrypt-only safety net (one more deploy cycle) in case a pre-
+    ENCv3 row somehow survived migration."""
     if not encrypted:
         return ""
     if encrypted.startswith("PLAIN:"):
@@ -377,7 +375,7 @@ def decrypt_secret(encrypted):
         except Exception:
             return ""
 
-    # ENCv2: AES-GCM with SHA256-derived key (legacy, decrypt-only)
+    # ENCv2: AES-GCM with SHA256-derived key (legacy, decrypt-only safety net)
     if encrypted.startswith("ENCv2:"):
         if not MASTER_KEY or not _HAS_AESGCM:
             return ""
@@ -391,31 +389,9 @@ def decrypt_secret(encrypted):
         except Exception:
             return ""
 
-    # ENC: legacy HMAC stream cipher
-    if encrypted.startswith("ENC:"):
-        if not MASTER_KEY:
-            return ""
-        try:
-            combined = base64.b64decode(encrypted[4:])
-            nonce = combined[:16]
-            mac_stored = combined[16:48]
-            ciphertext = combined[48:]
-            mac_key = _derive_key(MASTER_KEY, "mac")
-            mac_check = hmac.new(mac_key, nonce + ciphertext, hashlib.sha256).digest()
-            if not hmac.compare_digest(mac_stored, mac_check):
-                return ""
-            enc_key = _derive_key(MASTER_KEY, "encrypt")
-            blocks_needed = (len(ciphertext) + 31) // 32
-            keystream = b""
-            for i in range(blocks_needed):
-                counter = nonce + i.to_bytes(16, "big")
-                keystream += hmac.new(enc_key, counter, hashlib.sha256).digest()
-            plaintext = bytes(a ^ b for a, b in zip(ciphertext, keystream[:len(ciphertext)]))
-            return plaintext.decode()
-        except Exception:
-            return ""
-
-    # Legacy plaintext (pre-encryption deploys)
+    # Anything else — including the removed legacy "ENC:" prefix — is
+    # undecodable. Returning the input string verbatim keeps pre-
+    # encryption dev data from dying; production won't hit this path.
     return encrypted
 
 
@@ -423,17 +399,15 @@ def needs_cipher_upgrade(encrypted):
     """Return True if the ciphertext is in an older format that should be
     re-encrypted under the current (ENCv3) scheme on next opportunity.
 
-    All of PLAIN, ENC (legacy HMAC stream), and ENCv2 (SHA256-derived
-    AES-GCM key) are considered upgradable. ENCv3 (HKDF-derived AES-GCM
-    key) is the current target.
+    Round-7: "ENC:" removed from upgrade targets (legacy HMAC stream
+    cipher is no longer decryptable anyway). PLAIN and ENCv2 still
+    considered upgradable so the login migration keeps working.
     """
     if not encrypted:
         return False
     if not (_HAS_AESGCM and MASTER_KEY):
         return False
     if encrypted.startswith("PLAIN:"):
-        return True
-    if encrypted.startswith("ENC:"):
         return True
     if encrypted.startswith("ENCv2:"):
         return True

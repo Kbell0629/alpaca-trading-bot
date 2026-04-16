@@ -252,6 +252,19 @@ def analyze_strategy_performance(closed_trades, existing):
 
         multipliers[strat] = mult
 
+        # Per-strategy confidence. Round-7 audit: the existing global
+        # `confidence` (computed from total closed trades across ALL
+        # strategies) can be "medium" or "high" even when an individual
+        # strategy still has <5 trades and should not be weight-adjusted.
+        # Consumers (insights renderer, dashboard) now see which
+        # strategies are learning-ready vs. which are still cold-start.
+        if count >= 20:
+            strat_confidence = "high"
+        elif count >= 5:
+            strat_confidence = "medium"
+        else:
+            strat_confidence = "low"
+
         details[strat] = {
             "trades": count,
             "wins": s["wins"],
@@ -259,6 +272,8 @@ def analyze_strategy_performance(closed_trades, existing):
             "win_rate": round(win_rate, 1),
             "avg_pnl": round(avg_pnl, 2),
             "multiplier": multipliers[strat],
+            "confidence": strat_confidence,
+            "weight_frozen": count < 5,  # explicit flag — clearer than deriving from mult==1.0
         }
 
     return multipliers, details
@@ -554,12 +569,22 @@ def run_learning_engine():
         closed_trades, multipliers, details, boost_signals, penalty_signals, confidence
     )
 
+    # Surface per-strategy confidence at the top level — existing global
+    # "confidence" field stays for backward compat (dashboard renderers
+    # read it). Consumers that want to know "is wheel_strategy_multiplier
+    # trustworthy yet?" can now check strategy_confidence["wheel"] directly.
+    strategy_confidence = {
+        strat: details.get(strat, {}).get("confidence", "low")
+        for strat in STRATEGIES
+    }
+
     # Build output
     learned_weights = {
         "last_updated": now_et().isoformat(),
         "total_trades_analyzed": total_closed,
         "strategy_multipliers": multipliers,
         "strategy_details": details,
+        "strategy_confidence": strategy_confidence,
         "boost_signals": [s["signal"] for s in boost_signals],
         "penalty_signals": [s["signal"] for s in penalty_signals],
         "boost_signal_details": boost_signals,

@@ -51,6 +51,20 @@ _last_runs = {}
 _recent_logs = []  # Circular buffer for dashboard display
 _logs_lock = threading.Lock()
 _last_fatal_notify_ts = 0.0  # rate-limit fatal-loop-error push notifications
+_staleness_last_alert = {}   # {task_key: ts} — prevent repeat alerts every tick
+_last_heartbeat_ts = 0.0     # when we last emitted a heartbeat log line
+
+
+def _heartbeat_tick():
+    """Emit a heartbeat log line every ~2 min so /healthz sees recent
+    activity even when the scheduler is idle (after hours, weekends).
+    Without this, healthz starts returning degraded after 5 minutes of
+    silence, triggering Railway restarts for no real reason."""
+    global _last_heartbeat_ts
+    now = time.time()
+    if now - _last_heartbeat_ts > 120:  # 2 min
+        _last_heartbeat_ts = now
+        log("heartbeat", task="scheduler")
 
 # ET is the canonical timezone for this app — the US markets run in ET,
 # the user is in ET, and there is no reason for UTC to surface anywhere in
@@ -370,6 +384,112 @@ def save_json(path, data):
             pass
         raise
 
+
+# fcntl.flock-based advisory lock for strategy state files. Wheel strategies
+# already had this via wheel_strategy._WheelLock; round-7 audit flagged that
+# trailing/breakout/mean-rev state files had none, so a scheduler monitor
+# tick's read-modify-write could race with a handler thread's pause/stop
+# action and silently clobber the user's intent.
+#
+# Pattern: `with strategy_file_lock(filepath): state = load_json(filepath);
+# mutate(state); save_json(filepath, state)`. The lock is released on exit.
+try:
+    import fcntl as _fcntl
+    _HAS_FCNTL = True
+except ImportError:  # pragma: no cover — Windows
+    _HAS_FCNTL = False
+
+class _StrategyFileLock:
+    """Exclusive advisory lock held against `path + '.lock'` for the duration
+    of a read-modify-write cycle. No-op on systems without fcntl.
+
+    Implementation cribbed from wheel_strategy._WheelLock — same hardening
+    applied in round 6 (self.fh only set after flock succeeds).
+    """
+    def __init__(self, path):
+        self.path = path
+        self.fh = None
+    def __enter__(self):
+        if not _HAS_FCNTL:
+            return self
+        fh = None
+        try:
+            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+            fh = open(self.path + ".lock", "w")
+            _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX)
+            self.fh = fh
+        except Exception:
+            if fh:
+                try: fh.close()
+                except Exception: pass
+            self.fh = None
+        return self
+    def __exit__(self, *a):
+        if self.fh:
+            try: _fcntl.flock(self.fh.fileno(), _fcntl.LOCK_UN)
+            except Exception: pass
+            try: self.fh.close()
+            except Exception: pass
+            self.fh = None
+
+def strategy_file_lock(path):
+    """Public factory — callers use `with strategy_file_lock(path):` around
+    their read-modify-write. Exported so server.py handlers can use the
+    same lock file as the scheduler, which is what makes the serialization
+    actually work (both threads need to contend on the same flock)."""
+    return _StrategyFileLock(path)
+
+
+# Interval-based tasks and their expected max gap. If _last_runs shows a
+# gap bigger than 2× these values during market hours, we consider the
+# task stale and fire a one-off push notification.
+# Daily tasks (auto_deployer_{uid}, wheel_deploy_{uid}, daily_close_{uid}
+# etc.) intentionally omitted — "overdue by 2x the daily interval" would
+# mean 2 days, which is not actionable alerting.
+_STALENESS_INTERVALS_SEC = {
+    "monitor":        60,       # 2x → alert if > 2 min
+    "wheel_monitor":  15 * 60,  # 2x → alert if > 30 min
+    "screener":       30 * 60,  # 2x → alert if > 60 min
+}
+
+
+def _check_task_staleness(users):
+    """Fire a push notification if any interval-based per-user task hasn't
+    run within 2× its expected window. One alert per (task, user) per
+    hour to avoid spam during extended outages.
+    """
+    now = time.time()
+    try:
+        for user in users:
+            uid = user.get("id")
+            if uid is None:
+                continue
+            for prefix, interval in _STALENESS_INTERVALS_SEC.items():
+                key = f"{prefix}_{uid}"
+                last = _last_runs.get(key)
+                if last is None or not isinstance(last, (int, float)):
+                    continue  # never run OR tracked differently (daily keys store date strings)
+                gap = now - last
+                if gap < interval * 2:
+                    continue
+                # Overdue. Check if we recently alerted about this.
+                if now - _staleness_last_alert.get(key, 0) < 3600:
+                    continue
+                _staleness_last_alert[key] = now
+                msg = (
+                    f"Task {prefix} for user {user.get('username','?')} is "
+                    f"{int(gap)}s behind (expected every {interval}s). "
+                    f"Scheduler may be stuck or Alpaca may be failing."
+                )
+                log(msg, "staleness")
+                try:
+                    notify_user(user, msg, "alert")
+                except Exception:
+                    pass
+    except Exception as _e:
+        # Watchdog must never crash the scheduler loop
+        log(f"task-staleness watchdog error: {_e}", "staleness")
+
 # ============================================================================
 # NOTIFICATIONS
 # ============================================================================
@@ -569,17 +689,23 @@ def monitor_strategies(user):
             if fname in ("copy_trading.json", "wheel_strategy.json"):
                 continue
             filepath = os.path.join(sdir, fname)
-            strat = load_json(filepath)
-            if not strat:
-                continue
-            status = strat.get("status", "")
-            symbol = strat.get("symbol")
-            if status not in ("active", "awaiting_fill") or not symbol:
-                continue
-            try:
-                process_strategy_file(user, filepath, strat)
-            except Exception as e:
-                log(f"[{user['username']}] Error processing {fname}: {e}", "monitor")
+            # Serialize the read-modify-write cycle. Without this lock, a
+            # handler thread calling pause_strategy or stop_strategy can
+            # write mid-tick, then the monitor's save_json clobbers the
+            # status change. Lock file is path + ".lock" — same file is
+            # acquired by handlers/strategy_mixin.py for the same reason.
+            with strategy_file_lock(filepath):
+                strat = load_json(filepath)
+                if not strat:
+                    continue
+                status = strat.get("status", "")
+                symbol = strat.get("symbol")
+                if status not in ("active", "awaiting_fill") or not symbol:
+                    continue
+                try:
+                    process_strategy_file(user, filepath, strat)
+                except Exception as e:
+                    log(f"[{user['username']}] Error processing {fname}: {e}", "monitor")
     except Exception as e:
         log(f"[{user['username']}] Monitor error: {e}", "monitor")
 
@@ -1140,6 +1266,29 @@ def run_auto_deployer(user):
 
     sdir = user_strategies_dir(user)
 
+    # BURN_DOWN #1: news signals integration. Build a {symbol: signal_dir}
+    # map from the screener's post-market news scan output. Each entry in
+    # `news_signals.actionable` has shape {symbol, score, direction}
+    # where direction is "bullish" or "bearish". Used below to (a) skip
+    # picks flagged bearish by strong news, and (b) bump pick priority
+    # for picks flagged bullish. The existing per-pick `news_sentiment`
+    # already catches most of this but the actionable list is higher-signal
+    # (deeper scoring, post-market scan vs. just pick-time snapshot).
+    news_map = {}
+    try:
+        actionable = (picks_data.get("news_signals") or {}).get("actionable") or []
+        for item in actionable:
+            sym = (item.get("symbol") or "").upper()
+            direction = (item.get("direction") or "").lower()
+            if sym and direction in ("bullish", "bearish"):
+                news_map[sym] = direction
+        if news_map:
+            log(f"[{user['username']}] News signals in play: "
+                f"{sum(1 for d in news_map.values() if d == 'bullish')} bullish, "
+                f"{sum(1 for d in news_map.values() if d == 'bearish')} bearish", "deployer")
+    except Exception as _e:
+        log(f"[{user['username']}] news_signals parse failed: {_e}. Continuing without it.", "deployer")
+
     log(f"[{user['username']}] Evaluating {len(top_picks)} candidates from filtered screener list", "deployer")
 
     for pick in top_picks:
@@ -1155,6 +1304,15 @@ def run_auto_deployer(user):
         if pick.get("earnings_warning"):
             log(f"[{user['username']}] {symbol}: Skipped (earnings warning) — trying next pick", "deployer")
             skip_reasons.append(f"{symbol}: earnings warning")
+            continue
+        # BURN_DOWN #1: bearish news → skip. A strong bearish news signal
+        # is a harder stop than per-pick sentiment (higher bar to qualify
+        # as "actionable" in the screener). Long strategies should not
+        # ignore it.
+        if best_strat in ("trailing_stop", "breakout", "mean_reversion") \
+                and news_map.get(symbol) == "bearish":
+            log(f"[{user['username']}] {symbol}: Skipped (bearish news signal) — trying next pick", "deployer")
+            skip_reasons.append(f"{symbol}: bearish news signal")
             continue
         if best_strat not in ("trailing_stop", "breakout", "mean_reversion"):
             skip_reasons.append(f"{symbol}: unsupported strategy ({best_strat})")
@@ -1919,6 +2077,22 @@ def scheduler_loop():
             if now_et.hour == 3 and now_et.minute >= 0:
                 if should_run_daily_at("daily_backup_all", 3, 0):
                     run_daily_backup()
+
+            # Task-staleness watchdog — alert if an interval-based task is
+            # overdue during market hours. Each alert fires at most once
+            # per hour per task, so a persistent outage doesn't spam.
+            # Only meaningful during market hours; outside market hours
+            # interval tasks are expected to be idle.
+            if market_open_flag:
+                _check_task_staleness(users)
+
+            # Heartbeat: /healthz checks that _recent_logs has a log line
+            # within 5 min. During market hours tasks log frequently, but
+            # after hours the scheduler sleeps silently and healthz starts
+            # returning "stale". Emit a heartbeat every ~2 min (every 4
+            # iterations of the 30s-sleep loop) to keep healthz green
+            # whenever the loop is actually running.
+            _heartbeat_tick()
         except Exception as e:
             log(f"Scheduler loop error: {e}", "scheduler")
             # Rate-limited notification on scheduler catastrophes. If the

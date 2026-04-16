@@ -943,7 +943,7 @@ class DashboardHandler(
         # leaves the old container running, and there was previously no way
         # to tell from outside).
         if path == "/api/version":
-            info = {"bot_version": "round-6"}
+            info = {"bot_version": "round-7"}
             try:
                 import subprocess as _sp
                 r = _sp.run(

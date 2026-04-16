@@ -35,7 +35,10 @@ button:disabled { opacity:0.5; cursor:not-allowed; }
       <div class="form-group"><label>Username</label><input type="text" id="username" required minlength="3" maxlength="30" pattern="[A-Za-z0-9_-]+"><div class="help-text">3-30 chars, letters/numbers/_/-</div></div>
       <div class="form-group"><label>Email</label><input type="email" id="email" required></div>
     </div>
-    <div class="form-group"><label>Password</label><input type="password" id="password" required minlength="10" autocomplete="new-password"><div class="help-text">Min 10 characters — a passphrase like "correct horse battery staple" works great</div></div>
+    <div class="form-group"><label>Password</label><input type="password" id="password" required minlength="10" autocomplete="new-password" oninput="updatePwStrength(this.value)"><div class="help-text">Min 10 characters — a passphrase like "correct horse battery staple" works great</div>
+      <div id="pwStrengthBar" style="height:6px;margin-top:6px;background:#2a3142;border-radius:3px;overflow:hidden"><div id="pwStrengthFill" style="height:100%;width:0%;background:#ef4444;transition:all 150ms"></div></div>
+      <div id="pwStrengthLabel" style="font-size:11px;color:#8a93a6;margin-top:4px;min-height:14px"></div>
+    </div>
 
     <div class="section-title">Alpaca Credentials</div>
     <div class="info-box">
@@ -60,7 +63,36 @@ button:disabled { opacity:0.5; cursor:not-allowed; }
   </form>
   <div class="auth-links">Already have an account? <a href="/login">Sign in</a></div>
 </div>
+<script src="https://cdn.jsdelivr.net/npm/zxcvbn@4.4.2/dist/zxcvbn.js"></script>
 <script>
+// Client-side password-strength meter. Server enforces the same policy
+// (score >= 3, length >= 10) via python-zxcvbn in auth.check_password_strength.
+// This is UX — let the user see the strength before they submit.
+function updatePwStrength(pw) {
+  var fill = document.getElementById('pwStrengthFill');
+  var label = document.getElementById('pwStrengthLabel');
+  if (!fill || !label) return;
+  if (!pw) {
+    fill.style.width = '0%'; fill.style.background = '#ef4444';
+    label.textContent = ''; return;
+  }
+  if (typeof zxcvbn !== 'function') { // CDN blocked / offline
+    var pct = Math.min(100, pw.length * 8);
+    fill.style.width = pct + '%';
+    label.textContent = pw.length < 10 ? 'Need at least 10 characters' : '';
+    return;
+  }
+  var username = document.getElementById('username') ? document.getElementById('username').value : '';
+  var email = document.getElementById('email') ? document.getElementById('email').value : '';
+  var result = zxcvbn(pw, [username, email, email.split('@')[0]]);
+  var pct = (result.score + 1) * 20;
+  var colors = ['#ef4444', '#f59e0b', '#f59e0b', '#10b981', '#10b981'];
+  var names  = ['Very weak', 'Weak', 'Fair', 'Good', 'Strong'];
+  fill.style.width = pct + '%';
+  fill.style.background = colors[result.score];
+  var warn = result.feedback && result.feedback.warning ? (' — ' + result.feedback.warning) : '';
+  label.textContent = names[result.score] + (result.score < 3 ? ' (server will reject)' : ' (passes policy)') + warn;
+}
 document.getElementById('signupForm').addEventListener('submit', async function(e) {
   e.preventDefault();
   var btn = e.target.querySelector('button');

@@ -426,13 +426,20 @@ class StrategyHandlerMixin:
             return self.send_json({"error": f"No strategy files found for {strategy}"}, 404)
 
         paused = []
+        # Round-7 fix: hold the strategy_file_lock across read-modify-write.
+        # Without it, the scheduler's monitor tick (also reading + writing
+        # these files every 60s) could overwrite the "paused" status we
+        # just set, silently reactivating the strategy the user asked to
+        # pause. Same lock file (path + ".lock") used by cloud_scheduler.
+        import cloud_scheduler as _cs
         for fpath in files:
-            data = server.load_json(fpath)
-            if data:
-                data["status"] = "paused"
-                data["paused_at"] = now_et().strftime("%Y-%m-%d %I:%M:%S %p ET")
-                server.save_json(fpath, data)
-                paused.append(os.path.basename(fpath))
+            with _cs.strategy_file_lock(fpath):
+                data = server.load_json(fpath)
+                if data:
+                    data["status"] = "paused"
+                    data["paused_at"] = now_et().strftime("%Y-%m-%d %I:%M:%S %p ET")
+                    server.save_json(fpath, data)
+                    paused.append(os.path.basename(fpath))
 
         self.send_json({
             "success": True,
@@ -451,34 +458,38 @@ class StrategyHandlerMixin:
 
         stopped = []
         orders_cancelled = 0
+        # Round-7: lock around the read-modify-write so the monitor tick
+        # can't reactivate what we're stopping. Same pattern as pause above.
+        import cloud_scheduler as _cs
         for fpath in files:
-            data = server.load_json(fpath)
-            if data:
-                # Cancel any open orders for this symbol
-                sym = data.get("symbol", "")
-                state = data.get("state", {})
-                order_ids = []
-                for key in ["stop_order_id", "trail_order_id", "sell_order_id", "entry_order_id"]:
-                    oid = state.get(key)
-                    if oid:
-                        order_ids.append(oid)
-                # Cancel ladder orders too
-                for rule_key in ["rules"]:
-                    rules = data.get(rule_key, {})
-                    for ladder in rules.get("ladder_in", []):
-                        oid = ladder.get("order_id")
+            with _cs.strategy_file_lock(fpath):
+                data = server.load_json(fpath)
+                if data:
+                    # Cancel any open orders for this symbol
+                    sym = data.get("symbol", "")
+                    state = data.get("state", {})
+                    order_ids = []
+                    for key in ["stop_order_id", "trail_order_id", "sell_order_id", "entry_order_id"]:
+                        oid = state.get(key)
                         if oid:
                             order_ids.append(oid)
+                    # Cancel ladder orders too
+                    for rule_key in ["rules"]:
+                        rules = data.get(rule_key, {})
+                        for ladder in rules.get("ladder_in", []):
+                            oid = ladder.get("order_id")
+                            if oid:
+                                order_ids.append(oid)
 
-                for oid in order_ids:
-                    result = self.user_api_delete(f"{self.user_api_endpoint}/orders/{oid}")
-                    if not (isinstance(result, dict) and "error" in result):
-                        orders_cancelled += 1
+                    for oid in order_ids:
+                        result = self.user_api_delete(f"{self.user_api_endpoint}/orders/{oid}")
+                        if not (isinstance(result, dict) and "error" in result):
+                            orders_cancelled += 1
 
-                data["status"] = "stopped"
-                data["stopped_at"] = now_et().strftime("%Y-%m-%d %I:%M:%S %p ET")
-                server.save_json(fpath, data)
-                stopped.append(os.path.basename(fpath))
+                    data["status"] = "stopped"
+                    data["stopped_at"] = now_et().strftime("%Y-%m-%d %I:%M:%S %p ET")
+                    server.save_json(fpath, data)
+                    stopped.append(os.path.basename(fpath))
 
         self.send_json({
             "success": True,

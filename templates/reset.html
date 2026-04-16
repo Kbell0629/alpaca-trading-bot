@@ -20,12 +20,35 @@ button { width:100%; padding:14px; background:var(--accent); color:white; border
 <p>Enter a new password below.</p>
 <form id="resetForm">
 <label>New Password</label>
-<input type="password" id="password" required minlength="10" autocomplete="new-password" placeholder="min 10 characters — a passphrase works great">
+<input type="password" id="password" required minlength="10" autocomplete="new-password" placeholder="min 10 characters — a passphrase works great" oninput="updatePwStrength(this.value)">
+<div id="pwStrengthBar" style="height:6px;margin-top:-8px;margin-bottom:10px;background:#2a3142;border-radius:3px;overflow:hidden"><div id="pwStrengthFill" style="height:100%;width:0%;background:#ef4444;transition:all 150ms"></div></div>
+<div id="pwStrengthLabel" style="font-size:11px;color:var(--text-dim);margin-top:-6px;margin-bottom:10px;min-height:14px"></div>
 <button type="submit">Reset Password</button>
 </form>
 <div id="message" class="message"></div>
 </div>
+<script src="https://cdn.jsdelivr.net/npm/zxcvbn@4.4.2/dist/zxcvbn.js"></script>
 <script>
+function updatePwStrength(pw) {
+  var fill = document.getElementById('pwStrengthFill');
+  var label = document.getElementById('pwStrengthLabel');
+  if (!fill || !label) return;
+  if (!pw) { fill.style.width = '0%'; fill.style.background = '#ef4444'; label.textContent = ''; return; }
+  if (typeof zxcvbn !== 'function') {
+    var pct = Math.min(100, pw.length * 8);
+    fill.style.width = pct + '%';
+    label.textContent = pw.length < 10 ? 'Need at least 10 characters' : '';
+    return;
+  }
+  var result = zxcvbn(pw);
+  var pct = (result.score + 1) * 20;
+  var colors = ['#ef4444', '#f59e0b', '#f59e0b', '#10b981', '#10b981'];
+  var names  = ['Very weak', 'Weak', 'Fair', 'Good', 'Strong'];
+  fill.style.width = pct + '%';
+  fill.style.background = colors[result.score];
+  var warn = result.feedback && result.feedback.warning ? (' — ' + result.feedback.warning) : '';
+  label.textContent = names[result.score] + (result.score < 3 ? ' (server will reject)' : ' (passes policy)') + warn;
+}
 var params = new URLSearchParams(window.location.search);
 var token = params.get('token');
 document.getElementById('resetForm').addEventListener('submit', async function(e) {
