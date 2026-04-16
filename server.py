@@ -2408,7 +2408,12 @@ function renderDashboard() {
         const wPct = Math.max(5, Math.min(100, (p.wheel_score||0) / maxScore * 100));
         const mrPct = Math.max(5, Math.min(100, (p.mean_reversion_score||0) / maxScore * 100));
         const boPct = Math.max(5, Math.min(100, (p.breakout_score||0) / maxScore * 100));
-        const recShares = p.recommended_shares || Math.max(1, Math.floor(portfolioValue * 0.05 / p.price));
+        // Guard against 0 price (Infinity shares) and missing/zero recommended_shares
+        const safePrice = (p.price && p.price > 0) ? p.price : 1;
+        let recShares = p.recommended_shares;
+        if (!recShares || !isFinite(recShares) || recShares < 1) {
+            recShares = Math.max(1, Math.floor(portfolioValue * 0.05 / safePrice) || 1);
+        }
         const backtestPct = p.backtest_return != null ? parseFloat(p.backtest_return).toFixed(1) : (p.daily_change * 0.3 + p.volatility * 0.1).toFixed(1);
 
         picksHtml += '<div class="pick-card" style="border-top:3px solid ' + color + '">' +
@@ -2472,14 +2477,15 @@ function renderDashboard() {
     orders.forEach(o => {
         const sideCls = o.side === 'buy' ? 'side-buy' : 'side-sell';
         const price = o.limit_price || o.stop_price || 'Market';
+        const priceDisplay = (price === 'Market') ? 'Market' : ('$' + price);
         ordHtml += '<tr>' +
             '<td><strong>' + esc(o.symbol||'') + '</strong></td>' +
             '<td><span class="' + sideCls + '">' + esc((o.side||'').toUpperCase()) + '</span></td>' +
             '<td>' + esc(o.type||'') + '</td>' +
             '<td>' + esc(o.qty||'') + '</td>' +
-            '<td>$' + price + '</td>' +
-            '<td>' + (o.status||'') + '</td>' +
-            '<td><button class="btn-danger btn-sm" onclick="openCancelOrderModal(\'' + (o.id||'') + '\',\'' + (o.symbol||'') + '\',\'' + (o.side||'') + '\',\'' + (o.type||'') + '\',\'' + (o.qty||'') + '\',\'' + price + '\')">Cancel</button></td></tr>';
+            '<td>' + esc(priceDisplay) + '</td>' +
+            '<td>' + esc(o.status||'') + '</td>' +
+            '<td><button class="btn-danger btn-sm" onclick="openCancelOrderModal(\'' + esc(o.id||'') + '\',\'' + esc(o.symbol||'') + '\',\'' + esc(o.side||'') + '\',\'' + esc(o.type||'') + '\',\'' + esc(o.qty||'') + '\',\'' + esc(price) + '\')">Cancel</button></td></tr>';
     });
     if (!ordHtml) ordHtml = '<tr><td colspan="7" class="empty">No open orders</td></tr>';
 
@@ -2497,7 +2503,8 @@ function renderDashboard() {
         const chgCls = p.daily_change >= 0 ? 'positive' : 'negative';
         const vsCls = (p.volume_surge||0) > 0 ? 'positive' : 'negative';
         const hl = i < 3 ? ' style="background:rgba(59,130,246,0.04)"' : '';
-        const recShares = Math.max(1, Math.floor(portfolioValue * 0.05 / p.price));
+        const safePriceScr = (p.price && p.price > 0) ? p.price : 1;
+        const recShares = Math.max(1, Math.floor(portfolioValue * 0.05 / safePriceScr) || 1);
         scrHtml += '<tr' + hl + '>' +
             '<td>' + (i+1) + '</td>' +
             '<td><strong>' + esc(p.symbol) + '</strong></td>' +
@@ -3549,7 +3556,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {args[0]}")
 
     def check_auth(self):
-        """Check HTTP Basic Auth. Returns True if authorized."""
+        """Check HTTP Basic Auth. Returns True if authorized.
+
+        Uses hmac.compare_digest for timing-safe comparison to prevent
+        timing attacks against the credentials.
+        """
+        import hmac
         auth_header = self.headers.get("Authorization", "")
         if not auth_header.startswith("Basic "):
             self.send_response(401)
@@ -3561,7 +3573,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             decoded = base64.b64decode(auth_header[6:]).decode("utf-8")
             user, passwd = decoded.split(":", 1)
-            if user == AUTH_USER and passwd == AUTH_PASS:
+            # Timing-safe comparison for both username and password
+            user_ok = hmac.compare_digest(user.encode("utf-8"), AUTH_USER.encode("utf-8"))
+            pass_ok = hmac.compare_digest(passwd.encode("utf-8"), AUTH_PASS.encode("utf-8"))
+            if user_ok and pass_ok:
                 return True
         except Exception:
             pass
@@ -4436,29 +4451,80 @@ class DashboardHandler(BaseHTTPRequestHandler):
         })
 
     def handle_apply_preset(self, body):
-        """Apply a strategy preset (conservative/moderate/aggressive)."""
-        settings = body.get("settings", {})
+        """Apply a strategy preset (conservative/moderate/aggressive).
+
+        Validates all inputs to bounded ranges to prevent a malicious or
+        buggy client from writing absurd values into guardrails.json (e.g.,
+        max_positions=9999999) that could cause downstream misbehavior.
+        """
+        if not isinstance(body, dict):
+            return self.send_json({"error": "Invalid request body"}, 400)
         preset_name = body.get("preset", "unknown")
+        allowed_presets = {"conservative", "moderate", "aggressive", "custom"}
+        if preset_name not in allowed_presets:
+            return self.send_json({"error": f"Unknown preset: {preset_name}"}, 400)
+
+        settings = body.get("settings", {})
+        if not isinstance(settings, dict):
+            return self.send_json({"error": "settings must be an object"}, 400)
+
+        # Whitelist strategy names to prevent arbitrary strings being saved
+        allowed_strategies = {
+            "trailing_stop", "copy_trading", "wheel", "mean_reversion",
+            "breakout", "short_sell",
+        }
+        raw_strats = settings.get("strategies", [])
+        if not isinstance(raw_strats, list):
+            raw_strats = []
+        strategies = [s for s in raw_strats if isinstance(s, str) and s in allowed_strategies]
+
+        # Bounded numeric validation
+        def _num(key, default, lo, hi):
+            v = settings.get(key, default)
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                return default
+            return max(lo, min(hi, v))
+
+        max_positions = int(_num("max_positions", 5, 1, 20))
+        max_position_pct = _num("max_position_pct", 0.10, 0.01, 0.50)
+        stop_loss_pct = _num("stop_loss_pct", 0.10, 0.01, 0.50)
 
         guardrails_path = os.path.join(BASE_DIR, "guardrails.json")
         guardrails = load_json(guardrails_path) or {}
-        guardrails["max_positions"] = settings.get("max_positions", guardrails.get("max_positions", 5))
-        guardrails["max_position_pct"] = settings.get("max_position_pct", guardrails.get("max_position_pct", 0.10))
-        guardrails["strategies_allowed"] = settings.get("strategies", guardrails.get("strategies_allowed", []))
+        guardrails["max_positions"] = max_positions
+        guardrails["max_position_pct"] = max_position_pct
+        if strategies:
+            guardrails["strategies_allowed"] = strategies
         save_json(guardrails_path, guardrails)
 
         config_path = os.path.join(BASE_DIR, "auto_deployer_config.json")
         config = load_json(config_path) or {}
         config["risk_settings"] = config.get("risk_settings", {})
-        config["risk_settings"]["default_stop_loss_pct"] = settings.get("stop_loss_pct", 0.10)
-        config["max_positions"] = settings.get("max_positions", 5)
+        config["risk_settings"]["default_stop_loss_pct"] = stop_loss_pct
+        config["max_positions"] = max_positions
         save_json(config_path, config)
 
-        self.send_json({"message": f"Preset applied: {preset_name}", "settings": settings})
+        self.send_json({"message": f"Preset applied: {preset_name}", "settings": {
+            "max_positions": max_positions,
+            "max_position_pct": max_position_pct,
+            "stop_loss_pct": stop_loss_pct,
+            "strategies": strategies,
+        }})
 
     def handle_toggle_short_selling(self, body):
-        """Toggle short selling ON/OFF in auto_deployer_config.json."""
-        enabled = bool(body.get("enabled", True))
+        """Toggle short selling ON/OFF in auto_deployer_config.json.
+
+        Requires body to contain an explicit 'enabled' boolean — defaulting
+        to True on missing body would silently enable shorts on any empty POST.
+        """
+        if not isinstance(body, dict) or "enabled" not in body:
+            return self.send_json({"error": "Missing 'enabled' field in request body"}, 400)
+        raw = body.get("enabled")
+        if not isinstance(raw, bool):
+            return self.send_json({"error": "'enabled' must be a boolean"}, 400)
+        enabled = raw
         config_path = os.path.join(BASE_DIR, "auto_deployer_config.json")
         config = load_json(config_path) or {}
         if "short_selling" not in config:
@@ -4475,6 +4541,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             }
         else:
             config["short_selling"]["enabled"] = enabled
+        config["short_selling"]["last_toggled"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         save_json(config_path, config)
         msg = "Short selling ENABLED — will deploy in bear markets" if enabled else "Short selling DISABLED — no new shorts will deploy"
         self.send_json({"message": msg, "enabled": enabled})

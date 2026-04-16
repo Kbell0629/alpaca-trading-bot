@@ -145,6 +145,13 @@ def monitor_strategies():
         if isinstance(account, dict) and "error" not in account:
             current_val = float(account.get("portfolio_value", 0))
             daily_start = guardrails.get("daily_starting_value")
+            # Fallback: if auto-deployer never ran to set daily_starting_value
+            # (disabled, kill switch was on, cooldown, etc.), set it now from
+            # current value so the kill-switch safety is always armed.
+            if not daily_start and current_val > 0:
+                guardrails["daily_starting_value"] = current_val
+                save_json(os.path.join(BASE_DIR, "guardrails.json"), guardrails)
+                daily_start = current_val
             if daily_start:
                 loss_pct = (daily_start - current_val) / daily_start
                 if loss_pct > guardrails.get("daily_loss_limit_pct", 0.03):
@@ -189,7 +196,7 @@ def check_profit_ladder(filepath, strat, price, entry, shares):
         return
 
     profit_pct = (price / entry - 1) * 100
-    state = strat.get("state", {})
+    state = strat.setdefault("state", {})  # ensure mutations persist in strat
     takes = state.get("profit_takes", []) or []
     symbol = strat["symbol"]
     initial_qty = strat.get("initial_qty") or shares
@@ -223,15 +230,42 @@ def check_profit_ladder(filepath, strat, price, entry, shares):
         if isinstance(order, dict) and "id" in order:
             takes.append(level)
             state["profit_takes"] = takes
-            state["total_shares_held"] = shares - sell_qty
+            remaining = shares - sell_qty
+            state["total_shares_held"] = remaining
+
+            # CRITICAL: resize the protective stop to match remaining shares,
+            # otherwise if the stop triggers it sells MORE than we hold and
+            # Alpaca will reject or (with short-enabled accounts) open a short.
+            old_stop_id = state.get("stop_order_id")
+            current_stop_price = state.get("current_stop_price")
+            if old_stop_id and remaining > 0 and current_stop_price:
+                api_delete(f"{API_ENDPOINT}/orders/{old_stop_id}")
+                new_stop = api_post(f"{API_ENDPOINT}/orders", {
+                    "symbol": symbol, "qty": str(remaining), "side": "sell",
+                    "type": "stop", "stop_price": str(current_stop_price),
+                    "time_in_force": "gtc"
+                })
+                if isinstance(new_stop, dict) and "id" in new_stop:
+                    state["stop_order_id"] = new_stop["id"]
+                else:
+                    # Stop replacement failed — clear stop_order_id so next
+                    # monitor tick will re-place a fresh stop.
+                    state["stop_order_id"] = None
+                    log(f"{symbol}: WARN stop resize failed after profit-take — will re-place next tick", "monitor")
+            elif old_stop_id and remaining <= 0:
+                api_delete(f"{API_ENDPOINT}/orders/{old_stop_id}")
+                state["stop_order_id"] = None
+
+            # Ensure state is attached to strat before save (defensive)
+            strat["state"] = state
             save_json(filepath, strat)
             log(f"{symbol}: Profit take level {level}% — sold {sell_qty} shares", "monitor")
-            notify(f"Profit take on {symbol} at +{level}%: sold {sell_qty} shares. {shares - sell_qty} still held.", "exit")
+            notify(f"Profit take on {symbol} at +{level}%: sold {sell_qty} shares. {remaining} still held.", "exit")
             return  # One level per check
 
 def process_strategy_file(filepath, strat):
     symbol = strat["symbol"]
-    state = strat.get("state", {})
+    state = strat.setdefault("state", {})  # ensure mutations persist in strat
     rules = strat.get("rules", {})
     strategy_type = strat.get("strategy", "trailing_stop")
 
@@ -291,17 +325,22 @@ def process_strategy_file(filepath, strat):
             current_stop = state.get("current_stop_price", 0) or 0
             if new_stop > current_stop:
                 old_id = state.get("stop_order_id")
-                if old_id:
-                    api_delete(f"{API_ENDPOINT}/orders/{old_id}")
-                order = api_post(f"{API_ENDPOINT}/orders", {
+                # Place the NEW stop before canceling the old one, so the
+                # position is never unprotected if either call fails.
+                new_order = api_post(f"{API_ENDPOINT}/orders", {
                     "symbol": symbol, "qty": str(shares), "side": "sell",
                     "type": "stop", "stop_price": str(new_stop), "time_in_force": "gtc"
                 })
-                if isinstance(order, dict) and "id" in order:
-                    state["stop_order_id"] = order["id"]
+                if isinstance(new_order, dict) and "id" in new_order:
+                    if old_id:
+                        api_delete(f"{API_ENDPOINT}/orders/{old_id}")
+                    state["stop_order_id"] = new_order["id"]
                     state["current_stop_price"] = new_stop
                     log(f"{symbol}: Stop raised ${current_stop:.2f} -> ${new_stop:.2f}", "monitor")
                     notify(f"Stop raised on {symbol}: ${current_stop:.2f} -> ${new_stop:.2f}", "info")
+                else:
+                    # New stop placement failed — keep the old stop in place.
+                    log(f"{symbol}: WARN stop raise failed, keeping prior stop at ${current_stop:.2f}. Err: {new_order}", "monitor")
 
     # Mean reversion target check
     if strategy_type == "mean_reversion":
@@ -465,8 +504,19 @@ def run_auto_deployer():
             log(f"{symbol}: Skipped ({reason})", "deployer")
             continue
 
-        qty = int(pick.get("recommended_shares", 1) or 1)
+        # Do NOT use `or 1` here — if screener said recommended_shares=0
+        # that means "don't buy". Treat missing (None) as skip too.
+        rs = pick.get("recommended_shares")
+        if rs is None:
+            log(f"{symbol}: Skipped (no recommended_shares from screener)", "deployer")
+            continue
+        try:
+            qty = int(rs)
+        except (TypeError, ValueError):
+            log(f"{symbol}: Skipped (bad recommended_shares: {rs!r})", "deployer")
+            continue
         if qty < 1:
+            log(f"{symbol}: Skipped (recommended_shares < 1)", "deployer")
             continue
 
         order = api_post(f"{API_ENDPOINT}/orders", {
@@ -511,12 +561,16 @@ def run_auto_deployer():
             # Log to trade journal
             journal_path = os.path.join(BASE_DIR, "trade_journal.json")
             journal = load_json(journal_path) or {"trades": [], "daily_snapshots": []}
+            _score = pick.get("best_score")
+            _rsi = pick.get("rsi", 50)
+            _score_str = f"{_score:.0f}" if isinstance(_score, (int, float)) else "n/a"
+            _rsi_str = f"{_rsi:.0f}" if isinstance(_rsi, (int, float)) else "n/a"
             journal["trades"].append({
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "symbol": symbol, "side": "buy", "qty": qty,
                 "price": pick.get("price"),
                 "strategy": best_strat,
-                "reason": f"Auto-deployed. Score {pick.get('best_score'):.0f}, RSI {pick.get('rsi',50):.0f}, Bias {pick.get('overall_bias','?')}",
+                "reason": f"Auto-deployed. Score {_score_str}, RSI {_rsi_str}, Bias {pick.get('overall_bias','?')}",
                 "deployer": "cloud_scheduler",
                 "status": "open",
             })
@@ -630,10 +684,16 @@ def run_friday_risk_reduction():
 
         if isinstance(order, dict) and "id" in order:
             actions_taken += 1
-            profit = (current - avg_entry) * half_qty
-            notify(f"Friday risk reduction: sold {half_qty} {symbol} locking in ~${profit:.2f} profit. {qty - half_qty} shares still held.", "exit")
+            # Signed position size: long>0, short<0. Profit direction depends on side.
+            raw_qty = float(pos.get("qty", 0))
+            if raw_qty > 0:
+                profit = (current - avg_entry) * half_qty
+            else:
+                # Short: profit when current < entry
+                profit = (avg_entry - current) * half_qty
+            notify(f"Friday risk reduction: trimmed {half_qty} {symbol} locking in ~${profit:.2f}. {qty - half_qty} shares still held.", "exit")
         else:
-            log(f"Failed to sell {symbol}: {order}", "friday")
+            log(f"Failed to trim {symbol}: {order}", "friday")
 
     if actions_taken > 0:
         notify(f"Weekend prep complete: scaled out of {actions_taken} winning positions", "info")
@@ -669,12 +729,14 @@ def run_monthly_rebalance():
             created = strat.get("created")
             if created:
                 try:
+                    # Accept both "YYYY-MM-DD" and full ISO timestamps
+                    created_str = str(created)[:10]
                     age_days = (datetime.now(timezone.utc).date() -
-                               datetime.strptime(created, "%Y-%m-%d").date()).days
+                               datetime.strptime(created_str, "%Y-%m-%d").date()).days
                     if age_days >= 60:
                         too_old = True
                         break
-                except:
+                except Exception:
                     pass
 
         # Close if old AND losing
@@ -742,8 +804,8 @@ def scheduler_loop():
             is_weekday = weekday < 5
             market_open = is_market_open() if is_weekday else False
 
-            # Auto-deployer: weekdays 9:35 AM ET
-            if is_weekday and now_et.hour == 9 and now_et.minute >= 35:
+            # Auto-deployer: weekdays 9:35 AM ET (skip on market holidays)
+            if is_weekday and now_et.hour == 9 and now_et.minute >= 35 and market_open:
                 if should_run_daily_at("auto_deployer", 9, 35):
                     run_auto_deployer()
 

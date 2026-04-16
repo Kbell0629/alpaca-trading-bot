@@ -59,18 +59,31 @@ def api_get(url, timeout=15):
         return {"error": str(e)}
 
 def score_news_article(article):
-    """Score a news article for actionable signals."""
+    """Score a news article for actionable signals.
+
+    Uses longest-match precedence so "upgraded to buy" doesn't also trigger "upgrade".
+    Patterns are checked in order of length (longest first), and any matched span
+    is masked out so shorter overlapping patterns don't double-count.
+    """
     text = (article.get("headline","") + " " + article.get("summary","")).lower()
     score = 0
     signals = []
-    for pattern, weight in BULLISH_SIGNALS.items():
-        if pattern in text:
+
+    # Combine bullish + bearish with their direction labels, longest first
+    all_patterns = (
+        [(p, w, "bullish") for p, w in BULLISH_SIGNALS.items()]
+        + [(p, w, "bearish") for p, w in BEARISH_SIGNALS.items()]
+    )
+    all_patterns.sort(key=lambda x: -len(x[0]))
+
+    # Mask matched spans in working text so shorter overlapping terms don't re-match
+    working = text
+    for pattern, weight, direction in all_patterns:
+        if pattern in working:
             score += weight
-            signals.append({"type": "bullish", "signal": pattern, "weight": weight})
-    for pattern, weight in BEARISH_SIGNALS.items():
-        if pattern in text:
-            score += weight  # weight is negative
-            signals.append({"type": "bearish", "signal": pattern, "weight": weight})
+            signals.append({"type": direction, "signal": pattern, "weight": weight})
+            # Replace with spaces to preserve positions
+            working = working.replace(pattern, " " * len(pattern))
     return score, signals
 
 def scan_post_market_news(hours_back=12, min_score=8):

@@ -305,6 +305,12 @@ def score_stocks(snapshots):
             volatility = (daily_high - daily_low) / daily_low * 100 if daily_low else 0
             volume_surge = (daily_volume / prev_volume - 1) * 100 if prev_volume else 0
 
+            # Data-quality filter: reject obvious stale/split-adjusted/bad-data snapshots.
+            # A legit single-session move is almost never >100%; >300% is corrupt data.
+            # These would otherwise produce garbage best_scores that dominate the auto-deployer.
+            if abs(daily_change) > 100 or volatility > 100:
+                continue
+
             # --- Strategy Scores ---
             # Trailing Stop Score
             trailing_score = daily_change * 0.5 + volatility * 0.3
