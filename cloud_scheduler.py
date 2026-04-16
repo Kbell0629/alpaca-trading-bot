@@ -570,13 +570,22 @@ def stop_scheduler():
 def get_scheduler_status():
     is_alive = _scheduler_running and _scheduler_thread is not None and _scheduler_thread.is_alive()
     et_now = get_et_time()
+    # Determine if we're in EDT or EST based on month
+    month = datetime.now(timezone.utc).month
+    tz_label = "EDT" if 3 <= month <= 11 else "EST"
+    # Send as a PRE-FORMATTED string so the browser doesn't re-convert timezones
+    et_display = et_now.strftime("%-I:%M:%S %p ") + tz_label
+    et_date_display = et_now.strftime("%a %b %-d")
     with _logs_lock:
         logs = list(_recent_logs[-20:])
     return {
         "running": is_alive,
         "thread_name": _scheduler_thread.name if _scheduler_thread else None,
         "last_runs": dict(_last_runs),
-        "current_et": et_now.isoformat(),
+        "current_et": et_now.isoformat(),       # kept for backward compat
+        "current_et_display": et_display,       # use this in UI ("3:30:00 AM EDT")
+        "current_et_date": et_date_display,     # e.g. "Thu Apr 16"
+        "tz_label": tz_label,
         "market_open": is_market_open(),
         "recent_logs": logs,
     }

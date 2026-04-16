@@ -1592,7 +1592,9 @@ function renderSchedulerPanel(s) {
     }
     var lastRuns = s.last_runs || {};
     var marketOpen = s.market_open;
-    var etTime = s.current_et ? new Date(s.current_et).toLocaleTimeString() : '?';
+    // Use the pre-formatted ET string from server (don't let browser re-convert timezones)
+    var etTime = s.current_et_display || '?';
+    var etDate = s.current_et_date || '';
 
     // Define all tasks with their schedules
     var tasks = [
@@ -1629,7 +1631,7 @@ function renderSchedulerPanel(s) {
 
     // Summary bar
     var summary = '<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--text-dim);margin-bottom:16px">' +
-        '<span>Current ET: <strong style="color:var(--text)">' + esc(etTime) + '</strong></span>' +
+        '<span>Current ET: <strong style="color:var(--text)">' + esc(etTime) + '</strong>' + (etDate ? ' <span style="color:var(--text-dim)">(' + esc(etDate) + ')</span>' : '') + '</span>' +
         '<span>Market: <strong style="color:' + (marketOpen ? 'var(--green)' : 'var(--text-dim)') + '">' + (marketOpen ? 'OPEN' : 'CLOSED') + '</strong></span>' +
         '<span>Thread: <strong style="color:var(--text)">' + esc(s.thread_name || '?') + '</strong></span>' +
         '<span>Running: <strong style="color:var(--green)">YES</strong></span>' +
