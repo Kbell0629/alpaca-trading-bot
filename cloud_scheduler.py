@@ -1613,6 +1613,18 @@ def run_daily_close(user):
         env["ALPACA_API_SECRET"] = user["_api_secret"]
         env["ALPACA_ENDPOINT"] = user["_api_endpoint"]
         env["ALPACA_DATA_ENDPOINT"] = user["_data_endpoint"]
+        # Round-9 fix: tell the subprocess WHICH user's scorecard +
+        # trade_journal to write. Without these env vars the subprocess
+        # fell through to the shared /data/scorecard.json and /data/
+        # trade_journal.json legacy paths, which is what caused the
+        # divergence I observed today (shared file fresh, per-user file
+        # stale by over an hour). update_scorecard.py reads these from
+        # os.environ at import time.
+        env["SCORECARD_PATH"] = user_file(user, "scorecard.json")
+        env["JOURNAL_PATH"] = user_file(user, "trade_journal.json")
+        env["STRATEGIES_DIR"] = user.get("_strategies_dir") or os.path.join(
+            user.get("_data_dir") or DATA_DIR, "strategies"
+        )
         subprocess.run([sys.executable, os.path.join(BASE_DIR, "update_scorecard.py")],
                       cwd=BASE_DIR, capture_output=True, text=True, timeout=60, env=env)
         subprocess.run([sys.executable, os.path.join(BASE_DIR, "error_recovery.py")],
@@ -1864,14 +1876,22 @@ def is_first_trading_day_of_month(user):
 # SCHEDULER LOOP
 # ============================================================================
 def should_run_interval(task_name, interval_seconds):
+    # Round-9 fix: acquire the lock BEFORE the read so the TOCTOU window
+    # between check and write can't let two threads both think they
+    # should run the task. The scheduler is single-threaded in practice
+    # but handler threads (force-daily-close, future endpoints) can also
+    # mutate _last_runs, so lock discipline matters.
     now = time.time()
-    last = _last_runs.get(task_name, 0)
-    if now - last >= interval_seconds:
-        with _last_runs_lock:
+    with _last_runs_lock:
+        last = _last_runs.get(task_name, 0)
+        if now - last >= interval_seconds:
             _last_runs[task_name] = now
-        _save_last_runs()
-        return True
-    return False
+            fire = True
+        else:
+            fire = False
+    if fire:
+        _save_last_runs()  # persist outside the lock (no re-entry risk)
+    return fire
 
 def should_run_daily_at(task_name, hour_et, minute_et, max_late_seconds=1800):
     """Fire a daily task exactly once per day.
@@ -1887,16 +1907,21 @@ def should_run_daily_at(task_name, hour_et, minute_et, max_late_seconds=1800):
     larger value. Auto-deployer/wheel-deploy keep the default because
     firing those hours late = trading on stale screener data.
     """
+    # Round-9 fix: acquire lock BEFORE the read. See should_run_interval
+    # comment — same TOCTOU bug applied here before.
     now_et = get_et_time()
     target = now_et.replace(hour=hour_et, minute=minute_et, second=0, microsecond=0)
-    last_date = _last_runs.get(task_name, "")
     today_str = now_et.strftime("%Y-%m-%d")
-    if last_date != today_str and now_et >= target and (now_et - target).total_seconds() < max_late_seconds:
-        with _last_runs_lock:
+    with _last_runs_lock:
+        last_date = _last_runs.get(task_name, "")
+        if last_date != today_str and now_et >= target and (now_et - target).total_seconds() < max_late_seconds:
             _last_runs[task_name] = today_str
+            fire = True
+        else:
+            fire = False
+    if fire:
         _save_last_runs()
-        return True
-    return False
+    return fire
 
 # ============================================================================
 # TASK 8: WHEEL AUTO-DEPLOY (per user) — fires at 9:40 AM ET weekdays.

@@ -41,13 +41,18 @@ class ActionsHandlerMixin:
         user_id = self.current_user.get("id") if self.current_user else None
         if user_id is not None:
             now_ts = time.time()
-            last = server._refresh_cooldowns.get(user_id, 0)
-            if now_ts - last < 30:
-                wait = int(30 - (now_ts - last))
-                return self.send_json({
-                    "error": f"Refresh cooling down — try again in {wait}s"
-                }, 429)
-            server._refresh_cooldowns[user_id] = now_ts
+            # Round-9 fix: atomic compare-and-set on _refresh_cooldowns.
+            # Without the lock, two clicks arriving in the same
+            # millisecond could both pass the check and both spawn a
+            # screener subprocess.
+            with server._refresh_cooldowns_lock:
+                last = server._refresh_cooldowns.get(user_id, 0)
+                if now_ts - last < 30:
+                    wait = int(30 - (now_ts - last))
+                    return self.send_json({
+                        "error": f"Refresh cooling down — try again in {wait}s"
+                    }, 429)
+                server._refresh_cooldowns[user_id] = now_ts
 
         script_path = os.path.join(server.BASE_DIR, "update_dashboard.py")
         env = os.environ.copy()
@@ -378,10 +383,19 @@ class ActionsHandlerMixin:
             # read fresh scorecard values. Daily close is fast (~1-3s).
             cs.run_daily_close(user)
             # Mark it done for today so the scheduler doesn't re-fire.
+            # Round-9 fix: mutation must be inside cs._last_runs_lock to
+            # avoid racing with the scheduler thread's snapshot in
+            # _save_last_runs (and with should_run_daily_at's own
+            # compare-and-set path).
             from et_time import now_et
             today_str = now_et().strftime("%Y-%m-%d")
-            cs._last_runs[f"daily_close_{user['id']}"] = today_str
-            # Persist if the scheduler supports it (round-8+ fix).
+            try:
+                with cs._last_runs_lock:
+                    cs._last_runs[f"daily_close_{user['id']}"] = today_str
+            except AttributeError:
+                # Pre-round-8 cloud_scheduler (no lock exposed). Fall
+                # back to unsafe direct assignment.
+                cs._last_runs[f"daily_close_{user['id']}"] = today_str
             try:
                 if hasattr(cs, "_save_last_runs"):
                     cs._save_last_runs()

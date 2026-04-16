@@ -502,6 +502,7 @@ def is_allowed_alpaca_endpoint(url, data=False):
 
 # Per-user cooldown for /api/refresh. Spawns a 10-min subprocess if abused.
 _refresh_cooldowns = {}  # user_id -> last_refresh_ts
+_refresh_cooldowns_lock = threading.Lock()  # serialize compare-and-set
 
 def _login_rate_limited(ip, username):
     """Persistent rate limit check (delegates to auth.is_login_locked)."""

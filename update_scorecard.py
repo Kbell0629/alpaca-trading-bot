@@ -49,9 +49,19 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # path (e.g. /data). Locally defaults to BASE_DIR so nothing changes.
 DATA_DIR = os.environ.get("DATA_DIR", BASE_DIR)
 os.makedirs(DATA_DIR, exist_ok=True)
-JOURNAL_PATH = os.path.join(DATA_DIR, "trade_journal.json")
-SCORECARD_PATH = os.path.join(DATA_DIR, "scorecard.json")
-STRATEGIES_DIR = os.path.join(DATA_DIR, "strategies")
+
+# Round-9 fix: when cloud_scheduler.run_daily_close spawns this script
+# as a subprocess, it passes per-user paths via env vars so scorecard +
+# trade_journal are written to the user's own /data/users/{id}/ dir,
+# not the shared /data/ legacy paths. Before this fix, daily close
+# wrote to /data/scorecard.json while the dashboard read from
+# /data/users/1/scorecard.json — the two files drifted (observed today:
+# shared had last_updated=17:16 current_value=$100,332 while per-user
+# had 16:05 $100,378). Env vars win; shared paths are the fallback for
+# env-mode / dev runs without a user context.
+JOURNAL_PATH = os.environ.get("JOURNAL_PATH", os.path.join(DATA_DIR, "trade_journal.json"))
+SCORECARD_PATH = os.environ.get("SCORECARD_PATH", os.path.join(DATA_DIR, "scorecard.json"))
+STRATEGIES_DIR = os.environ.get("STRATEGIES_DIR", os.path.join(DATA_DIR, "strategies"))
 
 API_ENDPOINT = os.environ.get("ALPACA_ENDPOINT", "https://paper-api.alpaca.markets/v2")
 API_KEY = os.environ.get("ALPACA_API_KEY", "")

@@ -253,6 +253,10 @@ th .sort-arrow { margin-left: 4px; font-size: 8px; }
 td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
 .positive { color: var(--green); }
 .negative { color: var(--red); }
+/* Break-even P&L — neither win nor loss. Muted so it reads as "no
+   change" rather than being mistaken for a small gain (it was
+   rendering green via the >= 0 comparison in pnlClass before). */
+.neutral { color: var(--text-dim); }
 .side-buy { color: var(--green); font-weight: 600; }
 .side-sell { color: var(--red); font-weight: 600; }
 .empty { text-align: center; color: var(--text-dim); padding: 20px; }
@@ -1100,6 +1104,111 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
     .screener table { font-size: 11px; }
     .screener th, .screener td { padding: 6px 8px; }
 }
+
+/* ===================================================================
+   Mobile polish pass — fixes for phone-sized viewports (<=600px).
+   Written as a single consolidated block so the full set of mobile
+   behaviours is discoverable and reviewable in one place.
+   =================================================================== */
+@media (max-width: 600px) {
+    /* Tighter body padding so content gets the full viewport width. */
+    body { padding: 6px; font-size: 14px; }
+
+    /* Sticky header — keep it compact on phones so it doesn't eat
+       half the screen when the user scrolls. */
+    .header-v2 { padding: 8px; margin: -6px -6px 12px -6px; flex-wrap: wrap; gap: 6px; }
+    .header-brand h1 { font-size: 16px; }
+    .header-status-row { flex-wrap: wrap; gap: 4px; width: 100%; }
+    .status-chip { font-size: 9px; padding: 3px 8px; }
+
+    /* Touch targets: Apple HIG says 44px minimum. Most of our buttons
+       were 32-34px. Bump to 40px+ on mobile so you can actually tap. */
+    .header-icon-btn, .kill-switch-btn-v2, .user-btn-v2 { min-height: 40px; min-width: 40px; }
+    button, .btn-primary, .btn-secondary, .btn-ghost, .btn-warning, .btn-danger { min-height: 40px; }
+    .btn-sm { min-height: 32px; }  /* allow compact action buttons in tables */
+
+    /* Readme (user guide) modal — the big one. Was 90vh centred
+       with 280px sidebar TOC. Already hidden sidebar on <900px, but
+       mobile needs full-screen and tighter padding. */
+    .readme-modal-overlay { padding: 0; }
+    .readme-modal { height: 100vh; border-radius: 0; border: none; max-width: 100vw; }
+    .readme-header { padding: 10px 12px; flex-wrap: wrap; gap: 6px; }
+    .readme-header h2 { font-size: 15px; }
+    .readme-search { width: 100%; order: 99; margin-top: 6px; }  /* search on its own row */
+    .readme-close { width: 40px; height: 40px; font-size: 18px; }  /* bigger tap target */
+    .readme-content { padding: 14px 12px; font-size: 13px; }
+    .readme-content h1 { font-size: 20px; }
+    .readme-content h2 { font-size: 17px; margin-top: 20px; }
+    .readme-content h3 { font-size: 14px; }
+    /* Long URLs and inline code — break instead of overflowing. */
+    .readme-content a, .readme-content code { word-break: break-word; overflow-wrap: anywhere; }
+    /* Tables inside the readme (if any) — horizontal scroll. */
+    .readme-content table { display: block; overflow-x: auto; white-space: nowrap; }
+    /* Code blocks — don't let them push the viewport wider. */
+    .readme-content pre { overflow-x: auto; font-size: 12px; max-width: 100%; }
+
+    /* All confirm/deploy/settings modals — go full-screen on phones
+       so the user isn't squinting at a 400px-wide centred card. */
+    .modal-overlay { padding: 0; align-items: stretch; }
+    .modal { max-width: 100vw; width: 100%; height: 100vh; border-radius: 0; overflow-y: auto; }
+
+    /* Screener table — 10 columns will NEVER fit. Wrap the whole
+       container in horizontal scroll and shrink padding. */
+    .screener { padding: 12px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .screener table { min-width: 700px; font-size: 10px; }
+    .screener th, .screener td { padding: 4px 6px; }
+
+    /* Positions / orders tables — the .table-card already has
+       overflow-x:auto, but on mobile force a minimum width so
+       columns don't squash together. */
+    .table-card { padding: 12px; }
+    .table-card table { min-width: 420px; font-size: 11px; }
+
+    /* Scheduler panel task grid — stack cards single-column. */
+    .scheduler-task-grid { grid-template-columns: 1fr !important; gap: 8px; }
+
+    /* Heatmap — stats grid should go 3 columns not 6 on phones. */
+    .heatmap-stats { grid-template-columns: repeat(2, 1fr) !important; gap: 8px; }
+
+    /* Stat cards inside cards — single column. */
+    .stat-grid { grid-template-columns: repeat(2, 1fr) !important; gap: 8px; }
+
+    /* Activity log — tighten and wrap long lines. */
+    .activity-log { padding: 12px; }
+    .log-entries > div { word-break: break-word; font-size: 11px; }
+
+    /* Forms in settings/signup — ensure inputs fit viewport and use
+       the full width. Was fine but the labels and help text squished. */
+    .form-group input, .form-group select, .form-group textarea { width: 100%; font-size: 16px; }
+    /* iOS Safari zooms in on any input < 16px font on focus — setting
+       16px disables that forced zoom. */
+
+    /* Admin user list — the Deactivate/Reactivate + Reset buttons
+       should stack on a second row, not try to fit beside long
+       usernames on one line. */
+    .admin-users-table td:last-child { white-space: normal; }
+    .admin-users-table .btn-sm { margin-bottom: 4px; }
+
+    /* Backtest chart — Chart.js canvas; let it shrink to container. */
+    .backtest-section canvas { max-width: 100%; height: auto !important; }
+
+    /* Account cards — 2 columns fit comfortably on a phone. */
+    .account-bar { grid-template-columns: repeat(2, 1fr); gap: 6px; }
+
+    /* Hide the standalone "Next refresh: XXs" chip on very narrow
+       screens — the countdown is nice-to-have, not essential. */
+    .next-refresh-chip { display: none; }
+}
+
+/* Ultra-narrow (< 380px, e.g. iPhone SE portrait) — one more tier. */
+@media (max-width: 380px) {
+    .heatmap-stats { grid-template-columns: repeat(2, 1fr) !important; }
+    .readiness-metrics { grid-template-columns: 1fr !important; }
+    .account-bar { grid-template-columns: 1fr !important; }
+    .nav-tab { padding: 6px 8px; font-size: 11px; }
+    .header-brand h1 { font-size: 15px; }
+    .readme-content h1 { font-size: 18px; }
+}
 .backtest-section {
     background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
     padding: 20px; margin-bottom: 24px;
@@ -1648,7 +1757,14 @@ function fmtPct(n) {
     if (!isFinite(x)) x = 0;
     return (x>=0?'+':'') + x.toFixed(1) + '%';
 }
-function pnlClass(n) { return parseFloat(n) >= 0 ? 'positive' : 'negative'; }
+function pnlClass(n) {
+    // Break-even ($0.00) shouldn't be green — it's neither win nor
+    // loss. Only strictly > 0 gets positive styling; strictly < 0 gets
+    // negative; exactly 0 gets the default muted text color.
+    var v = parseFloat(n);
+    if (!isFinite(v) || v === 0) return 'neutral';
+    return v > 0 ? 'positive' : 'negative';
+}
 
 /* Format a server-emitted timestamp as 12-hour ET. Accepts:
      - New format: "YYYY-MM-DD HH:MM:SS AM/PM ET" (server emits this directly)
