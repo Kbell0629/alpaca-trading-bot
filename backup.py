@@ -118,6 +118,15 @@ def _create_backup_inner():
             if os.path.exists(src_db):
                 dst_db = os.path.join(staging, "users.db")
                 src_conn = sqlite3.connect(src_db)
+                # Force a WAL checkpoint FIRST so any pending writes are
+                # flushed into the main DB file. Without this, conn.backup()
+                # still gives a consistent snapshot, but uncommitted WAL
+                # transactions are not guaranteed to be included and could
+                # be lost on restore.
+                try:
+                    src_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                except Exception:
+                    pass  # non-WAL DBs are a no-op; don't fail the backup
                 dst_conn = sqlite3.connect(dst_db)
                 with dst_conn:
                     src_conn.backup(dst_conn)

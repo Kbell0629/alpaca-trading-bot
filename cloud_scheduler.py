@@ -50,6 +50,7 @@ _scheduler_running = False
 _last_runs = {}
 _recent_logs = []  # Circular buffer for dashboard display
 _logs_lock = threading.Lock()
+_last_fatal_notify_ts = 0.0  # rate-limit fatal-loop-error push notifications
 
 # ET is the canonical timezone for this app — the US markets run in ET,
 # the user is in ET, and there is no reason for UTC to surface anywhere in
@@ -148,7 +149,15 @@ def _user_headers(user):
 # the cached error immediately without touching the network. This prevents
 # all users from generating a retry storm against an Alpaca outage and
 # burning API quota / bandwidth. Reset on first successful response.
+#
+# Thread safety: this module's user_api_get runs in the scheduler thread,
+# AND the server.py DashboardHandler has its OWN user_api_get method (does
+# NOT touch _cb_state). So in practice only one thread mutates _cb_state.
+# Still protect with a lock so future handler code can safely use this
+# module's helpers, and so read-modify-write (`fails += 1`) is atomic even
+# under free-threading Python builds.
 _cb_state = {}            # user_id -> {"fails": int, "open_until": timestamp}
+_cb_lock = threading.Lock()
 _CB_OPEN_THRESHOLD = 5    # consecutive failures before tripping
 _CB_OPEN_SECONDS = 300    # 5-minute cool-off once tripped
 
@@ -158,29 +167,56 @@ def _cb_key(user):
 
 
 def _cb_blocked(user):
-    st = _cb_state.get(_cb_key(user))
-    if not st:
+    key = _cb_key(user)
+    with _cb_lock:
+        st = _cb_state.get(key)
+        if not st:
+            return False
+        if st.get("open_until", 0) > time.time():
+            return True
+        # Cool-off elapsed — reset and allow a probe
+        _cb_state.pop(key, None)
         return False
-    if st.get("open_until", 0) > time.time():
-        return True
-    # Cool-off elapsed — reset and allow a probe
-    _cb_state.pop(_cb_key(user), None)
-    return False
 
 
 def _cb_record_failure(user):
     key = _cb_key(user)
-    st = _cb_state.setdefault(key, {"fails": 0, "open_until": 0})
-    st["fails"] += 1
-    if st["fails"] >= _CB_OPEN_THRESHOLD:
-        st["open_until"] = time.time() + _CB_OPEN_SECONDS
+    tripped = False
+    fails = 0
+    with _cb_lock:
+        st = _cb_state.setdefault(key, {"fails": 0, "open_until": 0})
+        st["fails"] += 1
+        fails = st["fails"]
+        if st["fails"] >= _CB_OPEN_THRESHOLD:
+            # Only notify on the TRANSITION — if we were already open, don't
+            # re-trip (open_until > now means we're still inside the cool-off).
+            if st.get("open_until", 0) <= time.time():
+                tripped = True
+            st["open_until"] = time.time() + _CB_OPEN_SECONDS
+    if tripped:
+        # Alert the user — a silent CB trip used to require reading Railway
+        # logs to discover. Now the user gets a push notification so they
+        # can check Alpaca status / credentials.
         log(f"[{user.get('username','?')}] Alpaca circuit breaker OPEN "
-            f"({st['fails']} consecutive failures). Cooling off "
+            f"({fails} consecutive failures). Cooling off "
             f"{_CB_OPEN_SECONDS}s.", "api")
+        try:
+            notify_user(
+                user,
+                f"Alpaca API has been failing for your account "
+                f"({fails} consecutive errors). Trading is paused for "
+                f"{_CB_OPEN_SECONDS // 60} minutes. Check Alpaca status "
+                f"and your API credentials.",
+                "alert",
+            )
+        except Exception as _e:
+            log(f"CB-trip notification failed: {_e}", "api")
 
 
 def _cb_record_success(user):
-    _cb_state.pop(_cb_key(user), None)
+    key = _cb_key(user)
+    with _cb_lock:
+        _cb_state.pop(key, None)
 
 
 def user_api_get(user, url_path, timeout=10, retries=2):
@@ -499,11 +535,16 @@ def monitor_strategies(user):
         if isinstance(account, dict) and "error" not in account:
             current_val = float(account.get("portfolio_value", 0))
             daily_start = guardrails.get("daily_starting_value")
-            # Fallback: if auto-deployer never ran to set daily_starting_value
-            # (disabled, kill switch was on, cooldown, etc.), set it now from
-            # current value so the kill-switch safety is always armed.
-            if not daily_start and current_val > 0:
+            stored_date = guardrails.get("daily_starting_value_date")
+            today_et = get_et_time().strftime("%Y-%m-%d")
+            # Fallback: set daily_starting_value if (a) never set, (b) stored
+            # date doesn't match today's ET date (new trading day), or (c) the
+            # auto-deployer never ran to set it (disabled, kill-switch cooldown).
+            # Tagging with the ET date keeps this fallback in sync with the
+            # auto-deployer's set-once logic in run_auto_deployer (line ~1076).
+            if current_val > 0 and (not daily_start or stored_date != today_et):
                 guardrails["daily_starting_value"] = current_val
+                guardrails["daily_starting_value_date"] = today_et
                 save_json(guardrails_path, guardrails)
                 daily_start = current_val
             if daily_start:
@@ -828,7 +869,21 @@ def process_strategy_file(user, filepath, strat):
         order = user_api_get(user, f"/orders/{entry_order_id}")
         if isinstance(order, dict) and order.get("status") == "filled":
             state["entry_fill_price"] = float(order.get("filled_avg_price", 0))
-            state["total_shares_held"] = int(float(order.get("filled_qty", 0)))
+            filled_qty = int(float(order.get("filled_qty", 0)))
+            state["total_shares_held"] = filled_qty
+            # Reconcile initial_qty with the ACTUAL fill. The profit ladder
+            # uses initial_qty to compute each rung's sell size
+            # (initial_qty * 25%). If the intended buy was 100 shares but
+            # only 75 filled, keeping initial_qty=100 would make each rung
+            # sell 25 — exhausting the position after 3 rungs instead of 4.
+            # Trade journal P&L also keys off initial_qty for returns math.
+            intended_qty = strat.get("initial_qty")
+            if filled_qty > 0 and filled_qty != intended_qty:
+                log(f"[{user['username']}] {symbol}: partial entry fill "
+                    f"({filled_qty}/{intended_qty}). Reconciling initial_qty → {filled_qty}.",
+                    "monitor")
+                strat["initial_qty"] = filled_qty
+                strat["intended_qty"] = intended_qty  # keep the original for audit
             strat["status"] = "active"
             log(f"[{user['username']}] {symbol}: Entry filled at ${state['entry_fill_price']:.2f}", "monitor")
 
@@ -1866,6 +1921,24 @@ def scheduler_loop():
                     run_daily_backup()
         except Exception as e:
             log(f"Scheduler loop error: {e}", "scheduler")
+            # Rate-limited notification on scheduler catastrophes. If the
+            # outer loop is failing, the user won't notice unless they
+            # happen to open the dashboard. One push per hour is enough to
+            # signal the problem without spamming if the loop fails every
+            # 30s for an extended outage.
+            global _last_fatal_notify_ts
+            _now = time.time()
+            if _now - _last_fatal_notify_ts > 3600:
+                _last_fatal_notify_ts = _now
+                try:
+                    notify_user_global(
+                        f"Scheduler loop hit an unhandled exception: "
+                        f"{type(e).__name__}: {str(e)[:200]}. "
+                        f"Bot continues but check Railway logs.",
+                        "alert",
+                    )
+                except Exception:
+                    pass
 
         time.sleep(30)
 

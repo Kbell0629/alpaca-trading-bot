@@ -867,10 +867,24 @@ def count_legacy_encrypted_rows():
 
 # ===== Per-user paths =====
 def user_data_dir(user_id):
-    """Return the data directory for a user."""
+    """Return the data directory for a user.
+
+    mode=0o700 means owner-only read/write/execute. On Railway (single
+    container, single process user) this is belt-and-suspenders; on a
+    shared local dev box it prevents OS-level users from reading another
+    trader's strategies or journal. If the directory already exists with
+    looser perms (from a pre-round-6 deploy), we tighten it on next call.
+    """
     d = os.path.join(USERS_DIR, str(user_id))
-    os.makedirs(d, exist_ok=True)
-    os.makedirs(os.path.join(d, "strategies"), exist_ok=True)
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    os.makedirs(os.path.join(d, "strategies"), mode=0o700, exist_ok=True)
+    # `exist_ok=True` skips mode on pre-existing dirs — enforce it
+    # explicitly so upgraded deploys get the tighter permissions.
+    try:
+        os.chmod(d, 0o700)
+        os.chmod(os.path.join(d, "strategies"), 0o700)
+    except OSError:
+        pass
     return d
 
 def user_file(user_id, filename):
@@ -985,16 +999,31 @@ AUDIT_RETENTION_DAYS = 90
 
 def gc_audit_log():
     """Delete admin_audit_log rows older than AUDIT_RETENTION_DAYS.
-    Called opportunistically from the same hook as gc_login_attempts."""
+    Called opportunistically from the same hook as gc_login_attempts.
+
+    Batched: processes 500 rows per statement to avoid holding a long
+    write lock if the table has accumulated many expired rows (e.g., after
+    a deploy that lost the GC hook). SQLite blocks other writers during
+    a DELETE, so unbounded deletes can pause logins for seconds.
+    """
     try:
         cutoff = (now_et() - timedelta(days=AUDIT_RETENTION_DAYS)).isoformat()
         conn = _get_db()
         cur = conn.cursor()
-        cur.execute("DELETE FROM admin_audit_log WHERE ts < ?", (cutoff,))
-        deleted = cur.rowcount
-        conn.commit()
+        total = 0
+        for _ in range(20):  # cap at 20 * 500 = 10k rows per GC call
+            cur.execute(
+                "DELETE FROM admin_audit_log "
+                "WHERE id IN (SELECT id FROM admin_audit_log WHERE ts < ? LIMIT 500)",
+                (cutoff,),
+            )
+            deleted = cur.rowcount
+            conn.commit()
+            total += deleted
+            if deleted < 500:
+                break
         conn.close()
-        return deleted
+        return total
     except Exception:
         return 0
 

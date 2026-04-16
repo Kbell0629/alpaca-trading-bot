@@ -198,8 +198,10 @@ def save_json(path, data):
 
 # Fix #14: Server-side API response caching
 _api_cache = {}
+_api_cache_lock = threading.Lock()
 _cache_ttl = 10  # seconds
 _API_CACHE_MAX = 500  # sweep when exceeded to prevent unbounded growth
+
 
 def alpaca_get_cached(url, timeout=15, headers=None):
     """Cached version of alpaca_get for dashboard data.
@@ -207,17 +209,25 @@ def alpaca_get_cached(url, timeout=15, headers=None):
     If headers is provided, the cache is keyed by (url, key-id) so different
     users don't share each other's data. When headers is None, uses the
     module-level env-var headers (backward compat).
+
+    Thread safety: ThreadingHTTPServer spawns one thread per request. Without
+    _api_cache_lock, the sweep-then-write pattern below could (1) raise
+    RuntimeError from concurrent dict iteration and (2) race on
+    _api_cache[cache_key] assignment. The lock is taken for the fast lookup
+    + sweep + write path. The actual network call is OUTSIDE the lock so
+    one slow request doesn't serialize unrelated cache reads.
     """
     now = time.time()
     cache_key = (url, (headers or {}).get("APCA-API-KEY-ID", ""))
-    # Periodic sweep of expired entries — was unbounded; long uptime with
-    # many distinct URL variants (query strings) grew the dict forever.
-    if len(_api_cache) > _API_CACHE_MAX:
-        for k in list(_api_cache.keys()):
-            if now - _api_cache[k]["time"] > _cache_ttl:
-                _api_cache.pop(k, None)
-    if cache_key in _api_cache and now - _api_cache[cache_key]["time"] < _cache_ttl:
-        return _api_cache[cache_key]["data"]
+
+    # Fast path: hit under the lock, return cached value without touching
+    # the network.
+    with _api_cache_lock:
+        entry = _api_cache.get(cache_key)
+        if entry and now - entry["time"] < _cache_ttl:
+            return entry["data"]
+
+    # Miss. Fetch without holding the lock.
     if headers:
         req_headers = dict(headers)
         req = urllib.request.Request(url, headers=req_headers)
@@ -232,7 +242,17 @@ def alpaca_get_cached(url, timeout=15, headers=None):
             data = {"error": str(e)}
     else:
         data = alpaca_get(url, timeout=timeout)
-    _api_cache[cache_key] = {"data": data, "time": now}
+
+    # Write back under the lock. Sweep expired entries here (not in the
+    # read path) so the sweep is serialized with writes and can't race
+    # against concurrent iteration.
+    with _api_cache_lock:
+        _api_cache[cache_key] = {"data": data, "time": now}
+        if len(_api_cache) > _API_CACHE_MAX:
+            now2 = time.time()
+            for k in list(_api_cache.keys()):
+                if now2 - _api_cache[k]["time"] > _cache_ttl:
+                    _api_cache.pop(k, None)
     return data
 
 
@@ -862,15 +882,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 import cloud_scheduler as _cs
                 thread_alive = (_cs._scheduler_thread is not None
                                  and _cs._scheduler_thread.is_alive())
-                # STALENESS CHECK: it's not enough for the thread to be alive and
-                # for _recent_logs to be non-empty. A thread that logged once at
-                # startup and then hung would pass both checks indefinitely. Use
-                # the ISO timestamp (tz-aware ET) on the most recent log to
-                # prove the loop is still ticking. Scheduler sleeps 30s between
-                # ticks so a gap > 5 min means the loop is wedged.
+                # STALENESS CHECK: thread-alive + log-count-positive passed
+                # forever once the thread logged anything, even if it hung.
+                # The recent-log timestamp proves the loop is still ticking.
+                # Scheduler sleeps 30s per tick so a gap > 5 min means wedged.
+                # Both _recent_logs snapshot and the [-1] access are inside
+                # the lock — without it, concurrent list mutation from the
+                # scheduler thread could raise IndexError on the handler.
+                last_log_count = 0
+                last_ts_iso = None
                 with _cs._logs_lock:
-                    last_log_count = len(_cs._recent_logs)
-                    last_ts_iso = _cs._recent_logs[-1].get("ts_iso") if _cs._recent_logs else None
+                    if _cs._recent_logs:
+                        last_log_count = len(_cs._recent_logs)
+                        last_entry = _cs._recent_logs[-1]
+                        last_ts_iso = last_entry.get("ts_iso") if isinstance(last_entry, dict) else None
                 seconds_since_last_log = None
                 log_stale = False
                 if last_ts_iso:
@@ -878,7 +903,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         last = datetime.fromisoformat(last_ts_iso)
                         now = _cs.now_et()
                         seconds_since_last_log = int((now - last).total_seconds())
-                        log_stale = seconds_since_last_log > 300  # 5 min
+                        # Negative seconds (clock skew) should not be flagged stale
+                        log_stale = seconds_since_last_log is not None and seconds_since_last_log > 300
                     except Exception:
                         pass
                 healthy = thread_alive and last_log_count > 0 and not log_stale
@@ -899,6 +925,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(json.dumps({"status": "error", "detail": str(e)[:120]}).encode())
+            return
+
+        # /api/version — public endpoint returning which commit is running
+        # and some lightweight health stats. Useful for confirming a Railway
+        # deploy actually swapped the process (sometimes a failed deploy
+        # leaves the old container running, and there was previously no way
+        # to tell from outside).
+        if path == "/api/version":
+            info = {"bot_version": "round-6"}
+            try:
+                import subprocess as _sp
+                r = _sp.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=BASE_DIR, capture_output=True, text=True, timeout=2,
+                )
+                if r.returncode == 0:
+                    info["commit"] = r.stdout.strip()[:12]
+            except Exception:
+                pass
+            info["python"] = sys.version.split()[0]
+            try:
+                import cloud_scheduler as _cs
+                info["scheduler_alive"] = (_cs._scheduler_thread is not None
+                                            and _cs._scheduler_thread.is_alive())
+            except Exception:
+                info["scheduler_alive"] = None
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(json.dumps(info).encode())
             return
 
         # PUBLIC routes — no auth required
