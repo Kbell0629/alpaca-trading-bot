@@ -2217,8 +2217,16 @@ function renderDashboard() {
         shortHtml +
         '<div id="section-backtest">' +
         '<div class="backtest-section">' +
-            '<h3>Visual Backtest — Top Pick</h3>' +
-            '<canvas id="backtestChart" height="300"></canvas>' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:12px">' +
+                '<div>' +
+                    '<h3 style="margin:0">Visual Backtest</h3>' +
+                    '<div style="font-size:12px;color:var(--text-dim);margin-top:4px">Shows how a trailing stop would have performed on this stock over the last 30 days</div>' +
+                '</div>' +
+                '<select id="backtestStockSelector" onchange="renderBacktest(this.value)" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:14px;min-width:200px"></select>' +
+            '</div>' +
+            '<div id="backtestSummary" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px"></div>' +
+            '<canvas id="backtestChart" height="280"></canvas>' +
+            '<div id="backtestExplanation" style="margin-top:16px;padding:12px;background:rgba(59,130,246,0.05);border:1px solid rgba(59,130,246,0.2);border-radius:8px;font-size:13px;color:var(--text-dim);line-height:1.6"></div>' +
         '</div>' +
         '</div>' +
         '<div class="activity-log">' +
@@ -2253,47 +2261,124 @@ function renderDashboard() {
 
     renderLog();
 
-    // Render backtest chart for top pick
+    // Populate the stock selector and render backtest
     setTimeout(function() {
-        var ctx = document.getElementById('backtestChart');
-        if (!ctx || !d.picks || !d.picks[0]) return;
-        var pick = d.picks[0];
-        var bt = pick.backtest_detail;
-        if (!bt || !bt.equity_curve) return;
+        var selector = document.getElementById('backtestStockSelector');
+        if (selector && d.picks && d.picks.length) {
+            // Only show picks that have backtest data
+            var withBacktest = d.picks.filter(function(p) { return p.backtest_detail && p.backtest_detail.equity_curve; });
+            selector.innerHTML = withBacktest.map(function(p, i) {
+                var bt = p.backtest_detail;
+                var ret = bt.return_pct || 0;
+                var retStr = (ret >= 0 ? '+' : '') + ret.toFixed(1) + '%';
+                return '<option value="' + p.symbol + '">' + p.symbol + ' — ' + p.best_strategy + ' (' + retStr + ')</option>';
+            }).join('');
+            if (withBacktest.length > 0) {
+                renderBacktest(withBacktest[0].symbol);
+            }
+        }
+    }, 300);
+}
 
-        new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: bt.equity_curve.map(function(_, i) { return 'Day ' + (i+1); }),
-                datasets: [{
-                    label: pick.symbol + ' Backtest Equity',
-                    data: bt.equity_curve,
-                    borderColor: '#3b82f6',
-                    backgroundColor: 'rgba(59,130,246,0.1)',
-                    fill: true,
-                    tension: 0.3,
-                    pointRadius: 0,
-                }, {
-                    label: 'Stop Level',
-                    data: bt.stop_levels || [],
-                    borderColor: '#ef4444',
-                    borderDash: [5, 5],
-                    fill: false,
-                    pointRadius: 0,
-                }]
+var _backtestChart = null;
+
+function renderBacktest(symbol) {
+    if (!lastData || !lastData.picks) return;
+    var pick = lastData.picks.find(function(p) { return p.symbol === symbol; });
+    if (!pick || !pick.backtest_detail) return;
+    var bt = pick.backtest_detail;
+
+    // Summary cards
+    var ret = bt.return_pct || 0;
+    var retClass = ret >= 0 ? 'positive' : 'negative';
+    var retStr = (ret >= 0 ? '+' : '') + ret.toFixed(1) + '%';
+    var stoppedOut = bt.stopped_out;
+    var days = bt.days || (bt.equity_curve ? bt.equity_curve.length : 0);
+    var entry = bt.entry || 0;
+    var exit = bt.exit || 0;
+
+    var summary = document.getElementById('backtestSummary');
+    if (summary) {
+        summary.innerHTML =
+            '<div class="metric"><div class="label">Return</div><div class="value ' + retClass + '">' + retStr + '</div></div>' +
+            '<div class="metric"><div class="label">Days Held</div><div class="value">' + days + '</div></div>' +
+            '<div class="metric"><div class="label">Entry → Exit</div><div class="value" style="font-size:16px">$' + entry.toFixed(2) + ' → $' + exit.toFixed(2) + '</div></div>' +
+            '<div class="metric"><div class="label">Outcome</div><div class="value" style="font-size:14px;color:' + (stoppedOut ? 'var(--red)' : 'var(--green)') + '">' + (stoppedOut ? 'Stopped Out' : 'Held Full Period') + '</div></div>';
+    }
+
+    // Explanation
+    var expl = document.getElementById('backtestExplanation');
+    if (expl) {
+        var profitDollar = Math.abs(exit - entry) * 100;  // assume 100 shares for illustration
+        var strategy = pick.best_strategy || 'Trailing Stop';
+        var why = stoppedOut
+            ? 'The stop-loss was triggered — the stock dropped 10% from its peak and was automatically sold. This LIMITED your losses.'
+            : 'The position was held the full 30 days without hitting the stop-loss. The trailing stop would have ratcheted up as the price climbed.';
+        expl.innerHTML =
+            '<strong>What this means:</strong> If you had deployed <strong>' + strategy + '</strong> on <strong>' + symbol + '</strong> 30 days ago ' +
+            'with 100 shares, you would be ' + (ret >= 0 ? 'UP' : 'DOWN') + ' ' + retStr +
+            ' (~$' + profitDollar.toFixed(0) + ' on a $' + (entry * 100).toFixed(0) + ' position). ' + why +
+            '<br><br><strong>Blue line:</strong> the stock\u2019s price over 30 days. <strong>Red dashed line:</strong> where your stop-loss would have been (it ratchets UP as the price climbs, never down). ' +
+            '<br><br><em>Past performance doesn\u2019t guarantee future results, but this shows how the strategy would have worked historically.</em>';
+    }
+
+    // Destroy previous chart if exists
+    if (_backtestChart) {
+        _backtestChart.destroy();
+        _backtestChart = null;
+    }
+
+    var ctx = document.getElementById('backtestChart');
+    if (!ctx || !bt.equity_curve) return;
+
+    _backtestChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: bt.equity_curve.map(function(_, i) { return 'Day ' + (i+1); }),
+            datasets: [{
+                label: symbol + ' Price',
+                data: bt.equity_curve,
+                borderColor: '#3b82f6',
+                backgroundColor: 'rgba(59,130,246,0.1)',
+                fill: true,
+                tension: 0.3,
+                pointRadius: 0,
+                borderWidth: 2,
+            }, {
+                label: 'Stop-Loss Level',
+                data: bt.stop_levels || [],
+                borderColor: '#ef4444',
+                borderDash: [5, 5],
+                fill: false,
+                pointRadius: 0,
+                borderWidth: 2,
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { labels: { color: '#e2e8f0' } },
+                tooltip: {
+                    callbacks: {
+                        label: function(ctx) {
+                            return ctx.dataset.label + ': $' + ctx.parsed.y.toFixed(2);
+                        }
+                    }
+                }
             },
-            options: {
-                responsive: true,
-                plugins: {
-                    legend: { labels: { color: '#94a3b8' } }
-                },
-                scales: {
-                    x: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
-                    y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } }
+            scales: {
+                x: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
+                y: {
+                    ticks: {
+                        color: '#94a3b8',
+                        callback: function(v) { return '$' + v.toFixed(2); }
+                    },
+                    grid: { color: '#1e293b' }
                 }
             }
-        });
-    }, 500);
+        }
+    });
 }
 
 /* ---- Voice Interface ---- */
