@@ -18,8 +18,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timezone
 
 # Basic auth credentials (set via env vars on Railway, defaults for local dev)
-AUTH_USER = os.environ.get("DASHBOARD_USER", "kevin")
-AUTH_PASS = os.environ.get("DASHBOARD_PASS", "stockb0tt2026")
+AUTH_USER = os.environ.get("DASHBOARD_USER", "Kbell0629")
+AUTH_PASS = os.environ.get("DASHBOARD_PASS", "We360you45$$")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STRATEGIES_DIR = os.path.join(BASE_DIR, "strategies")
