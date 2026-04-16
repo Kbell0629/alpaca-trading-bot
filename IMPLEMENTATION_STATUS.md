@@ -46,6 +46,8 @@ Tracker for the 20 profit-enhancement features proposed after the initial build.
 - **SOXL orphan recovery 2026-04-16** — First-day trade (SOXL 117@$85.11, stop@$76.60) lost strategy file due to Railway redeploy before volume was set up. `recover_soxl.py` script rebuilds strategy file from live Alpaca position data.
 - **Dashboard per-user picks fix 2026-04-16** — After multi-user + volume migrations, screener wrote to `users/{id}/dashboard_data.json` but dashboard read from shared path → showed 0 picks. Fixed: `get_dashboard_data(user_id=...)` reads per-user path first.
 - **Force Deploy button 2026-04-16** — New `/api/force-auto-deploy` endpoint + ⚡ Force Deploy button in dashboard header. Bypasses once-per-day lock so user can trigger a full auto-deploy cycle on demand. Guardrails still apply.
+- **Auto-deployer candidate pool 5→20 2026-04-16** — Bot was giving up when top 5 picks were blocked by guardrails. Now evaluates up to top 20 picks (configurable via `auto_deployer_config.candidate_pool_size`). Each skip logged with reason ("trying next pick"), and final summary emits full fallback chain + notifies user when all candidates blocked.
+- **Dashboard header v2 2026-04-16** — Two-row layout: brand + action icons (Force Deploy/Voice/Help/Refresh/Kill Switch/User) on row 1; status chips (session, scheduler, regime, readiness, auto-deployer toggle, countdown, time) on row 2. Sticky with backdrop blur. Mobile-responsive.
 
 ## Future Improvements (User-Deferred)
 
