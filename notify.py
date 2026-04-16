@@ -14,6 +14,7 @@ import os
 import tempfile
 import urllib.request
 from datetime import datetime, timezone
+from et_time import now_et
 
 
 def load_dotenv():
@@ -110,7 +111,7 @@ def queue_email(subject, body, notify_type="info"):
                 queue = []
 
         queue.append({
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": now_et().isoformat(),
             "to": EMAIL_RECIPIENT,
             "subject": f"[Trading Bot] {subject}",
             "body": body,
@@ -118,7 +119,13 @@ def queue_email(subject, body, notify_type="info"):
             "sent": False
         })
 
-        # Keep last 50 queued emails
+        # Keep last 50 queued emails. Previously this silently dropped
+        # older entries on overflow — surface a WARN so ops can notice if
+        # the email sender stops picking up and the queue saturates.
+        if len(queue) > 50:
+            dropped = len(queue) - 50
+            print(f"[notify] WARN: email queue overflow — dropping {dropped} oldest entries. "
+                  f"Check that the email sender is processing the queue.", flush=True)
         queue = queue[-50:]
 
         # Atomic write
@@ -142,7 +149,7 @@ def log_notification(message, notify_type="info"):
             log = []
 
     log.append({
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": now_et().isoformat(),
         "type": notify_type,
         "message": message
     })

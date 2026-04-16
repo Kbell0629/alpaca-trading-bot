@@ -14,6 +14,7 @@ import urllib.error
 import subprocess
 import tempfile
 from datetime import datetime, timezone
+from et_time import now_et
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STRATEGIES_DIR = os.path.join(BASE_DIR, "strategies")
@@ -262,7 +263,7 @@ def execute_actions(actions):
                 # Update guardrails cooldown
                 guardrails = load_json(GUARDRAILS_PATH)
                 if guardrails:
-                    guardrails["last_loss_time"] = datetime.now(timezone.utc).isoformat()
+                    guardrails["last_loss_time"] = now_et().isoformat()
                     save_json(GUARDRAILS_PATH, guardrails)
             else:
                 print(f"    ERROR placing sell: {order}")
@@ -328,7 +329,7 @@ def check_daily_loss():
         if loss_pct > guardrails.get("daily_loss_limit_pct", 0.03):
             print(f"  DAILY LOSS LIMIT BREACHED: {loss_pct * 100:.1f}% loss")
             guardrails["kill_switch"] = True
-            guardrails["kill_switch_triggered_at"] = datetime.now(timezone.utc).isoformat()
+            guardrails["kill_switch_triggered_at"] = now_et().isoformat()
             guardrails["kill_switch_reason"] = (
                 f"Daily loss {loss_pct * 100:.1f}% exceeded {guardrails['daily_loss_limit_pct'] * 100}% limit"
             )

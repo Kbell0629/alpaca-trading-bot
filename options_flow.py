@@ -8,6 +8,7 @@ import json
 import os
 import urllib.request
 from datetime import datetime, timezone, timedelta
+from et_time import now_et
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -38,8 +39,8 @@ def api_get(url, timeout=15):
 def analyze_options_flow(symbol):
     """Analyze options activity for a symbol. Look for unusual call/put ratio."""
     # Get all active option contracts expiring within 45 days
-    end = (datetime.now(timezone.utc) + timedelta(days=45)).strftime("%Y-%m-%d")
-    start = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    end = (now_et() + timedelta(days=45)).strftime("%Y-%m-%d")
+    start = now_et().strftime("%Y-%m-%d")
 
     url_calls = f"{API_ENDPOINT}/options/contracts?underlying_symbols={symbol}&type=call&expiration_date_gte={start}&expiration_date_lte={end}&status=active&limit=100"
     url_puts = f"{API_ENDPOINT}/options/contracts?underlying_symbols={symbol}&type=put&expiration_date_gte={start}&expiration_date_lte={end}&status=active&limit=100"

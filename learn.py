@@ -14,6 +14,7 @@ import json
 import os
 import tempfile
 from datetime import datetime, timezone
+from et_time import now_et
 
 
 def load_dotenv():
@@ -555,7 +556,7 @@ def run_learning_engine():
 
     # Build output
     learned_weights = {
-        "last_updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        "last_updated": now_et().isoformat(),
         "total_trades_analyzed": total_closed,
         "strategy_multipliers": multipliers,
         "strategy_details": details,

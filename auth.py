@@ -12,6 +12,20 @@ import hmac
 import json
 from datetime import datetime, timezone, timedelta
 
+# ET is the canonical timezone — market hours and user locale are both ET,
+# so there is no reason for UTC to appear in any string this app emits.
+# Stored ISO strings carry the ET offset (-04:00 EDT / -05:00 EST) and still
+# compare correctly against any legacy UTC-stored rows because both are
+# tz-aware.
+try:
+    from zoneinfo import ZoneInfo
+    ET_TZ = ZoneInfo("America/New_York")
+except Exception:
+    ET_TZ = timezone.utc  # safety fallback — should never trip on modern Python
+
+def now_et():
+    return datetime.now(ET_TZ)
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # DATA_DIR is where persistent data lives. On Railway, set to a volume mount path.
 # Locally, defaults to BASE_DIR so nothing changes.
@@ -342,7 +356,7 @@ def create_user(email, username, password, alpaca_key, alpaca_secret,
             is_admin = True
 
         pwhash, salt = hash_password(password)
-        now = datetime.now(timezone.utc).isoformat()
+        now = now_et().isoformat()
 
         cur.execute("""
             INSERT INTO users (email, username, password_hash, password_salt,
@@ -489,8 +503,10 @@ def authenticate(username_or_email, password):
                         (new_hash, new_salt, user["id"]))
             conn.commit()
             conn.close()
-    except Exception:
-        pass  # Rehash is best-effort, never fail login over it
+    except Exception as e:
+        # Rehash is best-effort, never fail login over it — but DO surface
+        # the error so a persistent rehash failure doesn't hide silently.
+        print(f"[auth] PBKDF2 rehash failed for user {user.get('id')}: {e}", flush=True)
 
     # Upgrade Alpaca credentials to AES-GCM (ENCv2) if they're still on
     # the legacy cipher. Transparent — user doesn't notice, next scheduler
@@ -512,13 +528,13 @@ def authenticate(username_or_email, password):
             cur.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = ?", params)
             conn.commit()
             conn.close()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[auth] cipher upgrade failed for user {user.get('id')}: {e}", flush=True)
     # Update last login
     conn = _get_db()
     cur = conn.cursor()
     cur.execute("UPDATE users SET last_login = ?, login_count = login_count + 1 WHERE id = ?",
-                (datetime.now(timezone.utc).isoformat(), user["id"]))
+                (now_et().isoformat(), user["id"]))
     conn.commit()
     conn.close()
     return user
@@ -541,7 +557,7 @@ def get_user_alpaca_creds(user_id):
 def create_session(user_id, ip_address=None):
     """Create a new session. Returns session token."""
     token = secrets.token_urlsafe(48)
-    now = datetime.now(timezone.utc)
+    now = now_et()
     expires = now + timedelta(days=SESSION_DAYS)
     conn = _get_db()
     cur = conn.cursor()
@@ -563,7 +579,7 @@ def validate_session(token):
         SELECT u.* FROM sessions s
         JOIN users u ON s.user_id = u.id
         WHERE s.token = ? AND s.expires_at > ? AND u.is_active = 1
-    """, (token, datetime.now(timezone.utc).isoformat()))
+    """, (token, now_et().isoformat()))
     row = cur.fetchone()
     conn.close()
     return dict(row) if row else None
@@ -578,20 +594,33 @@ def delete_session(token):
 def cleanup_expired_sessions():
     conn = _get_db()
     cur = conn.cursor()
-    cur.execute("DELETE FROM sessions WHERE expires_at < ?", (datetime.now(timezone.utc).isoformat(),))
+    cur.execute("DELETE FROM sessions WHERE expires_at < ?", (now_et().isoformat(),))
     deleted = cur.rowcount
     conn.commit()
     conn.close()
     return deleted
 
 # ===== Password Reset =====
+# Reset tokens are returned to the user in plaintext (via email / UI) but
+# stored as SHA-256 hashes in the DB. Defense-in-depth: if the users.db
+# file is leaked (backup mis-handled, Railway volume snapshot shared, etc.),
+# an attacker can't immediately reset any user's password from the dump.
+# They'd need to reverse the hash of an active 1-hour window token, which
+# for a 32-byte urlsafe token is infeasible.
+def _hash_reset_token(tok):
+    return hashlib.sha256((tok or "").encode()).hexdigest()
+
+
 def create_password_reset(email):
-    """Create a reset token. Returns (token, user) or (None, None)."""
+    """Create a reset token. Returns (token, user) or (None, None).
+    The DB stores only the hash; the plaintext is returned once to the caller
+    so it can be emailed/displayed, then discarded."""
     user = get_user_by_email(email)
     if not user:
         return None, None
     token = secrets.token_urlsafe(32)
-    now = datetime.now(timezone.utc)
+    token_hash = _hash_reset_token(token)
+    now = now_et()
     expires = now + timedelta(hours=RESET_TOKEN_HOURS)
     conn = _get_db()
     cur = conn.cursor()
@@ -600,22 +629,34 @@ def create_password_reset(email):
     cur.execute("""
         INSERT INTO password_resets (token, user_id, created_at, expires_at)
         VALUES (?, ?, ?, ?)
-    """, (token, user["id"], now.isoformat(), expires.isoformat()))
+    """, (token_hash, user["id"], now.isoformat(), expires.isoformat()))
     conn.commit()
     conn.close()
     return token, user
 
 def validate_reset_token(token):
-    """Return user_id if token valid and unused, None otherwise."""
+    """Return user_id if token valid and unused, None otherwise.
+    Accepts the plaintext token (hashes it to look up). Backward-compatible
+    with any legacy plaintext tokens still in-flight at deploy time."""
     if not token:
         return None
+    token_hash = _hash_reset_token(token)
     conn = _get_db()
     cur = conn.cursor()
+    now_iso = now_et().isoformat()
+    # Try hashed-token row first; fall back to legacy plaintext row for any
+    # tokens issued before this change (1hr TTL so the window is brief).
     cur.execute("""
         SELECT user_id FROM password_resets
         WHERE token = ? AND used = 0 AND expires_at > ?
-    """, (token, datetime.now(timezone.utc).isoformat()))
+    """, (token_hash, now_iso))
     row = cur.fetchone()
+    if not row:
+        cur.execute("""
+            SELECT user_id FROM password_resets
+            WHERE token = ? AND used = 0 AND expires_at > ?
+        """, (token, now_iso))
+        row = cur.fetchone()
     conn.close()
     return row[0] if row else None
 
@@ -625,9 +666,12 @@ def consume_reset_token(token, new_password):
     if not user_id:
         return False
     change_password(user_id, new_password)
+    token_hash = _hash_reset_token(token)
     conn = _get_db()
     cur = conn.cursor()
-    cur.execute("UPDATE password_resets SET used = 1 WHERE token = ?", (token,))
+    # Mark both the hashed row and any legacy plaintext row as used.
+    cur.execute("UPDATE password_resets SET used = 1 WHERE token IN (?, ?)",
+                (token_hash, token))
     # Also invalidate all existing sessions for security
     cur.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
     conn.commit()
@@ -747,6 +791,46 @@ def gc_login_attempts():
         return 0
 
 
+# Retain 90 days of admin audit log; older rows are pruned. 90d covers a full
+# quarter so forensic questions ("who reset whose password last quarter")
+# remain answerable, but the table can't grow unbounded.
+AUDIT_RETENTION_DAYS = 90
+
+def gc_audit_log():
+    """Delete admin_audit_log rows older than AUDIT_RETENTION_DAYS.
+    Called opportunistically from the same hook as gc_login_attempts."""
+    try:
+        cutoff = (now_et() - timedelta(days=AUDIT_RETENTION_DAYS)).isoformat()
+        conn = _get_db()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM admin_audit_log WHERE ts < ?", (cutoff,))
+        deleted = cur.rowcount
+        conn.commit()
+        conn.close()
+        return deleted
+    except Exception:
+        return 0
+
+
+def gc_password_resets():
+    """Delete expired or used password reset tokens.
+    Prevents unbounded table growth and reduces leak surface."""
+    try:
+        cutoff = now_et().isoformat()
+        conn = _get_db()
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM password_resets WHERE expires_at < ? OR used = 1",
+            (cutoff,),
+        )
+        deleted = cur.rowcount
+        conn.commit()
+        conn.close()
+        return deleted
+    except Exception:
+        return 0
+
+
 # ===== Admin Audit Log =====
 def log_admin_action(action, actor=None, target_user_id=None, ip_address=None, detail=None):
     """Record an admin/auth action to the audit log.
@@ -776,7 +860,7 @@ def log_admin_action(action, actor=None, target_user_id=None, ip_address=None, d
              target_user_id, target_username, ip_address, detail)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            datetime.now(timezone.utc).isoformat(),
+            now_et().isoformat(),
             actor.get("id") if actor else None,
             actor.get("username") if actor else None,
             action,

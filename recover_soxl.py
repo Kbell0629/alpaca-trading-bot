@@ -24,6 +24,7 @@ import tempfile
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+from et_time import now_et
 
 
 def load_dotenv():
@@ -177,7 +178,7 @@ def main():
     strategy = {
         "symbol": symbol,
         "strategy": "trailing_stop",
-        "created": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "created": now_et().strftime("%Y-%m-%d"),
         "status": "active",
         "entry_price_estimate": round(avg_entry, 2),
         "initial_qty": qty,

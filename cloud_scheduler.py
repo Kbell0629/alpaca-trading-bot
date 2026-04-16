@@ -51,22 +51,36 @@ _last_runs = {}
 _recent_logs = []  # Circular buffer for dashboard display
 _logs_lock = threading.Lock()
 
+# ET is the canonical timezone for this app — the US markets run in ET,
+# the user is in ET, and there is no reason for UTC to surface anywhere in
+# logs, storage, or UI. zoneinfo handles EDT/EST transitions automatically.
+try:
+    from zoneinfo import ZoneInfo
+    ET_TZ = ZoneInfo("America/New_York")
+except Exception:
+    ET_TZ = timezone.utc  # safety fallback, extremely unlikely in modern Python
+
+
+def now_et():
+    """Timezone-aware ET datetime — the ONE canonical 'now' for this app.
+
+    Stored ISO strings include an offset ("-04:00" in EDT, "-05:00" in EST)
+    so they compare correctly against legacy UTC-stored ISO strings with
+    "+00:00". Use this anywhere you previously reached for
+    now_et() or datetime.utcnow().
+    """
+    return datetime.now(ET_TZ)
+
+
 def log(msg, task="scheduler"):
-    # Server stdout keeps UTC for cross-reference with Railway logs, but the
-    # dashboard displays the ET-formatted 12-hour timestamp (what the user
-    # naturally reads). zoneinfo handles EDT/EST automatically.
-    utc_ts = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-    try:
-        from zoneinfo import ZoneInfo
-        et_now = datetime.now(ZoneInfo("America/New_York"))
-        et_ts = et_now.strftime("%-I:%M:%S %p ") + (et_now.tzname() or "ET")
-    except Exception:
-        et_ts = utc_ts  # fallback
-    line = f"[{utc_ts}] [{task}] {msg}"
+    # ET-only. Railway log cross-reference still works because Railway's
+    # own log timestamps are independent of the string we emit.
+    now = now_et()
+    et_ts = now.strftime("%-I:%M:%S %p ") + (now.tzname() or "ET")
+    line = f"[{et_ts}] [{task}] {msg}"
     print(line, flush=True)
     with _logs_lock:
-        # "ts" shown in the dashboard (ET 12-hour), "ts_utc" for cross-ref
-        _recent_logs.append({"ts": et_ts, "ts_utc": utc_ts, "task": task, "msg": msg})
+        _recent_logs.append({"ts": et_ts, "ts_iso": now.isoformat(), "task": task, "msg": msg})
         if len(_recent_logs) > 100:
             _recent_logs.pop(0)
 
@@ -129,11 +143,58 @@ def _user_headers(user):
         "APCA-API-SECRET-KEY": user["_api_secret"],
     }
 
+# Per-user circuit breaker for Alpaca. After CB_OPEN_THRESHOLD consecutive
+# failures, the breaker OPENs for CB_OPEN_SECONDS — additional calls return
+# the cached error immediately without touching the network. This prevents
+# all users from generating a retry storm against an Alpaca outage and
+# burning API quota / bandwidth. Reset on first successful response.
+_cb_state = {}            # user_id -> {"fails": int, "open_until": timestamp}
+_CB_OPEN_THRESHOLD = 5    # consecutive failures before tripping
+_CB_OPEN_SECONDS = 300    # 5-minute cool-off once tripped
+
+
+def _cb_key(user):
+    return user.get("id", "env")
+
+
+def _cb_blocked(user):
+    st = _cb_state.get(_cb_key(user))
+    if not st:
+        return False
+    if st.get("open_until", 0) > time.time():
+        return True
+    # Cool-off elapsed — reset and allow a probe
+    _cb_state.pop(_cb_key(user), None)
+    return False
+
+
+def _cb_record_failure(user):
+    key = _cb_key(user)
+    st = _cb_state.setdefault(key, {"fails": 0, "open_until": 0})
+    st["fails"] += 1
+    if st["fails"] >= _CB_OPEN_THRESHOLD:
+        st["open_until"] = time.time() + _CB_OPEN_SECONDS
+        log(f"[{user.get('username','?')}] Alpaca circuit breaker OPEN "
+            f"({st['fails']} consecutive failures). Cooling off "
+            f"{_CB_OPEN_SECONDS}s.", "api")
+
+
+def _cb_record_success(user):
+    _cb_state.pop(_cb_key(user), None)
+
+
 def user_api_get(user, url_path, timeout=10, retries=2):
     """GET from this user's Alpaca endpoint with exponential backoff on
     transient errors (502/503/504/timeout). Each retry waits 0.5s, 1s, 2s.
     Returns {"error": ...} after final retry failure.
+
+    Per-user circuit breaker: after 5 consecutive failures, fast-fails for
+    5 minutes so an Alpaca outage doesn't snowball into a retry storm
+    against the same dead endpoint for every scheduler tick.
     """
+    if _cb_blocked(user):
+        return {"error": "circuit_breaker_open"}
+
     if url_path.startswith("http"):
         url = url_path
     else:
@@ -146,6 +207,7 @@ def user_api_get(user, url_path, timeout=10, retries=2):
         req = urllib.request.Request(url, headers=_user_headers(user))
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
+                _cb_record_success(user)
                 return json.loads(resp.read().decode())
         except urllib.error.HTTPError as e:
             # Retry on 5xx; don't retry on 4xx (bad request, auth, rate limit)
@@ -153,13 +215,17 @@ def user_api_get(user, url_path, timeout=10, retries=2):
                 time.sleep(0.5 * (2 ** attempt))
                 last_err = e
                 continue
+            if 500 <= e.code < 600:
+                _cb_record_failure(user)
             return {"error": f"HTTP {e.code}"}
         except Exception as e:
             if attempt < retries:
                 time.sleep(0.5 * (2 ** attempt))
                 last_err = e
                 continue
+            _cb_record_failure(user)
             return {"error": "Request failed"}
+    _cb_record_failure(user)
     return {"error": "Request failed after retries"}
 
 def user_api_post(user, url_path, data, timeout=10):
@@ -242,7 +308,15 @@ def load_json(path):
     try:
         with open(path) as f:
             return json.load(f)
-    except:
+    except FileNotFoundError:
+        return None
+    except json.JSONDecodeError as e:
+        # Corrupt JSON file deserves attention — scheduler might be making
+        # decisions off stale/missing state. Log loudly but don't crash.
+        log(f"load_json: MALFORMED {path}: {e}. Returning None.", "scheduler")
+        return None
+    except Exception as e:
+        log(f"load_json: unexpected error reading {path}: {e}", "scheduler")
         return None
 
 def save_json(path, data):
@@ -253,9 +327,11 @@ def save_json(path, data):
         with os.fdopen(fd, 'w') as f:
             json.dump(data, f, indent=2, default=str)
         os.rename(tmp, path)
-    except:
-        try: os.unlink(tmp)
-        except: pass
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
         raise
 
 # ============================================================================
@@ -306,7 +382,7 @@ def get_et_time():
     except Exception:
         # Fallback if zoneinfo/tzdata isn't available (very old Python or
         # stripped container). Month-boundary heuristic is ~99% right.
-        now_utc = datetime.now(timezone.utc)
+        now_utc = now_et()
         month = now_utc.month
         offset = -4 if 3 <= month <= 11 else -5
         return (now_utc + timedelta(hours=offset)).replace(tzinfo=None)
@@ -381,7 +457,7 @@ def record_trade_close(user, symbol, strategy, exit_price, pnl, exit_reason,
                     and t.get("strategy") == strategy
                     and t.get("status", "open") == "open"):
                 t["status"] = "closed"
-                t["exit_timestamp"] = datetime.now(timezone.utc).isoformat()
+                t["exit_timestamp"] = now_et().isoformat()
                 t["exit_price"] = round(float(exit_price), 4) if exit_price else None
                 t["exit_reason"] = exit_reason
                 try:
@@ -434,7 +510,7 @@ def monitor_strategies(user):
                 loss_pct = (daily_start - current_val) / daily_start
                 if loss_pct > guardrails.get("daily_loss_limit_pct", 0.03):
                     guardrails["kill_switch"] = True
-                    guardrails["kill_switch_triggered_at"] = datetime.now(timezone.utc).isoformat()
+                    guardrails["kill_switch_triggered_at"] = now_et().isoformat()
                     guardrails["kill_switch_reason"] = f"Daily loss {loss_pct*100:.1f}%"
                     save_json(guardrails_path, guardrails)
                     user_api_delete(user, "/orders")
@@ -505,7 +581,8 @@ def check_profit_ladder(user, filepath, strat, price, entry, shares):
         # a prior attempt hit the server but the response was lost (timeout /
         # 504). Without this, the next monitor tick would re-enter and place
         # a second 25% sell at the same level — double-sell bug.
-        today_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+        # Uses ET trading-day so two rungs on the same session share a key.
+        today_str = now_et().strftime("%Y%m%d")
         client_order_id = f"ladder-{symbol}-L{level}-{today_str}"
         order = user_api_post(user, "/orders", {
             "symbol": symbol, "qty": str(sell_qty), "side": "sell",
@@ -679,7 +756,7 @@ def process_short_strategy(user, filepath, strat, state, rules):
             if pnl < 0:
                 gpath = user_file(user, "guardrails.json")
                 guardrails = load_json(gpath) or {}
-                guardrails["last_short_loss_time"] = datetime.now(timezone.utc).isoformat()
+                guardrails["last_short_loss_time"] = now_et().isoformat()
                 save_json(gpath, guardrails)
 
     # Check if target hit — profit scenario
@@ -708,7 +785,7 @@ def process_short_strategy(user, filepath, strat, state, rules):
     try:
         created = strat.get("created", "")[:10]
         if created:
-            age_days = (datetime.now(timezone.utc).date() - datetime.strptime(created, "%Y-%m-%d").date()).days
+            age_days = (now_et().date() - datetime.strptime(created, "%Y-%m-%d").date()).days
             if age_days >= max_hold and shares > 0:
                 log(f"[{user['username']}] {symbol}: SHORT held {age_days} days, forcing cover", "monitor")
                 order = user_api_post(user, "/orders", {
@@ -857,7 +934,7 @@ def process_strategy_file(user, filepath, strat):
                                 "stop_triggered", qty=shares, side="sell")
             gpath = user_file(user, "guardrails.json")
             guardrails = load_json(gpath) or {}
-            guardrails["last_loss_time"] = datetime.now(timezone.utc).isoformat()
+            guardrails["last_loss_time"] = now_et().isoformat()
             save_json(gpath, guardrails)
 
     save_json(filepath, strat)
@@ -921,11 +998,16 @@ def run_auto_deployer(user):
         try:
             last_dt = datetime.fromisoformat(last_loss.replace("Z", "+00:00"))
             cooldown_min = guardrails.get("cooldown_after_loss_minutes", 60)
-            if (datetime.now(timezone.utc) - last_dt).total_seconds() < cooldown_min * 60:
+            if (now_et() - last_dt).total_seconds() < cooldown_min * 60:
                 log(f"[{user['username']}] In cooldown after recent loss. Skipping.", "deployer")
                 return
-        except:
-            pass
+        except Exception as e:
+            # If we can't parse last_loss we can't honour the cooldown. Fail
+            # CLOSED (skip deploy) rather than silently bypassing a
+            # financial guardrail — this is what bit us in Round 3 audit.
+            log(f"[{user['username']}] Cooldown check failed to parse last_loss_time ({last_loss!r}): {e}. "
+                f"Skipping deploy to be safe.", "deployer")
+            return
 
     # Set daily starting value — ONCE per trading day. Previously this
     # unconditionally overwrote on every auto-deployer run (including
@@ -1055,7 +1137,7 @@ def run_auto_deployer(user):
             strat_file = {
                 "symbol": symbol,
                 "strategy": best_strat,
-                "created": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                "created": now_et().strftime("%Y-%m-%d"),
                 "status": "awaiting_fill",
                 "entry_price_estimate": pick.get("price"),
                 "initial_qty": qty,
@@ -1093,7 +1175,7 @@ def run_auto_deployer(user):
             _score_str = f"{_score:.0f}" if isinstance(_score, (int, float)) else "n/a"
             _rsi_str = f"{_rsi:.0f}" if isinstance(_rsi, (int, float)) else "n/a"
             journal["trades"].append({
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": now_et().isoformat(),
                 "symbol": symbol, "side": "buy", "qty": qty,
                 "price": pick.get("price"),
                 "strategy": best_strat,
@@ -1141,7 +1223,7 @@ def run_auto_deployer(user):
                 try:
                     last_dt = datetime.fromisoformat(last_short_loss.replace("Z", "+00:00"))
                     cooldown_hrs = guardrails.get("short_selling_cooldown_hours", 48)
-                    if (datetime.now(timezone.utc) - last_dt).total_seconds() < cooldown_hrs * 3600:
+                    if (now_et() - last_dt).total_seconds() < cooldown_hrs * 3600:
                         log(f"[{user['username']}] Short cooldown active ({cooldown_hrs}hr), skipping", "deployer")
                         current_shorts = max_shorts  # Force skip below
                 except Exception as e:
@@ -1196,7 +1278,7 @@ def run_auto_deployer(user):
                     short_strat = {
                         "symbol": short_symbol,
                         "strategy": "short_sell",
-                        "created": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                        "created": now_et().strftime("%Y-%m-%d"),
                         "status": "awaiting_fill",
                         "entry_price_estimate": short_price,
                         "initial_qty": short_qty,
@@ -1232,7 +1314,7 @@ def run_auto_deployer(user):
                     journal_path = user_file(user, "trade_journal.json")
                     journal = load_json(journal_path) or {"trades": [], "daily_snapshots": []}
                     journal["trades"].append({
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "timestamp": now_et().isoformat(),
                         "symbol": short_symbol, "side": "sell_short", "qty": short_qty,
                         "price": short_price,
                         "strategy": "short_sell",
@@ -1392,7 +1474,7 @@ def run_friday_risk_reduction(user):
                     remaining = qty - half_qty
                     state["total_shares_held"] = remaining
                     state.setdefault("friday_trims", []).append({
-                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "ts": now_et().isoformat(),
                         "sold_qty": half_qty,
                         "remaining_qty": remaining,
                         "estimated_profit": round(profit, 2),
@@ -1472,7 +1554,7 @@ def run_monthly_rebalance(user):
                 try:
                     # Accept both "YYYY-MM-DD" and full ISO timestamps
                     created_str = str(created)[:10]
-                    age_days = (datetime.now(timezone.utc).date() -
+                    age_days = (now_et().date() -
                                datetime.strptime(created_str, "%Y-%m-%d").date()).days
                     if age_days >= 60:
                         too_old = True
@@ -1808,7 +1890,7 @@ def get_scheduler_status():
         _aware = datetime.now(ZoneInfo("America/New_York"))
         tz_label = _aware.tzname() or "ET"  # e.g. "EDT" or "EST"
     except Exception:
-        month = datetime.now(timezone.utc).month
+        month = now_et().month
         tz_label = "EDT" if 3 <= month <= 11 else "EST"
     # Send as a PRE-FORMATTED string so the browser doesn't re-convert timezones
     et_display = et_now.strftime("%-I:%M:%S %p ") + tz_label

@@ -21,6 +21,7 @@ import time
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone
+from et_time import now_et
 
 
 def load_dotenv():
@@ -158,7 +159,7 @@ def create_orphan_strategy(symbol, qty, current_price, avg_entry):
     strategy = {
         "symbol": symbol,
         "strategy": "trailing_stop",
-        "created": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "created": now_et().strftime("%Y-%m-%d"),
         "status": "active",
         "entry_price_estimate": float(avg_entry),
         "initial_qty": int(float(qty)),
@@ -397,7 +398,7 @@ def main():
             strat_data = info["data"]
             strat_data["status"] = "closed"
             strat_data["closed_reason"] = "No position found — marked closed by error_recovery.py"
-            strat_data["closed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            strat_data["closed_at"] = now_et().isoformat()
             safe_save_json(info["path"], strat_data)
             print(f"    FIXED: Marked {fname} as closed")
             issues_fixed += 1

@@ -12,6 +12,7 @@ import json
 import os
 import urllib.request
 from datetime import datetime, timezone
+from et_time import now_et
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -112,7 +113,7 @@ def scan_for_harvest_opportunities(min_loss_pct=5.0, min_loss_dollars=50):
     opportunities.sort(key=lambda x: x["unrealized_loss"])  # Biggest losses first
 
     return {
-        "scan_date": datetime.now(timezone.utc).isoformat(),
+        "scan_date": now_et().isoformat(),
         "opportunities": opportunities,
         "total_harvestable_loss": round(total_harvestable, 2),
         "estimated_tax_savings": round(total_harvestable * 0.25, 2),

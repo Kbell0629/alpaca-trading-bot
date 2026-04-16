@@ -29,6 +29,7 @@ import urllib.error
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
+from et_time import now_et
 
 
 def load_dotenv():
@@ -432,8 +433,8 @@ def score_stocks(snapshots):
 
 def fetch_historical_bars(symbol, days=20):
     """Fetch daily bars for a symbol over the last N calendar days."""
-    end_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    start_date = (datetime.now(timezone.utc) - timedelta(days=days + 10)).strftime("%Y-%m-%d")
+    end_date = now_et().strftime("%Y-%m-%d")
+    start_date = (now_et() - timedelta(days=days + 10)).strftime("%Y-%m-%d")
     url = (
         f"{DATA_ENDPOINT}/stocks/{urllib.parse.quote(symbol)}/bars"
         f"?timeframe=1Day&start={start_date}&end={end_date}&limit={days}&feed=iex"
@@ -1564,7 +1565,7 @@ def fetch_all_data():
         "short_candidates": short_candidates,
         "trading_session": trading_session,
         "options_data": options_data,
-        "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "updated_at": now_et().strftime("%Y-%m-%d %I:%M:%S %p ET"),
     }
 
 

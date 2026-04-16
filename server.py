@@ -24,7 +24,19 @@ import urllib.request
 import urllib.error
 import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+
+# ET is the canonical timezone for this app. All timestamps emitted to logs,
+# stored in DB, or rendered in the UI use ET. UTC never appears in user-
+# facing strings or in stored ISO strings written from this process.
+try:
+    from zoneinfo import ZoneInfo
+    ET_TZ = ZoneInfo("America/New_York")
+except Exception:
+    ET_TZ = timezone.utc  # safety fallback
+
+def now_et():
+    return datetime.now(ET_TZ)
 
 try:
     from http.server import ThreadingHTTPServer  # Python 3.7+
@@ -32,6 +44,15 @@ except ImportError:
     import socketserver
     class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
         pass
+
+# Safety net: force every socket.create_connection() in this process to
+# observe a hard timeout. Every urllib call in this codebase passes an
+# explicit timeout, but this catches anything we missed (third-party libs
+# getting added later, debug scripts, etc.) from hanging forever and
+# wedging the scheduler thread. 30s is generous — individual call sites
+# use 10s which will always trip first.
+import socket as _socket
+_socket.setdefaulttimeout(30)
 
 try:
     from cloud_scheduler import start_scheduler, get_scheduler_status
@@ -230,7 +251,7 @@ def get_dashboard_data(api_endpoint=None, api_headers=None, user_id=None):
         data["account"] = account if isinstance(account, dict) and "error" not in account else data.get("account", {})
         data["positions"] = positions if isinstance(positions, list) else data.get("positions", [])
         data["open_orders"] = orders if isinstance(orders, list) else data.get("open_orders", [])
-        data["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        data["updated_at"] = now_et().strftime("%Y-%m-%d %I:%M:%S %p ET")
         data["api_errors"] = api_errors
         # Strategy files and per-user config — all per-user paths
         # Helper: load per-user file. Fallback to shared DATA_DIR only for
@@ -301,7 +322,7 @@ def get_dashboard_data(api_endpoint=None, api_headers=None, user_id=None):
         "picks": [],
         "total_screened": 0,
         "total_passed": 0,
-        "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "updated_at": now_et().strftime("%Y-%m-%d %I:%M:%S %p ET"),
         "api_errors": api_errors,
     }
 
@@ -1952,13 +1973,23 @@ function fmtPct(n) {
 }
 function pnlClass(n) { return parseFloat(n) >= 0 ? 'positive' : 'negative'; }
 
-/* Format a UTC timestamp string like "2026-04-16 14:51:28 UTC" as 12-hour ET.
-   Returns e.g. "10:51:28 AM ET". Falls back to "N/A" on any parse error. */
+/* Format a server-emitted timestamp as 12-hour ET. Accepts:
+     - New format: "YYYY-MM-DD HH:MM:SS AM/PM ET" (server emits this directly)
+     - Legacy format: "YYYY-MM-DD HH:MM:SS UTC" (backward compat for any
+       pre-migration strings still cached in dashboard_data.json)
+     - ISO 8601 with offset
+   Returns e.g. "10:51:28 AM ET". Falls back to "N/A" on parse error. */
 function fmtUpdatedET(ts) {
     if (!ts) return 'N/A';
     try {
-        // Server emits "YYYY-MM-DD HH:MM:SS UTC" — convert to ISO so Date parses it reliably
-        var iso = String(ts).replace(' UTC', 'Z').replace(' ', 'T');
+        var s = String(ts);
+        // If server already tagged it "ET", just extract the time portion
+        if (s.indexOf(' ET') !== -1) {
+            var m = s.match(/\d{1,2}:\d{2}:\d{2}\s*(AM|PM)?\s*ET/i);
+            if (m) return m[0].replace(/\s+/g, ' ');
+        }
+        // Legacy "... UTC" — parse as UTC then re-render in ET
+        var iso = s.replace(' UTC', 'Z').replace(' ', 'T');
         var d = new Date(iso);
         if (isNaN(d.getTime())) return 'N/A';
         return d.toLocaleTimeString('en-US', {
@@ -3969,7 +4000,8 @@ function switchAdminTab(name) {
     else if (name === 'backups') loadAdminBackups();
 }
 
-/* Format a UTC ISO timestamp as 12-hour ET for the audit log + backup list */
+/* Format an ISO timestamp as 12-hour ET for the audit log + backup list.
+   Timezone-aware: input may carry any offset; output is always ET. */
 function fmtAuditTime(iso) {
     if (!iso) return '—';
     try {
@@ -4096,7 +4128,7 @@ async function loadAdminUsers() {
             var u = users[i];
             var statusCls = u.is_active ? 'positive' : 'negative';
             var statusTxt = u.is_active ? 'Active' : 'Inactive';
-            var lastLogin = u.last_login ? fmtUpdatedET(u.last_login.replace('T', ' ').replace('+00:00', ' UTC')) : '—';
+            var lastLogin = u.last_login ? fmtUpdatedET(u.last_login) : '—';
             var actions = '';
             if (u.is_active) {
                 actions += '<button class="btn-warning btn-sm" onclick="adminSetActive(' + u.id + ', false)">Deactivate</button> ';
@@ -5055,15 +5087,28 @@ def _login_rate_limited(ip, username):
     return auth.is_login_locked(ip, username)
 
 def _login_attempt_record(ip, username, success):
-    """Persistent attempt record (delegates to auth.record_login_attempt)."""
+    """Persistent attempt record (delegates to auth.record_login_attempt).
+
+    Opportunistically GCs four tables from the same hook so none of them
+    require a separate scheduler task:
+      - login_attempts (24hr)
+      - sessions (expired rows — prior audits defined cleanup but never wired
+        it in, so the table grew unbounded)
+      - admin_audit_log (90d)
+      - password_resets (expired/used)
+    Ratio ~1.2%, safe to miss occasional ticks; the probability was deliberately
+    kept the same as before.
+    """
     auth.record_login_attempt(ip, username, success)
-    # Opportunistic GC ~1% of calls — keeps the login_attempts table small
-    # without needing a separate scheduler task.
     if secrets.token_bytes(1)[0] < 3:  # ~1.2% chance
-        try:
-            auth.gc_login_attempts()
-        except Exception:
-            pass
+        for _fn in ("gc_login_attempts", "cleanup_expired_sessions",
+                    "gc_audit_log", "gc_password_resets"):
+            try:
+                _gc = getattr(auth, _fn, None)
+                if _gc:
+                    _gc()
+            except Exception as _e:
+                print(f"[auth] GC {_fn} failed: {_e}", flush=True)
 
 # Signup invite code gate. Set SIGNUP_INVITE_CODE env var on Railway to require
 # the code for new signups. Set SIGNUP_DISABLED=1 to block all new signups.
@@ -5435,12 +5480,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 import cloud_scheduler as _cs
                 thread_alive = (_cs._scheduler_thread is not None
                                  and _cs._scheduler_thread.is_alive())
-                # Scheduler should have run a log entry within the last 2 min
-                # (screener+monitor fire more often than that during market
-                # hours; after-hours the sleep is 30s so at least one log/60s)
+                # STALENESS CHECK: it's not enough for the thread to be alive and
+                # for _recent_logs to be non-empty. A thread that logged once at
+                # startup and then hung would pass both checks indefinitely. Use
+                # the ISO timestamp (tz-aware ET) on the most recent log to
+                # prove the loop is still ticking. Scheduler sleeps 30s between
+                # ticks so a gap > 5 min means the loop is wedged.
                 with _cs._logs_lock:
                     last_log_count = len(_cs._recent_logs)
-                healthy = thread_alive and last_log_count > 0
+                    last_ts_iso = _cs._recent_logs[-1].get("ts_iso") if _cs._recent_logs else None
+                seconds_since_last_log = None
+                log_stale = False
+                if last_ts_iso:
+                    try:
+                        last = datetime.fromisoformat(last_ts_iso)
+                        now = _cs.now_et()
+                        seconds_since_last_log = int((now - last).total_seconds())
+                        log_stale = seconds_since_last_log > 300  # 5 min
+                    except Exception:
+                        pass
+                healthy = thread_alive and last_log_count > 0 and not log_stale
                 status = 200 if healthy else 503
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
@@ -5450,6 +5509,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "status": "ok" if healthy else "degraded",
                     "scheduler_alive": thread_alive,
                     "log_count": last_log_count,
+                    "seconds_since_last_log": seconds_since_last_log,
+                    "stale": log_stale,
                 }).encode())
             except Exception as e:
                 self.send_response(503)
@@ -5582,8 +5643,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             try:
                 # Fetch 30d daily bars from the caller's data endpoint
-                from datetime import datetime as _dt, timedelta as _td
-                end = _dt.utcnow().date()
+                from datetime import timedelta as _td
+                end = now_et().date()
                 start = end - _td(days=45)
                 url = (f"{self.user_data_endpoint}/stocks/{symbol}/bars"
                        f"?timeframe=1Day&start={start}T00:00:00Z&end={end}T00:00:00Z"
@@ -5830,15 +5891,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         elif path == "/api/admin/download-backup":
             # Admin-only: stream a backup archive to the caller. Validates
-            # the requested name matches "YYYY-MM-DD_HHMMSSUTC.tar.gz" to
-            # prevent any path traversal.
+            # the requested name matches the timestamped filename format
+            # ("YYYY-MM-DD_HHMMSS" + "ET" or legacy "UTC" suffix) to prevent
+            # any path traversal.
             if not self.current_user or not self.current_user.get("id") or not self.current_user.get("is_admin"):
                 self.send_json({"error": "Admin only"}, 403)
                 return
             qs = urllib.parse.urlparse(self.path).query
             params = urllib.parse.parse_qs(qs)
             name = (params.get("name") or [""])[0]
-            if not re.match(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}UTC\.tar\.gz$", name):
+            if not re.match(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}(ET|UTC)\.tar\.gz$", name):
                 self.send_json({"error": "Invalid backup name"}, 400)
                 return
             try:
@@ -6210,7 +6272,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "subject": "Stock Bot — Password Reset",
                 "body": msg,
                 "sent": False,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": now_et().isoformat(),
             })
             with open(email_queue_path, "w") as f:
                 json.dump(queue, f, indent=2)
@@ -6615,7 +6677,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         strategy_data = {
             "symbol": symbol,
             "strategy": "trailing_stop_with_ladder",
-            "created": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            "created": now_et().strftime("%Y-%m-%d"),
             "entry_price_estimate": price,
             "initial_qty": qty,
             "status": "awaiting_fill",
@@ -6679,7 +6741,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # Save strategy state (wheel requires options which paper may not support fully)
         strategy_data = {
             "strategy": "wheel_strategy",
-            "created": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            "created": now_et().strftime("%Y-%m-%d"),
             "symbol": symbol,
             "status": "active",
             "rules": {
@@ -6718,7 +6780,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """Deploy copy trading strategy: start tracking."""
         strategy_data = {
             "strategy": "copy_trading",
-            "created": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            "created": now_et().strftime("%Y-%m-%d"),
             "status": "active",
             "source": "capitol_trades",
             "source_url": "https://www.capitoltrades.com",
@@ -6734,7 +6796,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "state": {
                 "selected_politician": None,
                 "selection_reason": None,
-                "last_scan": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "last_scan": now_et().strftime("%Y-%m-%d %I:%M:%S %p ET"),
                 "trades_copied": [],
                 "active_positions": [],
                 "total_premium_collected": 0,
@@ -6789,7 +6851,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         strategy_data = {
             "symbol": symbol,
             "strategy": "mean_reversion",
-            "created": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            "created": now_et().strftime("%Y-%m-%d"),
             "entry_price_estimate": price,
             "initial_qty": qty,
             "target_price": target_price,
@@ -6854,7 +6916,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         strategy_data = {
             "symbol": symbol,
             "strategy": "breakout",
-            "created": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            "created": now_et().strftime("%Y-%m-%d"),
             "entry_price_estimate": price,
             "initial_qty": qty,
             "stop_price": stop_price,
@@ -6951,7 +7013,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "require_stop_loss": True,
             }
         config["enabled"] = bool(enabled)
-        config["last_toggled"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        config["last_toggled"] = now_et().strftime("%Y-%m-%d %I:%M:%S %p ET")
         save_json(config_path, config)
         self.send_json({"success": True, "enabled": config["enabled"]})
 
@@ -6961,7 +7023,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         one user's kill switch must not halt another user's trading.
         """
         activate = body.get("activate", False)
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        timestamp = now_et().strftime("%Y-%m-%d %I:%M:%S %p ET")
         guardrails_path = self._user_file("guardrails.json")
         guardrails = load_json(guardrails_path) or {}
 
@@ -7102,7 +7164,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             data = load_json(fpath)
             if data:
                 data["status"] = "paused"
-                data["paused_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                data["paused_at"] = now_et().strftime("%Y-%m-%d %I:%M:%S %p ET")
                 save_json(fpath, data)
                 paused.append(os.path.basename(fpath))
 
@@ -7149,7 +7211,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         orders_cancelled += 1
 
                 data["status"] = "stopped"
-                data["stopped_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                data["stopped_at"] = now_et().strftime("%Y-%m-%d %I:%M:%S %p ET")
                 save_json(fpath, data)
                 stopped.append(os.path.basename(fpath))
 
@@ -7253,7 +7315,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             }
         else:
             config["short_selling"]["enabled"] = enabled
-        config["short_selling"]["last_toggled"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        config["short_selling"]["last_toggled"] = now_et().strftime("%Y-%m-%d %I:%M:%S %p ET")
         save_json(config_path, config)
         msg = "Short selling ENABLED — will deploy in bear markets" if enabled else "Short selling DISABLED — no new shorts will deploy"
         self.send_json({"message": msg, "enabled": enabled})

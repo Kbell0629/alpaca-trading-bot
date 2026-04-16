@@ -2,4 +2,8 @@
 # (supersedes the original stdlib-only HMAC stream cipher). Falls back to
 # the legacy cipher at runtime if this package isn't installed, so removal
 # doesn't brick existing deployments.
-cryptography>=42.0.0
+#
+# Upper bound prevents auto-upgrade to a future major version with breaking
+# API changes. Review and bump when cryptography releases 46.0.0; until then,
+# Railway rebuilds pull a known-good version range.
+cryptography>=42.0.0,<46.0.0

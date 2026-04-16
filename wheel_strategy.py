@@ -29,6 +29,15 @@ import urllib.request
 import urllib.parse
 from datetime import datetime, date, timedelta, timezone
 
+try:
+    from zoneinfo import ZoneInfo
+    ET_TZ = ZoneInfo("America/New_York")
+except Exception:
+    ET_TZ = timezone.utc
+
+def now_et():
+    return datetime.now(ET_TZ)
+
 # File locking — used to prevent races between wheel monitor ticks and
 # human-triggered actions (e.g. Force Deploy). Unix only; on Windows this
 # falls through to a no-op lock.
@@ -39,29 +48,48 @@ except ImportError:
     _HAS_FCNTL = False
 
 class _WheelLock:
-    """Context manager that flock()s a wheel state file during read-modify-write."""
+    """Context manager that flock()s a wheel state file during read-modify-write.
+
+    Hardened against two classes of partial-failure:
+      1. `open()` succeeds but `flock()` fails — previously the file handle
+         was closed, but any references to `self.fh` afterward would have
+         flown past. Now `self.fh` is only set once flock succeeds.
+      2. Process crash between __enter__ and __exit__ — the ".lock" file
+         stays on disk but advisory-lock state is cleaned up by the kernel
+         when the FD is closed (automatic on process exit). Stale .lock
+         FILES never block a subsequent lock acquire because flock is
+         file-descriptor-scoped, not file-name-scoped.
+    """
     def __init__(self, path):
         self.path = path
         self.fh = None
     def __enter__(self):
         if not _HAS_FCNTL:
             return self
+        fh = None
         try:
-            self.fh = open(self.path + ".lock", "w")
-            fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX)
+            fh = open(self.path + ".lock", "w")
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            self.fh = fh  # only mark as held after flock succeeds
         except Exception:
-            if self.fh:
-                try: self.fh.close()
-                except Exception: pass
-                self.fh = None
+            if fh:
+                try:
+                    fh.close()
+                except Exception:
+                    pass
+            self.fh = None
         return self
     def __exit__(self, *a):
         if self.fh:
             try:
                 fcntl.flock(self.fh.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+            try:
                 self.fh.close()
             except Exception:
                 pass
+            self.fh = None
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("DATA_DIR", BASE_DIR)
@@ -186,7 +214,7 @@ def wheel_state_path(user, symbol):
 
 def save_wheel_state(user, state):
     """Write state and append to history."""
-    state["updated"] = datetime.now(timezone.utc).isoformat()
+    state["updated"] = now_et().isoformat()
     _save_json(wheel_state_path(user, state["symbol"]), state)
 
 
@@ -195,7 +223,7 @@ def log_history(state, event, detail=None):
     entries to prevent unbounded growth over months of monitoring."""
     hist = state.setdefault("history", [])
     hist.append({
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "ts": now_et().isoformat(),
         "event": event,
         "stage": state.get("stage"),
         "detail": detail,
@@ -533,7 +561,7 @@ def open_short_put(user, pick):
     exp = contract["expiration_date"]
     dte = (datetime.strptime(exp, "%Y-%m-%d").date() - date.today()).days
     premium_received = round(limit_price * 100, 2)  # one contract = 100 shares
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = now_et().isoformat()
 
     state = dict(WHEEL_STATE_TEMPLATE)
     state["symbol"] = symbol
@@ -633,7 +661,7 @@ def open_covered_call(user, state):
     exp = contract["expiration_date"]
     dte = (datetime.strptime(exp, "%Y-%m-%d").date() - date.today()).days
     premium_received = round(limit_price * 100 * contracts_qty, 2)
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = now_et().isoformat()
 
     # Snapshot shares at call-open so at expiration we can detect called-away
     # by delta (shares decreased by qty*100) instead of absolute zero (which
@@ -802,7 +830,7 @@ def _advance_wheel_state_locked(user, state, events):
                     state["cost_basis"] = round(cost_basis, 4)
                     state["stage"] = "stage_2_shares_owned"
                     contract_meta["status"] = "assigned"
-                    contract_meta["closed_at"] = datetime.now(timezone.utc).isoformat()
+                    contract_meta["closed_at"] = now_et().isoformat()
                     log_history(state, "put_assigned", {
                         "shares_owned_now_total": share_qty,
                         "shares_at_open_baseline": baseline,
@@ -815,7 +843,7 @@ def _advance_wheel_state_locked(user, state, events):
                 else:
                     # Put expired worthless — keep premium, restart stage 1
                     contract_meta["status"] = "expired"
-                    contract_meta["closed_at"] = datetime.now(timezone.utc).isoformat()
+                    contract_meta["closed_at"] = now_et().isoformat()
                     log_history(state, "put_expired_worthless", {"premium_kept": contract_meta["premium_received"]})
                     state["stage"] = "stage_1_searching"
                     state["active_contract"] = None
@@ -834,7 +862,7 @@ def _advance_wheel_state_locked(user, state, events):
                     stock_pnl = (contract_meta["strike"] - state.get("cost_basis", 0)) * 100 * qty_called
                     state["total_realized_pnl"] = round(state.get("total_realized_pnl", 0) + stock_pnl, 2)
                     contract_meta["status"] = "assigned"
-                    contract_meta["closed_at"] = datetime.now(timezone.utc).isoformat()
+                    contract_meta["closed_at"] = now_et().isoformat()
                     log_history(state, "call_assigned", {
                         "strike": contract_meta["strike"],
                         "cost_basis": state.get("cost_basis"),
@@ -852,7 +880,7 @@ def _advance_wheel_state_locked(user, state, events):
                 else:
                     # Call expired worthless — keep premium, can sell another call
                     contract_meta["status"] = "expired"
-                    contract_meta["closed_at"] = datetime.now(timezone.utc).isoformat()
+                    contract_meta["closed_at"] = now_et().isoformat()
                     log_history(state, "call_expired_worthless", {"premium_kept": contract_meta["premium_received"]})
                     state["stage"] = "stage_2_shares_owned"
                     state["active_contract"] = None
@@ -868,7 +896,7 @@ def _advance_wheel_state_locked(user, state, events):
             net_premium = contract_meta.get("premium_received", 0) - close_cost
             state["total_realized_pnl"] = round(state.get("total_realized_pnl", 0) - close_cost, 2)
             contract_meta["status"] = "closed"
-            contract_meta["closed_at"] = datetime.now(timezone.utc).isoformat()
+            contract_meta["closed_at"] = now_et().isoformat()
             log_history(state, f"{contract_meta['type']}_bought_to_close", {
                 "close_price": close_price,
                 "close_cost": close_cost,

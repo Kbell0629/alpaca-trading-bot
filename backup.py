@@ -34,6 +34,15 @@ import tarfile
 import tempfile
 from datetime import datetime, timezone, timedelta
 
+try:
+    from zoneinfo import ZoneInfo
+    ET_TZ = ZoneInfo("America/New_York")
+except Exception:
+    ET_TZ = timezone.utc
+
+def now_et():
+    return datetime.now(ET_TZ)
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("DATA_DIR", BASE_DIR)
 BACKUP_DIR = os.path.join(DATA_DIR, "backups")
@@ -58,7 +67,11 @@ INCLUDES = [
 
 
 def _ts():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%SUTC")
+    # Filename-safe ET timestamp (no colons or spaces). "ET" suffix makes
+    # the offset explicit. Previously used "UTC" suffix — restored with the
+    # same rotation semantics since alphabetical sort still works within any
+    # single tz choice, and we don't mix old/new filenames at rotation time.
+    return now_et().strftime("%Y-%m-%d_%H%M%SET")
 
 
 def _backup_filename(date_str=None):
@@ -137,7 +150,7 @@ def _create_backup_inner():
 
             # Write metadata
             meta = {
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": now_et().isoformat(),
                 "data_dir": DATA_DIR,
                 "includes": INCLUDES,
                 "bot_version": "post-forensic-audit-r4",
@@ -195,7 +208,7 @@ def list_backups():
                 "name": f,
                 "path": path,
                 "size_bytes": stat.st_size,
-                "created_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                "created_at": datetime.fromtimestamp(stat.st_mtime, tz=ET_TZ).isoformat(),
             })
         except OSError:
             pass

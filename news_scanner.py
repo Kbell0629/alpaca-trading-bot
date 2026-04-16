@@ -9,6 +9,7 @@ import os
 import re
 import urllib.request
 from datetime import datetime, timezone, timedelta
+from et_time import now_et
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -88,7 +89,8 @@ def score_news_article(article):
 
 def scan_post_market_news(hours_back=12, min_score=8):
     """Scan recent news for high-signal articles (post-market earnings, FDA news, etc.)"""
-    since = (datetime.now(timezone.utc) - timedelta(hours=hours_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Alpaca news API accepts ISO with any offset; ET offset is fine.
+    since = (now_et() - timedelta(hours=hours_back)).strftime("%Y-%m-%dT%H:%M:%S%z")
     url = f"https://data.alpaca.markets/v1beta1/news?limit=50&start={since}"
     data = api_get(url)
     news = data.get("news", []) if isinstance(data, dict) else []
@@ -144,7 +146,7 @@ def scan_post_market_news(hours_back=12, min_score=8):
     actionable.sort(key=lambda x: abs(x["score"]), reverse=True)
 
     return {
-        "scanned_at": datetime.now(timezone.utc).isoformat(),
+        "scanned_at": now_et().isoformat(),
         "hours_scanned": hours_back,
         "total_articles": len(news),
         "actionable_count": len(actionable),

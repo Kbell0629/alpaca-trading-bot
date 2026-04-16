@@ -16,6 +16,7 @@ import time
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone, timedelta
+from et_time import now_et
 
 
 def load_dotenv():
@@ -315,7 +316,7 @@ def calculate_metrics(journal, scorecard, account, positions):
     ready_for_live = readiness_score >= 80
 
     # Build updated scorecard
-    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now_str = now_et().isoformat()
     updated = {
         "start_date": scorecard.get("start_date", "2026-04-15"),
         "starting_capital": starting_capital,
@@ -353,7 +354,7 @@ def calculate_metrics(journal, scorecard, account, positions):
 
 def take_daily_snapshot(journal, account, positions, scorecard):
     """Create a daily snapshot and append to journal."""
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = now_et().strftime("%Y-%m-%d")
     snapshots = journal.get("daily_snapshots", [])
 
     # Don't duplicate today's snapshot

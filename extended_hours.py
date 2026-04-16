@@ -7,20 +7,24 @@ This module determines if extended hours trading is appropriate and configures o
 import json
 import os
 from datetime import datetime, timezone, timedelta
+from et_time import now_et as _now_et
 
 def get_trading_session():
     """Determine the current trading session.
     Returns: 'pre_market', 'market', 'after_hours', or 'closed'
-    """
-    # Convert to ET (UTC-4 for EDT, UTC-5 for EST)
-    now_utc = datetime.now(timezone.utc)
-    # Rough EDT offset (most of the trading year is EDT)
-    et_offset = timedelta(hours=-4)
-    now_et = now_utc + et_offset
 
-    weekday = now_et.weekday()  # 0=Monday, 6=Sunday
-    hour = now_et.hour
-    minute = now_et.minute
+    BUG FIX (audit round 5): previously used a hardcoded -4h offset to
+    convert UTC to ET. That silently broke for half of every year during
+    EST (winter), shifting the reported session by one full hour — so
+    users saw "CLOSED" at 9:30 AM ET from early November through early
+    March, and "MARKET OPEN" for the hour after the real close. Now uses
+    zoneinfo via the shared ET helper, which handles EDT/EST correctly.
+    """
+    now = _now_et()
+
+    weekday = now.weekday()  # 0=Monday, 6=Sunday
+    hour = now.hour
+    minute = now.minute
     time_minutes = hour * 60 + minute
 
     if weekday >= 5:  # Weekend

@@ -10,6 +10,7 @@ import urllib.request
 import urllib.parse
 import time
 from datetime import datetime, timedelta, timezone
+from et_time import now_et
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -39,8 +40,8 @@ def api_get(url, timeout=15):
 
 def fetch_daily_returns(symbol, days=60):
     """Fetch daily closing prices and compute returns."""
-    end = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    start = (datetime.now(timezone.utc) - timedelta(days=days + 10)).strftime("%Y-%m-%d")
+    end = now_et().strftime("%Y-%m-%d")
+    start = (now_et() - timedelta(days=days + 10)).strftime("%Y-%m-%d")
     url = (f"{DATA_ENDPOINT}/stocks/{urllib.parse.quote(symbol)}/bars"
            f"?timeframe=1Day&start={start}&end={end}&limit={days}&feed=iex")
     data = api_get(url)

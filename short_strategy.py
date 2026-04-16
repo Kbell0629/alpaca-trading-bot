@@ -7,6 +7,7 @@ Alpaca paper trading supports short selling.
 import json
 import os
 from datetime import datetime, timezone
+from et_time import now_et
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -123,7 +124,7 @@ def create_short_strategy_file(symbol, price, score, reasons):
     return {
         "symbol": symbol,
         "strategy": "short_sell",
-        "created": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "created": now_et().strftime("%Y-%m-%d"),
         "status": "active",
         "entry_price_estimate": price,
         "rules": {

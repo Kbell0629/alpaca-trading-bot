@@ -10,6 +10,7 @@ import time
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone
+from et_time import now_et
 
 
 def load_dotenv():
@@ -146,7 +147,7 @@ def check_capital():
     sustainability = max(0, min(100, sustainability))
 
     result = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": now_et().isoformat(),
         "portfolio_value": portfolio_value,
         "cash": cash,
         "buying_power": buying_power,
