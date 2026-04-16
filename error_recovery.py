@@ -20,9 +20,9 @@ from datetime import datetime, timezone
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STRATEGIES_DIR = os.path.join(BASE_DIR, "strategies")
 
-API_ENDPOINT = "https://paper-api.alpaca.markets/v2"
-API_KEY = ""
-API_SECRET = ""
+API_ENDPOINT = os.environ.get("ALPACA_ENDPOINT", "https://paper-api.alpaca.markets/v2")
+API_KEY = os.environ.get("ALPACA_API_KEY", "")
+API_SECRET = os.environ.get("ALPACA_API_SECRET", "")
 HEADERS = {
     "APCA-API-KEY-ID": API_KEY,
     "APCA-API-SECRET-KEY": API_SECRET,

@@ -20,9 +20,9 @@ JOURNAL_PATH = os.path.join(BASE_DIR, "trade_journal.json")
 SCORECARD_PATH = os.path.join(BASE_DIR, "scorecard.json")
 STRATEGIES_DIR = os.path.join(BASE_DIR, "strategies")
 
-API_ENDPOINT = "https://paper-api.alpaca.markets/v2"
-API_KEY = ""
-API_SECRET = ""
+API_ENDPOINT = os.environ.get("ALPACA_ENDPOINT", "https://paper-api.alpaca.markets/v2")
+API_KEY = os.environ.get("ALPACA_API_KEY", "")
+API_SECRET = os.environ.get("ALPACA_API_SECRET", "")
 HEADERS = {
     "APCA-API-KEY-ID": API_KEY,
     "APCA-API-SECRET-KEY": API_SECRET,

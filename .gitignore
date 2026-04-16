@@ -1,4 +1,11 @@
 __pycache__/
 *.pyc
 .env
+strategies/
+dashboard_data.json
+capital_status.json
+trade_journal.json
+scorecard.json
 notification_log.json
+notification_queue.json
+learned_weights.json

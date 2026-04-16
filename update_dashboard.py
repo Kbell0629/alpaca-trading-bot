@@ -32,11 +32,11 @@ STRATEGIES_DIR = os.path.join(BASE_DIR, "strategies")
 DASHBOARD_PATH = os.path.join(BASE_DIR, "dashboard.html")
 DATA_JSON_PATH = os.path.join(BASE_DIR, "dashboard_data.json")
 
-API_ENDPOINT = "https://paper-api.alpaca.markets/v2"
-DATA_ENDPOINT = "https://data.alpaca.markets/v2"
+API_ENDPOINT = os.environ.get("ALPACA_ENDPOINT", "https://paper-api.alpaca.markets/v2")
+DATA_ENDPOINT = os.environ.get("ALPACA_DATA_ENDPOINT", "https://data.alpaca.markets/v2")
 NEWS_ENDPOINT = "https://data.alpaca.markets/v1beta1/news"
-API_KEY = ""
-API_SECRET = ""
+API_KEY = os.environ.get("ALPACA_API_KEY", "")
+API_SECRET = os.environ.get("ALPACA_API_SECRET", "")
 
 HEADERS = {
     "APCA-API-KEY-ID": API_KEY,
