@@ -353,6 +353,25 @@ button:active { transform: translateY(0); }
 .strategy-card.meanrev::before { background: linear-gradient(90deg,var(--orange),#fbbf24); }
 .strategy-card.breakout::before { background: linear-gradient(90deg,var(--red),#f87171); }
 .strategy-card.short-sell::before { background: linear-gradient(90deg,#dc2626,#7f1d1d); }
+
+/* Scheduler Panel */
+.scheduler-section { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 24px; }
+.scheduler-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.sched-task { background: rgba(16,185,129,0.03); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+.sched-task.active { border-color: rgba(16,185,129,0.4); background: rgba(16,185,129,0.05); }
+.sched-task-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.sched-task-name { font-size: 13px; font-weight: 600; }
+.sched-task-status { font-size: 10px; padding: 2px 6px; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+.sched-task-status.ok { background: rgba(16,185,129,0.15); color: var(--green); }
+.sched-task-status.waiting { background: rgba(148,163,184,0.15); color: var(--text-dim); }
+.sched-task-status.pending { background: rgba(245,158,11,0.15); color: var(--orange); }
+.sched-task-schedule { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; }
+.sched-task-last { font-size: 11px; color: var(--text); font-family: monospace; }
+.sched-log-box { background: rgba(10,14,23,0.5); border: 1px solid var(--border); border-radius: 8px; padding: 12px; max-height: 300px; overflow-y: auto; font-family: 'SF Mono', Monaco, monospace; font-size: 11px; line-height: 1.6; }
+.sched-log-line { color: var(--text-dim); }
+.sched-log-line .ts { color: var(--accent); }
+.sched-log-line .tag { color: var(--orange); }
+.sched-log-empty { color: var(--text-dim); font-style: italic; text-align: center; padding: 20px; }
 .strategy-card h2 { font-size: 16px; margin-bottom: 4px; }
 .strategy-card .subtitle { font-size: 12px; color: var(--text-dim); margin-bottom: 16px; }
 .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -1531,6 +1550,116 @@ async function loadGuardrails() {
     }
 }
 
+/* ---- Scheduler Panel ---- */
+function fmtRelative(isoOrTs) {
+    if (!isoOrTs) return 'never';
+    var when;
+    if (typeof isoOrTs === 'number') {
+        when = new Date(isoOrTs * 1000);
+    } else if (typeof isoOrTs === 'string' && isoOrTs.match(/^\d{4}-\d{2}-\d{2}/)) {
+        when = new Date(isoOrTs);
+    } else {
+        return String(isoOrTs);
+    }
+    var diff = Date.now() - when.getTime();
+    if (diff < 0) return 'future';
+    var mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return mins + 'm ago';
+    var hrs = Math.floor(mins / 60);
+    if (hrs < 24) return hrs + 'h ago';
+    return Math.floor(hrs / 24) + 'd ago';
+}
+
+async function refreshSchedulerStatus() {
+    try {
+        var resp = await fetch(API_BASE + '/api/scheduler-status', {credentials: 'same-origin'});
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        var s = await resp.json();
+        renderSchedulerPanel(s);
+    } catch(e) {
+        var panel = document.getElementById('schedulerPanel');
+        if (panel) panel.innerHTML = '<div class="empty" style="padding:20px;color:var(--red)">Scheduler status unavailable: ' + e.message + '</div>';
+    }
+}
+
+function renderSchedulerPanel(s) {
+    var panel = document.getElementById('schedulerPanel');
+    if (!panel) return;
+    if (!s.running) {
+        panel.innerHTML = '<div class="empty" style="padding:20px;color:var(--red)">Scheduler NOT RUNNING. ' + (s.error||'') + '</div>';
+        return;
+    }
+    var lastRuns = s.last_runs || {};
+    var marketOpen = s.market_open;
+    var etTime = s.current_et ? new Date(s.current_et).toLocaleTimeString() : '?';
+
+    // Define all tasks with their schedules
+    var tasks = [
+        { key: 'screener', name: 'Stock Screener', schedule: 'Every 30 min during market hours', needsMarket: true },
+        { key: 'monitor', name: 'Strategy Monitor', schedule: 'Every 60s during market hours', needsMarket: true },
+        { key: 'auto_deployer', name: 'Auto-Deployer', schedule: 'Weekdays 9:35 AM ET', needsMarket: false },
+        { key: 'daily_close', name: 'Daily Close Summary', schedule: 'Weekdays 4:05 PM ET', needsMarket: false },
+        { key: 'weekly_learning', name: 'Weekly Learning', schedule: 'Fridays 5:00 PM ET', needsMarket: false }
+    ];
+
+    var gridHtml = '<div class="scheduler-grid">';
+    tasks.forEach(function(t) {
+        var last = lastRuns[t.key];
+        var hasRun = last != null;
+        var statusClass, statusLabel;
+        if (t.needsMarket && !marketOpen) {
+            statusClass = 'waiting'; statusLabel = 'Market Closed';
+        } else if (hasRun) {
+            statusClass = 'ok'; statusLabel = 'Active';
+        } else {
+            statusClass = 'pending'; statusLabel = 'Pending';
+        }
+        var lastStr = hasRun ? fmtRelative(last) : 'Not yet today';
+        gridHtml += '<div class="sched-task ' + (statusClass === 'ok' ? 'active' : '') + '">' +
+            '<div class="sched-task-header">' +
+                '<span class="sched-task-name">' + esc(t.name) + '</span>' +
+                '<span class="sched-task-status ' + statusClass + '">' + statusLabel + '</span>' +
+            '</div>' +
+            '<div class="sched-task-schedule">' + esc(t.schedule) + '</div>' +
+            '<div class="sched-task-last">Last: ' + esc(lastStr) + '</div>' +
+        '</div>';
+    });
+    gridHtml += '</div>';
+
+    // Summary bar
+    var summary = '<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--text-dim);margin-bottom:16px">' +
+        '<span>Current ET: <strong style="color:var(--text)">' + esc(etTime) + '</strong></span>' +
+        '<span>Market: <strong style="color:' + (marketOpen ? 'var(--green)' : 'var(--text-dim)') + '">' + (marketOpen ? 'OPEN' : 'CLOSED') + '</strong></span>' +
+        '<span>Thread: <strong style="color:var(--text)">' + esc(s.thread_name || '?') + '</strong></span>' +
+        '<span>Running: <strong style="color:var(--green)">YES</strong></span>' +
+    '</div>';
+
+    // Recent logs
+    var logs = s.recent_logs || [];
+    var logsHtml = '<h4 style="font-size:12px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Recent Activity (last ' + logs.length + ')</h4>';
+    if (logs.length === 0) {
+        logsHtml += '<div class="sched-log-empty">No scheduler activity yet</div>';
+    } else {
+        logsHtml += '<div class="sched-log-box">';
+        logs.slice().reverse().forEach(function(l) {
+            logsHtml += '<div class="sched-log-line">' +
+                '<span class="ts">[' + esc(l.ts||'') + ']</span> ' +
+                '<span class="tag">[' + esc(l.task||'') + ']</span> ' +
+                esc(l.msg||'') +
+            '</div>';
+        });
+        logsHtml += '</div>';
+    }
+
+    panel.innerHTML = summary + gridHtml + logsHtml;
+}
+
+// Auto-refresh scheduler panel every 15 seconds
+setInterval(function() {
+    if (document.getElementById('schedulerPanel')) refreshSchedulerStatus();
+}, 15000);
+
 /* ---- Data loading ---- */
 async function refreshData() {
     try {
@@ -2168,6 +2297,7 @@ function renderDashboard() {
         (losers.length > 0 ? '<button class="nav-tab" onclick="scrollToSection(\'section-tax\')">Tax Harvest</button>' : '') +
         '<button class="nav-tab" onclick="scrollToSection(\'section-backtest\')">Backtest</button>' +
         '<button class="nav-tab" onclick="scrollToSection(\'section-readiness\')">Readiness</button>' +
+        '<button class="nav-tab" onclick="scrollToSection(\'section-scheduler\')">Scheduler</button>' +
         '<button class="nav-tab" onclick="scrollToSection(\'section-settings\')">Settings</button>' +
     '</div>';
 
@@ -2358,6 +2488,10 @@ function renderDashboard() {
             '<div id="backtestExplanation" style="margin-top:16px;padding:12px;background:rgba(59,130,246,0.05);border:1px solid rgba(59,130,246,0.2);border-radius:8px;font-size:13px;color:var(--text-dim);line-height:1.6"></div>' +
         '</div>' +
         '</div>' +
+        '<div id="section-scheduler" class="scheduler-section">' +
+            '<h3 style="display:flex;justify-content:space-between;align-items:center">Cloud Scheduler <button class="btn-ghost btn-sm" onclick="refreshSchedulerStatus()">Refresh</button></h3>' +
+            '<div id="schedulerPanel"><div class="empty" style="padding:20px">Loading scheduler status...</div></div>' +
+        '</div>' +
         '<div class="activity-log">' +
             '<h3>Activity Log <button class="btn-ghost btn-sm" style="margin-left:12px" onclick="activityLog=[];renderLog();">Clear</button></h3>' +
             '<div class="log-entries" id="logEntries"></div>' +
@@ -2389,6 +2523,7 @@ function renderDashboard() {
         '<div class="footer">Stock Trading Bot - Strategies: Trailing Stop | Copy Trading | Wheel | Mean Reversion | Breakout | Short Selling - Full market screener across NYSE, NASDAQ, ARCA</div>';
 
     renderLog();
+    refreshSchedulerStatus();
 
     // Populate the stock selector and render backtest
     setTimeout(function() {
