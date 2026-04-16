@@ -191,6 +191,91 @@ Tracker for remaining improvements. Updated 2026-04-16.
 
 ---
 
+## 🧠 LEARNING ENGINE IMPROVEMENTS
+
+The self-learning engine is already set up and runs automatically every Friday 5 PM ET (via `cloud_scheduler.py → run_weekly_learning() → learn.py`). It writes `learned_weights.json` which the screener reads to adjust strategy multipliers, signal bonuses, price-range preferences, and hold-day recommendations. The screener applies these weights automatically.
+
+Current safeguards: cold-start protection (needs 5+ trades per strategy), 20% max change per week, manual override flag available, confidence levels (low/medium/high) based on sample size.
+
+### After 30 Days (~50-60 trades)
+
+#### Review learn.py's output
+**What:** Manually review the first substantial learning cycle.
+**Why:** Catch overfitting before it propagates. With limited data, bot might learn patterns that are just noise.
+**Plan:** Read `learned_weights.json`. If any multiplier seems too aggressive (e.g., 0.5x on a strategy after 5 trades), set `manual_override: true` to pause learning. Consider tightening the cap from 20% to 10% weekly change.
+
+#### Cap multiplier aggressiveness
+**What:** Reduce max per-cycle change from 20% to 10% until confidence = "high".
+**Why:** Small samples lead to wild swings. Medium confidence = tighter bounds.
+**Effort:** 10 min
+**Impact:** Low — just adds stability.
+
+### After 60 Days (~100-130 trades)
+
+#### Failed Opportunity Tracking
+**What:** Log stocks the screener rated highly but didn't deploy (hit position limits, earnings warning, correlation block, etc). Track their 30-day performance.
+**Why:** Bot currently only learns from trades that happened. Missing half the signal — stocks we ALMOST bought that then went up 20% are valuable training data too.
+**Plan:** Add `near_misses.json` that stores top 5-10 picks that were skipped each day with reason. After 30 days, check their actual performance. If consistently profitable, the screener's scoring is validated. If losses, something's off.
+**Effort:** 3-4 hours
+**Impact:** Medium — doubles effective training data.
+
+#### Time-of-Day Pattern Analysis
+**What:** Analyze trade journal by entry time-of-day.
+**Why:** "Morning trades (9:30-11:00 AM) have 65% win rate vs afternoon (2:00-4:00 PM) 40%" would be actionable.
+**Plan:** Add hour-of-day field to journal entries. learn.py computes win rate by hour. If material difference, auto-adjust deployment time or avoid weak hours.
+**Effort:** 2 hours
+**Impact:** Low-medium — depends on whether a real pattern exists.
+
+### After 90 Days (~150 trades)
+
+#### Regime-Conditional Learning
+**What:** Learn separate weights for bull vs bear vs neutral markets instead of one global weight set.
+**Why:** Current system learns "breakout has 67% win rate" — but that might be 80% in bull and 20% in bear markets, averaged together. Separating them would expose the real edge.
+**Plan:** Track `market_regime` in journal entries (already stored). learn.py builds 3 separate weight sets. Screener applies the right set based on current regime.
+**Effort:** 4-5 hours
+**Impact:** High — addresses the biggest weakness of the current learner.
+
+#### Signal Discovery
+**What:** Don't just boost/penalize EXISTING signals — discover NEW ones.
+**Why:** Current bot can say "RSI oversold helps." It can't discover "stocks that dropped on Mondays after 10 AM win 75% of the time."
+**Plan:** Feature-engineer 20-30 candidate signals (day-of-week, time-of-day, bollinger position, price vs 200 SMA, etc). learn.py tests each for correlation with wins. Statistically significant ones (p<0.05 with enough sample) get promoted to active signals.
+**Effort:** 6-8 hours
+**Impact:** High — but risk of false discoveries with small samples.
+
+### After 6+ Months (~500+ trades)
+
+#### Replace Signal Boosts With ML Model
+**What:** Instead of hand-crafted boost rules, train a real model (logistic regression or gradient boosting) to predict trade outcomes.
+**Why:** Current rule-based learning hits ceiling around 500 trades. A real model can find subtle interactions (e.g., "RSI oversold + high volume BUT ONLY in bear markets").
+**Plan:** Use scikit-learn (stdlib-compatible via pip if we allow deps). Train on trade_journal features → outcome. Score picks with predicted win probability.
+**Effort:** 10-15 hours. Requires allowing `scikit-learn` dependency (breaks "stdlib only" rule).
+**Impact:** Potentially very high, but risk of overfitting amplified.
+
+#### Walk-Forward Testing
+**What:** Periodically split historical trades into train/test sets. Verify learned weights actually generalize.
+**Why:** Without walk-forward validation, we don't know if learned weights are real patterns or coincidences.
+**Plan:** Every month, use oldest 80% of trades for training, newest 20% for testing. If test performance matches train performance, weights are valid. If test performance is much worse, we're overfitting.
+**Effort:** 4 hours
+**Impact:** Medium — prevents confident deployment of bad rules.
+
+### Meta Improvements
+
+#### Confidence-Weighted Deployment
+**What:** When learning confidence is "low" (< 20 trades), cap how much the bot trusts learned weights. As confidence rises, increase trust.
+**Why:** Currently learn.py caps at 1.5x/0.5x regardless of sample size. 2 wins out of 3 shouldn't trigger 1.2x boost.
+**Plan:** Apply a confidence-based dampener: `adjusted_multiplier = 1.0 + (multiplier - 1.0) * confidence_weight` where confidence_weight is 0.3 at low, 0.7 at medium, 1.0 at high.
+**Effort:** 1 hour
+**Impact:** Medium — prevents premature adjustments.
+
+#### Dashboard Learning Tab
+**What:** New dashboard section showing: last 8 weekly learning cycles, current multipliers, which signals are boost/penalty, confidence trend.
+**Why:** You only see weekly notifications. A visual dashboard would make it obvious when learning is working vs off-the-rails.
+**Plan:** New nav tab "Learning". Reads `learned_weights.json` + history. Chart.js line chart of multiplier evolution.
+**Effort:** 3 hours
+**Impact:** Low — transparency only, no direct profit impact.
+
+---
+
 ## 🚀 ADVANCED / SPECULATIVE
 
 ### 19. Machine Learning Price Prediction
@@ -244,10 +329,20 @@ Tracker for remaining improvements. Updated 2026-04-16.
 After 30 days of paper trading data, build in this order:
 
 1. **News Signals Integration** (quick win, 30 min) — already have data
-2. **Pre-Market Gap Trading** (big potential, 2-3 hours)
-3. **Earnings Play Auto-Deploy** (module exists, just needs wiring)
-4. **Limit Order Entry** (saves 0.1-0.3% per trade)
-5. **Real-Time WebSocket** (if paper profitability proves strategy, reduce latency)
+2. **Limit Order Entry** (saves 0.1-0.3% per trade, 2 hr)
+3. **Review Learning Engine Output** (30 min manual review — see Learning Engine Improvements section above)
+4. **Pre-Market Gap Trading** (big potential, 2-3 hours)
+5. **Earnings Play Auto-Deploy** (module exists, just needs wiring)
+
+After 60 days:
+
+6. **Failed Opportunity Tracking** (doubles effective training data for the learner)
+7. **Confidence-Weighted Learning** (prevents premature weight adjustments)
+
+After 90 days:
+
+8. **Regime-Conditional Learning** (highest-impact learning improvement)
+9. **Real-Time WebSocket** (if paper profitability proves strategy, reduce latency)
 
 Everything else is lower priority until we see how the bot performs on real data.
 
@@ -264,7 +359,7 @@ Everything else is lower priority until we see how the bot performs on real data
 | Data sources | Alpaca + StockTwits (free) | 7/10 |
 | UX | Interactive dashboard, voice | 9/10 |
 | Performance tracking | Scorecard + journal + heatmap | 9/10 |
-| Learning | Weekly weight adjustment | 8/10 |
+| Learning | Weekly weight adjustment (automated, safe defaults, 8 improvement paths identified) | 8/10 |
 | **Overall** | **Production-ready for paper** | **8.9/10** |
 
 **Verdict:** Bot is sophisticated and safe. Next priority is letting it run 30 days to gather real performance data before adding more complexity.
