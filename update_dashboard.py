@@ -82,7 +82,12 @@ HEADERS = {
 MAJOR_EXCHANGES = {"NYSE", "NASDAQ", "ARCA"}
 BATCH_SIZE = 500
 MIN_PRICE = 5.0
-MIN_VOLUME = 100_000
+# Bumped 100k → 500k in round-8 follow-up. Thin-float names (0.1-0.3M
+# daily volume) were dominating the top-of-screener list on volatile
+# days because breakout_score rewards big % moves without accounting
+# for fill quality. At 500k daily volume a paper market-buy at the
+# close fills at a reasonable price; below that, slippage is real.
+MIN_VOLUME = 500_000
 
 # --- Feature 3: Sector Rotation (sector ETFs + stock-to-ETF mapping) ---
 SECTOR_ETFS = {
@@ -358,6 +363,18 @@ def score_stocks(snapshots):
             elif daily_change > 2 and volume_surge > 30:
                 breakout_score = daily_change * 0.8
                 breakout_note = "weak_breakout"
+
+            # Volatility soft-cap: a stock with > 25% intraday range is
+            # usually reacting to a news event or pump/squeeze. The raw
+            # breakout formula keeps rewarding those (big % + heavy
+            # volume), but the entry is low-quality — spreads wide, fill
+            # unpredictable, often reverts hard. Halve the score so those
+            # names can still rank but don't dominate the top of the list.
+            # Keeps the signal (it's a real breakout) while penalizing
+            # the risk (hard to trade cleanly).
+            if volatility > 25 and breakout_score > 0:
+                breakout_score *= 0.5
+                breakout_note = (breakout_note or "standard_breakout") + "_highvol_capped"
 
             # Best strategy
             scores = {
