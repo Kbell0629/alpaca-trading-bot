@@ -6131,9 +6131,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_json({"message": msg, "enabled": enabled})
 
     def handle_force_auto_deploy(self):
-        """Admin: force the auto-deployer to run NOW for the current user.
+        """Admin: force the FULL morning deploy cycle to run NOW for the current user.
         Bypasses the once-per-day lock so you can see it execute on demand.
         Guardrails (kill switch, daily loss, capital check, correlation, etc) still apply.
+
+        Runs three tasks in sequence (not parallel — they share state files):
+          1. run_auto_deployer      (trailing stop / breakout / mean reversion picks)
+          2. run_wheel_auto_deploy  (sells cash-secured puts on wheel candidates)
+          3. run_wheel_monitor      (advances any existing wheel state machines)
         """
         if not self.current_user:
             return self.send_json({"error": "Not authenticated"}, 401)
@@ -6151,18 +6156,38 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "_data_dir": auth.user_data_dir(self.current_user["id"]),
                 "_strategies_dir": os.path.join(auth.user_data_dir(self.current_user["id"]), "strategies"),
             }
-            # Clear the once-per-day lock for this user so it can run again
-            cs._last_runs.pop(f"auto_deployer_{user['id']}", None)
+            # Clear all relevant once-per-day / interval locks so everything re-runs
+            uid = user["id"]
+            for key in (
+                f"auto_deployer_{uid}",
+                f"wheel_deploy_{uid}",
+                f"wheel_monitor_{uid}",
+                f"screener_{uid}",
+            ):
+                cs._last_runs.pop(key, None)
+
             # Run in a background thread so the request returns quickly
             def _run():
                 try:
+                    cs.log(f"[{user['username']}] FORCE DEPLOY: starting full cycle", "deployer")
                     cs.run_auto_deployer(user)
+                    cs.log(f"[{user['username']}] FORCE DEPLOY: regular deployer done, starting wheel", "deployer")
+                    cs.run_wheel_auto_deploy(user)
+                    cs.log(f"[{user['username']}] FORCE DEPLOY: wheel deploy done, running monitor", "deployer")
+                    cs.run_wheel_monitor(user)
+                    cs.log(f"[{user['username']}] FORCE DEPLOY: all three tasks complete", "deployer")
                 except Exception as e:
                     cs.log(f"Force-deploy error for {user['username']}: {e}", "deployer")
             threading.Thread(target=_run, daemon=True, name=f"ForceDeploy-{user['id']}").start()
             self.send_json({
                 "success": True,
-                "message": f"Auto-deployer triggered for {user['username']}. Watch the Scheduler tab for results (takes ~30-60 seconds).",
+                "message": (
+                    f"Full deploy cycle triggered for {user['username']}:\n"
+                    "  1. Regular auto-deployer (trailing/breakout/mean-rev)\n"
+                    "  2. Wheel auto-deploy (sell cash-secured puts)\n"
+                    "  3. Wheel monitor (advance any active cycles)\n"
+                    "Watch the Scheduler tab for live results (takes ~60-90 seconds)."
+                ),
             })
         except Exception as e:
             self.send_json({"error": f"Failed to start force-deploy: {e}"}, 500)
