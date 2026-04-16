@@ -38,6 +38,15 @@ Tracker for the 20 profit-enhancement features proposed after the initial build.
 - **All 13 tested and working** as of 2026-04-16
 - **Railway deployment updated** and live 24/7
 - **Committed and pushed** to GitHub (commit 391e8f3 + 97a8fdf)
+- **Pre-market audit completed 2026-04-16** — 16 bugs found and fixed across cloud_scheduler, server, update_dashboard, news_scanner
+- **Short selling auto-deploy completed 2026-04-16** — cloud_scheduler now actually places short orders (was previously stub that just logged). Inverse trailing stop logic added to strategy monitor. Bear-gated: SPY 20d must be below -3%, max 1 short, 48hr cooldown after loss.
+
+## Future Improvements (User-Deferred)
+
+### News Signals Integration (Decision 2 on 2026-04-16)
+The screener produces `news_signals` (post-market actionable news) in dashboard_data.json but the auto-deployer doesn't consume them directly. Currently the per-pick `news_sentiment` field captures most of the effect.
+
+Future enhancement: auto-deployer could boost picks that appear in `news_signals.actionable` with bullish scores, or skip picks with bearish news. Would require logic in `run_auto_deployer` around the pick-selection loop. Low priority — the `earnings_warning` and `news_sentiment` per-pick filters already prevent most bad-news trades.
 
 ## Testing Results (Verified 2026-04-16)
 

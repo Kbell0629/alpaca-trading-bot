@@ -263,11 +263,174 @@ def check_profit_ladder(filepath, strat, price, entry, shares):
             notify(f"Profit take on {symbol} at +{level}%: sold {sell_qty} shares. {remaining} still held.", "exit")
             return  # One level per check
 
+def process_short_strategy(filepath, strat, state, rules):
+    """Manage a short_sell position (inverse logic — we profit when price falls)."""
+    symbol = strat["symbol"]
+
+    # Check entry fill — shares_shorted is positive magnitude, Alpaca reports negative qty
+    entry_order_id = state.get("entry_order_id")
+    if entry_order_id and not state.get("entry_fill_price"):
+        order = api_get(f"{API_ENDPOINT}/orders/{entry_order_id}")
+        if isinstance(order, dict) and order.get("status") == "filled":
+            state["entry_fill_price"] = float(order.get("filled_avg_price", 0))
+            qty = int(float(order.get("filled_qty", 0)))
+            state["shares_shorted"] = qty
+            state["total_shares_held"] = qty  # Keep magnitude for consistency
+            strat["status"] = "active"
+            log(f"{symbol}: SHORT entry filled at ${state['entry_fill_price']:.2f}", "monitor")
+
+    entry = state.get("entry_fill_price")
+    shares = state.get("shares_shorted", 0)
+    if not entry or shares <= 0:
+        save_json(filepath, strat)
+        return
+
+    # Get current price
+    trade = api_get(f"{DATA_ENDPOINT}/stocks/{symbol}/trades/latest?feed=iex")
+    if not isinstance(trade, dict) or "trade" not in trade:
+        save_json(filepath, strat)
+        return
+    price = trade["trade"].get("p", 0)
+    if not price:
+        save_json(filepath, strat)
+        return
+
+    # Place initial stop-buy (cover) ABOVE entry — closes short if price rises
+    if not state.get("cover_order_id"):
+        stop_pct = rules.get("stop_loss_pct", 0.08)
+        stop_price = round(entry * (1 + stop_pct), 2)
+        order = api_post(f"{API_ENDPOINT}/orders", {
+            "symbol": symbol, "qty": str(shares), "side": "buy",
+            "type": "stop", "stop_price": str(stop_price), "time_in_force": "gtc"
+        })
+        if isinstance(order, dict) and "id" in order:
+            state["cover_order_id"] = order["id"]
+            state["current_stop_price"] = stop_price
+            log(f"{symbol}: SHORT cover-stop placed at ${stop_price}", "monitor")
+            notify(f"Short cover-stop on {symbol} at ${stop_price:.2f}", "info")
+
+    # Place profit target (limit buy below entry)
+    if not state.get("target_order_id"):
+        target_pct = rules.get("profit_target_pct", 0.15)
+        target_price = round(entry * (1 - target_pct), 2)
+        order = api_post(f"{API_ENDPOINT}/orders", {
+            "symbol": symbol, "qty": str(shares), "side": "buy",
+            "type": "limit", "limit_price": str(target_price), "time_in_force": "gtc"
+        })
+        if isinstance(order, dict) and "id" in order:
+            state["target_order_id"] = order["id"]
+            state["current_target_price"] = target_price
+            log(f"{symbol}: SHORT target-buy placed at ${target_price}", "monitor")
+
+    # Trailing stop for shorts: track LOWEST price, lower the stop as price falls
+    lowest = state.get("lowest_price_seen") or entry
+    if price < lowest:
+        state["lowest_price_seen"] = price
+        lowest = price
+        activation_pct = rules.get("short_trail_activation_pct", 0.05)
+        trail_pct = rules.get("short_trail_distance_pct", 0.05)
+        if not state.get("trailing_activated") and lowest <= entry * (1 - activation_pct):
+            state["trailing_activated"] = True
+            log(f"{symbol}: SHORT trailing activated", "monitor")
+        if state.get("trailing_activated"):
+            new_stop = round(lowest * (1 + trail_pct), 2)
+            current_stop = state.get("current_stop_price", 99999) or 99999
+            # For shorts: stop moves DOWN as price falls (locks in gains)
+            if new_stop < current_stop:
+                old_id = state.get("cover_order_id")
+                new_order = api_post(f"{API_ENDPOINT}/orders", {
+                    "symbol": symbol, "qty": str(shares), "side": "buy",
+                    "type": "stop", "stop_price": str(new_stop), "time_in_force": "gtc"
+                })
+                if isinstance(new_order, dict) and "id" in new_order:
+                    if old_id:
+                        api_delete(f"{API_ENDPOINT}/orders/{old_id}")
+                    state["cover_order_id"] = new_order["id"]
+                    state["current_stop_price"] = new_stop
+                    log(f"{symbol}: SHORT stop lowered ${current_stop:.2f} -> ${new_stop:.2f}", "monitor")
+                    notify(f"Short stop tightened on {symbol}: ${current_stop:.2f} -> ${new_stop:.2f}", "info")
+
+    # Check if cover (stop) triggered — loss scenario
+    if state.get("cover_order_id"):
+        order = api_get(f"{API_ENDPOINT}/orders/{state['cover_order_id']}")
+        if isinstance(order, dict) and order.get("status") == "filled":
+            cover_price = float(order.get("filled_avg_price", state.get("current_stop_price", 0)))
+            pnl = (entry - cover_price) * shares  # Short profit = entry - cover
+            state["total_shares_held"] = 0
+            state["shares_shorted"] = 0
+            state["cover_order_id"] = None
+            # Cancel target order too
+            if state.get("target_order_id"):
+                api_delete(f"{API_ENDPOINT}/orders/{state['target_order_id']}")
+                state["target_order_id"] = None
+            state["exit_price"] = cover_price
+            state["exit_reason"] = "short_stop_covered"
+            strat["status"] = "closed"
+            log(f"{symbol}: SHORT stopped out at ${cover_price}. P&L ${pnl:.2f}", "monitor")
+            notify(f"{symbol} short covered at ${cover_price:.2f}. P&L: ${pnl:.2f}", "stop")
+            # Record short loss for cooldown
+            if pnl < 0:
+                guardrails = load_json(os.path.join(BASE_DIR, "guardrails.json")) or {}
+                guardrails["last_short_loss_time"] = datetime.now(timezone.utc).isoformat()
+                save_json(os.path.join(BASE_DIR, "guardrails.json"), guardrails)
+
+    # Check if target hit — profit scenario
+    elif state.get("target_order_id"):
+        order = api_get(f"{API_ENDPOINT}/orders/{state['target_order_id']}")
+        if isinstance(order, dict) and order.get("status") == "filled":
+            exit_price = float(order.get("filled_avg_price", state.get("current_target_price", 0)))
+            pnl = (entry - exit_price) * shares
+            state["total_shares_held"] = 0
+            state["shares_shorted"] = 0
+            state["target_order_id"] = None
+            # Cancel cover stop
+            if state.get("cover_order_id"):
+                api_delete(f"{API_ENDPOINT}/orders/{state['cover_order_id']}")
+                state["cover_order_id"] = None
+            state["exit_price"] = exit_price
+            state["exit_reason"] = "short_target_hit"
+            strat["status"] = "closed"
+            log(f"{symbol}: SHORT target hit at ${exit_price}. P&L ${pnl:.2f}", "monitor")
+            notify(f"Short profit on {symbol}: covered at ${exit_price:.2f}. P&L: ${pnl:.2f}", "exit")
+
+    # Force cover after max hold days (prevent indefinite short exposure)
+    max_hold = rules.get("max_hold_days", 14)
+    try:
+        created = strat.get("created", "")[:10]
+        if created:
+            age_days = (datetime.now(timezone.utc).date() - datetime.strptime(created, "%Y-%m-%d").date()).days
+            if age_days >= max_hold and shares > 0:
+                log(f"{symbol}: SHORT held {age_days} days, forcing cover", "monitor")
+                order = api_post(f"{API_ENDPOINT}/orders", {
+                    "symbol": symbol, "qty": str(shares), "side": "buy",
+                    "type": "market", "time_in_force": "day"
+                })
+                if isinstance(order, dict) and "id" in order:
+                    # Cancel pending orders
+                    if state.get("cover_order_id"):
+                        api_delete(f"{API_ENDPOINT}/orders/{state['cover_order_id']}")
+                    if state.get("target_order_id"):
+                        api_delete(f"{API_ENDPOINT}/orders/{state['target_order_id']}")
+                    strat["status"] = "closed"
+                    state["exit_reason"] = "max_hold_exceeded"
+                    pnl = (entry - price) * shares
+                    notify(f"Short on {symbol} force-covered after {age_days} days. P&L ~${pnl:.2f}", "info")
+    except Exception as e:
+        log(f"{symbol}: Short age check error: {e}", "monitor")
+
+    save_json(filepath, strat)
+
+
 def process_strategy_file(filepath, strat):
     symbol = strat["symbol"]
     state = strat.setdefault("state", {})  # ensure mutations persist in strat
     rules = strat.get("rules", {})
     strategy_type = strat.get("strategy", "trailing_stop")
+
+    # Shorts have inverse logic — delegate to dedicated handler
+    if strategy_type == "short_sell":
+        process_short_strategy(filepath, strat, state, rules)
+        return
 
     # Check entry fill
     entry_order_id = state.get("entry_order_id")
@@ -479,7 +642,9 @@ def run_auto_deployer():
 
     positions = api_get(f"{API_ENDPOINT}/positions")
     existing_syms = set()
+    existing_positions = []
     if isinstance(positions, list):
+        existing_positions = positions
         existing_syms = {p.get("symbol") for p in positions}
 
     for pick in top_picks:
@@ -586,17 +751,124 @@ def run_auto_deployer():
     short_config = config.get("short_selling", {})
     if short_config.get("enabled") and deployed < max_per_day:
         if market_regime == "bear" and spy_mom < short_config.get("require_spy_20d_below", -3):
+            # Check existing shorts count
+            current_shorts = sum(1 for p in existing_positions if float(p.get("qty", 0)) < 0)
+            max_shorts = short_config.get("max_short_positions", 1)
+
+            # Short cooldown check
+            last_short_loss = guardrails.get("last_short_loss_time")
+            if last_short_loss:
+                try:
+                    last_dt = datetime.fromisoformat(last_short_loss.replace("Z", "+00:00"))
+                    cooldown_hrs = guardrails.get("short_selling_cooldown_hours", 48)
+                    if (datetime.now(timezone.utc) - last_dt).total_seconds() < cooldown_hrs * 3600:
+                        log(f"Short cooldown active ({cooldown_hrs}hr), skipping", "deployer")
+                        current_shorts = max_shorts  # Force skip below
+                except Exception as e:
+                    log(f"Short cooldown parse error: {e}", "deployer")
+
             short_candidates = picks_data.get("short_candidates", [])
             min_score = short_config.get("min_short_score", 15)
-            for sc in short_candidates[:1]:  # Max 1 short per run
+            stop_pct = short_config.get("stop_loss_pct", 0.08)
+            target_pct = short_config.get("profit_target_pct", 0.15)
+            max_pct = short_config.get("max_portfolio_pct_per_short", 0.05)
+
+            for sc in short_candidates:
+                if current_shorts >= max_shorts:
+                    break
                 if sc.get("short_score", 0) < min_score:
                     continue
                 if sc.get("meme_warning") and short_config.get("skip_if_meme_warning", True):
                     continue
-                if sc.get("symbol") in existing_syms:
+
+                short_symbol = sc.get("symbol")
+                if not short_symbol or short_symbol in existing_syms:
                     continue
-                # TODO: implement short deploy (sell without position = short)
-                log(f"Short candidate available: {sc.get('symbol')} (score {sc.get('short_score')})", "deployer")
+
+                # Correlation check for shorts too
+                short_allowed, short_reason = check_correlation_allowed(short_symbol, existing_positions)
+                if not short_allowed:
+                    log(f"{short_symbol}: Short skipped ({short_reason})", "deployer")
+                    continue
+
+                # Position sizing: max 5% of portfolio
+                short_price = float(sc.get("price", 0))
+                if short_price <= 0:
+                    continue
+                portfolio_val = float(account.get("portfolio_value", 0))
+                max_dollars = portfolio_val * max_pct
+                short_qty = min(int(max_dollars / short_price), 100)
+                if short_qty < 1:
+                    log(f"{short_symbol}: Short skipped (price ${short_price} too high for 5% sizing)", "deployer")
+                    continue
+
+                # Place short (sell without existing position = short sell)
+                log(f"Deploying SHORT: {short_symbol} x{short_qty} @ ~${short_price}", "deployer")
+                short_order = api_post(f"{API_ENDPOINT}/orders", {
+                    "symbol": short_symbol, "qty": str(short_qty), "side": "sell",
+                    "type": "market", "time_in_force": "day"
+                })
+
+                if isinstance(short_order, dict) and "id" in short_order:
+                    # Write short strategy file
+                    stop_price = round(short_price * (1 + stop_pct), 2)
+                    target_price = round(short_price * (1 - target_pct), 2)
+                    short_strat = {
+                        "symbol": short_symbol,
+                        "strategy": "short_sell",
+                        "created": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                        "status": "awaiting_fill",
+                        "entry_price_estimate": short_price,
+                        "initial_qty": short_qty,
+                        "deployer": "cloud_scheduler",
+                        "rules": {
+                            "stop_loss_pct": stop_pct,
+                            "profit_target_pct": target_pct,
+                            "max_hold_days": 14,
+                            "reason": "Bear market deploy"
+                        },
+                        "state": {
+                            "entry_fill_price": None,
+                            "entry_order_id": short_order["id"],
+                            "cover_order_id": None,
+                            "target_order_id": None,
+                            "shares_shorted": 0,  # Will be negative (short) after fill
+                            "total_shares_held": 0,
+                            "current_stop_price": stop_price,
+                            "current_target_price": target_price,
+                            "lowest_price_seen": short_price,
+                        },
+                        "reasoning": {
+                            "short_score": sc.get("short_score"),
+                            "market_regime": "bear",
+                            "spy_momentum_20d": spy_mom,
+                            "reasons": sc.get("reasons", []),
+                        }
+                    }
+                    short_filename = f"short_sell_{short_symbol}.json"
+                    save_json(os.path.join(STRATEGIES_DIR, short_filename), short_strat)
+
+                    # Log to journal
+                    journal_path = os.path.join(BASE_DIR, "trade_journal.json")
+                    journal = load_json(journal_path) or {"trades": [], "daily_snapshots": []}
+                    journal["trades"].append({
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "symbol": short_symbol, "side": "sell_short", "qty": short_qty,
+                        "price": short_price,
+                        "strategy": "short_sell",
+                        "reason": f"Bear market short. SPY 20d: {spy_mom:.1f}%. Score: {sc.get('short_score')}",
+                        "deployer": "cloud_scheduler",
+                        "status": "open",
+                    })
+                    save_json(journal_path, journal)
+
+                    notify(f"SHORT deployed: sold {short_qty} {short_symbol} @ ~${short_price:.2f}. "
+                           f"Stop ${stop_price}, Target ${target_price}. Bear market play.", "trade")
+                    deployed += 1
+                    current_shorts += 1
+                    break  # Only 1 short per run
+                else:
+                    log(f"Short order failed for {short_symbol}: {short_order}", "deployer")
 
     if deployed == 0:
         notify("Morning scan complete. No qualifying trades today.", "info")
