@@ -4309,10 +4309,37 @@ function renderHeatmap(data) {
 
     // Compute stats
     var totalPnl = days.reduce(function(s,d){ return s + (d.pnl||0); }, 0);
-    var winDays = days.filter(function(d){ return (d.pnl||0) > 0; }).length;
-    var lossDays = days.filter(function(d){ return (d.pnl||0) < 0; }).length;
-    var bestDay = days.reduce(function(best, d){ return (d.pnl_pct||0) > (best.pnl_pct||-999) ? d : best; }, {pnl_pct: -999});
-    var worstDay = days.reduce(function(worst, d){ return (d.pnl_pct||0) < (worst.pnl_pct||999) ? d : worst; }, {pnl_pct: 999});
+    var winDaysArr = days.filter(function(d){ return (d.pnl||0) > 0; });
+    var lossDaysArr = days.filter(function(d){ return (d.pnl||0) < 0; });
+    var winDays = winDaysArr.length;
+    var lossDays = lossDaysArr.length;
+
+    // Best Day: only meaningful if there's at least one winning day.
+    // Previously this took the max of ALL days (including losses), so
+    // a day with -0.5% could show as "Best Day -0.50%" in green.
+    var bestDayHtml;
+    if (winDaysArr.length === 0) {
+        bestDayHtml = '<div class="value" style="color:var(--text-dim)">—</div>';
+    } else {
+        var bd = winDaysArr.reduce(function(best, d){
+            return (d.pnl_pct||0) > (best.pnl_pct||-Infinity) ? d : best;
+        }, {pnl_pct: -Infinity});
+        bestDayHtml = '<div class="value positive">+' + (bd.pnl_pct||0).toFixed(2) + '%</div>';
+    }
+
+    // Worst Day: only meaningful if there's at least one losing day.
+    // Previously with a 1-day-only win this rendered "+0.38%" in red
+    // as if today's WIN were the worst day. Now shows "—" until there's
+    // an actual loss to report.
+    var worstDayHtml;
+    if (lossDaysArr.length === 0) {
+        worstDayHtml = '<div class="value" style="color:var(--text-dim)">—</div>';
+    } else {
+        var wd = lossDaysArr.reduce(function(worst, d){
+            return (d.pnl_pct||0) < (worst.pnl_pct||Infinity) ? d : worst;
+        }, {pnl_pct: Infinity});
+        worstDayHtml = '<div class="value negative">' + (wd.pnl_pct||0).toFixed(2) + '%</div>';
+    }
 
     var stats =
         '<div class="heatmap-stats">' +
@@ -4320,8 +4347,8 @@ function renderHeatmap(data) {
             '<div class="metric"><div class="label">Win Days</div><div class="value positive">' + winDays + '</div></div>' +
             '<div class="metric"><div class="label">Loss Days</div><div class="value negative">' + lossDays + '</div></div>' +
             '<div class="metric"><div class="label">Total P&L</div><div class="value ' + (totalPnl >= 0 ? 'positive' : 'negative') + '">$' + totalPnl.toFixed(2) + '</div></div>' +
-            '<div class="metric"><div class="label">Best Day</div><div class="value positive">' + ((bestDay.pnl_pct||0) >= 0 ? '+' : '') + (bestDay.pnl_pct||0).toFixed(2) + '%</div></div>' +
-            '<div class="metric"><div class="label">Worst Day</div><div class="value negative">' + (worstDay.pnl_pct||0).toFixed(2) + '%</div></div>' +
+            '<div class="metric"><div class="label">Best Day</div>' + bestDayHtml + '</div>' +
+            '<div class="metric"><div class="label">Worst Day</div>' + worstDayHtml + '</div>' +
         '</div>';
 
     // Calendar grid (last 90 days, grouped by week)
