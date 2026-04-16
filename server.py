@@ -82,9 +82,21 @@ def save_json(path, data):
 
 
 def get_dashboard_data():
-    """Load dashboard_data.json or fall back to reading strategy files + API."""
+    """Load dashboard_data.json for screener picks, but always fetch live orders/positions from Alpaca."""
     data = load_json(DASHBOARD_DATA_PATH)
     if data:
+        # Always refresh live data from Alpaca (orders, positions, account)
+        account = alpaca_get(f"{API_ENDPOINT}/account")
+        positions = alpaca_get(f"{API_ENDPOINT}/positions")
+        orders = alpaca_get(f"{API_ENDPOINT}/orders?status=open&limit=50")
+        data["account"] = account if isinstance(account, dict) and "error" not in account else data.get("account", {})
+        data["positions"] = positions if isinstance(positions, list) else data.get("positions", [])
+        data["open_orders"] = orders if isinstance(orders, list) else data.get("open_orders", [])
+        data["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        # Also refresh strategy files
+        data["trailing"] = load_json(os.path.join(STRATEGIES_DIR, "trailing_stop.json")) or data.get("trailing")
+        data["copy_trading"] = load_json(os.path.join(STRATEGIES_DIR, "copy_trading.json")) or data.get("copy_trading")
+        data["wheel"] = load_json(os.path.join(STRATEGIES_DIR, "wheel_strategy.json")) or data.get("wheel")
         return data
     # Fallback: build from strategy files and API
     trailing = load_json(os.path.join(STRATEGIES_DIR, "trailing_stop.json"))
