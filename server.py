@@ -2956,7 +2956,7 @@ function renderDashboard() {
                 '<select id="backtestStockSelector" onchange="renderBacktest(this.value)" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:14px;min-width:200px"></select>' +
             '</div>' +
             '<div id="backtestSummary" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px"></div>' +
-            '<canvas id="backtestChart" height="280"></canvas>' +
+            '<div style="position:relative;height:320px;width:100%"><canvas id="backtestChart"></canvas></div>' +
             '<div id="backtestExplanation" style="margin-top:16px;padding:12px;background:rgba(59,130,246,0.05);border:1px solid rgba(59,130,246,0.2);border-radius:8px;font-size:13px;color:var(--text-dim);line-height:1.6"></div>' +
         '</div>' +
         '</div>' +
