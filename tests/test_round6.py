@@ -243,6 +243,41 @@ def test_wal_checkpoint_runs_before_backup(isolated_data_dir):
     assert cp_idx < bu_idx, "wal_checkpoint must run BEFORE the backup copy"
 
 
+def test_dashboard_handler_mixin_decomposition(isolated_data_dir):
+    """D2 fix: DashboardHandler was a 2300-line god class. Round 6.5
+    decomposed it into 4 focused mixins. This test locks in the structure
+    so a future refactor that accidentally dumps everything back into the
+    main class (or misses a mixin in the MRO) fails loudly."""
+    import server
+    mro_names = [c.__name__ for c in server.DashboardHandler.__mro__]
+    for required in ("AuthHandlerMixin", "AdminHandlerMixin",
+                     "StrategyHandlerMixin", "ActionsHandlerMixin"):
+        assert required in mro_names, f"{required} missing from DashboardHandler MRO"
+
+    # Methods must still be reachable (no regression on routing).
+    reachable = set(dir(server.DashboardHandler))
+    for name in ("handle_login", "handle_signup", "handle_forgot_password",
+                 "handle_reset_password", "handle_logout",
+                 "handle_change_password", "handle_update_settings",
+                 "handle_delete_account", "handle_admin_set_active",
+                 "handle_admin_reset_password", "handle_admin_create_backup",
+                 "handle_deploy", "deploy_trailing_stop", "deploy_wheel",
+                 "deploy_copy_trading", "deploy_mean_reversion",
+                 "deploy_breakout", "handle_pause_strategy",
+                 "handle_stop_strategy", "handle_apply_preset",
+                 "handle_toggle_short_selling", "handle_refresh",
+                 "handle_cancel_order", "handle_close_position", "handle_sell",
+                 "handle_auto_deployer", "handle_kill_switch",
+                 "handle_force_auto_deploy"):
+        assert name in reachable, f"{name} no longer reachable on DashboardHandler"
+
+    # server.py should be dramatically smaller now (was 2870, now ~1600).
+    import os
+    server_lines = sum(1 for _ in open(server.__file__))
+    assert server_lines < 2000, \
+        f"server.py too large ({server_lines} lines) — handler methods leaked back in"
+
+
 def test_ntfy_topic_format_is_random_for_new_users(isolated_data_dir):
     """New signups should get an unguessable ntfy_topic derived from
     secrets.token_urlsafe, not from the username."""
