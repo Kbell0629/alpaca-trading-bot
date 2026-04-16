@@ -1593,6 +1593,22 @@ function fmtMoney(n) { return '$' + Number(n).toLocaleString(undefined,{minimumF
 function fmtPct(n) { return (n>=0?'+':'') + Number(n).toFixed(1) + '%'; }
 function pnlClass(n) { return parseFloat(n) >= 0 ? 'positive' : 'negative'; }
 
+/* Format a UTC timestamp string like "2026-04-16 14:51:28 UTC" as 12-hour ET.
+   Returns e.g. "10:51:28 AM ET". Falls back to "N/A" on any parse error. */
+function fmtUpdatedET(ts) {
+    if (!ts) return 'N/A';
+    try {
+        // Server emits "YYYY-MM-DD HH:MM:SS UTC" — convert to ISO so Date parses it reliably
+        var iso = String(ts).replace(' UTC', 'Z').replace(' ', 'T');
+        var d = new Date(iso);
+        if (isNaN(d.getTime())) return 'N/A';
+        return d.toLocaleTimeString('en-US', {
+            hour: 'numeric', minute: '2-digit', second: '2-digit',
+            hour12: true, timeZone: 'America/New_York'
+        }) + ' ET';
+    } catch (e) { return 'N/A'; }
+}
+
 /* ---- Deploy Modal (enhanced) ---- */
 function openDeployModal(symbol, strategy, qty, price) {
     currentDeployPrice = price;
@@ -2972,7 +2988,7 @@ function renderDashboard() {
                     '<span class="auto-status ' + (autoDeployerEnabled ? 'on' : 'off') + '" id="autoDeployerStatus">' + (autoDeployerEnabled ? 'ON' : 'OFF') + '</span>' +
                 '</div>' +
                 '<div class="status-chip countdown-chip" title="Next auto-refresh"><span id="countdown">' + countdown + 's</span></div>' +
-                '<div class="status-chip subtle" title="Last data refresh">Updated ' + (d.updated_at ? d.updated_at.split(' ')[1] : 'N/A') + '</div>' +
+                '<div class="status-chip subtle" title="Last data refresh">Updated ' + fmtUpdatedET(d.updated_at) + '</div>' +
             '</div>' +
         '</div>' +
         (killSwitchActive
