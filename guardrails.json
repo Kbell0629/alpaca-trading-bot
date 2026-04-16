@@ -9,9 +9,6 @@
   "cooldown_after_loss_minutes": 60,
   "strategies_allowed": [
     "trailing_stop",
-    "mean_reversion",
-    "breakout",
-    "copy_trading",
     "wheel"
   ],
   "peak_portfolio_value": 100000,

@@ -132,6 +132,21 @@ except ImportError:
     def get_social_sentiment(symbol):
         return {"symbol": symbol, "overall_sentiment": "unknown", "overall_score": 0, "social_volume": 0, "is_trending": False, "sources": [], "strategy_adjustments": {}, "meme_warning": False}
 
+try:
+    from options_analysis import get_wheel_recommendation
+except ImportError:
+    get_wheel_recommendation = None
+
+try:
+    from short_strategy import identify_short_candidates
+except ImportError:
+    identify_short_candidates = None
+
+try:
+    from extended_hours import get_trading_session
+except ImportError:
+    get_trading_session = None
+
 
 def api_get(url, timeout=15):
     """Make an authenticated GET request to Alpaca API (no retry, legacy)."""
@@ -579,18 +594,23 @@ def apply_sector_diversification(picks, max_per_sector=2, top_n=5):
 # ---------------------------------------------------------------------------
 
 def backtest_trailing_stop(bars, stop_pct=0.10, trail_activation=0.10, trail_distance=0.05):
-    """Simulate trailing stop on historical data. Return dict with results."""
+    """Simulate trailing stop on historical data. Return dict with results including equity curve."""
     if not bars or len(bars) < 3:
-        return {"entry": 0, "exit": 0, "return_pct": 0, "stopped_out": False, "days": 0}
+        return {"entry": 0, "exit": 0, "return_pct": 0, "stopped_out": False, "days": 0,
+                "equity_curve": [], "stop_levels": []}
 
     # Enter at next day's open to avoid look-ahead bias
     entry = bars[1].get("o", bars[0].get("c", 0))
     if entry <= 0:
-        return {"entry": 0, "exit": 0, "return_pct": 0, "stopped_out": False, "days": 0}
+        return {"entry": 0, "exit": 0, "return_pct": 0, "stopped_out": False, "days": 0,
+                "equity_curve": [], "stop_levels": []}
 
     highest = entry
     stop_price = entry * (1 - stop_pct)
     trailing_active = False
+
+    equity_curve = [round(entry, 2)]
+    stop_levels = [round(stop_price, 2)]
 
     for i, bar in enumerate(bars[2:], start=2):
         low = bar.get("l", 0)
@@ -600,12 +620,16 @@ def backtest_trailing_stop(bars, stop_pct=0.10, trail_activation=0.10, trail_dis
         # Check if stopped out — use bar low as worst-case exit
         if low > 0 and low <= stop_price:
             exit_price = bar.get("l", stop_price)  # worst-case exit
+            equity_curve.append(round(exit_price, 2))
+            stop_levels.append(round(stop_price, 2))
             return {
                 "entry": round(entry, 2),
                 "exit": round(exit_price, 2),
                 "return_pct": round((exit_price / entry - 1) * 100, 2),
                 "stopped_out": True,
                 "days": i - 1,
+                "equity_curve": equity_curve,
+                "stop_levels": stop_levels,
             }
 
         if high > highest:
@@ -619,6 +643,9 @@ def backtest_trailing_stop(bars, stop_pct=0.10, trail_activation=0.10, trail_dis
             if new_stop > stop_price:
                 stop_price = new_stop
 
+        equity_curve.append(round(close, 2))
+        stop_levels.append(round(stop_price, 2))
+
     final = bars[-1].get("c", 0)
     return {
         "entry": round(entry, 2),
@@ -626,6 +653,8 @@ def backtest_trailing_stop(bars, stop_pct=0.10, trail_activation=0.10, trail_dis
         "return_pct": round((final / entry - 1) * 100, 2) if entry > 0 else 0,
         "stopped_out": False,
         "days": len(bars) - 2,
+        "equity_curve": equity_curve,
+        "stop_levels": stop_levels,
     }
 
 
@@ -1018,6 +1047,43 @@ def fetch_all_data():
     if pnl_data["alert_triggered"]:
         print(f"  ALERT: Daily loss of {pnl_data['daily_pnl_pct']:.1f}% exceeds -3% threshold!")
 
+    # --- Short Selling Candidates ---
+    short_candidates = []
+    if identify_short_candidates:
+        print("Identifying short selling candidates...")
+        short_candidates = identify_short_candidates(top_candidates[:50])
+        if short_candidates:
+            print(f"  Found {len(short_candidates)} short candidates")
+            for sc in short_candidates[:3]:
+                print(f"    {sc['symbol']}: score {sc['short_score']}, entry ${sc['price']}, "
+                      f"stop ${sc['stop_loss']}, target ${sc['profit_target']} (R:R {sc['risk_reward']})")
+        else:
+            print("  No short candidates found (market may not be bearish enough)")
+
+    # --- Trading Session ---
+    trading_session = get_trading_session() if get_trading_session else "unknown"
+    print(f"Current trading session: {trading_session}")
+
+    # --- Options Analysis for top wheel candidate ---
+    options_data = None
+    if get_wheel_recommendation:
+        # Find the top wheel candidate
+        wheel_candidates = sorted(top_candidates, key=lambda x: x.get("wheel_score", 0), reverse=True)
+        if wheel_candidates:
+            top_wheel = wheel_candidates[0]
+            print(f"Fetching options data for top wheel candidate: {top_wheel['symbol']}...")
+            try:
+                options_data = get_wheel_recommendation(top_wheel["symbol"], top_wheel["price"])
+                put = options_data.get("put_analysis", {})
+                if put.get("best"):
+                    b = put["best"]
+                    print(f"  Best put: Strike ${b['strike']} exp {b['expiration']} ({b['dte']} DTE, score {b['score']})")
+                else:
+                    print(f"  No puts found: {put.get('message', 'N/A')}")
+            except Exception as e:
+                print(f"  Error fetching options data: {e}")
+                options_data = None
+
     elapsed = time.time() - start_time
     print(f"Data fetch + enrichment complete in {elapsed:.1f}s")
 
@@ -1043,6 +1109,9 @@ def fetch_all_data():
             "position_size_multiplier": econ_size_multiplier,
         },
         "pnl": pnl_data,
+        "short_candidates": short_candidates,
+        "trading_session": trading_session,
+        "options_data": options_data,
         "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
     }
 
@@ -1469,6 +1538,9 @@ def save_data_json(data):
         "trailing_strategy": data["trailing"],
         "copy_trading_strategy": data["copy_trading"],
         "wheel_strategy": data["wheel"],
+        "short_candidates": data.get("short_candidates", []),
+        "trading_session": data.get("trading_session", "unknown"),
+        "options_data": data.get("options_data"),
     }
     safe_save_json(DATA_JSON_PATH, output)
     print(f"Data JSON saved: {DATA_JSON_PATH}")

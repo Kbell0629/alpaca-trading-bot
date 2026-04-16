@@ -1,0 +1,21 @@
+{
+  "accounts": {
+    "paper": {
+      "name": "Paper Trading",
+      "endpoint": "https://paper-api.alpaca.markets/v2",
+      "data_endpoint": "https://data.alpaca.markets/v2",
+      "active": true,
+      "is_live": false
+    },
+    "live": {
+      "name": "Live Trading ($5k)",
+      "endpoint": "https://api.alpaca.markets/v2",
+      "data_endpoint": "https://data.alpaca.markets/v2",
+      "active": false,
+      "is_live": true,
+      "note": "Set ALPACA_LIVE_KEY and ALPACA_LIVE_SECRET env vars when ready"
+    }
+  },
+  "active_account": "paper",
+  "compare_mode": false
+}

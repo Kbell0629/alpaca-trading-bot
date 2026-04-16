@@ -189,6 +189,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Stock Trading Bot Dashboard</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#3b82f6">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="StockBot">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
 :root {
     --bg: #0a0e17; --card: #111827; --card-hover: #1a2332; --border: #1e293b;
@@ -567,6 +573,28 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
     border: 2px solid rgba(239,68,68,0.6);
 }
 
+/* Voice Button */
+.voice-btn {
+    background: var(--card); border: 1px solid var(--border); border-radius: 50%;
+    width: 40px; height: 40px; cursor: pointer; font-size: 18px;
+    transition: all 0.3s;
+}
+.voice-btn.listening {
+    background: var(--red); border-color: var(--red); animation: voicePulse 1s infinite;
+}
+@keyframes voicePulse { 0%,100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.4); } 50% { box-shadow: 0 0 0 10px rgba(239,68,68,0); } }
+.voice-result { background: var(--card); border: 1px solid var(--accent); border-radius: 8px; padding: 12px; margin-top: 8px; display: none; }
+
+/* Strategy Marketplace */
+.marketplace { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 24px; }
+.marketplace h3 { font-size: 14px; margin-bottom: 12px; color: var(--text-dim); text-transform: uppercase; }
+.marketplace-actions { display: flex; gap: 8px; margin-bottom: 16px; }
+.preset-strategies { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.preset-card { background: rgba(59,130,246,0.05); border: 1px solid var(--border); border-radius: 8px; padding: 12px; cursor: pointer; transition: all 0.2s; }
+.preset-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+.preset-card strong { display: block; margin-bottom: 4px; }
+.preset-card p { font-size: 12px; color: var(--text-dim); margin: 0; }
+
 /* What Happens Next Panel */
 .next-actions-panel {
     background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
@@ -678,8 +706,22 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
 }
 @media (max-width:768px) {
     body { padding: 12px; }
-    .account-bar { grid-template-columns: repeat(2,1fr); }
+    .account-bar { grid-template-columns: repeat(2, 1fr); }
+    .picks { grid-template-columns: 1fr; }
+    .strategies { grid-template-columns: 1fr; }
+    .tables { grid-template-columns: 1fr; }
     .header { flex-direction: column; gap: 12px; align-items: flex-start; }
+    .header h1 { font-size: 18px; }
+    .metric .value { font-size: 18px; }
+    .pick-symbol { font-size: 22px; }
+}
+.backtest-section {
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 20px; margin-bottom: 24px;
+}
+.backtest-section h3 {
+    font-size: 14px; margin-bottom: 12px; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: 0.5px;
 }
 </style>
 </head>
@@ -851,6 +893,7 @@ let pendingAutoDeployerState = false;
 let killSwitchActive = false;
 let guardrailsData = null;
 let currentDeployPrice = 0;
+var lastData = null;
 
 const STRATEGY_INFO = {
     trailing_stop: {
@@ -1298,6 +1341,7 @@ async function refreshData() {
     try {
         const resp = await fetch(API_BASE + '/api/data');
         dashboardData = await resp.json();
+        lastData = dashboardData;
         renderDashboard();
         countdown = 60;
     } catch(e) {
@@ -1311,6 +1355,7 @@ async function forceRefresh() {
     try {
         const resp = await fetch(API_BASE + '/api/refresh', {method:'POST'});
         dashboardData = await resp.json();
+        lastData = dashboardData;
         renderDashboard();
         countdown = 60;
         toast('Data refreshed!', 'success');
@@ -1653,6 +1698,7 @@ function renderDashboard() {
                 (killSwitchActive
                     ? '<span class="kill-switch-indicator">KILL SWITCH ACTIVE</span>'
                     : '<button class="kill-switch-btn" onclick="openKillSwitchModal()">KILL SWITCH</button>') +
+                '<button id="voiceBtn" class="voice-btn" onclick="toggleVoice()" title="Voice Control">\ud83c\udfa4</button>' +
                 '<span class="countdown" id="countdown">Next refresh: ' + countdown + 's</span>' +
                 '<button class="btn-primary" onclick="forceRefresh()">\u21BB Refresh</button>' +
                 '<span class="paper-badge">PAPER TRADING</span>' +
@@ -1783,13 +1829,267 @@ function renderDashboard() {
                 '<th>Action</th>' +
             '</tr></thead><tbody>' + scrHtml + '</tbody></table>' +
         '</div>' +
+        '<div class="backtest-section">' +
+            '<h3>Visual Backtest — Top Pick</h3>' +
+            '<canvas id="backtestChart" height="300"></canvas>' +
+        '</div>' +
         '<div class="activity-log">' +
             '<h3>Activity Log</h3>' +
             '<div class="log-entries" id="logEntries"></div>' +
         '</div>' +
+        '<div class="marketplace">' +
+            '<h3>Strategy Templates</h3>' +
+            '<div class="marketplace-actions">' +
+                '<button class="btn-primary btn-sm" onclick="exportStrategies()">Export My Strategies</button>' +
+                '<button class="btn-sm" onclick="document.getElementById(\'importFile\').click()">Import Strategy</button>' +
+                '<input type="file" id="importFile" accept=".json" style="display:none" onchange="importStrategy(this)">' +
+            '</div>' +
+            '<div class="preset-strategies">' +
+                '<div class="preset-card" onclick="applyPreset(\'conservative\')">' +
+                    '<strong>Conservative</strong>' +
+                    '<p>Low risk. 5% stops, no breakouts, wheel on blue chips only.</p>' +
+                '</div>' +
+                '<div class="preset-card" onclick="applyPreset(\'moderate\')">' +
+                    '<strong>Moderate</strong>' +
+                    '<p>Balanced. 10% stops, all strategies, dynamic sizing.</p>' +
+                '</div>' +
+                '<div class="preset-card" onclick="applyPreset(\'aggressive\')">' +
+                    '<strong>Aggressive</strong>' +
+                    '<p>High risk/reward. Tight stops, breakouts + shorts, extended hours.</p>' +
+                '</div>' +
+            '</div>' +
+        '</div>' +
         '<div class="footer">Stock Trading Bot - Strategies: Trailing Stop | Copy Trading | Wheel | Mean Reversion | Breakout - Full market screener across NYSE, NASDAQ, ARCA</div>';
 
     renderLog();
+
+    // Render backtest chart for top pick
+    setTimeout(function() {
+        var ctx = document.getElementById('backtestChart');
+        if (!ctx || !d.picks || !d.picks[0]) return;
+        var pick = d.picks[0];
+        var bt = pick.backtest_detail;
+        if (!bt || !bt.equity_curve) return;
+
+        new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: bt.equity_curve.map(function(_, i) { return 'Day ' + (i+1); }),
+                datasets: [{
+                    label: pick.symbol + ' Backtest Equity',
+                    data: bt.equity_curve,
+                    borderColor: '#3b82f6',
+                    backgroundColor: 'rgba(59,130,246,0.1)',
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 0,
+                }, {
+                    label: 'Stop Level',
+                    data: bt.stop_levels || [],
+                    borderColor: '#ef4444',
+                    borderDash: [5, 5],
+                    fill: false,
+                    pointRadius: 0,
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: { labels: { color: '#94a3b8' } }
+                },
+                scales: {
+                    x: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
+                    y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } }
+                }
+            }
+        });
+    }, 500);
+}
+
+/* ---- Voice Interface ---- */
+var recognition = null;
+var isListening = false;
+
+function toggleVoice() {
+    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+        toast('Voice not supported in this browser', 'error');
+        return;
+    }
+
+    if (isListening) {
+        recognition.stop();
+        return;
+    }
+
+    var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = 'en-US';
+
+    recognition.onstart = function() {
+        isListening = true;
+        document.getElementById('voiceBtn').classList.add('listening');
+        toast('Listening...', 'info');
+    };
+
+    recognition.onresult = function(event) {
+        var text = event.results[0][0].transcript.toLowerCase().trim();
+        handleVoiceCommand(text);
+    };
+
+    recognition.onend = function() {
+        isListening = false;
+        document.getElementById('voiceBtn').classList.remove('listening');
+    };
+
+    recognition.onerror = function(e) {
+        isListening = false;
+        document.getElementById('voiceBtn').classList.remove('listening');
+        if (e.error !== 'no-speech') toast('Voice error: ' + e.error, 'error');
+    };
+
+    recognition.start();
+}
+
+function handleVoiceCommand(text) {
+    addLog('Voice: "' + text + '"', 'info');
+    toast('Heard: "' + text + '"', 'info');
+
+    if (text.includes('kill') || text.includes('emergency') || text.includes('stop everything')) {
+        if (confirm('Voice command: Activate Kill Switch? This will close all positions.')) {
+            activateKillSwitch();
+        }
+    }
+    else if (text.includes('refresh') || text.includes('update')) {
+        refreshData();
+    }
+    else if (text.match(/deploy|buy|run|start/)) {
+        var words = text.split(' ');
+        var symbol = null;
+        for (var i = 0; i < words.length; i++) {
+            if (words[i].length >= 2 && words[i].length <= 5 && words[i] === words[i].toUpperCase()) {
+                symbol = words[i];
+                break;
+            }
+        }
+        var strategy = 'trailing_stop';
+        if (text.includes('wheel')) strategy = 'wheel';
+        else if (text.includes('breakout')) strategy = 'breakout';
+        else if (text.includes('mean') || text.includes('reversion')) strategy = 'mean_reversion';
+        else if (text.includes('copy')) strategy = 'copy_trading';
+        else if (text.includes('short')) strategy = 'short_sell';
+
+        if (symbol) {
+            openDeployModal(symbol.toUpperCase(), strategy, 0, 0);
+            toast('Opening deploy for ' + symbol.toUpperCase() + ' with ' + strategy, 'info');
+        } else {
+            toast('Say a stock symbol, e.g., "Deploy trailing stop on NVDA"', 'info');
+        }
+    }
+    else if (text.includes('p and l') || text.includes('p&l') || text.includes('profit') || text.includes('portfolio')) {
+        var d = lastData;
+        if (d && d.account) {
+            var val = parseFloat(d.account.portfolio_value || 0);
+            toast('Portfolio: $' + val.toLocaleString(), 'info');
+            speak('Portfolio value is ' + val.toLocaleString() + ' dollars');
+        }
+    }
+    else if (text.includes('what') && text.includes('pick')) {
+        var d = lastData;
+        if (d && d.picks && d.picks[0]) {
+            var p = d.picks[0];
+            var msg = 'Top pick is ' + p.symbol + ' at ' + p.price.toFixed(2) + ' dollars. Recommended strategy: ' + p.best_strategy;
+            toast(msg, 'info');
+            speak(msg);
+        }
+    }
+    else {
+        toast('Commands: "deploy [strategy] on [SYMBOL]", "kill switch", "refresh", "portfolio", "what\'s the top pick"', 'info');
+    }
+}
+
+function speak(text) {
+    if ('speechSynthesis' in window) {
+        var msg = new SpeechSynthesisUtterance(text);
+        msg.rate = 1.0;
+        msg.pitch = 1.0;
+        speechSynthesis.speak(msg);
+    }
+}
+
+/* ---- Strategy Marketplace ---- */
+function exportStrategies() {
+    fetch(API_BASE + '/api/data').then(function(r) { return r.json(); }).then(function(d) {
+        var exportData = {
+            exported_at: new Date().toISOString(),
+            version: "1.0",
+            strategies: {
+                trailing: d.trailing,
+                copy_trading: d.copy_trading,
+                wheel: d.wheel
+            },
+            guardrails: d.guardrails || {},
+            scorecard: d.scorecard || {}
+        };
+        var blob = new Blob([JSON.stringify(exportData, null, 2)], {type: 'application/json'});
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'stockbot-strategies-' + new Date().toISOString().slice(0,10) + '.json';
+        a.click();
+        URL.revokeObjectURL(url);
+        toast('Strategies exported!', 'info');
+    });
+}
+
+function importStrategy(input) {
+    var file = input.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function(e) {
+        try {
+            var data = JSON.parse(e.target.result);
+            toast('Strategy imported: ' + (data.version || 'unknown version') + '. Review and deploy from the dashboard.', 'info');
+            addLog('Imported strategy template', 'info');
+        } catch(err) {
+            toast('Invalid JSON file', 'error');
+        }
+    };
+    reader.readAsText(file);
+}
+
+function applyPreset(preset) {
+    var presets = {
+        conservative: {
+            stop_loss_pct: 0.05, max_positions: 3, max_position_pct: 0.05,
+            strategies: ['trailing_stop', 'wheel', 'copy_trading'],
+            note: 'Conservative: smaller positions, wider stops, no aggressive strategies'
+        },
+        moderate: {
+            stop_loss_pct: 0.10, max_positions: 5, max_position_pct: 0.10,
+            strategies: ['trailing_stop', 'wheel', 'copy_trading', 'mean_reversion', 'breakout'],
+            note: 'Moderate: balanced risk/reward with all strategies'
+        },
+        aggressive: {
+            stop_loss_pct: 0.05, max_positions: 8, max_position_pct: 0.15,
+            strategies: ['trailing_stop', 'breakout', 'short_sell', 'mean_reversion'],
+            note: 'Aggressive: tight stops, more positions, includes shorting'
+        }
+    };
+    var p = presets[preset];
+    if (!p) return;
+    if (confirm('Apply ' + preset + ' preset?\n\n' + p.note + '\n\nThis will update your guardrails.')) {
+        fetch(API_BASE + '/api/apply-preset', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({preset: preset, settings: p})
+        }).then(function(r) { return r.json(); }).then(function(d) {
+            toast('Preset applied: ' + preset, 'info');
+            addLog('Applied ' + preset + ' strategy preset', 'info');
+            refreshData();
+        });
+    }
 }
 
 // Initialize
@@ -1809,6 +2109,10 @@ function renderDashboard() {
         }
     }, 1000);
 })();
+
+if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(function(){});
+}
 </script>
 </body>
 </html>"""
@@ -1866,6 +2170,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(html.encode("utf-8"))
 
+    def _serve_icon_placeholder(self, size):
+        """Generate a simple PNG icon placeholder (solid blue square)."""
+        import struct, zlib
+        # Create a minimal valid PNG: solid #3b82f6 square
+        width = height = size
+        # Build raw image data: filter byte + RGB pixels per row
+        raw = b''
+        r, g, b = 0x3b, 0x82, 0xf6
+        row = bytes([0] + [r, g, b] * width)
+        raw = row * height
+        # Compress
+        compressed = zlib.compress(raw)
+        # Build PNG
+        def chunk(ctype, data):
+            c = ctype + data
+            crc = struct.pack('>I', zlib.crc32(c) & 0xffffffff)
+            return struct.pack('>I', len(data)) + c + crc
+        sig = b'\x89PNG\r\n\x1a\n'
+        ihdr = struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0)
+        png = sig + chunk(b'IHDR', ihdr) + chunk(b'IDAT', compressed) + chunk(b'IEND', b'')
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(png)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.end_headers()
+        self.wfile.write(png)
+
     def read_body(self):
         length = int(self.headers.get("Content-Length", 0))
         if length == 0:
@@ -1919,6 +2250,34 @@ class DashboardHandler(BaseHTTPRequestHandler):
             guardrails = load_json(guardrails_path)
             self.send_json(guardrails if guardrails else {"kill_switch": False})
 
+        elif path == "/manifest.json":
+            manifest_path = os.path.join(BASE_DIR, "manifest.json")
+            manifest = load_json(manifest_path)
+            if manifest:
+                self.send_json(manifest)
+            else:
+                self.send_json({
+                    "name": "Stock Trading Bot",
+                    "short_name": "StockBot",
+                    "start_url": "/",
+                    "display": "standalone",
+                    "background_color": "#0a0e17",
+                    "theme_color": "#3b82f6",
+                    "orientation": "any"
+                })
+
+        elif path == "/sw.js":
+            sw = "self.addEventListener('fetch', e => e.respondWith(fetch(e.request)));"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/javascript")
+            self.end_headers()
+            self.wfile.write(sw.encode())
+
+        elif path in ("/icon-192.png", "/icon-512.png"):
+            # Serve a simple colored square as a PNG placeholder
+            size = 192 if "192" in path else 512
+            self._serve_icon_placeholder(size)
+
         else:
             self.send_json({"error": "Not found"}, 404)
 
@@ -1954,6 +2313,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         elif path == "/api/stop-strategy":
             self.handle_stop_strategy(body)
+
+        elif path == "/api/apply-preset":
+            self.handle_apply_preset(body)
 
         else:
             self.send_json({"error": "Not found"}, 404)
@@ -2564,6 +2926,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "files_updated": stopped,
             "orders_cancelled": orders_cancelled,
         })
+
+    def handle_apply_preset(self, body):
+        """Apply a strategy preset (conservative/moderate/aggressive)."""
+        settings = body.get("settings", {})
+        preset_name = body.get("preset", "unknown")
+
+        guardrails_path = os.path.join(BASE_DIR, "guardrails.json")
+        guardrails = load_json(guardrails_path) or {}
+        guardrails["max_positions"] = settings.get("max_positions", guardrails.get("max_positions", 5))
+        guardrails["max_position_pct"] = settings.get("max_position_pct", guardrails.get("max_position_pct", 0.10))
+        guardrails["strategies_allowed"] = settings.get("strategies", guardrails.get("strategies_allowed", []))
+        save_json(guardrails_path, guardrails)
+
+        config_path = os.path.join(BASE_DIR, "auto_deployer_config.json")
+        config = load_json(config_path) or {}
+        config["risk_settings"] = config.get("risk_settings", {})
+        config["risk_settings"]["default_stop_loss_pct"] = settings.get("stop_loss_pct", 0.10)
+        config["max_positions"] = settings.get("max_positions", 5)
+        save_json(config_path, config)
+
+        self.send_json({"message": f"Preset applied: {preset_name}", "settings": settings})
 
 
 def main():

@@ -80,7 +80,7 @@
       "sentiment_score": 1,
       "news_sentiment": "positive",
       "social_sentiment": "bullish",
-      "social_score": 66.7,
+      "social_score": 81.8,
       "social_volume": 30,
       "social_trending": true,
       "meme_warning": false,
@@ -91,7 +91,17 @@
         "exit": 3.08,
         "return_pct": -6.38,
         "stopped_out": true,
-        "days": 2
+        "days": 2,
+        "equity_curve": [
+          3.29,
+          3.63,
+          3.08
+        ],
+        "stop_levels": [
+          2.96,
+          3.45,
+          3.45
+        ]
       },
       "recommended_shares": 38,
       "profit_ladder": [
@@ -163,7 +173,63 @@
         "exit": 48.99,
         "return_pct": -24.39,
         "stopped_out": true,
-        "days": 25
+        "days": 25,
+        "equity_curve": [
+          64.79,
+          66,
+          63.94,
+          63.6,
+          64.22,
+          63.66,
+          62.09,
+          62.05,
+          61.4,
+          64.93,
+          64.85,
+          64.89,
+          67.25,
+          66.12,
+          68.42,
+          71.86,
+          72.87,
+          72.89,
+          72.92,
+          72.54,
+          74.51,
+          76.56,
+          75.97,
+          76.95,
+          78.42,
+          48.99
+        ],
+        "stop_levels": [
+          58.31,
+          58.31,
+          58.31,
+          58.31,
+          58.31,
+          58.31,
+          58.31,
+          58.31,
+          58.31,
+          58.31,
+          58.31,
+          58.31,
+          58.31,
+          58.31,
+          58.31,
+          68.27,
+          69.93,
+          69.93,
+          69.93,
+          70.05,
+          72.88,
+          73.12,
+          73.12,
+          73.13,
+          75.59,
+          75.59
+        ]
       },
       "recommended_shares": 196,
       "profit_ladder": [
@@ -235,7 +301,19 @@
         "exit": 18.93,
         "return_pct": 8.17,
         "stopped_out": true,
-        "days": 3
+        "days": 3,
+        "equity_curve": [
+          17.5,
+          19.53,
+          20.76,
+          18.93
+        ],
+        "stop_levels": [
+          15.75,
+          18.88,
+          19.72,
+          19.72
+        ]
       },
       "recommended_shares": 529,
       "profit_ladder": [
@@ -307,7 +385,15 @@
         "exit": 8.18,
         "return_pct": -16.87,
         "stopped_out": true,
-        "days": 1
+        "days": 1,
+        "equity_curve": [
+          9.84,
+          8.18
+        ],
+        "stop_levels": [
+          8.86,
+          8.86
+        ]
       },
       "recommended_shares": 369,
       "profit_ladder": [
@@ -379,7 +465,25 @@
         "exit": 10.03,
         "return_pct": -11.24,
         "stopped_out": true,
-        "days": 6
+        "days": 6,
+        "equity_curve": [
+          11.3,
+          11.67,
+          11.44,
+          10.95,
+          11.08,
+          11.14,
+          10.03
+        ],
+        "stop_levels": [
+          10.17,
+          10.17,
+          10.17,
+          10.17,
+          10.17,
+          10.17,
+          10.17
+        ]
       },
       "recommended_shares": 520,
       "profit_ladder": [
@@ -440,7 +544,7 @@
       "sentiment_score": 0,
       "news_sentiment": "neutral",
       "social_sentiment": "bullish",
-      "social_score": 57.1,
+      "social_score": 53.8,
       "social_volume": 30,
       "social_trending": true,
       "meme_warning": false,
@@ -451,7 +555,21 @@
         "exit": 17.14,
         "return_pct": -10.38,
         "stopped_out": true,
-        "days": 4
+        "days": 4,
+        "equity_curve": [
+          19.12,
+          18.9,
+          17.84,
+          17.56,
+          17.14
+        ],
+        "stop_levels": [
+          17.21,
+          17.21,
+          17.21,
+          17.21,
+          17.21
+        ]
       },
       "recommended_shares": 480,
       "profit_ladder": [
@@ -523,7 +641,19 @@
         "exit": 8.68,
         "return_pct": -12.85,
         "stopped_out": true,
-        "days": 3
+        "days": 3,
+        "equity_curve": [
+          9.96,
+          10.17,
+          9.16,
+          8.68
+        ],
+        "stop_levels": [
+          8.96,
+          8.96,
+          8.96,
+          8.96
+        ]
       },
       "recommended_shares": 1058,
       "profit_ladder": [
@@ -595,7 +725,27 @@
         "exit": 6.89,
         "return_pct": -10.98,
         "stopped_out": true,
-        "days": 7
+        "days": 7,
+        "equity_curve": [
+          7.74,
+          7.62,
+          7.43,
+          7.3,
+          7.38,
+          7.54,
+          7.25,
+          6.89
+        ],
+        "stop_levels": [
+          6.97,
+          6.97,
+          6.97,
+          6.97,
+          6.97,
+          6.97,
+          6.97,
+          6.97
+        ]
       },
       "recommended_shares": 1064,
       "profit_ladder": [
@@ -667,7 +817,19 @@
         "exit": 19.61,
         "return_pct": 0.95,
         "stopped_out": true,
-        "days": 3
+        "days": 3,
+        "equity_curve": [
+          19.43,
+          20.99,
+          22.96,
+          19.61
+        ],
+        "stop_levels": [
+          17.48,
+          20.58,
+          22.19,
+          22.19
+        ]
       },
       "recommended_shares": 525,
       "profit_ladder": [
@@ -739,7 +901,33 @@
         "exit": 4.08,
         "return_pct": -12.74,
         "stopped_out": true,
-        "days": 10
+        "days": 10,
+        "equity_curve": [
+          4.67,
+          4.51,
+          4.62,
+          4.49,
+          4.54,
+          4.58,
+          4.45,
+          4.55,
+          4.39,
+          4.54,
+          4.08
+        ],
+        "stop_levels": [
+          4.2,
+          4.2,
+          4.2,
+          4.2,
+          4.2,
+          4.2,
+          4.2,
+          4.2,
+          4.2,
+          4.2,
+          4.2
+        ]
       },
       "recommended_shares": 1279,
       "profit_ladder": [
@@ -6740,7 +6928,7 @@
       "sentiment_score": 1,
       "news_sentiment": "positive",
       "social_sentiment": "bullish",
-      "social_score": 66.7,
+      "social_score": 81.8,
       "social_volume": 30,
       "social_trending": true,
       "meme_warning": false,
@@ -6751,7 +6939,17 @@
         "exit": 3.08,
         "return_pct": -6.38,
         "stopped_out": true,
-        "days": 2
+        "days": 2,
+        "equity_curve": [
+          3.29,
+          3.63,
+          3.08
+        ],
+        "stop_levels": [
+          2.96,
+          3.45,
+          3.45
+        ]
       },
       "recommended_shares": 38,
       "profit_ladder": [
@@ -6823,7 +7021,63 @@
         "exit": 48.99,
         "return_pct": -24.39,
         "stopped_out": true,
-        "days": 25
+        "days": 25,
+        "equity_curve": [
+          64.79,
+          66,
+          63.94,
+          63.6,
+          64.22,
+          63.66,
+          62.09,
+          62.05,
+          61.4,
+          64.93,
+          64.85,
+          64.89,
+          67.25,
+          66.12,
+          68.42,
+          71.86,
+          72.87,
+          72.89,
+          72.92,
+          72.54,
+          74.51,
+          76.56,
+          75.97,
+          76.95,
+          78.42,
+          48.99
+        ],
+        "stop_levels": [
+          58.31,
+          58.31,
+          58.31,
+          58.31,
+          58.31,
+          58.31,
+          58.31,
+          58.31,
+          58.31,
+          58.31,
+          58.31,
+          58.31,
+          58.31,
+          58.31,
+          58.31,
+          68.27,
+          69.93,
+          69.93,
+          69.93,
+          70.05,
+          72.88,
+          73.12,
+          73.12,
+          73.13,
+          75.59,
+          75.59
+        ]
       },
       "recommended_shares": 196,
       "profit_ladder": [
@@ -6941,7 +7195,7 @@
     "daily_pnl_pct": 0.0,
     "alert_triggered": false
   },
-  "updated_at": "2026-04-16 02:34:40 UTC",
+  "updated_at": "2026-04-16 02:52:24 UTC",
   "trailing_strategy": {
     "symbol": null,
     "strategy": "trailing_stop",
@@ -7029,5 +7283,241 @@
       "total_stock_gains": 0,
       "history": []
     }
+  },
+  "short_candidates": [
+    {
+      "symbol": "IONZ",
+      "price": 7.24,
+      "short_score": 25,
+      "reasons": [
+        "Strong downtrend: -34.1% in 20d",
+        "Big down day: -42.1%",
+        "Negative news sentiment",
+        "High volume selling: 18.8x normal"
+      ],
+      "stop_loss": 7.82,
+      "stop_loss_pct": 8.0,
+      "profit_target": 6.15,
+      "profit_target_pct": 15.0,
+      "risk_reward": 1.9,
+      "momentum_20d": -34.08082799408575,
+      "daily_change": -42.13084112149532,
+      "rsi": 50,
+      "sentiment": "negative"
+    },
+    {
+      "symbol": "RGTZ",
+      "price": 12.525,
+      "short_score": 20,
+      "reasons": [
+        "Strong downtrend: -22.9% in 20d",
+        "Big down day: -27.1%",
+        "High volume selling: 12.3x normal"
+      ],
+      "stop_loss": 13.53,
+      "stop_loss_pct": 8.0,
+      "profit_target": 10.65,
+      "profit_target_pct": 15.0,
+      "risk_reward": 1.9,
+      "momentum_20d": -22.90076335877862,
+      "daily_change": -27.05299941758882,
+      "rsi": 50,
+      "sentiment": "neutral"
+    },
+    {
+      "symbol": "BIRD",
+      "price": 17.65,
+      "short_score": 10,
+      "reasons": [
+        "Strong downtrend: -21.1% in 20d"
+      ],
+      "stop_loss": 19.06,
+      "stop_loss_pct": 8.0,
+      "profit_target": 15.0,
+      "profit_target_pct": 15.0,
+      "risk_reward": 1.9,
+      "momentum_20d": -21.118012422360255,
+      "daily_change": 569.6850393700788,
+      "rsi": 50,
+      "sentiment": "positive"
+    },
+    {
+      "symbol": "TSLR",
+      "price": 22.62,
+      "short_score": 10,
+      "reasons": [
+        "Strong downtrend: -18.3% in 20d"
+      ],
+      "stop_loss": 24.43,
+      "stop_loss_pct": 8.0,
+      "profit_target": 19.23,
+      "profit_target_pct": 15.0,
+      "risk_reward": 1.9,
+      "momentum_20d": -18.349958437240232,
+      "daily_change": 15.143802494273363,
+      "rsi": 50,
+      "sentiment": "neutral"
+    },
+    {
+      "symbol": "TSLL",
+      "price": 13.36,
+      "short_score": 10,
+      "reasons": [
+        "Strong downtrend: -19.4% in 20d"
+      ],
+      "stop_loss": 14.43,
+      "stop_loss_pct": 8.0,
+      "profit_target": 11.36,
+      "profit_target_pct": 15.0,
+      "risk_reward": 1.9,
+      "momentum_20d": -19.413407821229058,
+      "daily_change": 15.164644714038133,
+      "rsi": 50,
+      "sentiment": "neutral"
+    },
+    {
+      "symbol": "MSTY",
+      "price": 23.12,
+      "short_score": 10,
+      "reasons": [
+        "Downtrend: -11.7% in 20d",
+        "Negative news sentiment"
+      ],
+      "stop_loss": 24.97,
+      "stop_loss_pct": 8.0,
+      "profit_target": 19.65,
+      "profit_target_pct": 15.0,
+      "risk_reward": 1.9,
+      "momentum_20d": -11.671924290220826,
+      "daily_change": 3.214285714285725,
+      "rsi": 50,
+      "sentiment": "negative"
+    },
+    {
+      "symbol": "SOXS",
+      "price": 21.06,
+      "short_score": 10,
+      "reasons": [
+        "Strong downtrend: -44.7% in 20d"
+      ],
+      "stop_loss": 22.74,
+      "stop_loss_pct": 8.0,
+      "profit_target": 17.9,
+      "profit_target_pct": 15.0,
+      "risk_reward": 1.9,
+      "momentum_20d": -44.70711846598371,
+      "daily_change": -0.5225653206650804,
+      "rsi": 50,
+      "sentiment": "neutral"
+    },
+    {
+      "symbol": "CRCL",
+      "price": 105.55,
+      "short_score": 10,
+      "reasons": [
+        "Strong downtrend: -20.3% in 20d"
+      ],
+      "stop_loss": 113.99,
+      "stop_loss_pct": 8.0,
+      "profit_target": 89.72,
+      "profit_target_pct": 15.0,
+      "risk_reward": 1.9,
+      "momentum_20d": -20.270781332728237,
+      "daily_change": 0.1328147234607835,
+      "rsi": 50,
+      "sentiment": "neutral"
+    },
+    {
+      "symbol": "EQPT",
+      "price": 20.01,
+      "short_score": 10,
+      "reasons": [
+        "Strong downtrend: -18.0% in 20d"
+      ],
+      "stop_loss": 21.61,
+      "stop_loss_pct": 8.0,
+      "profit_target": 17.01,
+      "profit_target_pct": 15.0,
+      "risk_reward": 1.9,
+      "momentum_20d": -17.983870967741943,
+      "daily_change": -1.6224188790560423,
+      "rsi": 50,
+      "sentiment": "neutral"
+    }
+  ],
+  "trading_session": "closed",
+  "options_data": {
+    "symbol": "FROG",
+    "current_price": 42.88,
+    "cost_basis": null,
+    "put_analysis": {
+      "symbol": "FROG",
+      "type": "put",
+      "current_price": 42.88,
+      "target_strike": 38.59,
+      "available": true,
+      "total_contracts": 29,
+      "scored_candidates": 29,
+      "candidates": [
+        {
+          "contract_symbol": "FROG260515P00037500",
+          "strike": 37.5,
+          "expiration": "2026-05-15",
+          "dte": 30,
+          "otm": true,
+          "strike_distance_pct": 2.5,
+          "score": 11.9
+        },
+        {
+          "contract_symbol": "FROG260515P00040000",
+          "strike": 40.0,
+          "expiration": "2026-05-15",
+          "dte": 30,
+          "otm": true,
+          "strike_distance_pct": 3.3,
+          "score": 10.4
+        },
+        {
+          "contract_symbol": "FROG260515P00020000",
+          "strike": 20.0,
+          "expiration": "2026-05-15",
+          "dte": 30,
+          "otm": true,
+          "strike_distance_pct": 43.4,
+          "score": 7.0
+        },
+        {
+          "contract_symbol": "FROG260515P00022500",
+          "strike": 22.5,
+          "expiration": "2026-05-15",
+          "dte": 30,
+          "otm": true,
+          "strike_distance_pct": 37.5,
+          "score": 7.0
+        },
+        {
+          "contract_symbol": "FROG260515P00025000",
+          "strike": 25.0,
+          "expiration": "2026-05-15",
+          "dte": 30,
+          "otm": true,
+          "strike_distance_pct": 31.7,
+          "score": 7.0
+        }
+      ],
+      "best": {
+        "contract_symbol": "FROG260515P00037500",
+        "strike": 37.5,
+        "expiration": "2026-05-15",
+        "dte": 30,
+        "otm": true,
+        "strike_distance_pct": 2.5,
+        "score": 11.9
+      }
+    },
+    "call_analysis": null,
+    "estimated_premium_per_cycle_pct": 2.0,
+    "estimated_annual_return_pct": 34.0,
+    "capital_required": 4288.0
   }
 }
