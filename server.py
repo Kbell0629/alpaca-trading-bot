@@ -2394,13 +2394,19 @@ function renderSchedulerPanel(s) {
     var etTime = s.current_et_display || '?';
     var etDate = s.current_et_date || '';
 
-    // Define all tasks with their schedules
+    // Define all tasks with their schedules — mirrors the actual
+    // cloud_scheduler.py task registrations (lines 1619-1669).
     var tasks = [
-        { key: 'screener', name: 'Stock Screener', schedule: 'Every 30 min during market hours', needsMarket: true },
-        { key: 'monitor', name: 'Strategy Monitor', schedule: 'Every 60s during market hours', needsMarket: true },
-        { key: 'auto_deployer', name: 'Auto-Deployer', schedule: 'Weekdays 9:35 AM ET', needsMarket: false },
-        { key: 'daily_close', name: 'Daily Close Summary', schedule: 'Weekdays 4:05 PM ET', needsMarket: false },
-        { key: 'weekly_learning', name: 'Weekly Learning', schedule: 'Fridays 5:00 PM ET', needsMarket: false }
+        { key: 'screener',           name: 'Stock Screener',        schedule: 'Every 30 min during market hours',    needsMarket: true },
+        { key: 'monitor',            name: 'Strategy Monitor',      schedule: 'Every 60s during market hours',       needsMarket: true },
+        { key: 'auto_deployer',      name: 'Auto-Deployer',         schedule: 'Weekdays 9:35 AM ET',                  needsMarket: false },
+        { key: 'wheel_deploy',       name: 'Wheel Auto-Deploy',     schedule: 'Weekdays 9:40 AM ET (sells puts)',     needsMarket: false },
+        { key: 'wheel_monitor',      name: 'Wheel Monitor',         schedule: 'Every 15 min during market hours',    needsMarket: true },
+        { key: 'friday_reduction',   name: 'Friday Risk Reduction', schedule: 'Fridays 3:45 PM ET',                   needsMarket: false },
+        { key: 'daily_close',        name: 'Daily Close Summary',   schedule: 'Weekdays 4:05 PM ET',                  needsMarket: false },
+        { key: 'weekly_learning',    name: 'Weekly Learning',       schedule: 'Fridays 5:00 PM ET',                   needsMarket: false },
+        { key: 'monthly_rebalance',  name: 'Monthly Rebalance',     schedule: '1st trading day 9:45 AM ET',           needsMarket: false },
+        { key: 'daily_backup_all',   name: 'Daily Volume Backup',   schedule: 'Daily 3:00 AM ET (14-day retention)',  needsMarket: false }
     ];
 
     var gridHtml = '<div class="scheduler-grid">';
@@ -2559,31 +2565,59 @@ function buildNextActionsPanel(d) {
     const copyOn = !killSwitchActive;
     const wheelOn = !killSwitchActive;
 
+    // Timeline reflects the ACTUAL cloud_scheduler task schedule
+    // (cloud_scheduler.py:1619-1669). Earlier version had 9:35 AM for wheel
+    // + "Every 5 min" for monitor — both wrong.
     let timelineHtml =
         '<div class="timeline-item' + (adOn ? '' : ' off') + '">' +
             '<span class="time">9:35 AM ET</span>' +
-            '<span class="action">Auto-Deployer screens 12,000+ stocks and deploys top 2 picks</span>' +
+            '<span class="action">Auto-Deployer screens ~12,000 stocks, deploys top picks (trailing stop / breakout / mean reversion)</span>' +
             '<span class="' + (adOn ? 'badge-on' : 'badge-off') + '">' + (adOn ? 'ON' : 'OFF') + '</span>' +
         '</div>' +
-        '<div class="timeline-item' + (monOn ? '' : ' off') + '">' +
-            '<span class="time">9:35 AM ET</span>' +
-            '<span class="action">Strategy Monitor checks all positions, manages stops and ladders</span>' +
-            '<span class="' + (monOn ? 'badge-on' : 'badge-off') + '">' + (monOn ? 'ON' : 'OFF') + '</span>' +
+        '<div class="timeline-item' + (wheelOn ? '' : ' off') + '">' +
+            '<span class="time">9:40 AM ET</span>' +
+            '<span class="action">Wheel Strategy auto-deploy sells cash-secured puts on top wheel candidates ($10-$50 stocks)</span>' +
+            '<span class="' + (wheelOn ? 'badge-on' : 'badge-off') + '">' + (wheelOn ? 'ON' : 'OFF') + '</span>' +
         '</div>' +
         '<div class="timeline-item' + (copyOn ? '' : ' off') + '">' +
             '<span class="time">9:35 AM ET</span>' +
             '<span class="action">Copy Trading scans Capitol Trades for politician moves</span>' +
             '<span class="' + (copyOn ? 'badge-on' : 'badge-off') + '">' + (copyOn ? 'ON' : 'OFF') + '</span>' +
         '</div>' +
-        '<div class="timeline-item' + (wheelOn ? '' : ' off') + '">' +
-            '<span class="time">9:35 AM ET</span>' +
-            '<span class="action">Wheel Strategy auto-picks affordable stock, sells puts/calls</span>' +
+        '<div class="timeline-item active' + (monOn ? '' : ' off') + '">' +
+            '<span class="time">Every 60 sec</span>' +
+            '<span class="action">Strategy Monitor: adjusts stops, checks profit-ladder fills, ratchets trailing stops up</span>' +
+            '<span class="' + (monOn ? 'badge-on' : 'badge-off') + '">' + (monOn ? 'ON' : 'OFF') + '</span>' +
+        '</div>' +
+        '<div class="timeline-item active' + (wheelOn ? '' : ' off') + '">' +
+            '<span class="time">Every 15 min</span>' +
+            '<span class="action">Wheel Monitor: checks fills, assignments, sells covered calls, buys-to-close at 50% profit</span>' +
             '<span class="' + (wheelOn ? 'badge-on' : 'badge-off') + '">' + (wheelOn ? 'ON' : 'OFF') + '</span>' +
         '</div>' +
-        '<div class="timeline-item active' + (monOn ? '' : ' off') + '">' +
-            '<span class="time">Every 5 min</span>' +
-            '<span class="action">Strategy Monitor: adjusts stops, checks ladder fills, takes profits</span>' +
-            '<span class="' + (monOn ? 'badge-on' : 'badge-off') + '">' + (monOn ? 'ON' : 'OFF') + '</span>' +
+        '<div class="timeline-item active' + (adOn ? '' : ' off') + '">' +
+            '<span class="time">Every 30 min</span>' +
+            '<span class="action">Screener refresh: 12k stocks filtered + scored</span>' +
+            '<span class="' + (adOn ? 'badge-on' : 'badge-off') + '">' + (adOn ? 'ON' : 'OFF') + '</span>' +
+        '</div>' +
+        '<div class="timeline-item">' +
+            '<span class="time">3:45 PM ET (Fri)</span>' +
+            '<span class="action">Weekly risk reduction: trim 50% off winners >20% before weekend gap</span>' +
+            '<span class="badge-on">AUTO</span>' +
+        '</div>' +
+        '<div class="timeline-item">' +
+            '<span class="time">4:05 PM ET</span>' +
+            '<span class="action">Daily close summary: scorecard, readiness score, orphan recovery</span>' +
+            '<span class="badge-on">AUTO</span>' +
+        '</div>' +
+        '<div class="timeline-item">' +
+            '<span class="time">5:00 PM ET (Fri)</span>' +
+            '<span class="action">Weekly learning: analyzes trade journal, adjusts strategy weights</span>' +
+            '<span class="badge-on">AUTO</span>' +
+        '</div>' +
+        '<div class="timeline-item">' +
+            '<span class="time">3:00 AM ET</span>' +
+            '<span class="action">Daily backup: snapshots users.db + all per-user data (14-day retention)</span>' +
+            '<span class="badge-on">AUTO</span>' +
         '</div>';
 
     // Pending actions from open orders
