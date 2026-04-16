@@ -1,0 +1,25 @@
+{
+  "strategy": "copy_trading",
+  "created": "2026-04-15",
+  "status": "active",
+  "source": "capitol_trades",
+  "source_url": "https://www.capitoltrades.com",
+  "rules": {
+    "politician": null,
+    "selection_criteria": "highest_recent_returns_and_active",
+    "trade_delay_max_days": 7,
+    "position_size_pct": 0.05,
+    "max_positions": 10,
+    "skip_if_price_moved_pct": 0.15,
+    "stop_loss_pct": 0.10
+  },
+  "state": {
+    "selected_politician": null,
+    "selection_reason": null,
+    "last_scan": null,
+    "trades_copied": [],
+    "active_positions": [],
+    "total_premium_collected": 0,
+    "total_realized_pnl": 0
+  }
+}

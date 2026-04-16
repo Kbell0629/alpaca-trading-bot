@@ -1,0 +1,50 @@
+{
+  "kill_switch": false,
+  "mode": "paper",
+  "account_size": 100000,
+  "daily_loss_limit_pct": 0.03,
+  "max_drawdown_pct": 0.1,
+  "max_positions": 5,
+  "max_position_pct": 0.1,
+  "cooldown_after_loss_minutes": 60,
+  "strategies_allowed": [
+    "trailing_stop",
+    "mean_reversion",
+    "breakout",
+    "copy_trading",
+    "wheel"
+  ],
+  "peak_portfolio_value": 100000,
+  "daily_starting_value": null,
+  "last_loss_time": null,
+  "kill_switch_triggered_at": null,
+  "kill_switch_reason": null,
+  "paper_trading_start": "2026-04-15",
+  "paper_trading_scorecard": {
+    "total_trades": 0,
+    "winning_trades": 0,
+    "losing_trades": 0,
+    "total_pnl": 0,
+    "max_drawdown_seen": 0,
+    "days_tracked": 0,
+    "ready_for_live": false
+  },
+  "live_mode_settings": {
+    "account_size": 5000,
+    "daily_loss_limit_pct": 0.03,
+    "max_drawdown_pct": 0.1,
+    "max_positions": 3,
+    "max_position_pct": 0.05,
+    "max_new_per_day": 1,
+    "strategies_allowed": [
+      "trailing_stop",
+      "mean_reversion",
+      "breakout",
+      "copy_trading",
+      "wheel"
+    ],
+    "min_profitable_paper_days": 30,
+    "wheel_max_stock_price": 50,
+    "note": "Wheel enabled on stocks under $50 so 100 shares fits within $5k budget"
+  }
+}

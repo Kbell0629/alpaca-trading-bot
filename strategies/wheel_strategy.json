@@ -1,0 +1,33 @@
+{
+  "strategy": "wheel_strategy",
+  "created": "2026-04-15",
+  "symbol": null,
+  "symbol_selection": "auto",
+  "status": "active",
+  "rules": {
+    "max_stock_price": 50,
+    "min_stock_price": 10,
+    "min_options_volume": 1000,
+    "preferred_volatility_min": 2.0,
+    "put_strike_pct_below": 0.10,
+    "call_strike_pct_above": 0.10,
+    "expiration_weeks": [2, 3, 4],
+    "early_close_profit_pct": 0.50,
+    "check_interval_minutes": 15,
+    "never_sell_put_without_cash": true,
+    "never_sell_call_below_cost_basis": true,
+    "note": "Auto-selects best wheel candidate between $10-$50 so 100 shares is affordable on $5k"
+  },
+  "state": {
+    "current_stage": "stage_1_sell_puts",
+    "selected_symbol": null,
+    "selection_reason": null,
+    "shares_owned": 0,
+    "cost_basis": null,
+    "active_contract": null,
+    "cycles_completed": 0,
+    "total_premiums_collected": 0,
+    "total_stock_gains": 0,
+    "history": []
+  }
+}

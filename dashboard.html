@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stock Trading Bot Dashboard</title>
+<style>
+:root {
+    --bg: #0a0e17; --card: #111827; --border: #1e293b;
+    --text: #e2e8f0; --text-dim: #94a3b8; --accent: #3b82f6;
+    --green: #10b981; --red: #ef4444; --orange: #f59e0b; --purple: #8b5cf6;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text); padding: 24px; line-height: 1.5;
+}
+.header {
+    display:flex; justify-content:space-between; align-items:center;
+    margin-bottom:24px; padding-bottom:16px; border-bottom:1px solid var(--border);
+}
+.header h1 {
+    font-size:24px; font-weight:700;
+    background: linear-gradient(135deg, var(--accent), var(--purple));
+    -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+}
+.header .updated { color:var(--text-dim); font-size:13px; }
+.paper-badge {
+    background:var(--orange); color:#000; padding:4px 12px; border-radius:20px;
+    font-size:11px; font-weight:700; letter-spacing:1px;
+}
+.account-bar { display:grid; grid-template-columns:repeat(5,1fr); gap:16px; margin-bottom:24px; }
+.metric {
+    background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px;
+}
+.metric .label { font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px; }
+.metric .value { font-size:22px; font-weight:700; }
+
+/* Stock Picks */
+.section-title {
+    font-size:18px; font-weight:700; margin-bottom:16px;
+    display:flex; align-items:center; gap:8px;
+}
+.section-title .subtitle { font-size:13px; color:var(--text-dim); font-weight:400; }
+.picks { display:grid; grid-template-columns:repeat(3,1fr); gap:20px; margin-bottom:24px; }
+.pick-card {
+    background:var(--card); border:1px solid var(--border); border-radius:12px; padding:20px;
+}
+.pick-header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:16px; }
+.pick-rank { font-size:10px; font-weight:700; letter-spacing:1px; }
+.pick-symbol { font-size:28px; font-weight:800; margin-top:2px; }
+.pick-price { font-size:16px; color:var(--text-dim); }
+.pick-strategy {
+    padding:6px 12px; border-radius:8px; font-size:11px; font-weight:700;
+    text-transform:uppercase; letter-spacing:0.5px;
+}
+.pick-stats { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:16px; }
+.pick-stat {
+    display:flex; justify-content:space-between; padding:6px 0;
+    border-bottom:1px solid rgba(30,41,59,0.5);
+}
+.pick-stat-label { font-size:11px; color:var(--text-dim); }
+.pick-stat-value { font-size:13px; font-weight:600; }
+.pick-scores { display:flex; flex-direction:column; gap:6px; }
+.score-row { display:flex; align-items:center; gap:8px; }
+.score-label { font-size:10px; font-weight:600; width:50px; text-transform:uppercase; }
+.score-bar-bg { flex:1; height:6px; background:rgba(30,41,59,0.8); border-radius:3px; overflow:hidden; }
+.score-bar { height:100%; border-radius:3px; transition:width 0.5s; }
+.score-val { font-size:11px; color:var(--text-dim); width:30px; text-align:right; }
+
+/* Strategies */
+.strategies { display:grid; grid-template-columns:1fr 1fr 1fr; gap:20px; margin-bottom:24px; }
+.strategy-card {
+    background:var(--card); border:1px solid var(--border); border-radius:12px;
+    padding:20px; position:relative; overflow:hidden;
+}
+.strategy-card::before {
+    content:''; position:absolute; top:0; left:0; right:0; height:3px;
+}
+.strategy-card.trailing::before { background:linear-gradient(90deg,var(--accent),#60a5fa); }
+.strategy-card.copy::before { background:linear-gradient(90deg,var(--green),#34d399); }
+.strategy-card.wheel::before { background:linear-gradient(90deg,var(--purple),#a78bfa); }
+.strategy-card h2 { font-size:16px; margin-bottom:4px; }
+.strategy-card .subtitle { font-size:12px; color:var(--text-dim); margin-bottom:16px; }
+.stat-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.stat { padding:8px 0; }
+.stat .stat-label { font-size:10px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; }
+.stat .stat-value { font-size:16px; font-weight:600; margin-top:2px; }
+.badge-active { background:rgba(16,185,129,0.15); color:var(--green); padding:2px 8px; border-radius:6px; font-size:11px; font-weight:600; }
+.badge-inactive { background:rgba(245,158,11,0.15); color:var(--orange); padding:2px 8px; border-radius:6px; font-size:11px; font-weight:600; }
+.badge-pending { background:rgba(148,163,184,0.15); color:var(--text-dim); padding:2px 8px; border-radius:6px; font-size:11px; font-weight:600; }
+.strategy-visual {
+    background:rgba(59,130,246,0.05); border:1px solid rgba(59,130,246,0.2);
+    border-radius:8px; padding:12px; margin-top:12px; font-size:12px;
+}
+
+/* Tables */
+.tables { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:24px; }
+.table-card {
+    background:var(--card); border:1px solid var(--border); border-radius:12px;
+    padding:20px; overflow-x:auto;
+}
+.table-card h3 { font-size:14px; margin-bottom:12px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th { text-align:left; padding:8px 12px; border-bottom:1px solid var(--border); color:var(--text-dim); font-size:10px; text-transform:uppercase; letter-spacing:0.5px; font-weight:600; }
+td { padding:8px 12px; border-bottom:1px solid rgba(30,41,59,0.5); }
+.positive { color:var(--green); }
+.negative { color:var(--red); }
+.side-buy { color:var(--green); font-weight:600; }
+.side-sell { color:var(--red); font-weight:600; }
+.status-filled { color:var(--green); font-weight:600; }
+.status-pending { color:var(--orange); }
+.empty { text-align:center; color:var(--text-dim); padding:20px; }
+.note { color:var(--text-dim); font-size:11px; }
+
+.screener { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:20px; margin-bottom:24px; }
+.ladder-card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:20px; margin-bottom:24px; }
+.ladder-card h3, .screener h3 { font-size:14px; margin-bottom:12px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; }
+
+.how-to {
+    background: linear-gradient(135deg, rgba(59,130,246,0.08), rgba(139,92,246,0.08));
+    border: 1px solid rgba(59,130,246,0.2); border-radius:12px;
+    padding:20px; margin-bottom:24px;
+}
+.how-to h3 { font-size:14px; margin-bottom:8px; }
+.how-to code { background:rgba(59,130,246,0.15); padding:2px 6px; border-radius:4px; font-size:12px; }
+.how-to ul { padding-left:20px; font-size:13px; color:var(--text-dim); }
+.how-to li { margin-bottom:4px; }
+
+.screener-stats {
+    display:flex; gap:24px; margin-bottom:16px; font-size:12px; color:var(--text-dim);
+}
+.screener-stats span { font-weight:600; color:var(--text); }
+
+.footer { text-align:center; padding:16px; color:var(--text-dim); font-size:11px; border-top:1px solid var(--border); }
+@media (max-width:1200px) {
+    .strategies,.picks { grid-template-columns:1fr; }
+    .tables { grid-template-columns:1fr; }
+    .account-bar { grid-template-columns:repeat(3,1fr); }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+    <div>
+        <h1>Stock Trading Bot Dashboard</h1>
+        <div class="updated">Last updated: 2026-04-16 00:36:22 UTC</div>
+    </div>
+    <span class="paper-badge">PAPER TRADING</span>
+</div>
+
+<!-- Account Overview -->
+<div class="account-bar">
+    <div class="metric"><div class="label">Portfolio Value</div><div class="value">$100,000.00</div></div>
+    <div class="metric"><div class="label">Cash</div><div class="value">$100,000.00</div></div>
+    <div class="metric"><div class="label">Buying Power</div><div class="value">$196,238.00</div></div>
+    <div class="metric"><div class="label">Long Market Value</div><div class="value">$0.00</div></div>
+    <div class="metric"><div class="label">Equity</div><div class="value">$100,000.00</div></div>
+</div>
+
+<!-- How to Use -->
+<div class="how-to">
+    <h3>How to Use This Dashboard</h3>
+    <ul>
+        <li>Tell Claude: <code>/stock-bot</code> to launch the bot and see picks</li>
+        <li>Or just say: <code>"Run trailing stop on NVDA"</code>, <code>"Start wheel on SOFI"</code>, <code>"Set up copy trading"</code></li>
+        <li>Strategies run autonomously once deployed — check back anytime for status</li>
+    </ul>
+</div>
+
+<!-- Top 3 Picks -->
+<div class="section-title">Top 3 Stock Picks <span class="subtitle">-- Screened 10,861 stocks, scored 1,089 after filtering</span></div>
+<div class="picks">
+    
+        <div class="pick-card" style="border-top: 3px solid #ef4444">
+            <div class="pick-header">
+                <div>
+                    <span class="pick-rank" style="color:#ef4444">TOP PICK</span>
+                    <div class="pick-symbol">BIRD</div>
+                    <div class="pick-price">$17.65</div>
+                </div>
+                <div class="pick-strategy" style="background:#ef444420;color:#ef4444">
+                    Deploy: Breakout
+                </div>
+            </div>
+            <div class="pick-stats">
+                <div class="pick-stat">
+                    <span class="pick-stat-label">Daily Change</span>
+                    <span class="pick-stat-value positive">+569.7%</span>
+                </div>
+                <div class="pick-stat">
+                    <span class="pick-stat-label">Volatility</span>
+                    <span class="pick-stat-value">291.5%</span>
+                </div>
+                <div class="pick-stat">
+                    <span class="pick-stat-label">Volume</span>
+                    <span class="pick-stat-value">1.7M</span>
+                </div>
+                <div class="pick-stat">
+                    <span class="pick-stat-label">Vol Surge</span>
+                    <span class="pick-stat-value positive">+84345%</span>
+                </div>
+            </div>
+            <div class="pick-scores">
+                <div class="score-row"><span class="score-label" style="color:#3b82f6">Trailing</span><div class="score-bar-bg"><div class="score-bar" style="width:7.254655352036769%;background:#3b82f6"></div></div><span class="score-val">368</span></div>
+                <div class="score-row"><span class="score-label" style="color:#10b981">Copy</span><div class="score-bar-bg"><div class="score-bar" style="width:5%;background:#10b981"></div></div><span class="score-val">168</span></div>
+                <div class="score-row"><span class="score-label" style="color:#8b5cf6">Wheel</span><div class="score-bar-bg"><div class="score-bar" style="width:17.160731223441722%;background:#8b5cf6"></div></div><span class="score-val">872</span></div>
+            </div>
+        </div>
+        <div class="pick-card" style="border-top: 3px solid #3b82f6">
+            <div class="pick-header">
+                <div>
+                    <span class="pick-rank" style="color:#3b82f6">RUNNER UP</span>
+                    <div class="pick-symbol">MSTX</div>
+                    <div class="pick-price">$25.16</div>
+                </div>
+                <div class="pick-strategy" style="background:#3b82f620;color:#3b82f6">
+                    Deploy: Trailing Stop
+                </div>
+            </div>
+            <div class="pick-stats">
+                <div class="pick-stat">
+                    <span class="pick-stat-label">Daily Change</span>
+                    <span class="pick-stat-value positive">+8.7%</span>
+                </div>
+                <div class="pick-stat">
+                    <span class="pick-stat-label">Volatility</span>
+                    <span class="pick-stat-value">9.2%</span>
+                </div>
+                <div class="pick-stat">
+                    <span class="pick-stat-label">Volume</span>
+                    <span class="pick-stat-value">0.1M</span>
+                </div>
+                <div class="pick-stat">
+                    <span class="pick-stat-label">Vol Surge</span>
+                    <span class="pick-stat-value positive">+25%</span>
+                </div>
+            </div>
+            <div class="pick-scores">
+                <div class="score-row"><span class="score-label" style="color:#3b82f6">Trailing</span><div class="score-bar-bg"><div class="score-bar" style="width:5%;background:#3b82f6"></div></div><span class="score-val">219</span></div>
+                <div class="score-row"><span class="score-label" style="color:#10b981">Copy</span><div class="score-bar-bg"><div class="score-bar" style="width:5%;background:#10b981"></div></div><span class="score-val">3</span></div>
+                <div class="score-row"><span class="score-label" style="color:#8b5cf6">Wheel</span><div class="score-bar-bg"><div class="score-bar" style="width:5%;background:#8b5cf6"></div></div><span class="score-val">33</span></div>
+            </div>
+        </div>
+        <div class="pick-card" style="border-top: 3px solid #ef4444">
+            <div class="pick-header">
+                <div>
+                    <span class="pick-rank" style="color:#ef4444">STRONG OPTION</span>
+                    <div class="pick-symbol">DOO</div>
+                    <div class="pick-price">$50.87</div>
+                </div>
+                <div class="pick-strategy" style="background:#ef444420;color:#ef4444">
+                    Deploy: Breakout
+                </div>
+            </div>
+            <div class="pick-stats">
+                <div class="pick-stat">
+                    <span class="pick-stat-label">Daily Change</span>
+                    <span class="pick-stat-value negative">-35.1%</span>
+                </div>
+                <div class="pick-stat">
+                    <span class="pick-stat-label">Volatility</span>
+                    <span class="pick-stat-value">12.4%</span>
+                </div>
+                <div class="pick-stat">
+                    <span class="pick-stat-label">Volume</span>
+                    <span class="pick-stat-value">0.2M</span>
+                </div>
+                <div class="pick-stat">
+                    <span class="pick-stat-label">Vol Surge</span>
+                    <span class="pick-stat-value positive">+3002%</span>
+                </div>
+            </div>
+            <div class="pick-scores">
+                <div class="score-row"><span class="score-label" style="color:#3b82f6">Trailing</span><div class="score-bar-bg"><div class="score-bar" style="width:5%;background:#3b82f6"></div></div><span class="score-val">-4</span></div>
+                <div class="score-row"><span class="score-label" style="color:#10b981">Copy</span><div class="score-bar-bg"><div class="score-bar" style="width:5%;background:#10b981"></div></div><span class="score-val">-14</span></div>
+                <div class="score-row"><span class="score-label" style="color:#8b5cf6">Wheel</span><div class="score-bar-bg"><div class="score-bar" style="width:5%;background:#8b5cf6"></div></div><span class="score-val">39</span></div>
+            </div>
+        </div>
+</div>
+
+<!-- Active Strategies -->
+<div class="section-title">Active Strategies</div>
+<div class="strategies">
+    <div class="strategy-card trailing">
+        <h2>1. Trailing Stop</h2>
+        <div class="subtitle">TSLA -- Auto stop-loss with ratcheting floor</div>
+        <div class="stat-grid">
+            <div class="stat"><div class="stat-label">Entry Price</div><div class="stat-value">$392.61</div></div>
+            <div class="stat"><div class="stat-label">Shares Held</div><div class="stat-value">0</div></div>
+            <div class="stat"><div class="stat-label">Stop Price</div><div class="stat-value">None</div></div>
+            <div class="stat"><div class="stat-label">Trailing</div><div class="stat-value"><span class="badge-inactive">WAITING</span></div></div>
+            <div class="stat"><div class="stat-label">Highest Seen</div><div class="stat-value">None</div></div>
+        </div>
+        <div class="strategy-visual"><strong>Rules:</strong> 10% stop-loss | +10% activates trailing | 5% trail distance | Floor only goes up</div>
+    </div>
+    <div class="strategy-card copy">
+        <h2>2. Copy Trading</h2>
+        <div class="subtitle">Track &amp; copy politician trades via Capitol Trades</div>
+        <div class="stat-grid">
+            <div class="stat"><div class="stat-label">Tracking</div><div class="stat-value">Not selected yet</div></div>
+            <div class="stat"><div class="stat-label">Status</div><div class="stat-value"><span class="badge-pending">SETUP NEEDED</span></div></div>
+            <div class="stat"><div class="stat-label">Trades Copied</div><div class="stat-value">0</div></div>
+            <div class="stat"><div class="stat-label">Realized P&L</div><div class="stat-value">$0.00</div></div>
+        </div>
+        <div class="strategy-visual"><strong>Rules:</strong> 5% position size | Max 10 positions | Skip if moved 15%+ | 10% stop-loss</div>
+    </div>
+    <div class="strategy-card wheel">
+        <h2>3. Wheel Strategy</h2>
+        <div class="subtitle">Sell puts &rarr; Assigned &rarr; Sell calls &rarr; Repeat</div>
+        <div class="stat-grid">
+            <div class="stat"><div class="stat-label">Current Stage</div><div class="stat-value" style="font-size:13px">Stage 1: Selling Puts</div></div>
+            <div class="stat"><div class="stat-label">Status</div><div class="stat-value"><span class="badge-pending">SETUP NEEDED</span></div></div>
+            <div class="stat"><div class="stat-label">Premiums</div><div class="stat-value positive">$0.00</div></div>
+            <div class="stat"><div class="stat-label">Cycles</div><div class="stat-value">0</div></div>
+        </div>
+        <div class="strategy-visual"><strong>Rules:</strong> Strike 10% OTM | 2-4 week exp | Close at 50% profit | Check every 15 min</div>
+    </div>
+</div>
+
+<!-- Ladder Buys -->
+<div class="ladder-card">
+    <h3>Trailing Stop -- Ladder Buy Levels</h3>
+    <table>
+        <thead><tr><th>Drop</th><th>Trigger Price</th><th>Shares</th><th>Status</th><th>Note</th></tr></thead>
+        <tbody><tr><td>-12%</td><td>$345</td><td>1</td><td><span class="status-pending">Pending</span></td><td class="note">re-entry just below stop-out</td></tr><tr><td>-20%</td><td>$315</td><td>2</td><td><span class="status-pending">Pending</span></td><td class="note">meaningful pullback</td></tr><tr><td>-30%</td><td>$275</td><td>3</td><td><span class="status-pending">Pending</span></td><td class="note">deep correction</td></tr><tr><td>-40%</td><td>$235</td><td>5</td><td><span class="status-pending">Pending</span></td><td class="note">crash territory, go heavy</td></tr></tbody>
+    </table>
+</div>
+
+<!-- Orders & Positions -->
+<div class="tables">
+    <div class="table-card">
+        <h3>Open Orders</h3>
+        <table>
+            <thead><tr><th>Symbol</th><th>Side</th><th>Type</th><th>Qty</th><th>Price</th><th>Status</th></tr></thead>
+            <tbody><tr><td>TSLA</td><td><span class="side-buy">BUY</span></td><td>limit</td><td>5</td><td>$235</td><td>accepted</td></tr><tr><td>TSLA</td><td><span class="side-buy">BUY</span></td><td>limit</td><td>3</td><td>$275</td><td>accepted</td></tr><tr><td>TSLA</td><td><span class="side-buy">BUY</span></td><td>limit</td><td>2</td><td>$315</td><td>accepted</td></tr><tr><td>TSLA</td><td><span class="side-buy">BUY</span></td><td>limit</td><td>1</td><td>$345</td><td>accepted</td></tr><tr><td>TSLA</td><td><span class="side-buy">BUY</span></td><td>market</td><td>2</td><td>$Market</td><td>accepted</td></tr></tbody>
+        </table>
+    </div>
+    <div class="table-card">
+        <h3>Positions</h3>
+        <table>
+            <thead><tr><th>Symbol</th><th>Qty</th><th>Avg Entry</th><th>Current</th><th>P&L</th><th>P&L %</th></tr></thead>
+            <tbody><tr><td colspan="6" class="empty">No open positions</td></tr></tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Full Screener -->
+<div class="screener">
+    <h3>Full Stock Screener -- Top 50</h3>
+    <div class="screener-stats">
+        Screened: <span>10,861</span> stocks &nbsp;|&nbsp;
+        Passed filters: <span>1,089</span> &nbsp;|&nbsp;
+        Showing: <span>Top 50</span>
+    </div>
+    <table>
+        <thead><tr><th>#</th><th>Symbol</th><th>Price</th><th>Daily Chg</th><th>Volatility</th><th>Volume</th><th>Vol Surge</th><th>Best Strategy</th><th>Score</th></tr></thead>
+        <tbody><tr style="background:rgba(59,130,246,0.05)"><td>1</td><td><strong>BIRD</strong></td><td>$17.65</td><td class="positive">+569.7%</td><td>291.5%</td><td>1.7M</td><td class="positive">+84345%</td><td style="color:#ef4444;font-weight:600">Breakout</td><td style="font-weight:700">5079</td></tr><tr style="background:rgba(59,130,246,0.05)"><td>2</td><td><strong>MSTX</strong></td><td>$25.16</td><td class="positive">+8.7%</td><td>9.2%</td><td>0.1M</td><td class="positive">+25%</td><td style="color:#3b82f6;font-weight:600">Trailing Stop</td><td style="font-weight:700">219</td></tr><tr style="background:rgba(59,130,246,0.05)"><td>3</td><td><strong>DOO</strong></td><td>$50.87</td><td class="negative">-35.1%</td><td>12.4%</td><td>0.2M</td><td class="positive">+3002%</td><td style="color:#ef4444;font-weight:600">Breakout</td><td style="font-weight:700">184</td></tr><tr><td>4</td><td><strong>IONZ</strong></td><td>$7.24</td><td class="negative">-42.1%</td><td>52.2%</td><td>0.1M</td><td class="positive">+190%</td><td style="color:#8b5cf6;font-weight:600">Wheel Strategy</td><td style="font-weight:700">160</td></tr><tr><td>5</td><td><strong>MRLN</strong></td><td>$14.35</td><td class="positive">+32.5%</td><td>37.7%</td><td>0.1M</td><td class="positive">+479%</td><td style="color:#ef4444;font-weight:600">Breakout</td><td style="font-weight:700">129</td></tr><tr><td>6</td><td><strong>NEXA</strong></td><td>$14.65</td><td class="positive">+22.9%</td><td>26.2%</td><td>0.2M</td><td class="positive">+280%</td><td style="color:#ef4444;font-weight:600">Breakout</td><td style="font-weight:700">116</td></tr><tr><td>7</td><td><strong>CAR</strong></td><td>$395.41</td><td class="negative">-3.8%</td><td>21.5%</td><td>0.2M</td><td class="positive">+32%</td><td style="color:#3b82f6;font-weight:600">Trailing Stop</td><td style="font-weight:700">114</td></tr><tr><td>8</td><td><strong>RGTZ</strong></td><td>$12.53</td><td class="negative">-27.1%</td><td>30.4%</td><td>0.1M</td><td class="positive">+500%</td><td style="color:#f59e0b;font-weight:600">Mean Reversion</td><td style="font-weight:700">100</td></tr><tr><td>9</td><td><strong>ZNTL</strong></td><td>$5.36</td><td class="positive">+3.5%</td><td>13.5%</td><td>0.2M</td><td class="positive">+33%</td><td style="color:#ef4444;font-weight:600">Breakout</td><td style="font-weight:700">98</td></tr><tr><td>10</td><td><strong>OKLL</strong></td><td>$9.45</td><td class="positive">+16.1%</td><td>16.2%</td><td>0.2M</td><td class="positive">+84%</td><td style="color:#ef4444;font-weight:600">Breakout</td><td style="font-weight:700">87</td></tr><tr><td>11</td><td><strong>QBTS</strong></td><td>$20.80</td><td class="positive">+22.5%</td><td>18.4%</td><td>3.6M</td><td class="positive">+71%</td><td style="color:#ef4444;font-weight:600">Breakout</td><td style="font-weight:700">87</td></tr><tr><td>12</td><td><strong>OGN</strong></td><td>$9.24</td><td class="positive">+6.2%</td><td>12.2%</td><td>0.6M</td><td class="positive">+102%</td><td style="color:#ef4444;font-weight:600">Breakout</td><td style="font-weight:700">79</td></tr><tr><td>13</td><td><strong>QUBT</strong></td><td>$9.39</td><td class="positive">+15.8%</td><td>15.2%</td><td>1.6M</td><td class="positive">+81%</td><td style="color:#ef4444;font-weight:600">Breakout</td><td style="font-weight:700">76</td></tr><tr><td>14</td><td><strong>TSLQ</strong></td><td>$21.39</td><td class="negative">-15.2%</td><td>20.8%</td><td>0.8M</td><td class="positive">+255%</td><td style="color:#8b5cf6;font-weight:600">Wheel Strategy</td><td style="font-weight:700">72</td></tr><tr><td>15</td><td><strong>TSHA</strong></td><td>$5.99</td><td class="positive">+27.2%</td><td>26.1%</td><td>0.6M</td><td class="positive">+258%</td><td style="color:#8b5cf6;font-weight:600">Wheel Strategy</td><td style="font-weight:700">71</td></tr><tr><td>16</td><td><strong>NUAI</strong></td><td>$5.12</td><td class="positive">+18.5%</td><td>21.1%</td><td>0.3M</td><td class="positive">+36%</td><td style="color:#8b5cf6;font-weight:600">Wheel Strategy</td><td style="font-weight:700">68</td></tr><tr><td>17</td><td><strong>RGTI</strong></td><td>$19.11</td><td class="positive">+13.3%</td><td>13.5%</td><td>2.7M</td><td class="positive">+52%</td><td style="color:#ef4444;font-weight:600">Breakout</td><td style="font-weight:700">68</td></tr><tr><td>18</td><td><strong>BBNX</strong></td><td>$12.99</td><td class="positive">+9.8%</td><td>10.4%</td><td>0.2M</td><td class="positive">+165%</td><td style="color:#ef4444;font-weight:600">Breakout</td><td style="font-weight:700">68</td></tr><tr><td>19</td><td><strong>EOSE</strong></td><td>$7.08</td><td class="positive">+12.1%</td><td>10.5%</td><td>1.4M</td><td class="positive">+70%</td><td style="color:#ef4444;font-weight:600">Breakout</td><td style="font-weight:700">67</td></tr><tr><td>20</td><td><strong>IONQ</strong></td><td>$43.26</td><td class="positive">+20.9%</td><td>15.5%</td><td>2.9M</td><td class="positive">+4%</td><td style="color:#ef4444;font-weight:600">Breakout</td><td style="font-weight:700">66</td></tr><tr><td>21</td><td><strong>TSDD</strong></td><td>$9.09</td><td class="negative">-15.0%</td><td>20.7%</td><td>1.1M</td><td class="negative">-20%</td><td style="color:#8b5cf6;font-weight:600">Wheel Strategy</td><td style="font-weight:700">62</td></tr><tr><td>22</td><td><strong>TSLR</strong></td><td>$22.62</td><td class="positive">+15.1%</td><td>17.4%</td><td>0.1M</td><td class="positive">+79%</td><td style="color:#8b5cf6;font-weight:600">Wheel Strategy</td><td style="font-weight:700">57</td></tr><tr><td>23</td><td><strong>NB</strong></td><td>$5.92</td><td class="positive">+18.6%</td><td>16.5%</td><td>0.7M</td><td class="positive">+395%</td><td style="color:#8b5cf6;font-weight:600">Wheel Strategy</td><td style="font-weight:700">56</td></tr><tr><td>24</td><td><strong>BE</strong></td><td>$213.66</td><td class="negative">-2.4%</td><td>8.6%</td><td>0.5M</td><td class="negative">-29%</td><td style="color:#ef4444;font-weight:600">Breakout</td><td style="font-weight:700">56</td></tr><tr><td>25</td><td><strong>UPST</strong></td><td>$33.34</td><td class="positive">+13.0%</td><td>9.7%</td><td>0.3M</td><td class="positive">+121%</td><td style="color:#ef4444;font-weight:600">Breakout</td><td style="font-weight:700">54</td></tr><tr><td>26</td><td><strong>MLYS</strong></td><td>$30.43</td><td class="positive">+11.5%</td><td>14.7%</td><td>0.2M</td><td class="positive">+597%</td><td style="color:#8b5cf6;font-weight:600">Wheel Strategy</td><td style="font-weight:700">54</td></tr><tr><td>27</td><td><strong>FSLY</strong></td><td>$23.38</td><td class="positive">+11.5%</td><td>10.2%</td><td>0.8M</td><td class="positive">+12%</td><td style="color:#f59e0b;font-weight:600">Mean Reversion</td><td style="font-weight:700">54</td></tr><tr><td>28</td><td><strong>TSLG</strong></td><td>$6.55</td><td class="positive">+15.2%</td><td>17.1%</td><td>6.3M</td><td class="positive">+59%</td><td style="color:#8b5cf6;font-weight:600">Wheel Strategy</td><td style="font-weight:700">51</td></tr><tr><td>29</td><td><strong>HIMS</strong></td><td>$24.30</td><td class="positive">+13.7%</td><td>16.0%</td><td>1.2M</td><td class="positive">+91%</td><td style="color:#8b5cf6;font-weight:600">Wheel Strategy</td><td style="font-weight:700">51</td></tr><tr><td>30</td><td><strong>LWLG</strong></td><td>$12.10</td><td class="negative">-1.0%</td><td>12.4%</td><td>0.2M</td><td class="negative">-16%</td><td style="color:#ef4444;font-weight:600">Breakout</td><td style="font-weight:700">51</td></tr><tr><td>31</td><td><strong>SEDG</strong></td><td>$37.76</td><td class="negative">-12.1%</td><td>13.5%</td><td>0.4M</td><td class="positive">+231%</td><td style="color:#8b5cf6;font-weight:600">Wheel Strategy</td><td style="font-weight:700">51</td></tr><tr><td>32</td><td><strong>AXTI</strong></td><td>$62.92</td><td class="negative">-6.4%</td><td>17.5%</td><td>0.5M</td><td class="positive">+186%</td><td style="color:#8b5cf6;font-weight:600">Wheel Strategy</td><td style="font-weight:700">50</td></tr><tr><td>33</td><td><strong>CRWV</strong></td><td>$118.65</td><td class="positive">+1.2%</td><td>6.6%</td><td>1.5M</td><td class="positive">+103%</td><td style="color:#ef4444;font-weight:600">Breakout</td><td style="font-weight:700">50</td></tr><tr><td>34</td><td><strong>ASST</strong></td><td>$13.53</td><td class="positive">+8.8%</td><td>10.1%</td><td>0.2M</td><td class="positive">+37%</td><td style="color:#ef4444;font-weight:600">Breakout</td><td style="font-weight:700">47</td></tr><tr><td>35</td><td><strong>CRWG</strong></td><td>$5.40</td><td class="positive">+2.6%</td><td>12.6%</td><td>0.9M</td><td class="negative">-30%</td><td style="color:#3b82f6;font-weight:600">Trailing Stop</td><td style="font-weight:700">46</td></tr><tr><td>36</td><td><strong>SATL</strong></td><td>$6.92</td><td class="negative">-5.1%</td><td>12.5%</td><td>0.3M</td><td class="negative">-15%</td><td style="color:#3b82f6;font-weight:600">Trailing Stop</td><td style="font-weight:700">45</td></tr><tr><td>37</td><td><strong>TEM</strong></td><td>$56.45</td><td class="positive">+14.0%</td><td>11.6%</td><td>0.5M</td><td class="positive">+95%</td><td style="color:#8b5cf6;font-weight:600">Wheel Strategy</td><td style="font-weight:700">45</td></tr><tr><td>38</td><td><strong>PII</strong></td><td>$47.92</td><td class="negative">-16.7%</td><td>11.0%</td><td>0.3M</td><td class="positive">+230%</td><td style="color:#8b5cf6;font-weight:600">Wheel Strategy</td><td style="font-weight:700">43</td></tr><tr><td>39</td><td><strong>YSS</strong></td><td>$39.65</td><td class="positive">+15.9%</td><td>15.2%</td><td>0.1M</td><td class="negative">-7%</td><td style="color:#8b5cf6;font-weight:600">Wheel Strategy</td><td style="font-weight:700">43</td></tr><tr><td>40</td><td><strong>CARR</strong></td><td>$58.55</td><td class="negative">-9.4%</td><td>10.7%</td><td>1.3M</td><td class="positive">+393%</td><td style="color:#8b5cf6;font-weight:600">Wheel Strategy</td><td style="font-weight:700">42</td></tr><tr><td>41</td><td><strong>NXT</strong></td><td>$110.09</td><td class="negative">-4.1%</td><td>10.7%</td><td>0.1M</td><td class="positive">+34%</td><td style="color:#8b5cf6;font-weight:600">Wheel Strategy</td><td style="font-weight:700">42</td></tr><tr><td>42</td><td><strong>AUR</strong></td><td>$5.30</td><td class="positive">+13.4%</td><td>12.1%</td><td>1.5M</td><td class="positive">+54%</td><td style="color:#ef4444;font-weight:600">Breakout</td><td style="font-weight:700">42</td></tr><tr><td>43</td><td><strong>CONL</strong></td><td>$8.67</td><td class="positive">+12.3%</td><td>13.8%</td><td>0.3M</td><td class="negative">-18%</td><td style="color:#8b5cf6;font-weight:600">Wheel Strategy</td><td style="font-weight:700">41</td></tr><tr><td>44</td><td><strong>DYN</strong></td><td>$20.00</td><td class="positive">+0.8%</td><td>10.3%</td><td>0.1M</td><td class="positive">+45%</td><td style="color:#8b5cf6;font-weight:600">Wheel Strategy</td><td style="font-weight:700">41</td></tr><tr><td>45</td><td><strong>ALM</strong></td><td>$21.02</td><td class="negative">-3.6%</td><td>10.3%</td><td>0.3M</td><td class="negative">-7%</td><td style="color:#8b5cf6;font-weight:600">Wheel Strategy</td><td style="font-weight:700">41</td></tr><tr><td>46</td><td><strong>TE</strong></td><td>$5.34</td><td class="positive">+9.9%</td><td>11.4%</td><td>1.6M</td><td class="negative">-10%</td><td style="color:#8b5cf6;font-weight:600">Wheel Strategy</td><td style="font-weight:700">39</td></tr><tr><td>47</td><td><strong>FSLR</strong></td><td>$195.17</td><td class="negative">-2.7%</td><td>8.0%</td><td>0.1M</td><td class="positive">+21%</td><td style="color:#8b5cf6;font-weight:600">Wheel Strategy</td><td style="font-weight:700">39</td></tr><tr><td>48</td><td><strong>TSLL</strong></td><td>$13.36</td><td class="positive">+15.2%</td><td>17.3%</td><td>5.0M</td><td class="positive">+52%</td><td style="color:#ef4444;font-weight:600">Breakout</td><td style="font-weight:700">39</td></tr><tr><td>49</td><td><strong>LYV</strong></td><td>$155.81</td><td class="negative">-6.3%</td><td>9.5%</td><td>0.4M</td><td class="positive">+235%</td><td style="color:#8b5cf6;font-weight:600">Wheel Strategy</td><td style="font-weight:700">39</td></tr><tr><td>50</td><td><strong>UAMY</strong></td><td>$10.70</td><td class="positive">+14.3%</td><td>12.8%</td><td>0.5M</td><td class="positive">+158%</td><td style="color:#8b5cf6;font-weight:600">Wheel Strategy</td><td style="font-weight:700">38</td></tr></tbody>
+    </table>
+</div>
+
+<div class="footer">
+    Stock Trading Bot -- Strategies: Trailing Stop | Copy Trading | Wheel -- Full market screener across NYSE, NASDAQ, ARCA<br>
+    Tell Claude: "/stock-bot" to launch | "Run trailing stop on [SYMBOL]" | "Start wheel on [SYMBOL]" | "Set up copy trading"
+</div>
+
+</body>
+</html>

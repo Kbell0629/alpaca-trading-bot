@@ -1,0 +1,25 @@
+{
+  "symbol": null,
+  "strategy": "trailing_stop",
+  "created": "2026-04-15",
+  "status": "waiting_for_auto_deployer",
+  "entry_price_estimate": null,
+  "initial_qty": null,
+  "rules": {
+    "stop_loss_pct": 0.10,
+    "trailing_activation_pct": 0.10,
+    "trailing_distance_pct": 0.05,
+    "ladder_in": []
+  },
+  "state": {
+    "entry_fill_price": null,
+    "entry_order_id": null,
+    "stop_order_id": null,
+    "highest_price_seen": null,
+    "trailing_activated": false,
+    "current_stop_price": null,
+    "total_shares_held": 0,
+    "ladder_fills": [],
+    "profit_takes": []
+  }
+}

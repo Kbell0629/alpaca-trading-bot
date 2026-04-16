@@ -1,0 +1,21 @@
+{
+  "enabled": true,
+  "max_positions": 5,
+  "max_new_per_day": 2,
+  "min_capital": 1000,
+  "strategies_enabled": {
+    "trailing_stop": true,
+    "mean_reversion": true,
+    "breakout": true,
+    "wheel": true,
+    "copy_trading": true
+  },
+  "risk_settings": {
+    "max_portfolio_pct_per_stock": 0.1,
+    "default_stop_loss_pct": 0.1,
+    "breakout_stop_loss_pct": 0.05
+  },
+  "last_deploy_date": null,
+  "deploy_history": [],
+  "last_toggled": "2026-04-16 00:27:33 UTC"
+}
