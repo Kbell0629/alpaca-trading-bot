@@ -1134,6 +1134,36 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
     button, .btn-primary, .btn-secondary, .btn-ghost, .btn-warning, .btn-danger { min-height: 40px; }
     .btn-sm { min-height: 32px; }  /* allow compact action buttons in tables */
 
+    /* Timeline items (What Happens at Market Open, etc.). On mobile the
+       horizontal [time][action][badge] row breaks when a timestamp is
+       long (e.g. "9:45 AM ET (1st trading day of month)") — badge
+       wraps to its own line and looks orphaned. Restructure: time and
+       badge share the top row, action text flows beneath full-width. */
+    .timeline-item {
+        flex-wrap: wrap;
+        align-items: center;
+        row-gap: 6px;
+        padding: 10px 0;
+    }
+    .timeline-item .time {
+        flex: 1 1 auto;
+        min-width: 0;
+        font-size: 11px;
+        word-break: break-word;
+    }
+    .timeline-item .action {
+        flex: 1 1 100%;  /* action always on its own row, full width */
+        font-size: 13px;
+        line-height: 1.45;
+        color: var(--text);
+    }
+    .timeline-item .badge-on,
+    .timeline-item .badge-off {
+        margin-left: auto;  /* pin badge to right of the time row */
+        flex: 0 0 auto;
+        align-self: center;
+    }
+
     /* Readme (user guide) modal — the big one. Was 90vh centred
        with 280px sidebar TOC. Already hidden sidebar on <900px, but
        mobile needs full-screen and tighter padding.
