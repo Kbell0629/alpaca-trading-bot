@@ -259,10 +259,14 @@ def run_screener(user, max_age_seconds=0):
     # Pass preferred output paths; update_dashboard.py may or may not honor them.
     env["DASHBOARD_DATA_PATH"] = user_file(user, "dashboard_data.json")
     env["DASHBOARD_HTML_PATH"] = user_file(user, "dashboard.html")
+    # Timeout: 600s (10 min) — Railway containers have slower network than local.
+    # Screening 10k+ stocks in 22 batches of 500 can take 3-8 min on Railway vs ~60s local.
+    # TODO: optimize screener to be faster (reduce symbols scanned, parallel batches)
+    SCREENER_TIMEOUT = 600
     try:
         result = subprocess.run(
             [sys.executable, os.path.join(BASE_DIR, "update_dashboard.py")],
-            cwd=BASE_DIR, capture_output=True, text=True, timeout=180, env=env,
+            cwd=BASE_DIR, capture_output=True, text=True, timeout=SCREENER_TIMEOUT, env=env,
         )
         if result.returncode == 0:
             log(f"[{user['username']}] Screener completed", "screener")
@@ -270,7 +274,7 @@ def run_screener(user, max_age_seconds=0):
         else:
             log(f"[{user['username']}] Screener failed: {result.stderr[:200]}", "screener")
     except subprocess.TimeoutExpired:
-        log(f"[{user['username']}] Screener timed out (>180s)", "screener")
+        log(f"[{user['username']}] Screener timed out (>{SCREENER_TIMEOUT}s)", "screener")
     except Exception as e:
         log(f"[{user['username']}] Screener error: {e}", "screener")
 
