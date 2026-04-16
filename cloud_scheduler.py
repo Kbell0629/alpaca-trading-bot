@@ -107,7 +107,14 @@ def get_et_time():
 # ============================================================================
 # TASK 1: SCREENER
 # ============================================================================
-def run_screener():
+def run_screener(max_age_seconds=0):
+    """Run the stock screener. If max_age_seconds > 0, skip if last run was within that window."""
+    if max_age_seconds > 0:
+        last = _last_runs.get("screener", 0)
+        if isinstance(last, (int, float)) and time.time() - last < max_age_seconds:
+            age = int(time.time() - last)
+            log(f"Screener data is {age}s old (< {max_age_seconds}s). Skipping duplicate run.", "screener")
+            return
     log("Starting screener...", "screener")
     try:
         result = subprocess.run(
@@ -116,6 +123,7 @@ def run_screener():
         )
         if result.returncode == 0:
             log("Screener completed", "screener")
+            _last_runs["screener"] = time.time()
         else:
             log(f"Screener failed: {result.stderr[:200]}", "screener")
     except subprocess.TimeoutExpired:
@@ -329,8 +337,8 @@ def run_auto_deployer():
     except Exception as e:
         log(f"Capital check error: {e}", "deployer")
 
-    # Run screener to get fresh picks
-    run_screener()
+    # Run screener to get fresh picks (skip if already ran in last 5 min to avoid duplicate API calls)
+    run_screener(max_age_seconds=300)
 
     picks_data = load_json(os.path.join(BASE_DIR, "dashboard_data.json")) or {}
     top_picks = picks_data.get("picks", [])[:5]
