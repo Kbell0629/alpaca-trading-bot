@@ -44,9 +44,13 @@ def safe_save_json(path, data):
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-JOURNAL_PATH = os.path.join(BASE_DIR, "trade_journal.json")
-SCORECARD_PATH = os.path.join(BASE_DIR, "scorecard.json")
-STRATEGIES_DIR = os.path.join(BASE_DIR, "strategies")
+# DATA_DIR is where persistent runtime data lives. On Railway, set to a volume mount
+# path (e.g. /data). Locally defaults to BASE_DIR so nothing changes.
+DATA_DIR = os.environ.get("DATA_DIR", BASE_DIR)
+os.makedirs(DATA_DIR, exist_ok=True)
+JOURNAL_PATH = os.path.join(DATA_DIR, "trade_journal.json")
+SCORECARD_PATH = os.path.join(DATA_DIR, "scorecard.json")
+STRATEGIES_DIR = os.path.join(DATA_DIR, "strategies")
 
 API_ENDPOINT = os.environ.get("ALPACA_ENDPOINT", "https://paper-api.alpaca.markets/v2")
 API_KEY = os.environ.get("ALPACA_API_KEY", "")

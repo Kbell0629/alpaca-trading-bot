@@ -38,6 +38,10 @@ def safe_save_json(path, data):
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# DATA_DIR is where persistent runtime data lives. On Railway, set to a volume mount
+# path (e.g. /data). Locally defaults to BASE_DIR so nothing changes.
+DATA_DIR = os.environ.get("DATA_DIR", BASE_DIR)
+os.makedirs(DATA_DIR, exist_ok=True)
 API_ENDPOINT = os.environ.get("ALPACA_ENDPOINT", "https://paper-api.alpaca.markets/v2")
 API_KEY = os.environ.get("ALPACA_API_KEY", "")
 API_SECRET = os.environ.get("ALPACA_API_SECRET", "")
@@ -104,7 +108,7 @@ def check_capital():
     # Read guardrails
     guardrails = {}
     try:
-        with open(os.path.join(BASE_DIR, "guardrails.json")) as f:
+        with open(os.path.join(DATA_DIR, "guardrails.json")) as f:
             guardrails = json.load(f)
     except (OSError, json.JSONDecodeError):
         pass
@@ -170,7 +174,7 @@ def check_capital():
         result["recommendation"] = f"Critical. Reduce exposure before opening new positions. Free cash: ${free_cash:,.2f}"
 
     # Save to file (atomic write)
-    safe_save_json(os.path.join(BASE_DIR, "capital_status.json"), result)
+    safe_save_json(os.path.join(DATA_DIR, "capital_status.json"), result)
 
     return result
 

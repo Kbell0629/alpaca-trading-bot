@@ -29,6 +29,7 @@ All secrets in `.env` (gitignored) and Railway variables. No hardcoded defaults.
 | `NTFY_TOPIC` | `alpaca-trading-bot-kevin` (push notifications) |
 | `NOTIFICATION_EMAIL` | `se2login@gmail.com` |
 | `DASHBOARD_USER` / `DASHBOARD_PASS` | Basic auth for dashboard |
+| `DATA_DIR` | `/data` on Railway (volume mount for persistent storage). Locally unset (defaults to project dir). Holds `users.db`, `users/`, strategy files, `*.json` runtime data. |
 | `PORT` | `8888` (Railway sets automatically) |
 
 **Account:** PA3N3JCNBP02 ($100k paper, 2x margin)

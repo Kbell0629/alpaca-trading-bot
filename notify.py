@@ -42,6 +42,10 @@ def safe_save_json(path, data):
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# DATA_DIR is where persistent runtime data lives. On Railway, set to a volume mount
+# path (e.g. /data). Locally defaults to BASE_DIR so nothing changes.
+DATA_DIR = os.environ.get("DATA_DIR", BASE_DIR)
+os.makedirs(DATA_DIR, exist_ok=True)
 
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "alpaca-bot-" + os.environ.get("USER", "default"))
 NTFY_URL = f"https://ntfy.sh/{NTFY_TOPIC}"
@@ -89,7 +93,7 @@ def send_notification(message, notify_type="info"):
 
 def queue_email(subject, body, notify_type="info"):
     """Queue an email notification with file locking for concurrency safety."""
-    queue_file = os.path.join(BASE_DIR, "email_queue.json")
+    queue_file = os.path.join(DATA_DIR, "email_queue.json")
     lock_file = queue_file + ".lock"
     lock_fd = None
     try:
@@ -128,7 +132,7 @@ def queue_email(subject, body, notify_type="info"):
 
 # Also keep the queue file for backup/logging
 def log_notification(message, notify_type="info"):
-    log_file = os.path.join(BASE_DIR, "notification_log.json")
+    log_file = os.path.join(DATA_DIR, "notification_log.json")
     log = []
     if os.path.exists(log_file):
         try:

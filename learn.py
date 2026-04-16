@@ -42,8 +42,12 @@ def safe_save_json(path, data):
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-TRADE_JOURNAL_PATH = os.path.join(BASE_DIR, "trade_journal.json")
-LEARNED_WEIGHTS_PATH = os.path.join(BASE_DIR, "learned_weights.json")
+# DATA_DIR is where persistent runtime data lives. On Railway, set to a volume mount
+# path (e.g. /data). Locally defaults to BASE_DIR so nothing changes.
+DATA_DIR = os.environ.get("DATA_DIR", BASE_DIR)
+os.makedirs(DATA_DIR, exist_ok=True)
+TRADE_JOURNAL_PATH = os.path.join(DATA_DIR, "trade_journal.json")
+LEARNED_WEIGHTS_PATH = os.path.join(DATA_DIR, "learned_weights.json")
 
 # Maximum weight change per update (20%)
 MAX_CHANGE = 0.2

@@ -27,7 +27,11 @@ import urllib.parse
 from datetime import datetime, timezone, timedelta
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STRATEGIES_DIR = os.path.join(BASE_DIR, "strategies")  # legacy / fallback
+# DATA_DIR is where persistent runtime data lives. On Railway, set to a volume
+# mount path (e.g. /data). Locally defaults to BASE_DIR.
+DATA_DIR = os.environ.get("DATA_DIR", BASE_DIR)
+os.makedirs(DATA_DIR, exist_ok=True)
+STRATEGIES_DIR = os.path.join(DATA_DIR, "strategies")  # legacy / fallback
 
 # Legacy env vars (used only when auth module is unavailable)
 API_ENDPOINT = os.environ.get("ALPACA_ENDPOINT", "https://paper-api.alpaca.markets/v2")
@@ -104,7 +108,7 @@ def get_all_users_for_scheduling():
             "_api_endpoint": API_ENDPOINT,
             "_data_endpoint": DATA_ENDPOINT,
             "_ntfy_topic": os.environ.get("NTFY_TOPIC", ""),
-            "_data_dir": BASE_DIR,              # legacy uses root BASE_DIR
+            "_data_dir": DATA_DIR,              # legacy uses DATA_DIR (was BASE_DIR)
             "_strategies_dir": STRATEGIES_DIR,  # legacy strategies dir
         }]
     return []
@@ -778,8 +782,11 @@ def run_auto_deployer(user):
         env["ALPACA_DATA_ENDPOINT"] = user["_data_endpoint"]
         subprocess.run([sys.executable, os.path.join(BASE_DIR, "capital_check.py")],
             cwd=BASE_DIR, capture_output=True, text=True, timeout=30, env=env)
-        # capital_check.py writes to BASE_DIR/capital_status.json (legacy). Read from there.
-        capital = load_json(os.path.join(BASE_DIR, "capital_status.json")) or {}
+        # capital_check.py writes to DATA_DIR/capital_status.json. Read from there,
+        # falling back to BASE_DIR for backwards compat with older deploys.
+        capital = load_json(os.path.join(DATA_DIR, "capital_status.json"))
+        if not capital:
+            capital = load_json(os.path.join(BASE_DIR, "capital_status.json")) or {}
         if not capital.get("can_trade", True):
             log(f"[{user['username']}] Cannot trade: {capital.get('recommendation')}", "deployer")
             notify_user(user, f"Auto-deployer skipped: {capital.get('recommendation','insufficient capital')}", "info")
@@ -790,8 +797,10 @@ def run_auto_deployer(user):
     # Run screener to get fresh picks (skip if already ran in last 5 min)
     run_screener(user, max_age_seconds=300)
 
-    # Prefer per-user dashboard data; fall back to shared BASE_DIR one if not present
+    # Prefer per-user dashboard data; fall back to shared DATA_DIR (then BASE_DIR).
     picks_path = user_file(user, "dashboard_data.json")
+    if not os.path.exists(picks_path):
+        picks_path = os.path.join(DATA_DIR, "dashboard_data.json")
     if not os.path.exists(picks_path):
         picks_path = os.path.join(BASE_DIR, "dashboard_data.json")
     picks_data = load_json(picks_path) or {}
@@ -1065,8 +1074,10 @@ def run_daily_close(user):
                 guardrails["peak_portfolio_value"] = current
         save_json(gpath, guardrails)
 
-        # Try per-user scorecard first, fall back to shared
+        # Try per-user scorecard first, fall back to shared (DATA_DIR then BASE_DIR)
         scorecard_path = user_file(user, "scorecard.json")
+        if not os.path.exists(scorecard_path):
+            scorecard_path = os.path.join(DATA_DIR, "scorecard.json")
         if not os.path.exists(scorecard_path):
             scorecard_path = os.path.join(BASE_DIR, "scorecard.json")
         scorecard = load_json(scorecard_path) or {}

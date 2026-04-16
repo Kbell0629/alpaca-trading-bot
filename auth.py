@@ -13,8 +13,12 @@ import json
 from datetime import datetime, timezone, timedelta
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "users.db")
-USERS_DIR = os.path.join(BASE_DIR, "users")
+# DATA_DIR is where persistent data lives. On Railway, set to a volume mount path.
+# Locally, defaults to BASE_DIR so nothing changes.
+DATA_DIR = os.environ.get("DATA_DIR", BASE_DIR)
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_PATH = os.path.join(DATA_DIR, "users.db")
+USERS_DIR = os.path.join(DATA_DIR, "users")
 
 # Master encryption key from env — set on Railway, never in code
 MASTER_KEY = os.environ.get("MASTER_ENCRYPTION_KEY", "")

@@ -27,6 +27,7 @@ import time
 import urllib.request
 import urllib.error
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 
 
@@ -56,9 +57,15 @@ def safe_save_json(path, data):
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STRATEGIES_DIR = os.path.join(BASE_DIR, "strategies")
-DASHBOARD_PATH = os.path.join(BASE_DIR, "dashboard.html")
-DATA_JSON_PATH = os.path.join(BASE_DIR, "dashboard_data.json")
+# DATA_DIR is where persistent runtime data lives. On Railway, set to a volume mount
+# path (e.g. /data). Locally defaults to BASE_DIR so nothing changes.
+DATA_DIR = os.environ.get("DATA_DIR", BASE_DIR)
+os.makedirs(DATA_DIR, exist_ok=True)
+STRATEGIES_DIR = os.path.join(DATA_DIR, "strategies")
+# cloud_scheduler.py may pass per-user dashboard paths via env vars to route output
+# into a user-specific data directory. Fall back to the shared DATA_DIR otherwise.
+DASHBOARD_PATH = os.environ.get("DASHBOARD_HTML_PATH") or os.path.join(DATA_DIR, "dashboard.html")
+DATA_JSON_PATH = os.environ.get("DASHBOARD_DATA_PATH") or os.path.join(DATA_DIR, "dashboard_data.json")
 
 API_ENDPOINT = os.environ.get("ALPACA_ENDPOINT", "https://paper-api.alpaca.markets/v2")
 DATA_ENDPOINT = os.environ.get("ALPACA_DATA_ENDPOINT", "https://data.alpaca.markets/v2")
@@ -252,21 +259,36 @@ def fetch_snapshots_batch(symbols):
 
 
 def fetch_all_snapshots(symbols):
-    """Fetch snapshots for all symbols in batches of BATCH_SIZE."""
+    """Fetch snapshots for all symbols in batches of BATCH_SIZE (parallelized)."""
     all_snapshots = {}
     batches = [symbols[i:i + BATCH_SIZE] for i in range(0, len(symbols), BATCH_SIZE)]
     total_batches = len(batches)
+    print(f"  Fetching {total_batches} batches in parallel (6 workers)...")
 
-    for idx, batch in enumerate(batches):
-        print(f"  Fetching batch {idx + 1}/{total_batches}... ({len(batch)} symbols)")
+    def fetch_one(idx_batch):
+        idx, batch = idx_batch
         result = fetch_snapshots_batch(batch)
         if isinstance(result, dict) and "error" not in result:
-            all_snapshots.update(result)
-        elif isinstance(result, dict) and "error" in result:
-            print(f"    Batch {idx + 1} failed: {result['error']} -- skipping")
-        # Small delay to avoid rate limiting
-        if idx < total_batches - 1:
-            time.sleep(0.3)
+            return idx, result, None
+        else:
+            err = result.get("error", "unknown") if isinstance(result, dict) else "bad response"
+            return idx, {}, err
+
+    completed = 0
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {executor.submit(fetch_one, (i, b)): i for i, b in enumerate(batches)}
+        for future in as_completed(futures):
+            try:
+                idx, data, err = future.result()
+                completed += 1
+                if err:
+                    print(f"    Batch {idx+1} failed: {err[:80]}")
+                else:
+                    all_snapshots.update(data)
+                if completed % 5 == 0 or completed == total_batches:
+                    print(f"    Progress: {completed}/{total_batches} batches ({len(all_snapshots)} symbols)")
+            except Exception as e:
+                print(f"    Batch error: {e}")
 
     print(f"  Got snapshot data for {len(all_snapshots)} symbols")
     return all_snapshots
@@ -422,6 +444,47 @@ def fetch_historical_bars(symbol, days=20):
     if isinstance(result, list):
         return result
     return []
+
+
+def fetch_bars_for_picks(picks, days=20, max_workers=6):
+    """Fetch historical bars for multiple picks in parallel. Returns {symbol: bars}."""
+    def fetch_one(pick):
+        try:
+            bars = fetch_historical_bars(pick["symbol"], days)
+            return pick["symbol"], bars
+        except Exception:
+            return pick["symbol"], []
+
+    results = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(fetch_one, p): p for p in picks}
+        for future in as_completed(futures):
+            try:
+                sym, bars = future.result()
+                results[sym] = bars
+            except Exception:
+                pass
+    return results
+
+
+def fetch_bars_for_symbols(symbols, days=20, max_workers=6):
+    """Fetch historical bars for a list of symbols in parallel. Returns {symbol: bars}."""
+    def fetch_one(sym):
+        try:
+            return sym, fetch_historical_bars(sym, days)
+        except Exception:
+            return sym, []
+
+    results = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(fetch_one, s): s for s in symbols}
+        for future in as_completed(futures):
+            try:
+                sym, bars = future.result()
+                results[sym] = bars
+            except Exception:
+                pass
+    return results
 
 
 def enrich_with_momentum(pick, bars):
@@ -617,16 +680,29 @@ def apply_strategy_rotation(picks, market_regime, vix_estimate=None):
 # Feature 3: Sector Rotation Signal
 # ---------------------------------------------------------------------------
 
+_sector_cache = {"data": None, "timestamp": 0}
+SECTOR_CACHE_TTL = 3600  # 1 hour
+
+
 def calculate_sector_rotation():
-    """Fetch sector ETF 20-day performance and rank vs SPY."""
+    """Fetch sector ETF 20-day performance and rank vs SPY (parallel + 1h cached)."""
+    now = time.time()
+    if _sector_cache["data"] and (now - _sector_cache["timestamp"] < SECTOR_CACHE_TTL):
+        print("  Using cached sector rotation (age: {:.0f}s)".format(now - _sector_cache["timestamp"]))
+        return _sector_cache["data"]
+
     results = {}
-    spy_bars = fetch_historical_bars("SPY", days=20)
+    # Fetch SPY + all sector ETF bars in parallel
+    all_symbols = ["SPY"] + list(SECTOR_ETFS.keys())
+    bars_map = fetch_bars_for_symbols(all_symbols, days=20, max_workers=6)
+
+    spy_bars = bars_map.get("SPY", [])
     spy_return = 0
     if spy_bars and len(spy_bars) >= 20:
         spy_return = (spy_bars[-1].get("c", 0) / spy_bars[-20].get("c", 1) - 1) * 100
 
     for etf, name in SECTOR_ETFS.items():
-        bars = fetch_historical_bars(etf, days=20)
+        bars = bars_map.get(etf, [])
         if bars and len(bars) >= 20:
             etf_return = (bars[-1].get("c", 0) / bars[-20].get("c", 1) - 1) * 100
             relative = etf_return - spy_return
@@ -636,7 +712,10 @@ def calculate_sector_rotation():
                 "relative_to_spy": round(relative, 2),
                 "strength": "strong" if relative > 2 else "weak" if relative < -2 else "neutral"
             }
-    return {"sectors": results, "spy_return_20d": round(spy_return, 2)}
+    result = {"sectors": results, "spy_return_20d": round(spy_return, 2)}
+    _sector_cache["data"] = result
+    _sector_cache["timestamp"] = now
+    return result
 
 
 def apply_sector_rotation_filter(picks, sector_data):
@@ -997,18 +1076,22 @@ def fetch_all_data():
         for ev in econ_risk["events"][:5]:
             print(f"    [{ev['impact'].upper()}] {ev['date']}: {ev['event']}")
 
-    # --- Enrich top 100 candidates ---
-    top_candidates = picks[:100]
+    # --- Enrich top 50 candidates (reduced from 100 for speed) ---
+    ENRICH_TOP_N = 50
+    top_candidates = picks[:ENRICH_TOP_N]
     if top_candidates:
-        # Improvement 1 & 2: Fetch 20-day bars for momentum + relative volume
-        print(f"Enriching top {len(top_candidates)} candidates with 20-day historical bars...")
+        # Improvement 1 & 2: Fetch 20-day bars for momentum + relative volume (PARALLEL)
+        print(f"Enriching top {len(top_candidates)} candidates with 20-day historical bars (parallel)...")
         from indicators import analyze_stock
-        for i, pick in enumerate(top_candidates):
+
+        # Fetch all bars in parallel first
+        bars_map = fetch_bars_for_picks(top_candidates, days=20, max_workers=6)
+        print(f"  Fetched bars for {len(bars_map)} symbols in parallel")
+
+        for pick in top_candidates:
             sym = pick["symbol"]
-            if (i + 1) % 20 == 0 or i == 0:
-                print(f"  Fetching bars {i + 1}/{len(top_candidates)}: {sym}...")
             try:
-                bars_20d = fetch_historical_bars(sym, days=20)
+                bars_20d = bars_map.get(sym, [])
                 enrich_with_momentum(pick, bars_20d)
 
                 # Technical Indicators (uses the same bars we already fetched)
@@ -1030,7 +1113,7 @@ def fetch_all_data():
                     pick["macd_histogram"] = 0
                     pick["overall_bias"] = "neutral"
             except Exception as e:
-                print(f"    Error fetching bars for {sym}: {e}")
+                print(f"    Error processing bars for {sym}: {e}")
                 pick["momentum_5d"] = 0.0
                 pick["momentum_20d"] = 0.0
                 pick["relative_volume"] = 1.0
@@ -1038,80 +1121,122 @@ def fetch_all_data():
                 pick["rsi"] = 50
                 pick["macd_histogram"] = 0
                 pick["overall_bias"] = "neutral"
-            time.sleep(0.15)  # rate limit
 
-        # Improvement 4 & 8: News sentiment + earnings avoidance for top 20
-        print("Fetching news for top 20 candidates (sentiment + earnings check)...")
-        for i, pick in enumerate(top_candidates[:20]):
-            sym = pick["symbol"]
+        # Improvement 4 & 8: News sentiment + earnings avoidance for top 20 (PARALLEL)
+        print("Fetching news for top 20 candidates in parallel (sentiment + earnings check)...")
+        news_top = top_candidates[:20]
+
+        def fetch_news_one(pick):
             try:
-                news_items = fetch_news_for_symbol(sym, limit=5)
-                analyze_news(pick, news_items)
+                items = fetch_news_for_symbol(pick["symbol"], limit=5)
+                return pick["symbol"], items, None
+            except Exception as e:
+                return pick["symbol"], [], str(e)
+
+        news_map = {}
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            futures = {executor.submit(fetch_news_one, p): p for p in news_top}
+            for future in as_completed(futures):
+                try:
+                    sym, items, err = future.result()
+                    news_map[sym] = (items, err)
+                except Exception:
+                    pass
+
+        for pick in news_top:
+            sym = pick["symbol"]
+            items, err = news_map.get(sym, ([], None))
+            if err:
+                print(f"    Error fetching news for {sym}: {err}")
+                pick["earnings_warning"] = False
+                pick["news_sentiment"] = "neutral"
+                pick["sentiment_score"] = 0
+                continue
+            try:
+                analyze_news(pick, items)
                 if pick.get("earnings_warning"):
                     print(f"    {sym}: EARNINGS WARNING detected -- score penalized")
                 if pick.get("news_sentiment") != "neutral":
                     print(f"    {sym}: Sentiment = {pick['news_sentiment']} (score: {pick['sentiment_score']})")
             except Exception as e:
-                print(f"    Error fetching news for {sym}: {e}")
+                print(f"    Error analyzing news for {sym}: {e}")
                 pick["earnings_warning"] = False
                 pick["news_sentiment"] = "neutral"
                 pick["sentiment_score"] = 0
-            time.sleep(0.15)
 
-        # Set defaults for candidates 20-100 that didn't get news
+        # Set defaults for candidates 20-N that didn't get news
         for pick in top_candidates[20:]:
             pick.setdefault("earnings_warning", False)
             pick.setdefault("news_sentiment", "neutral")
             pick.setdefault("sentiment_score", 0)
 
-        # --- Social Sentiment for top 10 candidates ---
-        print("Fetching social sentiment for top 10 candidates...")
-        for i, pick in enumerate(top_candidates[:10]):
-            sym = pick["symbol"]
+        # --- Social Sentiment for top 10 candidates (PARALLEL, 4 workers — StockTwits rate-limited) ---
+        print("Fetching social sentiment for top 10 candidates in parallel (4 workers)...")
+        social_top = top_candidates[:10]
+
+        def fetch_social_one(pick):
             try:
-                social = get_social_sentiment(sym)
-                pick["social_sentiment"] = social.get("overall_sentiment", "unknown")
-                pick["social_score"] = social.get("overall_score", 0)
-                pick["social_volume"] = social.get("social_volume", 0)
-                pick["social_trending"] = social.get("is_trending", False)
-                pick["meme_warning"] = social.get("meme_warning", False)
-                pick["meme_note"] = social.get("meme_note", "")
-
-                # Apply strategy adjustments from social sentiment
-                adj = social.get("strategy_adjustments", {})
-                if adj:
-                    pick["trailing_score"] += adj.get("trailing_stop", 0)
-                    pick["copy_score"] += adj.get("copy_trading", 0)
-                    pick["wheel_score"] += adj.get("wheel", 0)
-                    pick["mean_reversion_score"] += adj.get("mean_reversion", 0)
-                    pick["breakout_score"] += adj.get("breakout", 0)
-
-                    # Recalculate best strategy after social adjustments
-                    pick["scores"] = {
-                        "Trailing Stop": pick["trailing_score"],
-                        "Copy Trading": pick["copy_score"],
-                        "Wheel Strategy": pick["wheel_score"],
-                        "Mean Reversion": pick["mean_reversion_score"],
-                        "Breakout": pick["breakout_score"],
-                    }
-                    pick["best_strategy"] = max(pick["scores"], key=pick["scores"].get)
-                    pick["best_score"] = pick["scores"][pick["best_strategy"]]
-
-                if social.get("overall_sentiment") != "unknown":
-                    print(f"    {sym}: social={social['overall_sentiment']} ({social['overall_score']:+.1f}), "
-                          f"vol={social['social_volume']}, trending={social['is_trending']}"
-                          + (f" MEME WARNING" if social.get("meme_warning") else ""))
+                return pick["symbol"], get_social_sentiment(pick["symbol"]), None
             except Exception as e:
-                print(f"    Error fetching social sentiment for {sym}: {e}")
+                return pick["symbol"], None, str(e)
+
+        social_map = {}
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {executor.submit(fetch_social_one, p): p for p in social_top}
+            for future in as_completed(futures):
+                try:
+                    sym, social, err = future.result()
+                    social_map[sym] = (social, err)
+                except Exception:
+                    pass
+
+        for pick in social_top:
+            sym = pick["symbol"]
+            social, err = social_map.get(sym, (None, None))
+            if err or social is None:
+                if err:
+                    print(f"    Error fetching social sentiment for {sym}: {err}")
                 pick["social_sentiment"] = "unknown"
                 pick["social_score"] = 0
                 pick["social_volume"] = 0
                 pick["social_trending"] = False
                 pick["meme_warning"] = False
                 pick["meme_note"] = ""
-            time.sleep(0.3)  # rate limit for StockTwits
+                continue
 
-        # Set social defaults for candidates 10-100 that didn't get social data
+            pick["social_sentiment"] = social.get("overall_sentiment", "unknown")
+            pick["social_score"] = social.get("overall_score", 0)
+            pick["social_volume"] = social.get("social_volume", 0)
+            pick["social_trending"] = social.get("is_trending", False)
+            pick["meme_warning"] = social.get("meme_warning", False)
+            pick["meme_note"] = social.get("meme_note", "")
+
+            # Apply strategy adjustments from social sentiment
+            adj = social.get("strategy_adjustments", {})
+            if adj:
+                pick["trailing_score"] += adj.get("trailing_stop", 0)
+                pick["copy_score"] += adj.get("copy_trading", 0)
+                pick["wheel_score"] += adj.get("wheel", 0)
+                pick["mean_reversion_score"] += adj.get("mean_reversion", 0)
+                pick["breakout_score"] += adj.get("breakout", 0)
+
+                # Recalculate best strategy after social adjustments
+                pick["scores"] = {
+                    "Trailing Stop": pick["trailing_score"],
+                    "Copy Trading": pick["copy_score"],
+                    "Wheel Strategy": pick["wheel_score"],
+                    "Mean Reversion": pick["mean_reversion_score"],
+                    "Breakout": pick["breakout_score"],
+                }
+                pick["best_strategy"] = max(pick["scores"], key=pick["scores"].get)
+                pick["best_score"] = pick["scores"][pick["best_strategy"]]
+
+            if social.get("overall_sentiment") != "unknown":
+                print(f"    {sym}: social={social['overall_sentiment']} ({social['overall_score']:+.1f}), "
+                      f"vol={social['social_volume']}, trending={social['is_trending']}"
+                      + (f" MEME WARNING" if social.get("meme_warning") else ""))
+
+        # Set social defaults for candidates 10-N that didn't get social data
         for pick in top_candidates[10:]:
             pick.setdefault("social_sentiment", "unknown")
             pick.setdefault("social_score", 0)
@@ -1121,7 +1246,7 @@ def fetch_all_data():
             pick.setdefault("meme_note", "")
 
     # --- Apply learned weights from self-learning engine ---
-    learned = load_json(os.path.join(BASE_DIR, "learned_weights.json"))
+    learned = load_json(os.path.join(DATA_DIR, "learned_weights.json"))
     if learned:
         multipliers = learned.get("strategy_multipliers", {})
         boost_signals = learned.get("boost_signals", [])
@@ -1243,12 +1368,14 @@ def fetch_all_data():
     # Re-sort top candidates after enrichment
     top_candidates.sort(key=lambda x: x["best_score"], reverse=True)
 
-    # Improvement 10: Backtest top 10
-    print("Running backtests on top 10 candidates (30-day trailing stop sim)...")
-    for i, pick in enumerate(top_candidates[:10]):
+    # Improvement 10: Backtest top 10 (PARALLEL)
+    print("Running backtests on top 10 candidates in parallel (30-day trailing stop sim)...")
+    backtest_top = top_candidates[:10]
+    bt_bars_map = fetch_bars_for_picks(backtest_top, days=30, max_workers=6)
+    for pick in backtest_top:
         sym = pick["symbol"]
         try:
-            bars_30d = fetch_historical_bars(sym, days=30)
+            bars_30d = bt_bars_map.get(sym, [])
             bt = backtest_trailing_stop(bars_30d)
             pick["backtest_return"] = bt["return_pct"]
             pick["backtest_detail"] = bt
@@ -1257,7 +1384,6 @@ def fetch_all_data():
             print(f"    Error backtesting {sym}: {e}")
             pick["backtest_return"] = 0.0
             pick["backtest_detail"] = {}
-        time.sleep(0.15)
 
     # Set defaults for candidates without backtest
     for pick in top_candidates[10:]:
@@ -1866,8 +1992,11 @@ def main():
 
     print("Generating dashboard HTML...")
     html = generate_html(data)
-    # Atomic write for dashboard HTML
-    fd, tmp_path = tempfile.mkstemp(dir=BASE_DIR, suffix=".tmp")
+    # Atomic write for dashboard HTML — temp file must live on same filesystem
+    # as DASHBOARD_PATH so os.rename() is atomic.
+    _html_dir = os.path.dirname(DASHBOARD_PATH) or DATA_DIR
+    os.makedirs(_html_dir, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=_html_dir, suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
             f.write(html)

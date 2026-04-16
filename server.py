@@ -60,8 +60,12 @@ AUTH_USER = os.environ.get("DASHBOARD_USER", "")
 AUTH_PASS = os.environ.get("DASHBOARD_PASS", "")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STRATEGIES_DIR = os.path.join(BASE_DIR, "strategies")
-DASHBOARD_DATA_PATH = os.path.join(BASE_DIR, "dashboard_data.json")
+# DATA_DIR is where persistent runtime data lives. On Railway, set to a volume
+# mount path (e.g. /data). Locally defaults to BASE_DIR so nothing changes.
+DATA_DIR = os.environ.get("DATA_DIR", BASE_DIR)
+os.makedirs(DATA_DIR, exist_ok=True)
+STRATEGIES_DIR = os.path.join(DATA_DIR, "strategies")
+DASHBOARD_DATA_PATH = os.path.join(DATA_DIR, "dashboard_data.json")
 
 API_ENDPOINT = os.environ.get("ALPACA_ENDPOINT", "")
 DATA_ENDPOINT = os.environ.get("ALPACA_DATA_ENDPOINT", "")
@@ -193,11 +197,11 @@ def get_dashboard_data(api_endpoint=None, api_headers=None):
         data["copy_trading"] = load_json(os.path.join(STRATEGIES_DIR, "copy_trading.json")) or data.get("copy_trading")
         data["wheel"] = load_json(os.path.join(STRATEGIES_DIR, "wheel_strategy.json")) or data.get("wheel")
         # Load scorecard for readiness score
-        data["scorecard"] = load_json(os.path.join(BASE_DIR, "scorecard.json")) or data.get("scorecard", {})
+        data["scorecard"] = load_json(os.path.join(DATA_DIR, "scorecard.json")) or data.get("scorecard", {})
         # Load auto-deployer config for short selling toggle state
-        data["auto_deployer_config"] = load_json(os.path.join(BASE_DIR, "auto_deployer_config.json")) or {}
+        data["auto_deployer_config"] = load_json(os.path.join(DATA_DIR, "auto_deployer_config.json")) or {}
         # Load guardrails for active preset detection
-        data["guardrails"] = load_json(os.path.join(BASE_DIR, "guardrails.json")) or {}
+        data["guardrails"] = load_json(os.path.join(DATA_DIR, "guardrails.json")) or {}
         return data
     # Fallback: build from strategy files and API
     trailing = load_json(os.path.join(STRATEGIES_DIR, "trailing_stop.json"))
@@ -4232,12 +4236,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json(result if isinstance(result, list) else [])
 
         elif path == "/api/auto-deployer-config":
-            config_path = os.path.join(BASE_DIR, "auto_deployer_config.json")
+            config_path = os.path.join(DATA_DIR, "auto_deployer_config.json")
             config = load_json(config_path)
             self.send_json(config if config else {"enabled": False})
 
         elif path == "/api/guardrails":
-            guardrails_path = os.path.join(BASE_DIR, "guardrails.json")
+            guardrails_path = os.path.join(DATA_DIR, "guardrails.json")
             guardrails = load_json(guardrails_path)
             self.send_json(guardrails if guardrails else {"kill_switch": False})
 
@@ -4261,7 +4265,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": f"Could not read README: {e}"}, 500)
 
         elif path == "/api/trade-heatmap":
-            journal = load_json(os.path.join(BASE_DIR, "trade_journal.json")) or {}
+            journal = load_json(os.path.join(DATA_DIR, "trade_journal.json")) or {}
             snapshots = journal.get("daily_snapshots", [])
             trades = journal.get("trades", [])
 
@@ -4513,7 +4517,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         # Also queue a direct email for the notification_email if one is set
         try:
-            email_queue_path = os.path.join(BASE_DIR, "email_queue.json")
+            email_queue_path = os.path.join(DATA_DIR, "email_queue.json")
             try:
                 with open(email_queue_path) as f:
                     queue = json.load(f)
@@ -5047,7 +5051,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def handle_auto_deployer(self, body):
         """Toggle the auto-deployer on/off by updating config file."""
         enabled = body.get("enabled", False)
-        config_path = os.path.join(BASE_DIR, "auto_deployer_config.json")
+        config_path = os.path.join(DATA_DIR, "auto_deployer_config.json")
         config = load_json(config_path)
         if not config:
             config = {
@@ -5066,7 +5070,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """Activate or deactivate the kill switch."""
         activate = body.get("activate", False)
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        guardrails_path = os.path.join(BASE_DIR, "guardrails.json")
+        guardrails_path = os.path.join(DATA_DIR, "guardrails.json")
         guardrails = load_json(guardrails_path) or {}
 
         if activate:
@@ -5089,7 +5093,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             save_json(guardrails_path, guardrails)
 
             # 4. Set enabled: false in auto_deployer_config.json
-            ad_config_path = os.path.join(BASE_DIR, "auto_deployer_config.json")
+            ad_config_path = os.path.join(DATA_DIR, "auto_deployer_config.json")
             ad_config = load_json(ad_config_path) or {}
             ad_config["enabled"] = False
             ad_config["last_toggled"] = timestamp
@@ -5250,7 +5254,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         max_position_pct = _num("max_position_pct", 0.10, 0.01, 0.50)
         stop_loss_pct = _num("stop_loss_pct", 0.10, 0.01, 0.50)
 
-        guardrails_path = os.path.join(BASE_DIR, "guardrails.json")
+        guardrails_path = os.path.join(DATA_DIR, "guardrails.json")
         guardrails = load_json(guardrails_path) or {}
         guardrails["max_positions"] = max_positions
         guardrails["max_position_pct"] = max_position_pct
@@ -5258,7 +5262,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             guardrails["strategies_allowed"] = strategies
         save_json(guardrails_path, guardrails)
 
-        config_path = os.path.join(BASE_DIR, "auto_deployer_config.json")
+        config_path = os.path.join(DATA_DIR, "auto_deployer_config.json")
         config = load_json(config_path) or {}
         config["risk_settings"] = config.get("risk_settings", {})
         config["risk_settings"]["default_stop_loss_pct"] = stop_loss_pct
@@ -5284,7 +5288,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not isinstance(raw, bool):
             return self.send_json({"error": "'enabled' must be a boolean"}, 400)
         enabled = raw
-        config_path = os.path.join(BASE_DIR, "auto_deployer_config.json")
+        config_path = os.path.join(DATA_DIR, "auto_deployer_config.json")
         config = load_json(config_path) or {}
         if "short_selling" not in config:
             config["short_selling"] = {

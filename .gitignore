@@ -28,4 +28,13 @@ users.db-wal
 users.db-shm
 users/
 
+# Additional runtime files
+accounts.json
+guardrails.json
+auto_deployer_config.json
+email_queue.json.lock
+
+# Data dir for Railway volume (if ever present locally)
+data/
+
 .claude/worktrees/

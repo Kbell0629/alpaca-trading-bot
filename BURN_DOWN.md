@@ -318,6 +318,13 @@ Current safeguards: cold-start protection (needs 5+ trades per strategy), 20% ma
 - [ ] Monitor Alpaca API status page
 - [ ] Weekly review of learned_weights.json changes
 
+### Persistence (DONE 2026-04-16)
+- [x] Railway volume `web-volume` mounted at `/data` (created via `railway volume add --mount-path /data`)
+- [x] `DATA_DIR=/data` env var set on Railway
+- [x] All persistent files (users.db, users/, strategies/, guardrails.json, scorecard.json, trade_journal.json, email_queue.json, notification_log.json, learned_weights.json, auto_deployer_config.json, capital_status.json, dashboard_data.json) now route through `DATA_DIR`
+- [x] SOXL strategy file recovery script (`recover_soxl.py`) written; repopulates trailing_stop state from Alpaca after Railway redeploys wiped the file
+- [ ] (Future) Daily backup/export of `users.db` and `users/` out of the volume — Railway volumes are NOT backed up
+
 ### Documentation
 - [ ] Record demo video of the dashboard
 - [ ] Document each notification type with example
