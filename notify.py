@@ -160,6 +160,13 @@ if __name__ == "__main__":
         notify_type = args[idx + 1]
         args = args[:idx] + args[idx+2:]
 
-    message = " ".join(args) if args else "Test notification from trading bot"
+    # Sensitive messages (password resets) can be piped via stdin with --stdin
+    # flag so the plaintext URL never appears in argv (which is readable via
+    # /proc on the host and may be logged by process supervisors).
+    if "--stdin" in args:
+        args.remove("--stdin")
+        message = sys.stdin.read().strip() or (" ".join(args) if args else "Notification")
+    else:
+        message = " ".join(args) if args else "Test notification from trading bot"
     send_notification(message, notify_type)
     log_notification(message, notify_type)

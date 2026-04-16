@@ -232,11 +232,25 @@ def notify_user_global(message, notify_type="info"):
             log(f"Global notification failed: {e}")
 
 def get_et_time():
-    # Rough ET — March to November is EDT (UTC-4), rest is EST (UTC-5)
-    now_utc = datetime.now(timezone.utc)
-    month = now_utc.month
-    offset = -4 if 3 <= month <= 11 else -5
-    return now_utc + timedelta(hours=offset)
+    """Return current Eastern time as a naive datetime, handling DST correctly.
+
+    Previous implementation used a month-boundary heuristic that was off by
+    one hour during the DST transition gaps (Mar 1 to 2nd Sunday, and first
+    Sunday of Nov to Nov 30). zoneinfo uses the tzdata rules and correctly
+    handles DST changes.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        et = datetime.now(ZoneInfo("America/New_York"))
+        # Strip tzinfo so existing callers comparing to tz-naive values still work.
+        return et.replace(tzinfo=None)
+    except Exception:
+        # Fallback if zoneinfo/tzdata isn't available (very old Python or
+        # stripped container). Month-boundary heuristic is ~99% right.
+        now_utc = datetime.now(timezone.utc)
+        month = now_utc.month
+        offset = -4 if 3 <= month <= 11 else -5
+        return (now_utc + timedelta(hours=offset)).replace(tzinfo=None)
 
 # ============================================================================
 # TASK 1: SCREENER (per user)
@@ -851,10 +865,11 @@ def run_auto_deployer(user):
             skip_reasons.append(f"{symbol}: unsupported strategy ({best_strat})")
             continue
 
-        # Feature 10: Correlation check
-        current_positions = user_api_get(user, "/positions") or []
-        current_positions = current_positions if isinstance(current_positions, list) else []
-        allowed, reason = check_correlation_allowed(symbol, current_positions)
+        # Feature 10: Correlation check. Reuses positions fetched at the top
+        # of run_auto_deployer (existing_positions) — previously this re-fetched
+        # /positions on EVERY candidate, an N+1 pattern that for a 20-candidate
+        # pool caused 20 extra API calls per run and up to 60s added latency.
+        allowed, reason = check_correlation_allowed(symbol, existing_positions)
         if not allowed:
             log(f"[{user['username']}] {symbol}: Skipped ({reason}) — trying next pick", "deployer")
             skip_reasons.append(f"{symbol}: {reason}")
@@ -935,6 +950,14 @@ def run_auto_deployer(user):
             log(f"[{user['username']}] DEPLOYED: {best_strat} on {symbol} x {qty} @ ~${pick.get('price',0):.2f}", "deployer")
             notify_user(user, f"Deployed {best_strat} on {symbol}: {qty} shares @ ~${pick.get('price',0):.2f}", "trade")
             deployed += 1
+            # Optimistically add this symbol to existing_positions so subsequent
+            # correlation checks in this same run account for it. Synthetic
+            # position record with just enough fields for check_correlation.
+            existing_positions.append({
+                "symbol": symbol, "qty": str(qty),
+                "market_value": str(qty * (pick.get("price") or 0)),
+            })
+            existing_syms.add(symbol)
         else:
             log(f"[{user['username']}] Order failed for {symbol}: {order}", "deployer")
             skip_reasons.append(f"{symbol}: order API error")
@@ -1148,6 +1171,7 @@ def run_friday_risk_reduction(user):
         return
 
     actions_taken = 0
+    sdir = user_strategies_dir(user)
     for pos in positions:
         symbol = pos.get("symbol", "")
         qty = abs(int(float(pos.get("qty", 0))))
@@ -1160,6 +1184,18 @@ def run_friday_risk_reduction(user):
             continue
         if qty < 2:  # Can't sell half of 1 share
             continue
+
+        # Never trim wheel-owned shares from Friday — the wheel state machine
+        # manages its own exits via covered calls / expiration.
+        try:
+            wheel_sf = os.path.join(sdir, f"wheel_{symbol}.json")
+            if os.path.exists(wheel_sf):
+                wstate = load_json(wheel_sf) or {}
+                if wstate.get("stage", "").startswith("stage_2_"):
+                    log(f"[{user['username']}] {symbol}: skipping Friday trim — wheel-owned in stage {wstate.get('stage')}", "friday")
+                    continue
+        except Exception:
+            pass
 
         half_qty = qty // 2
         log(f"[{user['username']}] {symbol}: +{unrealized_plpc:.1f}%, selling {half_qty}/{qty} before weekend", "friday")
@@ -1181,6 +1217,43 @@ def run_friday_risk_reduction(user):
             else:
                 # Short: profit when current < entry
                 profit = (avg_entry - current) * half_qty
+
+            # Update the matching strategy file so next monitor tick doesn't
+            # try to re-place stops sized for the OLD quantity. Resize any
+            # open stop order to match the remaining qty.
+            try:
+                for sf in os.listdir(sdir):
+                    if not (sf.endswith(f"_{symbol}.json") and not sf.startswith("wheel_")):
+                        continue
+                    sf_path = os.path.join(sdir, sf)
+                    strat = load_json(sf_path) or {}
+                    state = strat.get("state", {})
+                    remaining = qty - half_qty
+                    state["total_shares_held"] = remaining
+                    state.setdefault("friday_trims", []).append({
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "sold_qty": half_qty,
+                        "remaining_qty": remaining,
+                        "estimated_profit": round(profit, 2),
+                    })
+                    # Resize stop order if one exists
+                    old_stop = state.get("stop_order_id")
+                    stop_price = state.get("current_stop_price")
+                    if old_stop and remaining > 0 and stop_price:
+                        new_stop_side = "sell" if raw_qty > 0 else "buy"
+                        new_stop_resp = user_api_post(user, "/orders", {
+                            "symbol": symbol, "qty": str(remaining), "side": new_stop_side,
+                            "type": "stop", "stop_price": str(stop_price), "time_in_force": "gtc",
+                        })
+                        if isinstance(new_stop_resp, dict) and "id" in new_stop_resp:
+                            user_api_delete(user, f"/orders/{old_stop}")
+                            state["stop_order_id"] = new_stop_resp["id"]
+                        # else: keep old oversized stop — still protective
+                    strat["state"] = state
+                    save_json(sf_path, strat)
+            except Exception as e:
+                log(f"[{user['username']}] WARN Friday strategy-file update failed for {symbol}: {e}", "friday")
+
             notify_user(user, f"Friday risk reduction: trimmed {half_qty} {symbol} locking in ~${profit:.2f}. {qty - half_qty} shares still held.", "exit")
         else:
             log(f"[{user['username']}] Failed to trim {symbol}: {order}", "friday")
@@ -1503,9 +1576,14 @@ def stop_scheduler():
 def get_scheduler_status():
     is_alive = _scheduler_running and _scheduler_thread is not None and _scheduler_thread.is_alive()
     et_now = get_et_time()
-    # Determine if we're in EDT or EST based on month
-    month = datetime.now(timezone.utc).month
-    tz_label = "EDT" if 3 <= month <= 11 else "EST"
+    # Use zoneinfo to determine EDT vs EST — handles DST boundaries correctly.
+    try:
+        from zoneinfo import ZoneInfo
+        _aware = datetime.now(ZoneInfo("America/New_York"))
+        tz_label = _aware.tzname() or "ET"  # e.g. "EDT" or "EST"
+    except Exception:
+        month = datetime.now(timezone.utc).month
+        tz_label = "EDT" if 3 <= month <= 11 else "EST"
     # Send as a PRE-FORMATTED string so the browser doesn't re-convert timezones
     et_display = et_now.strftime("%-I:%M:%S %p ") + tz_label
     et_date_display = et_now.strftime("%a %b %-d")

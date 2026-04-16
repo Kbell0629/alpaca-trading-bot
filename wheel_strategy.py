@@ -156,15 +156,25 @@ def _save_json(path, data):
 
 
 def list_wheel_files(user):
-    """Return list of (filename, state_dict) for all wheel files this user has."""
+    """Return list of (filename, state_dict) for all wheel files this user has.
+    Logs a WARN to stderr for any wheel_*.json that fails to parse so a
+    corrupted state file doesn't silently cause positions to go unmanaged.
+    """
+    import sys as _sys
     sdir = _user_strategies_dir(user)
     results = []
     try:
         for f in os.listdir(sdir):
             if f.startswith("wheel_") and f.endswith(".json") and f != "wheel_strategy.json":
-                state = _load_json(os.path.join(sdir, f))
-                if state and state.get("strategy") == "wheel":
-                    results.append((f, state))
+                path = os.path.join(sdir, f)
+                state = _load_json(path)
+                if state is None:
+                    print(f"[wheel] WARN: malformed state file {path} — SKIPPING. Positions for this symbol will not be managed until fixed.", file=_sys.stderr, flush=True)
+                    continue
+                if state.get("strategy") != "wheel":
+                    print(f"[wheel] WARN: {path} missing 'strategy':'wheel' — skipping.", file=_sys.stderr, flush=True)
+                    continue
+                results.append((f, state))
     except FileNotFoundError:
         pass
     return results
@@ -266,7 +276,9 @@ def fetch_option_contracts(user, symbol, opt_type, min_dte=MIN_DTE, max_dte=MAX_
     all_contracts = []
     next_token = None
     # Paginate — Alpaca returns up to 200 per page
-    for _ in range(10):  # safety cap
+    _MAX_PAGES = 10
+    pages_fetched = 0
+    for _ in range(_MAX_PAGES):  # safety cap (2000 contracts)
         params = {
             "underlying_symbols": symbol,
             "type": opt_type,
@@ -283,9 +295,14 @@ def fetch_option_contracts(user, symbol, opt_type, min_dte=MIN_DTE, max_dte=MAX_
             break
         contracts = result.get("option_contracts", [])
         all_contracts.extend(contracts)
+        pages_fetched += 1
         next_token = result.get("next_page_token")
         if not next_token:
             break
+    # Warn if we hit the cap — means the chain was likely truncated.
+    if pages_fetched >= _MAX_PAGES and next_token:
+        import sys as _sys
+        print(f"[wheel] WARN: {symbol} {opt_type} chain TRUNCATED at {len(all_contracts)} contracts (hit _MAX_PAGES={_MAX_PAGES}). Some contracts may not have been considered.", file=_sys.stderr, flush=True)
     return all_contracts
 
 

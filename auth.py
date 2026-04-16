@@ -102,23 +102,70 @@ def init_db():
     os.makedirs(USERS_DIR, exist_ok=True)
 
 # ===== Password Hashing =====
-def hash_password(password, salt=None):
-    """Return (hash_b64, salt_b64). If salt not provided, generates one."""
+#
+# OWASP 2023 guidance: PBKDF2-HMAC-SHA256 with ≥600k iterations.
+# We bumped from 200k to 600k but need to remain backward-compat with
+# existing users. Hashes now carry an iteration count prefix:
+#   Format: "v1$ITERATIONS$BASE64HASH"   (e.g. "v1$600000$XXXX")
+#   Legacy: "BASE64HASH"                 (implicit 200_000 iterations)
+# verify_password handles both. On successful login with a legacy hash,
+# the caller (auth.authenticate) re-hashes at the new cost and upgrades
+# the stored record transparently.
+PBKDF2_CURRENT_ITERATIONS = 600_000
+PBKDF2_LEGACY_ITERATIONS = 200_000
+PBKDF2_HASH_PREFIX = "v1$"
+
+
+def _raw_pbkdf2(password, salt_bytes, iterations):
+    return hashlib.pbkdf2_hmac("sha256", password.encode(), salt_bytes, iterations)
+
+
+def hash_password(password, salt=None, iterations=None):
+    """Return (hash_blob, salt_b64). The hash_blob is self-describing:
+    "v1$<iterations>$<base64>". If salt not provided, generates one.
+    """
     if salt is None:
         salt_bytes = secrets.token_bytes(16)
         salt = base64.b64encode(salt_bytes).decode()
     else:
         salt_bytes = base64.b64decode(salt)
-    hashed = hashlib.pbkdf2_hmac("sha256", password.encode(), salt_bytes, 200_000)
-    return base64.b64encode(hashed).decode(), salt
+    iters = iterations or PBKDF2_CURRENT_ITERATIONS
+    hashed = _raw_pbkdf2(password, salt_bytes, iters)
+    blob = f"{PBKDF2_HASH_PREFIX}{iters}${base64.b64encode(hashed).decode()}"
+    return blob, salt
+
+
+def _parse_hash_blob(blob):
+    """Return (iterations, base64_hash). Legacy blobs are treated as 200k."""
+    if blob and blob.startswith(PBKDF2_HASH_PREFIX):
+        try:
+            _, iter_str, b64 = blob.split("$", 2)
+            return int(iter_str), b64
+        except (ValueError, AttributeError):
+            return PBKDF2_LEGACY_ITERATIONS, blob
+    return PBKDF2_LEGACY_ITERATIONS, blob
+
 
 def verify_password(password, stored_hash, stored_salt):
-    """Timing-safe password verification."""
+    """Timing-safe password verification. Works for both legacy (200k, no
+    prefix) and current (v1$600000$...) hashes.
+    """
     try:
-        check_hash, _ = hash_password(password, stored_salt)
-        return hmac.compare_digest(check_hash, stored_hash)
+        iters, b64 = _parse_hash_blob(stored_hash)
+        salt_bytes = base64.b64decode(stored_salt)
+        expected = _raw_pbkdf2(password, salt_bytes, iters)
+        actual = base64.b64decode(b64)
+        return hmac.compare_digest(expected, actual)
     except Exception:
         return False
+
+
+def needs_rehash(stored_hash):
+    """Return True if the stored hash uses an older iteration count and
+    should be upgraded on next successful verification.
+    """
+    iters, _ = _parse_hash_blob(stored_hash)
+    return iters < PBKDF2_CURRENT_ITERATIONS
 
 # ===== Encryption (Fernet-like using stdlib) =====
 # Uses HMAC-SHA256 for auth + simple XOR stream cipher derived from master key.
@@ -324,12 +371,29 @@ def change_password(user_id, new_password, invalidate_sessions=True):
     return True
 
 def authenticate(username_or_email, password):
-    """Return user dict if credentials valid, None otherwise."""
+    """Return user dict if credentials valid, None otherwise.
+
+    Transparently upgrades legacy PBKDF2 hashes (200k) to the current cost
+    (600k) on successful verification, so password strengths improve across
+    the user base without requiring manual password resets.
+    """
     user = get_user_by_username(username_or_email) or get_user_by_email(username_or_email)
     if not user:
         return None
     if not verify_password(password, user["password_hash"], user["password_salt"]):
         return None
+    # Upgrade hash if it's still the legacy iteration count
+    try:
+        if needs_rehash(user["password_hash"]):
+            new_hash, new_salt = hash_password(password)
+            conn = _get_db()
+            cur = conn.cursor()
+            cur.execute("UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?",
+                        (new_hash, new_salt, user["id"]))
+            conn.commit()
+            conn.close()
+    except Exception:
+        pass  # Rehash is best-effort, never fail login over it
     # Update last login
     conn = _get_db()
     cur = conn.cursor()

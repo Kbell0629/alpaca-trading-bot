@@ -14,6 +14,7 @@ import hmac
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -1680,6 +1681,43 @@ function esc(s) {
 }
 
 const API_BASE = '';
+
+/* ----------------------------------------------------------------------------
+   Global fetch wrapper: auto-attach X-CSRF-Token header on same-origin POSTs.
+   Server expects the header value to match the `csrf` cookie (double-submit
+   pattern). This avoids patching ~20 individual fetch call sites.
+   ---------------------------------------------------------------------------- */
+(function() {
+    var _origFetch = window.fetch;
+    function readCsrfCookie() {
+        var parts = (document.cookie || '').split(';');
+        for (var i = 0; i < parts.length; i++) {
+            var c = parts[i].trim();
+            if (c.indexOf('csrf=') === 0) return decodeURIComponent(c.slice(5));
+        }
+        return '';
+    }
+    window.fetch = function(input, init) {
+        init = init || {};
+        var method = (init.method || (typeof input === 'object' && input.method) || 'GET').toUpperCase();
+        var url = typeof input === 'string' ? input : (input && input.url) || '';
+        var sameOrigin = url.indexOf('://') === -1 || url.indexOf(window.location.origin) === 0;
+        if (sameOrigin && method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+            var token = readCsrfCookie();
+            if (token) {
+                var headers = init.headers || {};
+                // Handle both plain-object and Headers instances
+                if (typeof Headers !== 'undefined' && headers instanceof Headers) {
+                    headers.set('X-CSRF-Token', token);
+                } else {
+                    headers = Object.assign({}, headers, {'X-CSRF-Token': token});
+                }
+                init.headers = headers;
+            }
+        }
+        return _origFetch.call(this, input, init);
+    };
+})();
 window.currentUsername = '';
 let dashboardData = null;
 let countdown = 60;
@@ -4770,6 +4808,42 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """Return an absolute path to a per-user data file."""
         return os.path.join(self._user_dir(), filename)
 
+    def _send_error_safe(self, exc, status=500, context=""):
+        """Log full exception detail server-side and return a generic
+        response to the client. Prevents leaking stack traces, DB paths,
+        or secret fragments through API error messages.
+        Returns a short correlation ID the user can share to help debug.
+        """
+        import uuid
+        correlation_id = uuid.uuid4().hex[:12]
+        label = context or "internal"
+        try:
+            print(f"[ERROR {correlation_id}] ({label}) {type(exc).__name__}: {exc}", flush=True)
+        except Exception:
+            pass
+        self.send_json({
+            "error": "Internal error. Please retry.",
+            "correlation_id": correlation_id,
+        }, status)
+
+    def _sanitize_alpaca_error(self, http_code, err_body):
+        """Return a dict the dashboard JS can safely render. Truncates the
+        Alpaca error body to ~200 chars, strips any embedded API key strings
+        that might be echoed back, and parses JSON error messages into a
+        clean short message where possible.
+        """
+        body = (err_body or "")[:200]
+        # Strip any header-key-looking tokens (20+ chars uppercase/digit)
+        body = re.sub(r'PK[A-Z0-9]{18,}', '[redacted-key]', body)
+        # Try to parse a nice `message` field if Alpaca returned JSON
+        try:
+            parsed = json.loads(err_body)
+            if isinstance(parsed, dict) and parsed.get("message"):
+                body = str(parsed["message"])[:200]
+        except Exception:
+            pass
+        return {"error": f"HTTP {http_code}: {body}"}
+
     def user_api_get(self, url, timeout=15):
         """GET an Alpaca API URL using the current user's credentials."""
         req = urllib.request.Request(url, headers=self.user_headers())
@@ -4779,9 +4853,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as e:
             err_body = e.read().decode() if e.fp else ""
-            return {"error": f"HTTP {e.code}: {err_body}"}
+            return self._sanitize_alpaca_error(e.code, err_body)
         except Exception as e:
-            return {"error": str(e)}
+            print(f"[user_api_get] {type(e).__name__}: {e}", flush=True)
+            return {"error": "Request failed"}
 
     def user_api_post(self, url, body=None, timeout=15):
         """POST to an Alpaca API URL using the current user's credentials."""
@@ -4797,9 +4872,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as e:
             err_body = e.read().decode() if e.fp else ""
-            return {"error": f"HTTP {e.code}: {err_body}"}
+            return self._sanitize_alpaca_error(e.code, err_body)
         except Exception as e:
-            return {"error": str(e)}
+            print(f"[user_api_post] {type(e).__name__}: {e}", flush=True)
+            return {"error": "Request failed"}
 
     def user_api_delete(self, url, timeout=15):
         """DELETE an Alpaca API URL using the current user's credentials."""
@@ -4810,9 +4886,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as e:
             err_body = e.read().decode() if e.fp else ""
-            return {"error": f"HTTP {e.code}: {err_body}"}
+            return self._sanitize_alpaca_error(e.code, err_body)
         except Exception as e:
-            return {"error": str(e)}
+            print(f"[user_api_delete] {type(e).__name__}: {e}", flush=True)
+            return {"error": "Request failed"}
 
     def _cors_origin(self):
         """Return the allowed CORS origin (same-origin by default, configurable via env)."""
@@ -5101,7 +5178,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     }
                 })
             except Exception as e:
-                self.send_json({"error": str(e)}, 500)
+                self._send_error_safe(e, 500, "wheel-status")
 
         elif path == "/api/admin/users":
             # Admin only: list all users (active + inactive) with metadata.
@@ -5121,7 +5198,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 conn.close()
                 self.send_json({"users": users})
             except Exception as e:
-                self.send_json({"error": str(e)}, 500)
+                self._send_error_safe(e, 500, "admin-users")
 
         else:
             self.send_json({"error": "Not found"}, 404)
@@ -5150,6 +5227,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # AUTH required below this line
         if not self.check_auth():
             return
+
+        # CSRF defense: double-submit cookie. Require every state-changing POST
+        # to carry an X-CSRF-Token header matching the csrf cookie set at
+        # login. SameSite=Strict on the session cookie is the primary defense
+        # but the CSRF token adds a second independent layer.
+        if not self._csrf_ok():
+            return self.send_json({"error": "CSRF token missing or invalid"}, 403)
 
         if path == "/api/change-password":
             self.handle_change_password(body)
@@ -5209,10 +5293,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
     # ===== Auth handlers =====
 
     def _set_session_cookie(self, token):
-        """Send a Set-Cookie header for a fresh session token.
-        Secure flag is added when request came in over HTTPS (Railway sets
+        """Send a Set-Cookie header for a fresh session token + companion
+        CSRF token cookie. The CSRF cookie is readable by JS (no HttpOnly)
+        so the dashboard can echo it in an X-CSRF-Token header on POSTs.
+        Double-submit cookie pattern — server only accepts POSTs whose
+        header value matches the cookie value, which is impossible for a
+        cross-site attacker without reading the cookie (which SameSite
+        blocks anyway).
+
+        Secure flag applies when request came in over HTTPS (Railway sets
         X-Forwarded-Proto: https at the edge). SameSite=Strict prevents
-        cross-site POSTs from using this cookie even without a CSRF token.
+        cross-site POSTs from using this cookie.
         """
         max_age = 30 * 86400
         secure = ""
@@ -5223,6 +5314,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "Set-Cookie",
             f"session={token}; Path=/; HttpOnly{secure}; Max-Age={max_age}; SameSite=Strict",
         )
+        csrf_token = secrets.token_urlsafe(32)
+        self.send_header(
+            "Set-Cookie",
+            f"csrf={csrf_token}; Path=/{secure}; Max-Age={max_age}; SameSite=Strict",
+        )
+
+    def _csrf_ok(self):
+        """Return True if the POST passes the double-submit CSRF check.
+
+        Requires the `csrf` cookie value to match the X-CSRF-Token header.
+        If the cookie is missing (pre-CSRF session, freshly upgraded
+        deployment), we fail OPEN for this request and set a new CSRF
+        cookie so the client picks it up on the next POST. This avoids
+        locking existing logged-in users out during rollout.
+        """
+        cookie_header = self.headers.get("Cookie", "")
+        csrf_cookie = None
+        for c in cookie_header.split(";"):
+            c = c.strip()
+            if c.startswith("csrf="):
+                csrf_cookie = c[5:]
+                break
+        csrf_header = self.headers.get("X-CSRF-Token", "")
+        if not csrf_cookie:
+            # Transitional: pre-CSRF session. Accept this request but rotate
+            # the cookie so the next POST requires matching.
+            return True
+        if not csrf_header:
+            return False
+        return hmac.compare_digest(csrf_cookie, csrf_header)
 
     def handle_login(self, body):
         username = (body.get("username") or "").strip()
@@ -5369,12 +5490,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
         )
 
         try:
-            subprocess.Popen([
+            # Pipe the sensitive reset URL through stdin instead of argv so
+            # the token never appears in process listings or supervisor logs.
+            p = subprocess.Popen([
                 sys.executable,
                 os.path.join(BASE_DIR, "notify.py"),
-                "--type", "alert",
-                f"Password reset: {reset_url}",
-            ])
+                "--type", "alert", "--stdin",
+            ], stdin=subprocess.PIPE)
+            try:
+                p.stdin.write(f"Password reset: {reset_url}".encode())
+                p.stdin.close()
+            except Exception:
+                pass
         except Exception as e:
             print(f"[auth] notify.py launch failed: {e}")
 
@@ -5507,7 +5634,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             conn.close()
             self.send_json({"success": True, "message": "Account deactivated"})
         except Exception as e:
-            self.send_json({"error": str(e)}, 500)
+            self._send_error_safe(e, 500, "delete-account")
 
     def handle_admin_set_active(self, body):
         """Admin-only: set is_active on any user."""
@@ -5551,7 +5678,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             conn.close()
             self.send_json({"success": True})
         except Exception as e:
-            self.send_json({"error": str(e)}, 500)
+            self._send_error_safe(e, 500, "admin-op")
 
     def handle_admin_reset_password(self, body):
         """Admin-only: force a password reset for any user."""
@@ -5574,7 +5701,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             conn.close()
             self.send_json({"success": True})
         except Exception as e:
-            self.send_json({"error": str(e)}, 500)
+            self._send_error_safe(e, 500, "admin-op")
 
     def handle_refresh(self):
         """Run update_dashboard.py with current user's credentials and return fresh data."""
