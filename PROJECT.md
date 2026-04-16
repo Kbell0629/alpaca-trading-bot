@@ -92,9 +92,13 @@ All secrets in `.env` (gitignored) and Railway variables. No hardcoded defaults.
 ### Infrastructure
 - `Procfile` — `python3 -u server.py` (unbuffered for Railway log forwarding)
 - `railway.json` — Railway deploy config. `healthcheckPath: /healthz`.
-- `requirements.txt` — `cryptography>=42.0.0` (for AES-GCM encryption of Alpaca keys). Falls back to stdlib HMAC cipher if not installed.
+- `requirements.txt` — `cryptography>=42.0.0,<46.0.0` (AES-GCM) + `zxcvbn>=4.4.28,<5.0.0` (password strength). Both degrade gracefully if not installed.
 - `manifest.json` — PWA manifest
 - `icon-192.png` / `icon-512.png` — PWA icons
+- `templates/` — `dashboard.html`, `login.html`, `signup.html`, `forgot.html`, `reset.html`. Loaded once at server import.
+- `tests/` — pytest suite (run: `python3 -m pytest tests/`)
+- `et_time.py` — shared ET helper. **Never reach for `datetime.now(timezone.utc)`; use `from et_time import now_et`.**
+- `constants.py` — SECTOR_MAP + PROFIT_LADDER + keyword lists (single source of truth for all consumers)
 
 ---
 
@@ -291,6 +295,7 @@ When readiness score hits 80/100 after 30 days:
 - **2026-04-16 (PM):** 4 parallel forensic audits. Critical finds: cross-user migration leak (r3), trade journal writeback missing (r4 fin), profit ladder non-idempotent (r4 fin), ntfy_topic spoofing (r4 sec), logout CSRF, admin cross-admin pw reset. All fixed.
 - **2026-04-16 (PM):** Final hardening commit `e391f79`: AES-256-GCM (`ENCv2:`) for Alpaca credentials, backups now strip credential columns, login rate limit persisted to SQLite `login_attempts` table (survives Railway redeploy), SIGTERM handler, SQLite WAL, `/healthz` endpoint.
 - **2026-04-16 (PM):** Round-5 forensic audit (Opus 4.7, commit `0d1f961`): **ET-only policy** across entire codebase via new `et_time.py` helper — no `datetime.now(timezone.utc)` anywhere in runtime code; DST bug in `extended_hours.get_trading_session()` (hardcoded `-4h` broke EST) fixed; `cleanup_expired_sessions` finally wired (was dead code); `admin_audit_log` 90d rotation; `password_resets` GC; reset tokens SHA-256 hashed at rest; `/healthz` staleness check (5-min threshold); profit ladder client_order_id switched UTC-date → ET-date; cooldown parse error now fail-closed; per-user Alpaca circuit breaker (5 fails → 5-min cool-off); `socket.setdefaulttimeout(30)` safety net; email queue overflow WARN; wheel lock hardened; `cryptography<46.0.0` pin; load_json logs malformed files.
+- **2026-04-16 (PM):** Round-5.2 decision-item fixes (commit `7c2c013`): SECTOR_MAP consolidated to `constants.py` (single source of truth — 3 consumers now import it); dashboard HTML extracted to `templates/*.html` (**server.py 7508 → 2870 lines**); baseline pytest suite added (`tests/`, 30 tests); HKDF-SHA256 key derivation rolled out as `ENCv3:` with transparent upgrade on login (legacy ENCv2 stays decrypt-only); zxcvbn password strength enforced (score ≥3, ≥10 chars, username/email as user_inputs); new signups get random `alpaca-bot-<12char>` ntfy topics instead of guessable username-based ones; `get_dashboard_data` decomposed into `_resolve_user_paths` / `_fetch_live_alpaca_state` / `_load_with_shared_fallback` / `_load_overlay_files`; diagnostic reports distribution of PLAIN/ENC/ENCv2/ENCv3 rows at startup.
 
 ---
 
