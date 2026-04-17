@@ -62,10 +62,21 @@ SESSION_DAYS = 30
 RESET_TOKEN_HOURS = 1
 
 def _get_db():
-    """Get a connection with foreign keys enabled."""
-    conn = sqlite3.connect(DB_PATH)
+    """Get a connection with foreign keys + WAL + busy_timeout.
+
+    Round-11 audit: prior impl relied on server.py setting WAL at
+    startup on a one-shot connection, which doesn't stick —
+    journal_mode is per-DB but busy_timeout is per-connection, and
+    each call here created a fresh default-timeout connection. Under
+    concurrent writers (scheduler thread + HTTP handler + backup
+    subprocess) any writer blocked >0 seconds threw SQLITE_BUSY,
+    silently losing the login/session/audit write."""
+    conn = sqlite3.connect(DB_PATH, timeout=5.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 def init_db():

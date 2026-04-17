@@ -64,7 +64,17 @@ class ActionsHandlerMixin:
                 env["ALPACA_API_SECRET"] = self.user_api_secret
                 env["ALPACA_ENDPOINT"] = self.user_api_endpoint
                 env["ALPACA_DATA_ENDPOINT"] = self.user_data_endpoint
-                env["server.DASHBOARD_DATA_PATH"] = os.path.join(udir, "dashboard_data.json")
+                # Round-11: was `server.DASHBOARD_DATA_PATH` (bogus
+                # prefix); update_dashboard.py reads `DASHBOARD_DATA_PATH`
+                # so the subprocess was writing to the shared file and
+                # cross-user-leaking picks.
+                env["DASHBOARD_DATA_PATH"] = os.path.join(udir, "dashboard_data.json")
+                # Per-user strategies + journal + scorecard so Refresh
+                # doesn't cross-contaminate state either.
+                env["STRATEGIES_DIR"] = os.path.join(udir, "strategies")
+                env["JOURNAL_PATH"] = os.path.join(udir, "trade_journal.json")
+                env["SCORECARD_PATH"] = os.path.join(udir, "scorecard.json")
+                env["CAPITAL_STATUS_PATH"] = os.path.join(udir, "capital_status.json")
                 env["DASHBOARD_HTML_PATH"] = os.path.join(udir, "dashboard.html")
             except Exception as e:
                 print(f"user env setup failed: {e}")

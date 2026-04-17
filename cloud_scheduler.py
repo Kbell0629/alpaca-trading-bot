@@ -342,6 +342,11 @@ def user_api_post(user, url_path, data, timeout=10):
     # POSTs too. Previously CB only tracked GET — a dead endpoint kept
     # receiving fresh order submissions and the failure counter never
     # incremented, so CB never tripped.
+    # Round-11: only record 5xx / network failures as CB failures.
+    # 4xx (invalid symbol, insufficient buying power, duplicate order)
+    # are USER errors — they shouldn't open the breaker and halt all
+    # trading. Prior impl caught everything and 5 bad orders in a row
+    # would freeze the bot.
     if _cb_blocked(user):
         return {"error": "circuit_breaker_open"}
     req = urllib.request.Request(
@@ -355,6 +360,12 @@ def user_api_post(user, url_path, data, timeout=10):
             body = json.loads(resp.read().decode())
             _cb_record_success(user)
             return body
+    except urllib.error.HTTPError as he:
+        # 4xx is a user/client error, not an infra outage — don't trip CB.
+        if 400 <= he.code < 500:
+            return {"error": f"HTTP {he.code}: {he.reason}"}
+        _cb_record_failure(user)
+        return {"error": f"HTTP {he.code}: {he.reason}"}
     except Exception as e:
         _cb_record_failure(user)
         return {"error": str(e)}
@@ -372,6 +383,11 @@ def user_api_delete(user, url_path, timeout=10):
             body = resp.read()
             _cb_record_success(user)
             return json.loads(body.decode()) if body else {}
+    except urllib.error.HTTPError as he:
+        if 400 <= he.code < 500:
+            return {"error": f"HTTP {he.code}: {he.reason}"}
+        _cb_record_failure(user)
+        return {"error": f"HTTP {he.code}: {he.reason}"}
     except Exception as e:
         _cb_record_failure(user)
         return {"error": str(e)}
@@ -400,6 +416,11 @@ def user_api_patch(user, url_path, data, timeout=10):
             body = json.loads(resp.read().decode())
             _cb_record_success(user)
             return body
+    except urllib.error.HTTPError as he:
+        if 400 <= he.code < 500:
+            return {"error": f"HTTP {he.code}: {he.reason}"}
+        _cb_record_failure(user)
+        return {"error": f"HTTP {he.code}: {he.reason}"}
     except Exception as e:
         _cb_record_failure(user)
         return {"error": str(e)}
@@ -716,12 +737,12 @@ def get_et_time():
         # Strip tzinfo so existing callers comparing to tz-naive values still work.
         return et.replace(tzinfo=None)
     except Exception:
-        # Fallback if zoneinfo/tzdata isn't available (very old Python or
-        # stripped container). Month-boundary heuristic is ~99% right.
-        now_utc = now_et()
-        month = now_utc.month
-        offset = -4 if 3 <= month <= 11 else -5
-        return (now_utc + timedelta(hours=offset)).replace(tzinfo=None)
+        # Round-11 audit: previous fallback treated `now_et()` as UTC
+        # and applied an ET offset on top — silent double-conversion
+        # catastrophe for every wall-clock gate (auto-deployer 9:35,
+        # daily close, market-hours check). `now_et()` ALREADY returns
+        # ET, so just strip tz and return.
+        return now_et().replace(tzinfo=None)
 
 # ============================================================================
 # TASK 1: SCREENER (per user)
@@ -750,20 +771,46 @@ def run_screener(user, max_age_seconds=0):
     env["DASHBOARD_HTML_PATH"] = user_file(user, "dashboard.html")
     # Timeout: 600s (10 min) — Railway containers have slower network than local.
     # Screening 10k+ stocks in 22 batches of 500 can take 3-8 min on Railway vs ~60s local.
-    # TODO: optimize screener to be faster (reduce symbols scanned, parallel batches)
+    # Round-11: run as Popen and poll in a small wait loop so the main
+    # scheduler loop keeps its heartbeat alive. Previous subprocess.run
+    # was synchronous — blocked the entire scheduler thread for up to
+    # 10 min, causing /healthz to flip 503 (staleness) mid-run and
+    # Railway to restart the container. Polling every 10s lets us call
+    # `_heartbeat_tick()` so the log buffer stays fresh.
     SCREENER_TIMEOUT = 600
     try:
-        result = subprocess.run(
+        p = subprocess.Popen(
             [sys.executable, os.path.join(BASE_DIR, "update_dashboard.py")],
-            cwd=BASE_DIR, capture_output=True, text=True, timeout=SCREENER_TIMEOUT, env=env,
+            cwd=BASE_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=env,
         )
-        if result.returncode == 0:
+        _track_child(p)
+        deadline = time.time() + SCREENER_TIMEOUT
+        while time.time() < deadline:
+            rc = p.poll()
+            if rc is not None:
+                break
+            # Emit a heartbeat every ~60s so /healthz doesn't go stale
+            # while a long screener is running.
+            if int(time.time()) % 60 == 0:
+                _heartbeat_tick()
+            time.sleep(3)
+        else:
+            try:
+                p.terminate()
+            except Exception:
+                pass
+            log(f"[{user['username']}] Screener timed out (>{SCREENER_TIMEOUT}s)", "screener")
+            return
+        try:
+            stdout, stderr = p.communicate(timeout=5)
+        except Exception:
+            stdout, stderr = "", ""
+        if p.returncode == 0:
             log(f"[{user['username']}] Screener completed", "screener")
             _last_runs[key] = time.time()
         else:
-            log(f"[{user['username']}] Screener failed: {result.stderr[:200]}", "screener")
-    except subprocess.TimeoutExpired:
-        log(f"[{user['username']}] Screener timed out (>{SCREENER_TIMEOUT}s)", "screener")
+            log(f"[{user['username']}] Screener failed: {(stderr or '')[:200]}", "screener")
     except Exception as e:
         log(f"[{user['username']}] Screener error: {e}", "screener")
 
@@ -810,16 +857,23 @@ def record_trade_close(user, symbol, strategy, exit_price, pnl, exit_reason,
                     except (TypeError, ValueError):
                         t["pnl"] = None
                     # P&L % relative to entry price
+                    # Round-11: guard both sides against zero so a
+                    # short-cover with exit_price=0 (Alpaca hiccup)
+                    # doesn't silently skip pnl_pct via the outer
+                    # `except: pass`. Logs a warning when skipped.
                     try:
                         entry_px = float(t.get("price") or 0)
+                        exit_px = float(exit_price) if exit_price is not None else 0.0
                         t_qty = int(float(qty if qty is not None else t.get("qty") or 0))
-                        if entry_px and t_qty:
+                        if entry_px > 0 and t_qty and exit_px > 0:
                             if side == "sell":  # long close
-                                t["pnl_pct"] = round((float(exit_price) / entry_px - 1) * 100, 2)
+                                t["pnl_pct"] = round((exit_px / entry_px - 1) * 100, 2)
                             else:  # short cover
-                                t["pnl_pct"] = round((entry_px / float(exit_price) - 1) * 100, 2)
-                    except Exception:
-                        pass
+                                t["pnl_pct"] = round((entry_px / exit_px - 1) * 100, 2)
+                        else:
+                            log(f"[{user.get('username','?')}] {symbol} pnl_pct skipped (entry={entry_px} exit={exit_px} qty={t_qty})", "monitor")
+                    except Exception as _pp_e:
+                        log(f"[{user.get('username','?')}] {symbol} pnl_pct calc failed: {_pp_e}", "monitor")
                     t["exit_side"] = side
                     save_json(journal_path, journal)
                     return True
@@ -871,7 +925,16 @@ def monitor_strategies(user):
             # reading it — a 9% slide over a week with <3% daily moves
             # would never trigger the kill switch. Check peak/current
             # and fire the same flatten path on breach.
+            # Round-11: if peak is missing (pre-round-10 user), seed with
+            # current value so the drawdown check is defined rather than
+            # silently skipped (which would leave max_drawdown un-enforced).
             peak_val = guardrails.get("peak_portfolio_value")
+            if not peak_val and current_val:
+                with strategy_file_lock(guardrails_path):
+                    _g = load_json(guardrails_path) or {}
+                    _g.setdefault("peak_portfolio_value", current_val)
+                    save_json(guardrails_path, _g)
+                    peak_val = _g["peak_portfolio_value"]
             if peak_val and current_val and peak_val > 0:
                 dd_pct = (peak_val - current_val) / peak_val
                 if dd_pct > guardrails.get("max_drawdown_pct", 0.10):
@@ -2252,8 +2315,20 @@ def _build_daily_close_report(user, account, scorecard, guardrails,
     lines.append("TODAY'S ACTIVITY")
     lines.append(divider)
     today_str = et.strftime("%Y-%m-%d")
+    # Round-11: build midnight-ET-in-UTC boundary from zoneinfo so the
+    # daily-close report correctly includes today's orders during BOTH
+    # EDT (midnight ET = 04:00Z) AND EST (midnight ET = 05:00Z). The
+    # prior hardcoded `T04:00:00Z` was correct Apr–Nov and off by one
+    # day Nov–Mar (pulled yesterday's orders in too).
     try:
-        orders = user_api_get(user, f"/orders?status=closed&after={today_str}T04:00:00Z&limit=500")
+        from zoneinfo import ZoneInfo
+        from datetime import datetime as _dt, time as _time, timezone as _tz
+        _midnight_et = _dt.combine(et.date(), _time(0), tzinfo=ZoneInfo("America/New_York"))
+        _after_iso = _midnight_et.astimezone(_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except Exception:
+        _after_iso = f"{today_str}T04:00:00Z"  # fall back to prior behavior
+    try:
+        orders = user_api_get(user, f"/orders?status=closed&after={_after_iso}&limit=500")
     except Exception:
         orders = None
     if not isinstance(orders, list):
@@ -2461,12 +2536,15 @@ def run_friday_risk_reduction(user):
         half_qty = qty // 2
         log(f"[{user['username']}] {symbol}: +{unrealized_plpc:.1f}%, selling {half_qty}/{qty} before weekend", "friday")
 
+        # Round-11: idempotency key so a timeout-retry doesn't double-trim.
+        _today_str = get_et_time().strftime("%Y%m%d")
         order = user_api_post(user, "/orders", {
             "symbol": symbol,
             "qty": str(half_qty),
             "side": "sell" if float(pos.get("qty", 0)) > 0 else "buy",
             "type": "market",
-            "time_in_force": "day"
+            "time_in_force": "day",
+            "client_order_id": f"friday-{symbol}-{_today_str}",
         })
 
         if isinstance(order, dict) and "id" in order:
@@ -2616,10 +2694,13 @@ def run_monthly_rebalance(user):
                         save_json(sf_path, strat_for_close)
             except Exception as _e:
                 log(f"[{user['username']}] rebalance cancel-stop failed for {symbol}: {_e}", "rebalance")
+            # Round-11: idempotency so a timeout-retry doesn't double-close.
+            _mr_today = get_et_time().strftime("%Y%m")
             order = user_api_post(user, "/orders", {
                 "symbol": symbol, "qty": str(qty),
                 "side": "sell" if float(pos.get("qty", 0)) > 0 else "buy",
-                "type": "market", "time_in_force": "day"
+                "type": "market", "time_in_force": "day",
+                "client_order_id": f"monthly-{symbol}-{_mr_today}",
             })
             if isinstance(order, dict) and "id" in order:
                 closed_count += 1

@@ -112,6 +112,16 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # mount path (e.g. /data). Locally defaults to BASE_DIR so nothing changes.
 DATA_DIR = os.environ.get("DATA_DIR", BASE_DIR)
 os.makedirs(DATA_DIR, exist_ok=True)
+# Round-11: fail-loud at boot if the mount is read-only. If Railway's
+# volume fails to attach, /data still EXISTS (container root), so
+# makedirs returns cleanly — but subsequent writes silently fail and
+# /healthz stays green while the bot is effectively dead. Better to
+# crash hard and let Railway restart than zombify.
+if not os.access(DATA_DIR, os.W_OK):
+    import sys as _sys_boot
+    print(f"[FATAL] DATA_DIR ({DATA_DIR!r}) not writable — check volume mount.",
+          flush=True)
+    _sys_boot.exit(1)
 
 # Templates directory — dashboard/login/signup/forgot/reset HTML live here
 # as standalone files that can be edited with any HTML editor, linted, and
@@ -959,7 +969,7 @@ class DashboardHandler(
         # leaves the old container running, and there was previously no way
         # to tell from outside).
         if path == "/api/version":
-            info = {"bot_version": "round-8"}
+            info = {"bot_version": "round-11"}
             try:
                 import subprocess as _sp
                 r = _sp.run(

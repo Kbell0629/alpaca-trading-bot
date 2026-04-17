@@ -54,7 +54,12 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # path (e.g. /data). Locally defaults to BASE_DIR so nothing changes.
 DATA_DIR = os.environ.get("DATA_DIR", BASE_DIR)
 os.makedirs(DATA_DIR, exist_ok=True)
-STRATEGIES_DIR = os.path.join(DATA_DIR, "strategies")
+STRATEGIES_DIR = os.environ.get("STRATEGIES_DIR", os.path.join(DATA_DIR, "strategies"))
+# Round-11: honor per-user env var same way update_scorecard.py does.
+# Without this, cloud_scheduler.run_daily_close passed STRATEGIES_DIR
+# in env but error_recovery silently wrote to the shared /data/strategies
+# dir, leaving per-user orphan stops unrecovered and shared residue
+# receiving stops under whichever user's env was current.
 
 API_ENDPOINT = os.environ.get("ALPACA_ENDPOINT", "https://paper-api.alpaca.markets/v2")
 API_KEY = os.environ.get("ALPACA_API_KEY", "")
