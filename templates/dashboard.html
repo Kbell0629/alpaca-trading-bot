@@ -3079,6 +3079,24 @@ function renderDashboard() {
         '</div>';
     }
 
+    // Helper: politician signal HTML for a pick that won via Copy
+    // Trading. Only renders when there's actual data from capitol_trades.
+    function buildCopySignal(p) {
+        const sigs = p.copy_signals || [];
+        if (!sigs.length) return '';
+        const first = sigs[0] || {};
+        const who = first.politician || 'Unknown';
+        const chamber = (first.chamber || '').replace(/^./, c => c.toUpperCase());
+        const amt = first.amount_label || '';
+        const age = first.age_days;
+        const ageS = (typeof age === 'number') ? (age + 'd ago') : 'recent';
+        const more = sigs.length > 1 ? ' <span style="opacity:0.6">+' + (sigs.length - 1) + ' more</span>' : '';
+        return '<div class="pick-copy-signal" style="font-size:11px;color:#10b981;background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.25);border-radius:6px;padding:6px 10px;margin-top:6px;line-height:1.4">' +
+            '\ud83c\udfdb\ufe0f <strong>' + esc(who) + '</strong>' + (chamber ? ' (' + esc(chamber) + ')' : '') +
+            ' bought <strong>' + esc(amt) + '</strong>, ' + esc(ageS) + more +
+        '</div>';
+    }
+
     let picksHtml = '';
     top3.forEach((p,i) => {
         const color = stratColors[p.best_strategy] || '#3b82f6';
@@ -3116,6 +3134,7 @@ function renderDashboard() {
             '<div class="score-row"><span class="score-label" style="color:#ef4444">Breakout</span><div class="score-bar-bg"><div class="score-bar" style="width:' + boPct + '%;background:#ef4444"></div></div><span class="score-val">' + Math.round(p.breakout_score||0) + '</span></div></div>' +
             buildPickIndicators(p) +
             buildPickSocial(p) +
+            buildCopySignal(p) +
             '<div class="backtest-result">Rec. shares: ' + recShares + ' | 30d backtest: <span class="' + (parseFloat(backtestPct)>=0?'positive':'negative') + '">' + (parseFloat(backtestPct)>=0?'+':'') + backtestPct + '%</span></div>' +
             (p.earnings_warning ? '<div class="earnings-badge">\u26A0 Earnings Soon</div>' : '') +
             '<div class="pick-actions">' +
