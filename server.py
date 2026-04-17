@@ -1628,6 +1628,11 @@ def main():
         sys.exit(0)
     try:
         _signal.signal(_signal.SIGTERM, _sigterm_handler)
+        # Round-11: also wire SIGINT through the same path so Ctrl+C
+        # drains in-flight requests instead of just raising
+        # KeyboardInterrupt (which skips the scheduler's stop hook on
+        # some threading paths).
+        _signal.signal(_signal.SIGINT, _sigterm_handler)
     except (ValueError, AttributeError):
         pass  # Not in main thread / not supported
 

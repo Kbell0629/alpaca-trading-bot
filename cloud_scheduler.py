@@ -67,15 +67,48 @@ _last_runs_lock = threading.Lock()
 def _load_last_runs():
     """Load the persisted _last_runs dict at scheduler startup. Silent
     best-effort — a missing or malformed file just means we start with
-    an empty dict (same as pre-persistence behavior)."""
+    an empty dict (same as pre-persistence behavior).
+
+    Round-11: drop stale interval stamps (numeric last-run timestamps
+    older than 7 days) so a long-idle container or deleted user doesn't
+    leak monotonically-growing entries. Daily stamps (ISO dates older
+    than 7 days) are also dropped — `should_run_daily_at` already handles
+    them correctly but keeping them bloats the file forever.
+    """
     global _last_runs
     try:
         with open(_LAST_RUNS_PATH) as f:
             data = json.load(f)
         if isinstance(data, dict):
+            _cutoff_ts = time.time() - 7 * 86400
+            _today_naive = now_et().replace(tzinfo=None)
+            _cleaned = {}
+            _dropped = 0
+            for k, v in data.items():
+                # Numeric entries → unix ts from should_run_interval
+                if isinstance(v, (int, float)):
+                    if v >= _cutoff_ts:
+                        _cleaned[k] = v
+                    else:
+                        _dropped += 1
+                # String entries → date stamp from should_run_daily_at;
+                # drop entries older than 7 days, keep everything newer.
+                elif isinstance(v, str):
+                    try:
+                        _entry = datetime.strptime(v, "%Y-%m-%d")
+                        if (_today_naive - _entry).days <= 7:
+                            _cleaned[k] = v
+                        else:
+                            _dropped += 1
+                    except ValueError:
+                        # Unexpected format — keep conservatively
+                        _cleaned[k] = v
+                else:
+                    _cleaned[k] = v
             with _last_runs_lock:
-                _last_runs.update(data)
-            log(f"Loaded {len(data)} persisted scheduler last_runs entries", "scheduler")
+                _last_runs.update(_cleaned)
+            log(f"Loaded {len(_cleaned)} persisted scheduler last_runs entries "
+                f"(dropped {_dropped} stale)", "scheduler")
     except FileNotFoundError:
         pass
     except Exception as e:
@@ -2721,17 +2754,21 @@ def run_monthly_rebalance(user):
 
 def is_first_trading_day_of_month(user):
     """Check if today is the first trading day of the month (using Alpaca clock)."""
-    now_et = get_et_time()
-    if now_et.day > 7:
+    # Round-11: use a local name that does not shadow the module-level
+    # `now_et` import. Previous `now_et = get_et_time()` shadow worked
+    # by luck but confused static analysis and any future caller that
+    # expected now_et to remain callable inside this scope.
+    et_now = get_et_time()
+    if et_now.day > 7:
         return False  # Definitely not first trading day
     # Check calendar via Alpaca
-    start = now_et.replace(day=1).strftime("%Y-%m-%d")
-    end = now_et.strftime("%Y-%m-%d")
+    start = et_now.replace(day=1).strftime("%Y-%m-%d")
+    end = et_now.strftime("%Y-%m-%d")
     cal = user_api_get(user, f"/calendar?start={start}&end={end}")
     if not isinstance(cal, list) or not cal:
         return False
     first_trading_date = cal[0].get("date", "")
-    today_str = now_et.strftime("%Y-%m-%d")
+    today_str = et_now.strftime("%Y-%m-%d")
     return first_trading_date == today_str
 
 # ============================================================================
@@ -2771,12 +2808,14 @@ def should_run_daily_at(task_name, hour_et, minute_et, max_late_seconds=1800):
     """
     # Round-9 fix: acquire lock BEFORE the read. See should_run_interval
     # comment — same TOCTOU bug applied here before.
-    now_et = get_et_time()
-    target = now_et.replace(hour=hour_et, minute=minute_et, second=0, microsecond=0)
-    today_str = now_et.strftime("%Y-%m-%d")
+    # Round-11: renamed local from `now_et` -> `et_now` so we don't shadow
+    # the module-level `now_et` import.
+    et_now = get_et_time()
+    target = et_now.replace(hour=hour_et, minute=minute_et, second=0, microsecond=0)
+    today_str = et_now.strftime("%Y-%m-%d")
     with _last_runs_lock:
         last_date = _last_runs.get(task_name, "")
-        if last_date != today_str and now_et >= target and (now_et - target).total_seconds() < max_late_seconds:
+        if last_date != today_str and et_now >= target and (et_now - target).total_seconds() < max_late_seconds:
             _last_runs[task_name] = today_str
             fire = True
         else:
@@ -3167,9 +3206,39 @@ def scheduler_loop():
                     try:
                         import pead_strategy
                         result = pead_strategy.refresh_cache()
+                        _sig_count = result.get('signal_count', 0)
                         log(f"PEAD refresh: scanned {result.get('universe_size', 0)} symbols, "
-                            f"found {result.get('signal_count', 0)} signals",
+                            f"found {_sig_count} signals",
                             "pead")
+                        # Round-11: track an empty-streak so we know if
+                        # yfinance has gone dark (scraping broke, network
+                        # egress blocked, earnings calendar empty). Alert
+                        # the admin after 5 consecutive empty days —
+                        # earnings happen daily during US reporting weeks,
+                        # so 5 zeros in a row = broken pipe, not "no news."
+                        _streak_path = os.path.join(DATA_DIR, "pead_empty_streak.json")
+                        try:
+                            _streak = 0
+                            if os.path.exists(_streak_path):
+                                with open(_streak_path) as _sf:
+                                    _streak = int(json.load(_sf).get("streak", 0))
+                            if _sig_count == 0:
+                                _streak += 1
+                            else:
+                                _streak = 0
+                            with open(_streak_path, "w") as _sf:
+                                json.dump({"streak": _streak,
+                                           "last_update": now_et().isoformat()}, _sf)
+                            if _streak == 5:
+                                # Alert only on the threshold crossing to
+                                # avoid daily spam during a long outage.
+                                for _u in users:
+                                    notify_user(_u,
+                                                f"PEAD empty streak = {_streak} days. "
+                                                "yfinance scrape may be broken.",
+                                                "warning")
+                        except Exception as _se:
+                            log(f"PEAD empty-streak tracker error: {_se}", "pead")
                     except Exception as e:
                         log(f"PEAD refresh failed: {e} — will retry on next tick", "pead")
                         _clear_daily_stamp("pead_refresh")  # allow retry today
