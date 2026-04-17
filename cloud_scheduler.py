@@ -363,6 +363,29 @@ def user_api_delete(user, url_path, timeout=10):
     except Exception as e:
         return {"error": str(e)}
 
+
+def user_api_patch(user, url_path, data, timeout=10):
+    """Alpaca PATCH /orders/{id} atomically modifies an existing order's
+    stop_price / limit_price / qty without a cancel-and-replace dance.
+    Used for trailing-stop raises where the cancel-then-place pattern
+    hits a duplicate-order 403 from Alpaca's position-protection check
+    (can't have two sell-stops for 117 shares when you only hold 117)."""
+    if url_path.startswith("http"):
+        url = url_path
+    else:
+        url = user["_api_endpoint"] + url_path
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(data).encode(),
+        headers={**_user_headers(user), "Content-Type": "application/json"},
+        method="PATCH",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    except Exception as e:
+        return {"error": str(e)}
+
 def user_file(user, filename):
     """Return path to a user-scoped data file.
 
@@ -1162,21 +1185,38 @@ def process_strategy_file(user, filepath, strat):
             current_stop = state.get("current_stop_price", 0) or 0
             if new_stop > current_stop:
                 old_id = state.get("stop_order_id")
-                # Place the NEW stop before canceling the old one, so the
-                # position is never unprotected if either call fails.
-                new_order = user_api_post(user, "/orders", {
-                    "symbol": symbol, "qty": str(shares), "side": "sell",
-                    "type": "stop", "stop_price": str(new_stop), "time_in_force": "gtc"
-                })
-                if isinstance(new_order, dict) and "id" in new_order:
+                # Round-10 audit: Alpaca rejects "place new, cancel old"
+                # with HTTP 403 because having TWO sell-stops for X
+                # shares when you only hold X shares is a duplicate
+                # order. The correct pattern is PATCH /orders/{id} to
+                # atomically bump the stop_price on the existing order.
+                # Fall back to cancel-then-replace only if PATCH fails
+                # (e.g. old_id is stale or order already filled).
+                new_order = None
+                if old_id:
+                    patched = user_api_patch(user, f"/orders/{old_id}",
+                                              {"stop_price": str(new_stop)})
+                    if isinstance(patched, dict) and "id" in patched:
+                        new_order = patched
+                if not new_order:
+                    # PATCH failed (or no old_id) — fall back to
+                    # cancel-then-place. Cancel FIRST this time so
+                    # Alpaca doesn't reject the new order as duplicate.
+                    # ~200ms unprotected window is acceptable vs the
+                    # current "stuck forever at deploy-time stop" bug.
                     if old_id:
                         user_api_delete(user, f"/orders/{old_id}")
+                    new_order = user_api_post(user, "/orders", {
+                        "symbol": symbol, "qty": str(shares), "side": "sell",
+                        "type": "stop", "stop_price": str(new_stop),
+                        "time_in_force": "gtc"
+                    })
+                if isinstance(new_order, dict) and "id" in new_order:
                     state["stop_order_id"] = new_order["id"]
                     state["current_stop_price"] = new_stop
                     log(f"[{user['username']}] {symbol}: Stop raised ${current_stop:.2f} -> ${new_stop:.2f}", "monitor")
                     notify_user(user, f"Stop raised on {symbol}: ${current_stop:.2f} -> ${new_stop:.2f}", "info")
                 else:
-                    # New stop placement failed — keep the old stop in place.
                     log(f"[{user['username']}] {symbol}: WARN stop raise failed, keeping prior stop at ${current_stop:.2f}. Err: {new_order}", "monitor")
 
     # Mean reversion target check
