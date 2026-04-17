@@ -174,8 +174,14 @@ def check_capital():
     else:
         result["recommendation"] = f"Critical. Reduce exposure before opening new positions. Free cash: ${free_cash:,.2f}"
 
-    # Save to file (atomic write)
-    safe_save_json(os.path.join(DATA_DIR, "capital_status.json"), result)
+    # Save to file (atomic write). Round-10: honor CAPITAL_STATUS_PATH
+    # env var so per-user scheduler invocations land in each user's
+    # dir instead of the shared /data/capital_status.json (which
+    # previously leaked state across users — user B would read user A's
+    # can_trade / free-cash).
+    _cap_path = os.environ.get("CAPITAL_STATUS_PATH",
+                                os.path.join(DATA_DIR, "capital_status.json"))
+    safe_save_json(_cap_path, result)
 
     return result
 

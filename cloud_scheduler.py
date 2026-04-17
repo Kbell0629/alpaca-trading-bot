@@ -595,11 +595,12 @@ def notify_user(user, message, notify_type="info"):
         env = os.environ.copy()
         if user.get("_ntfy_topic"):
             env["NTFY_TOPIC"] = user["_ntfy_topic"]
-        subprocess.Popen(
+        p = subprocess.Popen(
             [sys.executable, os.path.join(BASE_DIR, "notify.py"),
              "--type", notify_type, message],
             env=env,
         )
+        _track_child(p)  # round-10: reap on SIGTERM
     except Exception as e:
         log(f"Notification failed: {e}")
 
@@ -1609,17 +1610,24 @@ def run_auto_deployer(user):
         save_json(gpath, guardrails)
 
     # Capital check — runs in BASE_DIR with user env so it reads the right account.
+    # Round-10: pipe CAPITAL_STATUS_PATH so the subprocess writes to
+    # the per-user capital_status.json instead of the shared file
+    # (which leaked can_trade / free-cash numbers across users).
     try:
         env = os.environ.copy()
         env["ALPACA_API_KEY"] = user["_api_key"]
         env["ALPACA_API_SECRET"] = user["_api_secret"]
         env["ALPACA_ENDPOINT"] = user["_api_endpoint"]
         env["ALPACA_DATA_ENDPOINT"] = user["_data_endpoint"]
+        capital_path = user_file(user, "capital_status.json")
+        env["CAPITAL_STATUS_PATH"] = capital_path
         subprocess.run([sys.executable, os.path.join(BASE_DIR, "capital_check.py")],
             cwd=BASE_DIR, capture_output=True, text=True, timeout=30, env=env)
-        # capital_check.py writes to DATA_DIR/capital_status.json. Read from there,
-        # falling back to BASE_DIR for backwards compat with older deploys.
-        capital = load_json(os.path.join(DATA_DIR, "capital_status.json"))
+        # Read from the per-user file first, falling back to shared for
+        # backwards compat with pre-round-10 deploys.
+        capital = load_json(capital_path)
+        if not capital:
+            capital = load_json(os.path.join(DATA_DIR, "capital_status.json"))
         if not capital:
             capital = load_json(os.path.join(BASE_DIR, "capital_status.json")) or {}
         if not capital.get("can_trade", True):
@@ -2931,16 +2939,29 @@ def scheduler_loop():
                 try:
                     uid = user["id"]
 
-                    # Auto-deployer: weekdays 9:35 AM ET (skip on market holidays)
+                    # Auto-deployer: weekdays 9:35 AM ET (skip on market holidays).
+                    # Round-10: clear the daily stamp on exception so a
+                    # transient Alpaca / screener / network error doesn't
+                    # silently skip today's deploy — next tick retries.
                     if is_weekday and now_et.hour == 9 and now_et.minute >= 35 and market_open_flag:
                         if should_run_daily_at(f"auto_deployer_{uid}", 9, 35):
-                            run_auto_deployer(user)
+                            try:
+                                run_auto_deployer(user)
+                            except Exception as _e:
+                                log(f"[{user['username']}] auto_deployer failed: {_e} — retrying next tick", "scheduler")
+                                _clear_daily_stamp(f"auto_deployer_{uid}")
+                                raise
 
                     # Wheel auto-deploy: weekdays 9:40 AM ET (5 min after regular deployer)
                     # Sells cash-secured puts on top wheel candidates.
                     if is_weekday and now_et.hour == 9 and now_et.minute >= 40 and market_open_flag:
                         if should_run_daily_at(f"wheel_deploy_{uid}", 9, 40):
-                            run_wheel_auto_deploy(user)
+                            try:
+                                run_wheel_auto_deploy(user)
+                            except Exception as _e:
+                                log(f"[{user['username']}] wheel_deploy failed: {_e} — retrying next tick", "scheduler")
+                                _clear_daily_stamp(f"wheel_deploy_{uid}")
+                                raise
 
                     # Wheel monitor: every 15 min during market hours
                     # Manages assignment, expiration, buy-to-close, stage transitions.
@@ -2964,23 +2985,43 @@ def scheduler_loop():
                     # enforces the same bound with its time math.
                     if is_weekday and (now_et.hour == 16 or (now_et.hour >= 17 and now_et.hour < 20)):
                         if should_run_daily_at(f"daily_close_{uid}", 16, 5, max_late_seconds=4*3600):
-                            run_daily_close(user)
+                            try:
+                                run_daily_close(user)
+                            except Exception as _e:
+                                log(f"[{user['username']}] daily_close failed: {_e} — retrying", "scheduler")
+                                _clear_daily_stamp(f"daily_close_{uid}")
+                                raise
 
                     # Weekly learning: Fridays 5:00 PM ET
                     if weekday == 4 and now_et.hour == 17:
                         if should_run_daily_at(f"weekly_learning_{uid}", 17, 0):
-                            run_weekly_learning(user)
+                            try:
+                                run_weekly_learning(user)
+                            except Exception as _e:
+                                log(f"[{user['username']}] weekly_learning failed: {_e} — retrying", "scheduler")
+                                _clear_daily_stamp(f"weekly_learning_{uid}")
+                                raise
 
                     # Feature 6: Friday risk reduction at 3:45 PM ET
                     if weekday == 4 and now_et.hour == 15 and now_et.minute >= 45 and market_open_flag:
                         if should_run_daily_at(f"friday_reduction_{uid}", 15, 45):
-                            run_friday_risk_reduction(user)
+                            try:
+                                run_friday_risk_reduction(user)
+                            except Exception as _e:
+                                log(f"[{user['username']}] friday_reduction failed: {_e} — retrying", "scheduler")
+                                _clear_daily_stamp(f"friday_reduction_{uid}")
+                                raise
 
                     # Feature 19: Monthly rebalance on first trading day at 9:45 AM ET
                     if is_weekday and now_et.hour == 9 and now_et.minute >= 45:
                         if is_first_trading_day_of_month(user):
                             if should_run_daily_at(f"monthly_rebalance_{uid}", 9, 45):
-                                run_monthly_rebalance(user)
+                                try:
+                                    run_monthly_rebalance(user)
+                                except Exception as _e:
+                                    log(f"[{user['username']}] monthly_rebalance failed: {_e} — retrying", "scheduler")
+                                    _clear_daily_stamp(f"monthly_rebalance_{uid}")
+                                    raise
                 except Exception as e:
                     log(f"[{user.get('username','?')}] Per-user scheduler error: {e}", "scheduler")
 
@@ -3005,7 +3046,11 @@ def scheduler_loop():
             # activity, minimizing contention on the volume.
             if now_et.hour == 3 and now_et.minute >= 0:
                 if should_run_daily_at("daily_backup_all", 3, 0):
-                    run_daily_backup()
+                    try:
+                        run_daily_backup()
+                    except Exception as _e:
+                        log(f"daily_backup_all failed: {_e} — retrying next tick", "scheduler")
+                        _clear_daily_stamp("daily_backup_all")
 
             # Capitol Trades refresh DISABLED — no working free data
             # provider as of 2026. The nightly task below is preserved
@@ -3088,9 +3133,49 @@ def start_scheduler():
     log("Scheduler thread started", "scheduler")
 
 def stop_scheduler():
+    """Flip the running flag AND force-flush _last_runs + reap any
+    subprocess children before returning so SIGTERM shutdown is clean.
+    Round-10 audit fix — previously an in-flight _last_runs update
+    could be lost on Railway redeploy (Popen children orphaned, stamp
+    not persisted)."""
     global _scheduler_running
     _scheduler_running = False
+    try:
+        _save_last_runs()
+    except Exception as _e:
+        log(f"stop_scheduler _save_last_runs failed: {_e}", "scheduler")
+    # Reap any tracked subprocess children.
+    try:
+        for p in list(_tracked_children):
+            try:
+                if p.poll() is None:  # still running
+                    p.terminate()
+            except Exception:
+                pass
+    except Exception:
+        pass
     log("Scheduler stop requested", "scheduler")
+
+
+# Round-10: track subprocess.Popen children so SIGTERM can terminate
+# them. subprocess.run() is synchronous so it self-reaps; the long-
+# running Popens (notify.py push sends) are what we care about.
+import threading as _tracked_threading
+_tracked_children = set()
+_tracked_children_lock = _tracked_threading.Lock()
+
+
+def _track_child(popen):
+    try:
+        with _tracked_children_lock:
+            _tracked_children.add(popen)
+        # Prune finished entries periodically (cheap — one O(n) scan).
+        with _tracked_children_lock:
+            for p in list(_tracked_children):
+                if p.poll() is not None:
+                    _tracked_children.discard(p)
+    except Exception:
+        pass
 
 def get_scheduler_status():
     is_alive = _scheduler_running and _scheduler_thread is not None and _scheduler_thread.is_alive()

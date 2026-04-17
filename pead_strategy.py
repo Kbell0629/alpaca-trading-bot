@@ -205,7 +205,12 @@ def _fetch_yfinance(symbols: list[str]) -> list[dict]:
 
             # Days since report (in trading days approx; using calendar
             # days as a proxy is fine for the recency cap)
-            days_since = (today - recent_dt).days
+            # Round-10 audit: count TRADING days, not calendar days.
+            # A Thursday after-close report to Monday is 4 calendar
+            # days but only 1 trading day — previous impl silently
+            # dropped Friday reports on the following Monday and
+            # missed the entire PEAD opportunity window.
+            days_since = _trading_days_between(recent_dt, today)
             if days_since > MAX_DAYS_SINCE_REPORT:
                 continue
 
@@ -244,6 +249,25 @@ def _fetch_yfinance(symbols: list[str]) -> list[dict]:
             continue
 
     return out
+
+
+def _trading_days_between(start: date, end: date) -> int:
+    """Weekday count between two dates. Doesn't account for market
+    holidays, but that's fine for PEAD's 3-day window — a US holiday
+    during a 3-weekday stretch is at most 1 off, still within tolerance
+    of our filter. Order-agnostic — always positive."""
+    if start is None or end is None:
+        return 0
+    if end < start:
+        start, end = end, start
+    days = 0
+    d = start
+    from datetime import timedelta as _td
+    while d < end:
+        d = d + _td(days=1)
+        if d.weekday() < 5:  # Mon=0..Fri=4
+            days += 1
+    return days
 
 
 def _is_nan(v: Any) -> bool:

@@ -879,13 +879,13 @@ def apply_sector_rotation_filter(picks, sector_data):
             strength = s["strength"]
             if strength == "strong":
                 # Boost all scores 15%
-                for key in ["trailing_score", "breakout_score", "mean_reversion_score", "copy_score"]:
+                for key in ["trailing_score", "breakout_score", "mean_reversion_score", "copy_score", "wheel_score", "pead_score"]:
                     if key in pick:
                         pick[key] *= 1.15
                 pick["sector_signal"] = f"Strong sector ({s['name']}, +{s['relative_to_spy']:.1f}% vs SPY)"
             elif strength == "weak":
                 # Reduce scores 20%
-                for key in ["trailing_score", "breakout_score", "mean_reversion_score", "copy_score"]:
+                for key in ["trailing_score", "breakout_score", "mean_reversion_score", "copy_score", "wheel_score", "pead_score"]:
                     if key in pick:
                         pick[key] *= 0.80
                 pick["sector_signal"] = f"Weak sector ({s['name']}, {s['relative_to_spy']:.1f}% vs SPY)"
@@ -936,14 +936,14 @@ def apply_breadth_filter(picks, breadth_data):
     if signal == "weak":
         # Weak breadth = reduce long scores (market is narrow = risky)
         for pick in picks:
-            for key in ["trailing_score", "breakout_score"]:
+            for key in ["trailing_score", "breakout_score", "mean_reversion_score", "wheel_score", "pead_score"]:
                 if key in pick:
                     pick[key] *= 0.85  # 15% reduction
             pick["breadth_warning"] = True
     elif signal == "strong":
         # Strong breadth = broad market strength = boost
         for pick in picks:
-            for key in ["trailing_score", "breakout_score"]:
+            for key in ["trailing_score", "breakout_score", "mean_reversion_score", "wheel_score", "pead_score"]:
                 if key in pick:
                     pick[key] *= 1.10
     return picks
