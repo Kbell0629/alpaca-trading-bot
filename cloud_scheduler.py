@@ -795,11 +795,24 @@ def monitor_strategies(user):
                 if loss_pct > guardrails.get("daily_loss_limit_pct", 0.03):
                     guardrails["kill_switch"] = True
                     guardrails["kill_switch_triggered_at"] = now_et().isoformat()
-                    guardrails["kill_switch_reason"] = f"Daily loss {loss_pct*100:.1f}%"
+                    reason = f"Daily loss {loss_pct*100:.1f}% (auto-trigger at {guardrails.get('daily_loss_limit_pct', 0.03)*100:.1f}% limit)"
+                    guardrails["kill_switch_reason"] = reason
                     save_json(guardrails_path, guardrails)
                     user_api_delete(user, "/orders")
                     user_api_delete(user, "/positions")
-                    notify_user(user, f"KILL SWITCH: Daily loss {loss_pct*100:.1f}% exceeded.", "kill")
+                    try:
+                        import notification_templates as _nt
+                        daily_pnl = current_val - daily_start
+                        _subj, _body = _nt.kill_switch(
+                            reason=reason,
+                            portfolio_value=current_val,
+                            daily_pnl=daily_pnl,
+                        )
+                    except Exception:
+                        _subj = _body = None
+                    notify_rich(user,
+                                f"KILL SWITCH: Daily loss {loss_pct*100:.1f}% exceeded.",
+                                "kill", rich_subject=_subj, rich_body=_body)
                     log(f"[{user['username']}] KILL SWITCH triggered: {loss_pct*100:.1f}% loss", "monitor")
                     return
 
@@ -1317,8 +1330,20 @@ def process_strategy_file(user, filepath, strat):
             state["exit_price"] = exit_price
             state["exit_reason"] = "stop_triggered"
             strat["status"] = "closed"
+            pnl_pct = ((exit_price / entry - 1) * 100) if entry else 0
             log(f"[{user['username']}] {symbol}: STOP TRIGGERED at ${exit_price}, P&L ${pnl:.2f}", "monitor")
-            notify_user(user, f"{symbol} stopped out at ${exit_price:.2f}. P&L: ${pnl:.2f}", "stop")
+            try:
+                import notification_templates as _nt
+                _subj, _body = _nt.stop_loss_triggered(
+                    symbol=symbol, strategy=strategy_type,
+                    entry_price=entry, exit_price=exit_price,
+                    shares=shares, pnl=pnl, pnl_pct=pnl_pct,
+                )
+            except Exception:
+                _subj = _body = None
+            notify_rich(user,
+                        f"{symbol} stopped out at ${exit_price:.2f}. P&L: ${pnl:.2f}",
+                        "stop", rich_subject=_subj, rich_body=_body)
             record_trade_close(user, symbol, strategy_type, exit_price, pnl,
                                 "stop_triggered", qty=shares, side="sell")
             gpath = user_file(user, "guardrails.json")
@@ -2548,7 +2573,30 @@ def _run_wheel_auto_deploy_inner(user):
         success, msg, _ = ws.open_short_put(user, pick)
         if success:
             log(f"[{user['username']}] WHEEL DEPLOYED: {msg}", "wheel")
-            notify_user(user, f"Wheel opened on {pick.get('symbol')}: {msg}", "trade")
+            # Parse the contract OCC symbol + premium out of the msg so
+            # the rich email has structured data. Example msg:
+            #   "Sold-to-open HIMS260508P00027000 @ $2.05 (premium $205.00 if filled). Stage: put active."
+            _subj = _body = None
+            try:
+                import re as _re, notification_templates as _nt
+                occ_match = _re.search(r"Sold-to-open\s+([A-Z]+)(\d{6})P(\d{8})\s+@\s+\$([0-9.]+)",
+                                        msg)
+                if occ_match:
+                    sym = occ_match.group(1)
+                    expiry_raw = occ_match.group(2)  # YYMMDD
+                    strike_raw = int(occ_match.group(3))
+                    premium = float(occ_match.group(4))
+                    strike = strike_raw / 1000.0
+                    expiration = f"20{expiry_raw[0:2]}-{expiry_raw[2:4]}-{expiry_raw[4:6]}"
+                    _subj, _body = _nt.wheel_put_sold(
+                        symbol=sym, strike=strike, premium=premium,
+                        expiration=expiration, contracts=1,
+                    )
+            except Exception as _e:
+                log(f"[{user['username']}] Wheel rich-email build failed: {_e}", "wheel")
+            notify_rich(user,
+                        f"Wheel opened on {pick.get('symbol')}: {msg}",
+                        "trade", rich_subject=_subj, rich_body=_body)
             deployed += 1
         else:
             log(f"[{user['username']}] {pick.get('symbol')}: wheel skipped — {msg}", "wheel")
