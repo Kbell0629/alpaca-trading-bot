@@ -60,7 +60,7 @@ button:disabled { opacity:0.5; cursor:not-allowed; }
     <div class="form-group"><label>Send Notifications To</label><input type="email" id="notification_email" placeholder="leave blank to use your login email"><div class="help-text">Optional override — e.g. a separate inbox just for bot emails.</div></div>
 
     <div class="section-title">Invite Code</div>
-    <div class="form-group"><label>Invite Code</label><input type="text" id="invite_code" placeholder="leave blank if not required" autocomplete="off"><div class="help-text">Required if the deployment has SIGNUP_INVITE_CODE set. Ask the admin for this code.</div></div>
+    <div class="form-group"><input type="text" id="invite_code" placeholder="leave blank if not required" autocomplete="off"><div class="help-text">Required only if the admin set a SIGNUP_INVITE_CODE for this deployment.</div></div>
 
     <button type="submit">Create Account</button>
   </form>
