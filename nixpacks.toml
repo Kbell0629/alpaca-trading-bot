@@ -32,8 +32,11 @@ nixPkgs = ["python312"]
 [phases.install]
 cmds = [
     "python -m venv --copies /opt/venv && . /opt/venv/bin/activate && pip install -r requirements.txt",
-    # Symlink libstdc++ into /usr/lib/ where numpy's dlopen will find
-    # it on the default loader path. Idempotent: || true if symlink
-    # already exists from a prior build cache hit.
-    "ln -sf /usr/lib/x86_64-linux-gnu/libstdc++.so.6 /usr/lib/libstdc++.so.6 || true",
+    # Add /usr/lib/x86_64-linux-gnu to the system loader's search path
+    # so numpy can dlopen libstdc++.so.6, libz.so.1, and any future
+    # transitive C lib it picks up — no per-lib symlinks needed.
+    # ldconfig rebuilds the dynamic linker cache; the multiarch.conf
+    # file persists into the runtime image. Idempotent — re-running
+    # the install phase just rewrites the same one-liner.
+    "echo /usr/lib/x86_64-linux-gnu > /etc/ld.so.conf.d/multiarch.conf && ldconfig",
 ]
