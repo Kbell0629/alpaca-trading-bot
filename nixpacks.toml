@@ -32,11 +32,16 @@ nixPkgs = ["python312"]
 [phases.install]
 cmds = [
     "python -m venv --copies /opt/venv && . /opt/venv/bin/activate && pip install -r requirements.txt",
-    # Add /usr/lib/x86_64-linux-gnu to the system loader's search path
-    # so numpy can dlopen libstdc++.so.6, libz.so.1, and any future
-    # transitive C lib it picks up — no per-lib symlinks needed.
-    # ldconfig rebuilds the dynamic linker cache; the multiarch.conf
-    # file persists into the runtime image. Idempotent — re-running
-    # the install phase just rewrites the same one-liner.
-    "echo /usr/lib/x86_64-linux-gnu > /etc/ld.so.conf.d/multiarch.conf && ldconfig",
+    # Make /usr/lib/x86_64-linux-gnu/*.so* visible to the default
+    # loader. We do this two ways for resilience:
+    #   1. Symlink every .so* file into /usr/lib/ — wildcard glob
+    #      catches libstdc++, libz, and any future transitive C dep
+    #      yfinance/numpy/pandas might pick up.
+    #   2. Also append the dir to /etc/ld.so.conf.d/ + ldconfig.
+    # On the previous deploy, ldconfig alone wasn't enough — the
+    # cache it built at build time apparently doesn't get used at
+    # runtime in this Nixpacks image. Symlinks are guaranteed to
+    # work because they live in the filesystem layer that persists.
+    "echo /usr/lib/x86_64-linux-gnu > /etc/ld.so.conf.d/multiarch.conf && ldconfig || true",
+    "for f in /usr/lib/x86_64-linux-gnu/*.so*; do ln -sf \"$f\" \"/usr/lib/$(basename $f)\" 2>/dev/null || true; done",
 ]
