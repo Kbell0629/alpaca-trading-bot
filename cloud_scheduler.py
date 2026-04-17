@@ -562,6 +562,42 @@ def notify_user(user, message, notify_type="info"):
     except Exception as e:
         log(f"Notification failed: {e}")
 
+
+def notify_rich(user, short_message, notify_type="info",
+                rich_subject=None, rich_body=None):
+    """Send a push notification (short one-liner to ntfy) AND queue a
+    detailed email with teaching-level context (rich_body).
+
+    Short message goes to ntfy via notify.py --push-only so the auto-
+    queued short email is skipped — we queue the rich one directly.
+    If rich_body is None, falls back to standard notify_user() (email
+    content = short message, same as before).
+    """
+    if not rich_body:
+        return notify_user(user, short_message, notify_type)
+    # 1. Push-only via ntfy (skips auto email queue)
+    try:
+        env = os.environ.copy()
+        if user.get("_ntfy_topic"):
+            env["NTFY_TOPIC"] = user["_ntfy_topic"]
+        subprocess.Popen(
+            [sys.executable, os.path.join(BASE_DIR, "notify.py"),
+             "--type", notify_type, "--push-only", short_message],
+            env=env,
+        )
+    except Exception as e:
+        log(f"Push notification failed: {e}")
+    # 2. Direct queue the rich email
+    try:
+        _queue_direct_email(
+            user,
+            subject=rich_subject or f"[Trading Bot] {short_message[:60]}",
+            body=rich_body,
+            notify_type=notify_type,
+        )
+    except Exception as e:
+        log(f"Rich email queue failed: {e}")
+
 def notify_user_global(message, notify_type="info"):
     """Global notification — routed to first user's ntfy topic (or env fallback)."""
     users = get_all_users_for_scheduling()
@@ -1155,8 +1191,21 @@ def process_strategy_file(user, filepath, strat):
                 state["exit_reason"] = "target_hit"
                 state["exit_price"] = price
                 pnl = (price - entry) * shares
+                pnl_pct = ((price / entry - 1) * 100) if entry else 0
                 log(f"[{user['username']}] {symbol}: Target hit. P&L ${pnl:.2f}", "monitor")
-                notify_user(user, f"Profit taken on {symbol}: sold at ${price:.2f} (+{((price/entry-1)*100):.1f}%)", "exit")
+                try:
+                    import notification_templates as _nt
+                    _subj, _body = _nt.profit_target_hit(
+                        symbol=symbol, strategy=strategy_type,
+                        entry_price=entry, exit_price=price,
+                        shares=shares, pnl=pnl, pnl_pct=pnl_pct,
+                        reason="target_hit",
+                    )
+                except Exception:
+                    _subj = _body = None
+                notify_rich(user,
+                            f"Profit taken on {symbol}: sold at ${price:.2f} (+{pnl_pct:.1f}%)",
+                            "exit", rich_subject=_subj, rich_body=_body)
                 record_trade_close(user, symbol, strategy_type, price, pnl,
                                     "target_hit", qty=shares, side="sell")
 
@@ -1565,7 +1614,25 @@ def run_auto_deployer(user):
             save_json(journal_path, journal)
 
             log(f"[{user['username']}] DEPLOYED: {best_strat} on {symbol} x {qty} @ ~${pick.get('price',0):.2f}", "deployer")
-            notify_user(user, f"Deployed {best_strat} on {symbol}: {qty} shares @ ~${pick.get('price',0):.2f}", "trade")
+            # Rich email with strategy explainer + what-happens-next
+            # context, short push for mobile alert.
+            try:
+                import notification_templates as _nt
+                entry_px = float(pick.get("price", 0) or 0)
+                stop_pct = rules.get("stop_loss_pct", 0.05)
+                _subj, _body = _nt.position_opened(
+                    symbol=symbol, strategy=best_strat, shares=qty,
+                    entry_price=entry_px,
+                    stop_price=round(entry_px * (1 - stop_pct), 2) if entry_px else None,
+                    reasoning={"best_score": pick.get("best_score"),
+                               "momentum_20d": pick.get("momentum_20d")},
+                )
+            except Exception as _e:
+                log(f"[{user['username']}] Template build failed: {_e}", "deployer")
+                _subj = _body = None
+            notify_rich(user,
+                        f"Deployed {best_strat} on {symbol}: {qty} shares @ ~${entry_px:.2f}",
+                        "trade", rich_subject=_subj, rich_body=_body)
             deployed += 1
             # Optimistically add this symbol to existing_positions so subsequent
             # correlation checks in this same run account for it. Synthetic
