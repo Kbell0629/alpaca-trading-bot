@@ -30,9 +30,22 @@
 nixPkgs = ["python312"]
 
 [phases.install]
-# Nixpacks default install. The C-lib path issues that yfinance + numpy
-# triggered are solved at process start by start.sh (sets LD_LIBRARY_PATH
-# before exec'ing python), not at install/build phase — earlier attempts
-# to fix it here all failed because the runtime image doesn't keep
-# /usr/lib changes from build, and Nix Python ignores ld.so.cache anyway.
-cmds = ["python -m venv --copies /opt/venv && . /opt/venv/bin/activate && pip install -r requirements.txt"]
+# Nixpacks default install + a NARROW native-libs dir for numpy.
+#
+# Why narrow: an earlier attempt set LD_LIBRARY_PATH to the entire
+# /usr/lib/x86_64-linux-gnu, which made Python's loader pick up the
+# SYSTEM glibc on top of Nix glibc. That triggered:
+#     python3: error while loading shared libraries: __vdso_time:
+#         invalid mode for dlopen(): Invalid argument
+# The whole interpreter died before main, container restart-looped,
+# healthcheck timed out.
+#
+# Solution: put only the libs numpy actually needs (libstdc++ + libz)
+# into a sandbox dir. start.sh points LD_LIBRARY_PATH at JUST that
+# dir, leaving Nix's libc untouched. /opt/venv survives the
+# build→runtime layer copy because Nixpacks treats it as the app
+# venv and preserves it; /usr/lib does not.
+cmds = [
+    "python -m venv --copies /opt/venv && . /opt/venv/bin/activate && pip install -r requirements.txt",
+    "mkdir -p /opt/venv/native-libs && ln -sf /usr/lib/x86_64-linux-gnu/libstdc++.so.6 /opt/venv/native-libs/libstdc++.so.6 && ln -sf /usr/lib/x86_64-linux-gnu/libz.so.1 /opt/venv/native-libs/libz.so.1",
+]

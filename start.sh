@@ -1,14 +1,16 @@
 #!/bin/bash
-# Startup wrapper. Sets LD_LIBRARY_PATH so numpy can find libstdc++ /
-# libz that live at /usr/lib/x86_64-linux-gnu/ (Nix Python is hermetic
-# and ignores /etc/ld.so.cache).
+# Startup wrapper. Points LD_LIBRARY_PATH at a NARROW dir containing
+# only the libs numpy actually needs (libstdc++.so.6, libz.so.1)
+# symlinked into /opt/venv/native-libs at build time.
 #
-# We redirect stderr → stdout so any startup crash (e.g. another C
-# extension breaking because it was linked against Nix glibc but now
-# picks up system libs) shows up in Railway's deploy logs instead of
-# disappearing into the void.
+# Crucially we do NOT add /usr/lib/x86_64-linux-gnu in full — that
+# pulled in the system glibc on top of Nix glibc and killed the
+# Python interpreter at startup with:
+#     python3: error while loading shared libraries: __vdso_time:
+#         invalid mode for dlopen(): Invalid argument
+# A scoped dir keeps numpy happy without polluting libc resolution.
 exec 2>&1
-echo "[start.sh] launching with LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/usr/lib"
-export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:/usr/lib:${LD_LIBRARY_PATH:-}"
+echo "[start.sh] LD_LIBRARY_PATH=/opt/venv/native-libs"
+export LD_LIBRARY_PATH="/opt/venv/native-libs:${LD_LIBRARY_PATH:-}"
 echo "[start.sh] exec python3 -u server.py"
 exec python3 -u server.py
