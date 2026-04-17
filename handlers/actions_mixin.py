@@ -174,8 +174,20 @@ class ActionsHandlerMixin:
         """Activate or deactivate the kill switch FOR THE CURRENT USER ONLY.
         Each user has their own guardrails.json and auto_deployer_config.json —
         one user's kill switch must not halt another user's trading.
+        Round-11: audit-log every kill-switch toggle so forensic review
+        can attribute a halt to a specific user/session/IP.
         """
         activate = body.get("activate", False)
+        try:
+            ip = self.client_address[0] if self.client_address else None
+            server.auth.log_admin_action(
+                "kill_switch_activate" if activate else "kill_switch_deactivate",
+                actor=self.current_user,
+                target_user_id=self.current_user.get("id") if self.current_user else None,
+                ip_address=ip,
+            )
+        except Exception as _e:
+            print(f"[audit] kill_switch log failed: {_e}", flush=True)
         timestamp = now_et().strftime("%Y-%m-%d %I:%M:%S %p ET")
         guardrails_path = self._user_file("guardrails.json")
         guardrails = server.load_json(guardrails_path) or {}
@@ -297,6 +309,18 @@ class ActionsHandlerMixin:
         """
         if not self.current_user:
             return self.send_json({"error": "Not authenticated"}, 401)
+        # Round-11: audit the force-deploy so we have a record if it
+        # was triggered off-hours or outside the normal 9:35 window.
+        try:
+            ip = self.client_address[0] if self.client_address else None
+            server.auth.log_admin_action(
+                "force_auto_deploy",
+                actor=self.current_user,
+                target_user_id=self.current_user.get("id"),
+                ip_address=ip,
+            )
+        except Exception:
+            pass
         try:
             import cloud_scheduler as cs
             # Build the user dict in the format cloud_scheduler expects

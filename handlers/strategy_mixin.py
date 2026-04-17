@@ -73,6 +73,19 @@ class StrategyHandlerMixin:
         except Exception as e:
             print(f"[deploy] guardrails pre-check failed: {e}", flush=True)
 
+        # Round-11: audit-log every manual deploy so we can trace
+        # "when did I enter this position" in the admin audit log.
+        try:
+            ip = self.client_address[0] if self.client_address else None
+            server.auth.log_admin_action(
+                f"deploy_{strategy}",
+                actor=self.current_user,
+                target_user_id=self.current_user.get("id") if self.current_user else None,
+                ip_address=ip,
+            )
+        except Exception:
+            pass
+
         if strategy == "trailing_stop":
             self.deploy_trailing_stop(symbol, qty)
         elif strategy == "wheel":

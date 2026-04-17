@@ -80,11 +80,11 @@ class AuthHandlerMixin:
                 csrf_cookie = c[5:]
                 break
         csrf_header = self.headers.get("X-CSRF-Token", "")
-        if not csrf_cookie:
-            # Transitional: pre-CSRF session. Accept this request but rotate
-            # the cookie so the next POST requires matching.
-            return True
-        if not csrf_header:
+        # Round-11 audit: transitional fail-open for missing cookie has
+        # expired (the rollout is weeks old, every active session has
+        # the cookie now). Fail-closed — missing cookie forces client
+        # to re-fetch via GET /api/me which sets a fresh cookie.
+        if not csrf_cookie or not csrf_header:
             return False
         return hmac.compare_digest(csrf_cookie, csrf_header)
     def handle_login(self, body):
@@ -112,6 +112,19 @@ class AuthHandlerMixin:
 
         server._login_attempt_record(ip, username, success=True)
         auth.log_admin_action("login_success", actor=user, target_user_id=user["id"], ip_address=ip)
+        # Round-11: defense against session fixation. Invalidate any
+        # pre-existing session for this user BEFORE minting a new one
+        # so a session cookie planted on the victim before login
+        # doesn't inherit post-login privileges. SameSite=Strict +
+        # Secure already blocks most attack paths; this is defense
+        # in depth.
+        try:
+            _conn = auth._get_db()
+            _conn.execute("DELETE FROM sessions WHERE user_id = ?", (user["id"],))
+            _conn.commit()
+            _conn.close()
+        except Exception as _e:
+            print(f"[auth] pre-login session invalidate failed: {_e}", flush=True)
         token = auth.create_session(user["id"], ip)
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -230,10 +243,34 @@ class AuthHandlerMixin:
         email = (body.get("email") or "").strip().lower()
         if not email:
             return self.send_json({"error": "Email required"}, 400)
+        # Round-11 audit: rate limit. Without this a trivial
+        # denial-of-reset: the attacker POSTs /api/forgot every second
+        # for a victim's email and create_password_reset invalidates
+        # any pending token each call, so the legitimate user can
+        # never complete a reset. Also fills email_queue.json past
+        # its 50-entry cap and evicts real trade notifications.
+        ip = self.client_address[0] if self.client_address else None
+        try:
+            # Reuse login_attempts bucket with a "forgot:" prefix so we
+            # don't need a new table; is_login_locked enforces 5 per
+            # 15-min already.
+            if server.auth.is_login_locked(ip, f"forgot:{email}"):
+                # Do NOT reveal lockout to attacker — same generic OK.
+                return self.send_json({"success": True,
+                                        "message": "If that email exists, a reset link has been sent."})
+            server.auth.record_login_attempt(ip, f"forgot:{email}", success=False)
+        except Exception:
+            pass  # rate-limit best-effort; don't block resets on DB hiccup
         token, user = auth.create_password_reset(email)
         # Do not reveal whether the email exists (security)
         generic_ok = {"success": True, "message": "If that email exists, a reset link has been sent."}
         if not token:
+            # Round-11: uniform delay so the existence check isn't
+            # wall-clock-leaking via timing (existing-email path runs
+            # subprocess.Popen + fcntl.flock write which is ~30-50ms
+            # longer than the not-found path's single SELECT).
+            import time as _time_f
+            _time_f.sleep(0.08)
             return self.send_json(generic_ok)
 
         # Build reset URL — prefer configured base, fall back to request Host.

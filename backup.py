@@ -138,16 +138,32 @@ def _create_backup_inner():
                 with dst_conn:
                     src_conn.backup(dst_conn)
                 src_conn.close()
-                # Strip Alpaca credential columns in the BACKUP copy only.
-                # Live DB keeps them — scheduler still needs to decrypt to trade.
+                # Strip SENSITIVE columns in the BACKUP copy only.
+                # Live DB keeps them — scheduler still needs them to trade.
+                # Round-11 audit: prior impl only NULLed Alpaca creds. Also
+                # strips password_hash (offline cracking), ntfy_topic
+                # (subscribe + spoof alerts), notification_email (phishing
+                # target harvest), and the password_salt column. VACUUM
+                # after so SQLite free-pages don't still contain the old
+                # encrypted bytes (plain UPDATE doesn't overwrite in place).
                 try:
                     cur = dst_conn.cursor()
                     cur.execute("UPDATE users SET "
                                 "alpaca_key_encrypted = NULL, "
-                                "alpaca_secret_encrypted = NULL")
+                                "alpaca_secret_encrypted = NULL, "
+                                "password_hash = NULL, "
+                                "password_salt = NULL, "
+                                "ntfy_topic = NULL, "
+                                "notification_email = NULL")
                     dst_conn.commit()
-                except Exception:
-                    pass
+                    # Rewrite the file so freed pages don't still carry
+                    # the old ciphertext / hash bytes.
+                    try:
+                        dst_conn.execute("VACUUM")
+                    except Exception as _ve:
+                        print(f"[backup] VACUUM skipped: {_ve}", flush=True)
+                except Exception as _se:
+                    print(f"[backup] scrub failed: {_se}", flush=True)
                 dst_conn.close()
 
             # Copy remaining files
