@@ -1202,6 +1202,37 @@ class DashboardHandler(
                         "weekday": datetime.strptime(date, "%Y-%m-%d").strftime("%A") if date else "",
                     }
 
+            # Override TODAY's entry with live Alpaca /account data so the
+            # heatmap's Total P&L matches the Overview's Daily P&L. Without
+            # this, the snapshot is whatever portfolio_value was when
+            # update_scorecard last ran (manual daily close, actual 4:05 PM
+            # close, etc.), which can drift hours behind the live value
+            # as after-hours feeds revise close prices. Past days stay
+            # locked to their snapshots — only the current day recomputes.
+            try:
+                today_str = now_et().strftime("%Y-%m-%d")
+                live_acct = self.user_api_get(f"{self.user_api_endpoint}/account")
+                if isinstance(live_acct, dict) and "error" not in live_acct:
+                    pv = float(live_acct.get("portfolio_value") or 0)
+                    le = float(live_acct.get("last_equity") or pv)
+                    live_pnl = pv - le
+                    live_pnl_pct = (live_pnl / le * 100) if le else 0
+                    existing = daily_pnl.get(today_str, {})
+                    daily_pnl[today_str] = {
+                        "date": today_str,
+                        "pnl": round(live_pnl, 2),
+                        "pnl_pct": round(live_pnl_pct, 2),
+                        "trades": existing.get("trades", 0),
+                        "wins": existing.get("wins", 0),
+                        "losses": existing.get("losses", 0),
+                        "weekday": datetime.strptime(today_str, "%Y-%m-%d").strftime("%A"),
+                        "live": True,  # flag for UI so it can mark "as of now"
+                    }
+            except Exception as _e:
+                # Live overlay is a nice-to-have — fall back to snapshot
+                # if the Alpaca call fails.
+                print(f"[heatmap] live-today overlay failed: {_e}", flush=True)
+
             # Analyze patterns
             by_weekday = {}
             for d in daily_pnl.values():
