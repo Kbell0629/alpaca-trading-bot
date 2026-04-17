@@ -316,6 +316,35 @@ def pick_best_entry_strategy(scores):
     return max(ENTRY_STRATEGIES, key=lambda s: float(scores.get(s, 0) or 0))
 
 
+def _trading_day_fraction_elapsed():
+    """What fraction of the US cash session has passed at the moment
+    score_stocks runs? Returns a value in (0, 1] — 0.05 at 9:50 AM,
+    0.5 at 12:45 PM, 1.0 at/after 4 PM. Weekends/after-hours return 1.0
+    so pre-market runs use full yesterday volume without scaling.
+
+    Used to rescale volume_surge so comparing 20 minutes of today's
+    volume against a full day of yesterday's doesn't report -95% for
+    every stock. Round-10 audit fix.
+    """
+    try:
+        from et_time import get_et_time
+        now = get_et_time()
+    except Exception:
+        from datetime import datetime
+        now = datetime.now()  # best-effort fallback
+    # If weekday and during 9:30-16:00 ET, compute elapsed fraction.
+    if now.weekday() >= 5:
+        return 1.0
+    open_mins = 9 * 60 + 30
+    close_mins = 16 * 60
+    now_mins = now.hour * 60 + now.minute
+    if now_mins < open_mins or now_mins >= close_mins:
+        return 1.0  # pre-/post-market: no scaling needed
+    total = close_mins - open_mins  # 390 minutes
+    elapsed = now_mins - open_mins
+    return max(0.01, min(1.0, elapsed / total))
+
+
 def score_stocks(snapshots):
     """Score each stock across all 3 strategies using snapshot data (initial fast pass)."""
     results = []
@@ -339,15 +368,31 @@ def score_stocks(snapshots):
                 continue
 
             # Filter: penny stocks and illiquid
+            # Round-10 audit: liquidity filter was comparing INTRADAY
+            # partial volume (e.g. first 25 min of the day) to a fixed
+            # 300k cutoff, which only ~6 stocks cleared — causing the
+            # 9:35 AM screener to report "6 passed filters" out of
+            # 10,878. Use prev_volume (yesterday's full-day close
+            # volume) as the liquidity proxy instead — that reflects
+            # how tradable a stock actually is and doesn't warp with
+            # time-of-day.
             if price < MIN_PRICE:
                 continue
-            if daily_volume < MIN_VOLUME:
+            liquidity_volume = prev_volume or daily_volume  # fall back if no prev
+            if liquidity_volume < MIN_VOLUME:
                 continue
 
-            # Calculate metrics
+            # Calculate metrics. Intraday volume_surge comparing partial
+            # today vs full yesterday gives -80% to -95% for ~every
+            # stock in the first hour of trading, making the 50%+
+            # breakout confirmation threshold unreachable. Scale the
+            # prev_volume divisor by the fraction of the trading day
+            # elapsed so the ratio is apples-to-apples.
             daily_change = (daily_close / prev_close - 1) * 100 if prev_close else 0
             volatility = (daily_high - daily_low) / daily_low * 100 if daily_low else 0
-            volume_surge = (daily_volume / prev_volume - 1) * 100 if prev_volume else 0
+            day_fraction = _trading_day_fraction_elapsed()
+            adjusted_prev_volume = prev_volume * max(day_fraction, 0.05) if prev_volume else 0
+            volume_surge = (daily_volume / adjusted_prev_volume - 1) * 100 if adjusted_prev_volume else 0
 
             # Data-quality filter: reject obvious stale/split-adjusted/bad-data snapshots.
             # A legit single-session move is almost never >100%; >300% is corrupt data.
