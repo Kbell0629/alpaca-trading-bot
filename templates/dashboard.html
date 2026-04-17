@@ -1789,7 +1789,7 @@ const STRATEGY_INFO = {
     mean_reversion: {
         name: 'Mean Reversion',
         desc: 'Buys oversold dips, sells at recovery. Best for: stocks that dropped too far.',
-        details: 'Buys the dip | Sells at 20-day average | 10% stop-loss',
+        details: 'Buys the dip | Sells at +15% gain | 10% stop-loss',
         stopPct: 0.10, profitPct: 0.15
     },
     breakout: {
@@ -1982,7 +1982,13 @@ function updateDeployDetails() {
     document.getElementById('deployConfirmBtn').textContent = 'Confirm Buy';
 }
 
+let _deployInFlight = false;  // round-11: double-submit guard
 async function executeDeploy() {
+    if (_deployInFlight) {
+        toast('Deploy already in flight — wait for it to finish', 'info');
+        return;
+    }
+    _deployInFlight = true;
     const symbol = document.getElementById('deploySymbol').value;
     const strategy = document.getElementById('deployStrategy').value;
     const qty = parseInt(document.getElementById('deployQty').value) || 1;
@@ -2008,6 +2014,8 @@ async function executeDeploy() {
     } catch(e) {
         toast('Deploy error: ' + e.message, 'error');
         addLog('Deploy error: ' + e.message, 'error');
+    } finally {
+        _deployInFlight = false;
     }
 }
 
@@ -2777,7 +2785,7 @@ function buildStrategyTemplates(d) {
             maxPositions: 3,
             maxPerStock: '5%',
             maxNewPerDay: 1,
-            strategies: ['Trailing Stop', 'Wheel', 'Copy Trading'],
+            strategies: ['Wheel (premium income)', 'Trailing-stop exits on every entry'],
             excluded: ['Breakout', 'Mean Reversion', 'Short Selling'],
             detail: 'Tight 5% stops to cut losses fast. Fewer positions (max 3) means less overall market exposure. Smaller 5% position sizing per stock. Only runs proven, slower strategies — no aggressive breakout chasing or short selling.',
             goodFor: 'First-time traders, small accounts under $5k, during high market uncertainty, or when you want to sleep well at night.',
@@ -2793,7 +2801,7 @@ function buildStrategyTemplates(d) {
             maxPositions: 5,
             maxPerStock: '10%',
             maxNewPerDay: 2,
-            strategies: ['All 5 Strategies', '(shorts only in bear)'],
+            strategies: ['Breakout + Mean Reversion + Wheel + PEAD', '(shorts only in bear markets)'],
             excluded: ['Short Selling auto-deploy in bull'],
             detail: 'Standard 10% stop-loss. Up to 5 concurrent positions with dynamic volatility-based sizing. All strategies enabled, but shorts only activate in bear markets. This is the default "set and forget" mode for most traders.',
             goodFor: 'The default recommendation. Accounts $5k-$50k. Users who want the bot to work across all market conditions without babysitting.',
@@ -2809,7 +2817,7 @@ function buildStrategyTemplates(d) {
             maxPositions: 8,
             maxPerStock: '15%',
             maxNewPerDay: 3,
-            strategies: ['All 6', 'Shorts enabled anytime'],
+            strategies: ['Breakout + Mean Reversion + Wheel + PEAD + Short Selling', 'Shorts enabled anytime'],
             excluded: [],
             detail: 'Tight 5% stops (fail fast), but larger 15% positions and up to 8 concurrent trades. Extended hours trading enabled. Short selling runs in any market regime, not just bear. Breakouts prioritized. Pre-market and after-hours sessions used when appropriate.',
             goodFor: 'Experienced traders. Accounts $25k+ (pattern day trader rules). Active day traders who want maximum signal deployment.',
@@ -3134,9 +3142,11 @@ function renderDashboard() {
         const est = sig.eps_estimate;
         const next_e = sig.next_earnings_date || '';
         const ageS = (typeof days === 'number') ? (days + 'd ago') : 'recent';
+        // Round-11: drop the word "beat" in the fallback to avoid
+        // rendering "EPS beat beat" when surprise_pct is missing.
         const surprisePart = (typeof surprise === 'number')
             ? ('+' + surprise.toFixed(1) + '%')
-            : 'beat';
+            : '(surprise pending)';
         // Guard against null/undefined EPS values — "actual $undefined
         // vs est $undefined" shows up when yfinance returns a partial
         // row. Fall back to em-dash, matching the fmtMoney pattern
@@ -3218,7 +3228,17 @@ function renderDashboard() {
             '<div class="pick-actions">' +
             '<button class="pick-deploy-btn" onclick="openDeployModal(\'' + jsStr(p.symbol) + '\',\'' + jsStr(p.best_strategy) + '\',' + Number(recShares||0) + ',' + Number(p.price||0) + ')">Deploy ' + esc(p.best_strategy) + ' — ' + recShares + ' sh @ ' + fmtMoney((Number(recShares)||0)*(Number(p.price)||0)) + '</button></div></div>';
     });
-    if (!picksHtml) picksHtml = '<div class="empty" style="grid-column:1/-1">No picks available - market may be closed</div>';
+    if (!picksHtml) {
+        // Round-11: distinguish "market closed" from "screener returned
+        // nothing above threshold" so users don't see "market may be
+        // closed" during active trading hours.
+        const ts = (d.trading_session || '').toLowerCase();
+        const inMarket = ts === 'regular' || ts === 'pre_market' || ts === 'after_hours';
+        const emptyMsg = inMarket
+            ? 'Screener returned 0 passable candidates — filters may be too tight or breadth is very weak today.'
+            : 'Market closed — picks will refresh at 9:35 AM ET on the next trading day.';
+        picksHtml = '<div class="empty" style="grid-column:1/-1">' + emptyMsg + '</div>';
+    }
 
     // Positions table
     const positions = d.positions || [];
@@ -3548,7 +3568,7 @@ function renderDashboard() {
         '<div class="strategies">' +
             '<div class="strategy-card trailing">' +
                 '<h2>1. Trailing Stop <span style="font-size:11px;font-weight:500;color:var(--text-dim);text-transform:none;letter-spacing:0">— universal exit policy</span></h2>' +
-                '<div class="subtitle">' + tsSymbol + ' - Auto-attached to every Breakout / Mean Reversion entry</div>' +
+                '<div class="subtitle">' + tsSymbol + ' - Auto-attached to every Breakout / PEAD entry (Mean Reversion uses a fixed +15% target instead)</div>' +
                 '<div class="stat-grid">' +
                     '<div class="stat"><div class="stat-label">Entry Price</div><div class="stat-value">' + (tsEntry ? '$'+tsEntry : 'Pending') + '</div></div>' +
                     '<div class="stat"><div class="stat-label">Shares Held</div><div class="stat-value">' + tsShares + '</div></div>' +
@@ -3589,7 +3609,7 @@ function renderDashboard() {
                 '<div class="stat-grid">' +
                     '<div class="stat"><div class="stat-label">How It Works</div><div class="stat-value" style="font-size:12px">Buys stocks that dropped 15%+ on no real news</div></div>' +
                     '<div class="stat"><div class="stat-label">Status</div><div class="stat-value"><span class="badge-active">READY</span></div></div>' +
-                    '<div class="stat"><div class="stat-label">Target</div><div class="stat-value" style="font-size:12px">Sells at 20-day average</div></div>' +
+                    '<div class="stat"><div class="stat-label">Target</div><div class="stat-value" style="font-size:12px">Sells at +15% gain from entry</div></div>' +
                     '<div class="stat"><div class="stat-label">Stop-Loss</div><div class="stat-value">10%</div></div>' +
                 '</div>' +
                 '<div class="strategy-visual"><strong>Rules:</strong> Buy oversold stocks | Target 20-day mean | 10% stop-loss | Skip if bad news caused drop</div>' +

@@ -1786,7 +1786,15 @@ def run_auto_deployer(user):
         # scheduler path. Copy Trading is currently disabled — no
         # free data provider — see update_dashboard.COPY_TRADING_ENABLED.
         accepted_entries = ("breakout", "mean_reversion", "pead")
-        if best_strat in accepted_entries and news_map.get(symbol) == "bearish":
+        # Round-11: PEAD picks REQUIRE a recent earnings event. News
+        # around earnings often scores bearish on single-word matches
+        # ("missed guidance" / "miss" / "lowered") even when the stock
+        # gapped UP on the beat. Skipping PEAD on bearish news negates
+        # the strategy. The earnings_warning filter already has the
+        # same PEAD carve-out; extend that here too.
+        if (best_strat in accepted_entries
+                and best_strat != "pead"
+                and news_map.get(symbol) == "bearish"):
             log(f"[{user['username']}] {symbol}: Skipped (bearish news signal) — trying next pick", "deployer")
             skip_reasons.append(f"{symbol}: bearish news signal")
             continue

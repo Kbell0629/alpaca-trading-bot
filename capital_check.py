@@ -44,6 +44,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("DATA_DIR", BASE_DIR)
 os.makedirs(DATA_DIR, exist_ok=True)
 API_ENDPOINT = os.environ.get("ALPACA_ENDPOINT", "https://paper-api.alpaca.markets/v2")
+# Market data endpoint (separate from trading endpoint) for quotes/trades.
+DATA_ENDPOINT = os.environ.get("ALPACA_DATA_ENDPOINT", "https://data.alpaca.markets/v2")
 API_KEY = os.environ.get("ALPACA_API_KEY", "")
 API_SECRET = os.environ.get("ALPACA_API_SECRET", "")
 HEADERS = {"APCA-API-KEY-ID": API_KEY, "APCA-API-SECRET-KEY": API_SECRET}
@@ -88,15 +90,29 @@ def check_capital():
     total_position_value = sum(float(p.get("market_value", 0)) for p in positions)
     num_positions = len(positions)
 
-    # Calculate capital reserved by open orders (including market orders)
+    # Calculate capital reserved by open orders (including market orders).
+    # Round-11: for market orders without notional, fall back to
+    # Alpaca's last-trade price for the symbol (cheap GET) rather
+    # than qty * 100 (which over-reserved by 9x for stocks like NVDA).
     reserved_by_orders = 0
     for o in orders:
         if o.get("side") == "buy":
             price = float(o.get("limit_price") or o.get("stop_price") or 0)
             qty = float(o.get("qty", 0))
-            if price == 0:  # market order - estimate using notional or rough estimate
+            if price == 0:
                 notional = float(o.get("notional") or 0)
-                reserved_by_orders += notional if notional else qty * 100  # rough estimate
+                if notional:
+                    reserved_by_orders += notional
+                else:
+                    sym = o.get("symbol", "")
+                    last = 0.0
+                    if sym:
+                        trade = api_get_with_retry(f"{DATA_ENDPOINT}/stocks/{sym}/trades/latest?feed=iex")
+                        try:
+                            last = float((trade or {}).get("trade", {}).get("p") or 0)
+                        except Exception:
+                            last = 0.0
+                    reserved_by_orders += (last or 100) * qty
             else:
                 reserved_by_orders += price * qty
 

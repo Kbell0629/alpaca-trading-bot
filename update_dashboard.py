@@ -708,6 +708,16 @@ def fetch_market_regime():
     # Prior regime read from a small cache file so hysteresis survives
     # restarts; absence → assume neutral.
     _regime_cache = os.path.join(DATA_DIR, "market_regime.json")
+    # Round-11: hold an fcntl lock across the read + write so two
+    # concurrent update_dashboard runs (scheduler tick + handler
+    # Refresh) don't race and lose a regime-transition decision.
+    import fcntl as _fcntl_r
+    _lock_fd = None
+    try:
+        _lock_fd = open(_regime_cache + ".lock", "w")
+        _fcntl_r.flock(_lock_fd, _fcntl_r.LOCK_EX)
+    except Exception:
+        _lock_fd = None
     try:
         _prior = (load_json(_regime_cache) or {}).get("market_regime", "neutral")
     except Exception:
@@ -729,6 +739,13 @@ def fetch_market_regime():
                                         "updated_at": now_et().isoformat()})
     except Exception:
         pass
+    finally:
+        if _lock_fd:
+            try:
+                _fcntl_r.flock(_lock_fd, _fcntl_r.LOCK_UN)
+                _lock_fd.close()
+            except Exception:
+                pass
 
     print(f"  SPY 20d momentum: {spy_mom:+.1f}% -- Market regime: {regime} (prior: {_prior})")
     return {"spy_momentum_20d": round(spy_mom, 2), "market_regime": regime}

@@ -195,7 +195,24 @@ def _entry_what_next(strategy: str) -> str:
     if strategy == "pead":
         return common + pead_extra
     if strategy == "mean_reversion":
-        return common + mr_extra
+        # Round-11 audit: mean_reversion has NO trailing stop — it
+        # has a hard 10% stop and a fixed +15% target. The generic
+        # `common` block talks about "trailing stop follows it up"
+        # which is false for MR. Return a MR-specific explainer.
+        return (
+            "Three things can happen from here:\n\n"
+            "  1. The stock bounces back to the 20-day average. At a\n"
+            "     +15% gain from entry, the bot sells at market and\n"
+            "     books the win. Mean Reversion's edge is speed —\n"
+            "     typical hold is 3-7 days.\n\n"
+            "  2. The stock keeps falling. At a 10% loss from entry,\n"
+            "     the hard stop triggers and the position closes.\n"
+            "     Mean Reversion has no trailing stop — you either\n"
+            "     get the bounce or you eat the defined loss.\n\n"
+            "  3. The stock chops sideways. The bot holds and the\n"
+            "     monitor keeps checking every 60s. No time-based\n"
+            "     exit — MR waits for either the target or the stop.\n"
+        )
     return common
 
 
