@@ -185,8 +185,12 @@ def check_stop_conditions(strategies, prices):
                 }
             )
 
-        # TRAILING STOP: Check if we need to raise the floor
-        elif strat.get("strategy") in ("trailing_stop", "breakout"):
+        # TRAILING STOP exit: applied to every non-wheel entry strategy.
+        # The shape of the state dict (highest_price_seen, stop_order_id,
+        # trailing_activated) is the same regardless of which entry
+        # strategy opened the position — the exit logic is unified
+        # (round-10 architecture).
+        elif strat.get("strategy") in ("trailing_stop", "breakout", "copy_trading"):
             highest = state.get("highest_price_seen", 0)
             trailing_active = state.get("trailing_activated", False)
             trail_pct = strat.get("rules", {}).get("trailing_distance_pct", 0.05)

@@ -276,6 +276,26 @@ def fetch_all_snapshots(symbols):
     return all_snapshots
 
 
+# ---------------------------------------------------------------------------
+# Strategy competition
+# ---------------------------------------------------------------------------
+# Only these strategies compete for best_strategy. Trailing Stop is an EXIT
+# policy applied by the auto-deployer and the live monitor — never an entry.
+# This keeps the screener competition honest after the round-10
+# architecture change ("Option C"): if Trailing Stop ever reappears in a
+# scores dict (e.g. regime rotation sets it), it still can't win because
+# we pick the max from ENTRY_STRATEGIES only.
+ENTRY_STRATEGIES = ("Breakout", "Mean Reversion", "Copy Trading", "Wheel Strategy")
+
+
+def pick_best_entry_strategy(scores):
+    """Return the strategy name with the highest score, restricted to
+    entry strategies. Trailing Stop is silently ignored."""
+    if not scores:
+        return "Breakout"  # arbitrary safe default
+    return max(ENTRY_STRATEGIES, key=lambda s: float(scores.get(s, 0) or 0))
+
+
 def score_stocks(snapshots):
     """Score each stock across all 3 strategies using snapshot data (initial fast pass)."""
     results = []
@@ -316,15 +336,32 @@ def score_stocks(snapshots):
                 continue
 
             # --- Strategy Scores ---
-            # Trailing Stop Score
+            # Architecture note (round 10, "Option C"):
+            # Trailing Stop is an EXIT policy attached to Breakout /
+            # Copy Trading / error-recovered positions — it is no longer
+            # an entry strategy competing in the screener. We still
+            # surface a trailing_score on the pick for backward compat
+            # and analytics, but it's forced to 0 in the `scores` dict
+            # below so it can never win best_strategy.
             trailing_score = daily_change * 0.5 + volatility * 0.3
             if volume_surge > 50:
                 trailing_score += 5
 
-            # Copy Trading Score
-            copy_score = daily_change * 0.3
-            if price > 100 and daily_volume > 1_000_000:
-                copy_score += 15
+            # Copy Trading Score — driven by real politician disclosures.
+            # Previously this used a fake formula ("big-cap + modest move
+            # = copy_trading"), which had nothing to do with copy trading
+            # and only misled the auto-deployer. Now we score strictly
+            # off cached congressional disclosures: score > 0 only if
+            # a politician has actually filed a recent BUY on this
+            # symbol. See capitol_trades.py.
+            copy_score = 0
+            copy_signals = []
+            try:
+                import capitol_trades
+                copy_score, copy_signals = capitol_trades.score_symbol(symbol)
+            except Exception as _e:
+                # Never let a signal-fetch failure break the screener.
+                pass
 
             # Wheel Strategy Score (bell curve: moderate volatility scores highest)
             if volatility <= 5:
@@ -380,16 +417,19 @@ def score_stocks(snapshots):
                 breakout_score *= 0.5
                 breakout_note = (breakout_note or "standard_breakout") + "_highvol_capped"
 
-            # Best strategy
-            scores = {
-                "Trailing Stop": trailing_score,
+            # Best strategy — Trailing Stop is deliberately excluded
+            # from the competition (it's an exit policy, see above).
+            # The full `scores` dict still includes Trailing Stop as a
+            # dimmed reference value for the UI + learning engine.
+            entry_scores = {
                 "Copy Trading": copy_score,
                 "Wheel Strategy": wheel_score,
                 "Mean Reversion": mean_reversion_score,
                 "Breakout": breakout_score,
             }
-            best_strategy = max(scores, key=scores.get)
-            best_score = scores[best_strategy]
+            scores = {"Trailing Stop": 0, **entry_scores}
+            best_strategy = max(entry_scores, key=entry_scores.get)
+            best_score = entry_scores[best_strategy]
 
             # Sector (Improvement 3)
             sector = SECTOR_MAP.get(symbol, "Other")
@@ -406,6 +446,7 @@ def score_stocks(snapshots):
                 "scores": scores,
                 "trailing_score": trailing_score,
                 "copy_score": copy_score,
+                "copy_signals": copy_signals,  # politician list for UI tooltip
                 "wheel_score": wheel_score,
                 "mean_reversion_score": mean_reversion_score,
                 "breakout_score": breakout_score,
@@ -555,7 +596,7 @@ def enrich_with_momentum(pick, bars):
         "Mean Reversion": pick["mean_reversion_score"],
         "Breakout": pick["breakout_score"],
     }
-    pick["best_strategy"] = max(pick["scores"], key=pick["scores"].get)
+    pick["best_strategy"] = pick_best_entry_strategy(pick["scores"])
     pick["best_score"] = pick["scores"][pick["best_strategy"]]
 
 
@@ -599,7 +640,7 @@ def apply_market_regime(picks, regime):
             p["breakout_score"] += 3
             p["scores"]["Trailing Stop"] = p["trailing_score"]
             p["scores"]["Breakout"] = p["breakout_score"]
-            p["best_strategy"] = max(p["scores"], key=p["scores"].get)
+            p["best_strategy"] = pick_best_entry_strategy(p["scores"])
             p["best_score"] = p["scores"][p["best_strategy"]]
     elif regime == "bear":
         print("  Bear market regime: adjusting scores (-5 trailing, +3 wheel)")
@@ -608,7 +649,7 @@ def apply_market_regime(picks, regime):
             p["wheel_score"] += 3
             p["scores"]["Trailing Stop"] = p["trailing_score"]
             p["scores"]["Wheel Strategy"] = p["wheel_score"]
-            p["best_strategy"] = max(p["scores"], key=p["scores"].get)
+            p["best_strategy"] = pick_best_entry_strategy(p["scores"])
             p["best_score"] = p["scores"][p["best_strategy"]]
 
 
@@ -617,22 +658,25 @@ def apply_market_regime(picks, regime):
 # ---------------------------------------------------------------------------
 
 def apply_strategy_rotation(picks, market_regime, vix_estimate=None):
-    """Dynamically weight strategies based on market conditions.
-    Bull market: boost trailing_stop and breakout. Reduce mean_reversion.
-    Bear market: boost short_sell and mean_reversion. Reduce breakout.
+    """Dynamically weight ENTRY strategies based on market conditions.
+    Bull: boost breakout. Reduce mean_reversion.
+    Bear: boost mean_reversion and short_sell. Reduce breakout.
     Neutral/choppy: boost wheel (premium income).
+
+    Trailing Stop is NOT weighted here — it's an exit policy, not an
+    entry strategy (round-10 architecture change). Keeping
+    `trailing_score` as a dimmed reference on each pick, but its value
+    never influences `best_strategy`.
     """
     regime_weights = {
         'bull': {
-            'trailing_stop': 1.3,
             'breakout': 1.4,
             'mean_reversion': 0.6,
-            'copy_trading': 1.0,
+            'copy_trading': 1.1,
             'wheel': 0.8,
             'short_sell': 0.3,  # Almost never short in bull
         },
         'neutral': {
-            'trailing_stop': 1.0,
             'breakout': 1.0,
             'mean_reversion': 1.0,
             'copy_trading': 1.0,
@@ -640,7 +684,6 @@ def apply_strategy_rotation(picks, market_regime, vix_estimate=None):
             'short_sell': 0.7,
         },
         'bear': {
-            'trailing_stop': 0.7,  # Whipsaws
             'breakout': 0.5,  # False breakouts
             'mean_reversion': 1.2,  # Oversold bounces
             'copy_trading': 0.9,
@@ -650,21 +693,20 @@ def apply_strategy_rotation(picks, market_regime, vix_estimate=None):
     }
     weights = regime_weights.get(market_regime, regime_weights['neutral'])
     for pick in picks:
-        pick['trailing_score'] = pick.get('trailing_score', 0) * weights['trailing_stop']
         pick['breakout_score'] = pick.get('breakout_score', 0) * weights['breakout']
         pick['mean_reversion_score'] = pick.get('mean_reversion_score', 0) * weights['mean_reversion']
         pick['copy_score'] = pick.get('copy_score', 0) * weights['copy_trading']
         pick['wheel_score'] = pick.get('wheel_score', 0) * weights['wheel']
-        # Recalculate best strategy after weighting
+        # Trailing Stop intentionally NOT weighted — it's an exit policy.
         scores = {
-            'Trailing Stop': pick.get('trailing_score', 0),
+            'Trailing Stop': 0,
             'Copy Trading': pick.get('copy_score', 0),
             'Wheel Strategy': pick.get('wheel_score', 0),
             'Mean Reversion': pick.get('mean_reversion_score', 0),
             'Breakout': pick.get('breakout_score', 0),
         }
         pick['scores'] = scores
-        pick['best_strategy'] = max(scores, key=scores.get)
+        pick['best_strategy'] = pick_best_entry_strategy(scores)
         pick['best_score'] = scores[pick['best_strategy']]
         pick['regime_weights_applied'] = weights
     return picks, weights
@@ -859,7 +901,7 @@ def analyze_news(pick, news_items):
         "Mean Reversion": pick["mean_reversion_score"],
         "Breakout": pick["breakout_score"],
     }
-    pick["best_strategy"] = max(pick["scores"], key=pick["scores"].get)
+    pick["best_strategy"] = pick_best_entry_strategy(pick["scores"])
     pick["best_score"] = pick["scores"][pick["best_strategy"]]
 
 
@@ -1222,7 +1264,7 @@ def fetch_all_data():
                     "Mean Reversion": pick["mean_reversion_score"],
                     "Breakout": pick["breakout_score"],
                 }
-                pick["best_strategy"] = max(pick["scores"], key=pick["scores"].get)
+                pick["best_strategy"] = pick_best_entry_strategy(pick["scores"])
                 pick["best_score"] = pick["scores"][pick["best_strategy"]]
 
             if social.get("overall_sentiment") != "unknown":
@@ -1354,7 +1396,7 @@ def fetch_all_data():
                 "Mean Reversion": pick["mean_reversion_score"],
                 "Breakout": pick["breakout_score"],
             }
-            pick["best_strategy"] = max(pick["scores"], key=pick["scores"].get)
+            pick["best_strategy"] = pick_best_entry_strategy(pick["scores"])
             pick["best_score"] = pick["scores"][pick["best_strategy"]]
     else:
         print("No learned_weights.json found -- skipping learned weight adjustments.")

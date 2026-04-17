@@ -1098,13 +1098,16 @@ def process_strategy_file(user, filepath, strat):
             log(f"[{user['username']}] {symbol}: Stop-loss placed at ${stop_price}", "monitor")
             notify_user(user, f"Stop-loss placed on {symbol} at ${stop_price:.2f}", "info")
 
-    # Trailing stop for trailing_stop and breakout strategies
-    if strategy_type in ("trailing_stop", "breakout"):
+    # Trailing-stop exit — applied to every non-wheel entry strategy.
+    # Round-10 architecture: trailing_stop is an exit policy, not an
+    # entry, so breakout / copy_trading / legacy-trailing_stop all
+    # share the same floor-raising logic.
+    if strategy_type in ("trailing_stop", "breakout", "copy_trading"):
         highest = state.get("highest_price_seen") or entry
         if price > highest:
             state["highest_price_seen"] = price
             highest = price
-        activation = rules.get("trailing_activation_pct", 0.10 if strategy_type == "trailing_stop" else 0)
+        activation = rules.get("trailing_activation_pct", 0.10 if strategy_type != "breakout" else 0)
         trail = rules.get("trailing_distance_pct", 0.05)
         if not state.get("trailing_activated") and highest >= entry * (1 + activation):
             state["trailing_activated"] = True
@@ -1364,12 +1367,17 @@ def run_auto_deployer(user):
         # is a harder stop than per-pick sentiment (higher bar to qualify
         # as "actionable" in the screener). Long strategies should not
         # ignore it.
-        if best_strat in ("trailing_stop", "breakout", "mean_reversion") \
-                and news_map.get(symbol) == "bearish":
+        #
+        # Round-10 architecture note: accepted entries are now
+        # {breakout, mean_reversion, copy_trading}. Trailing Stop is an
+        # EXIT policy, not an entry — it's attached to every entry below
+        # via `exit_policy`. Wheel runs in its own scheduler path.
+        accepted_entries = ("breakout", "mean_reversion", "copy_trading")
+        if best_strat in accepted_entries and news_map.get(symbol) == "bearish":
             log(f"[{user['username']}] {symbol}: Skipped (bearish news signal) — trying next pick", "deployer")
             skip_reasons.append(f"{symbol}: bearish news signal")
             continue
-        if best_strat not in ("trailing_stop", "breakout", "mean_reversion"):
+        if best_strat not in accepted_entries:
             skip_reasons.append(f"{symbol}: unsupported strategy ({best_strat})")
             continue
 
@@ -1404,6 +1412,22 @@ def run_auto_deployer(user):
         })
 
         if isinstance(order, dict) and "id" in order:
+            # Round-10 architecture: every non-Wheel entry uses a
+            # trailing-stop exit. The `exit_policy` field documents
+            # that; the monitor already raises the floor on any state
+            # with `stop_order_id` + `highest_price_seen`, so nothing
+            # in the monitor needs to know which entry strategy opened
+            # the position — the exit logic is shared.
+            # Copy Trading inherits the mean-reversion style defaults
+            # (wider stop, later trailing activation) because politician
+            # buys are slow-moving signals, not breakout spikes.
+            is_breakout = best_strat == "breakout"
+            rules = {
+                "stop_loss_pct": 0.05 if is_breakout else 0.10,
+                "trailing_activation_pct": 0 if is_breakout else 0.10,
+                "trailing_distance_pct": 0.05,
+                "exit_policy": "trailing_stop",
+            }
             strat_file = {
                 "symbol": symbol,
                 "strategy": best_strat,
@@ -1412,11 +1436,7 @@ def run_auto_deployer(user):
                 "entry_price_estimate": pick.get("price"),
                 "initial_qty": qty,
                 "deployer": "cloud_scheduler",
-                "rules": {
-                    "stop_loss_pct": 0.05 if best_strat == "breakout" else 0.10,
-                    "trailing_activation_pct": 0 if best_strat == "breakout" else 0.10,
-                    "trailing_distance_pct": 0.05,
-                },
+                "rules": rules,
                 "state": {
                     "entry_fill_price": None,
                     "entry_order_id": order["id"],
@@ -2521,6 +2541,22 @@ def scheduler_loop():
             if now_et.hour == 3 and now_et.minute >= 0:
                 if should_run_daily_at("daily_backup_all", 3, 0):
                     run_daily_backup()
+
+            # Capitol Trades refresh — runs ONCE (not per-user) at 5 AM ET.
+            # Disclosures update at most once a day on the official side,
+            # so a nightly refresh is plenty. Runs at 5 AM (before the
+            # 9:35 AM deployer) so the cache is fresh for that day's
+            # screener pass. No-ops silently if FINNHUB_API_KEY is missing.
+            if now_et.hour == 5 and now_et.minute >= 0:
+                if should_run_daily_at("capitol_trades_refresh", 5, 0,
+                                        max_late_seconds=4*3600):
+                    try:
+                        import capitol_trades
+                        result = capitol_trades.refresh_cache()
+                        log(f"Capitol Trades refresh: {result.get('count', 0)} rows",
+                            "capitol")
+                    except Exception as e:
+                        log(f"Capitol Trades refresh failed: {e}", "capitol")
 
             # Task-staleness watchdog — alert if an interval-based task is
             # overdue during market hours. Each alert fires at most once
