@@ -3,21 +3,37 @@
 # Why this exists: numpy / pandas (pulled in transitively by yfinance,
 # which powers the PEAD strategy) need the C++ standard runtime
 # (libstdc++.so.6) at IMPORT time. Nixpacks' default Python image is
-# slim and doesn't ship that lib, so `import yfinance` blew up with:
-#   ImportError: libstdc++.so.6: cannot open shared object file
+# slim, AND its default LD_LIBRARY_PATH only contains /usr/lib —
+# numpy can't find the architecture-specific libstdc++.so.6 that lives
+# at /usr/lib/x86_64-linux-gnu/.
 #
-# Nixpacks distinguishes:
-#   nixPkgs — packages available at BUILD time (gcc, etc.)
-#   nixLibs — shared libs threaded into LD_LIBRARY_PATH at RUNTIME
-# The first attempt put gcc in nixPkgs only; that gave us libstdc++
-# during pip install but stripped it from the runtime image. Moving
-# stdenv.cc.cc.lib into nixLibs is the canonical Nix pattern for
-# "include just the C++ stdlib at runtime".
+# Things that DIDN'T work and why:
+#   - `nixPkgs = ["gcc"]` alone: libstdc++ available at BUILD only,
+#     not in the runtime image's library search path.
+#   - `nixLibs = ["stdenv.cc.cc.lib"]`: documented Nixpacks knob for
+#     runtime libs, but didn't actually thread libstdc++ onto the
+#     loader's search path on this image.
+#   - `LD_LIBRARY_PATH=...` inline in startCommand: Railway exec's
+#     the command without a shell, so the prefix syntax doesn't parse.
+#   - `/usr/bin/env LD_LIBRARY_PATH=... python3 ...`: server started
+#     OK per logs, but Railway healthcheck still marked it failed.
+#   - `LD_LIBRARY_PATH` as a Railway env var: applied to BUILD too,
+#     where it overrides Nix's own LD_LIBRARY_PATH and breaks pip
+#     install of native extensions.
+#
+# What works (this commit): symlink the system libstdc++ into a path
+# the default loader already searches. The lib IS installed in the
+# runtime image (apt's libstdc++6:amd64 at /usr/lib/x86_64-linux-gnu),
+# we just need it visible at /usr/lib/. One ln -s in the install phase
+# is all it takes — no env vars, no shell wrappers, no Nix surgery.
 [phases.setup]
-nixPkgs = ["python312", "gcc"]
-nixLibs = ["stdenv.cc.cc.lib"]
+nixPkgs = ["python312"]
 
 [phases.install]
-# Default install command — explicit because [phases.setup] would
-# otherwise replace the auto-detected install logic.
-cmds = ["python -m venv --copies /opt/venv && . /opt/venv/bin/activate && pip install -r requirements.txt"]
+cmds = [
+    "python -m venv --copies /opt/venv && . /opt/venv/bin/activate && pip install -r requirements.txt",
+    # Symlink libstdc++ into /usr/lib/ where numpy's dlopen will find
+    # it on the default loader path. Idempotent: || true if symlink
+    # already exists from a prior build cache hit.
+    "ln -sf /usr/lib/x86_64-linux-gnu/libstdc++.so.6 /usr/lib/libstdc++.so.6 || true",
+]
