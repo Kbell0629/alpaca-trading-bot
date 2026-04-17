@@ -1368,11 +1368,12 @@ def run_auto_deployer(user):
         # as "actionable" in the screener). Long strategies should not
         # ignore it.
         #
-        # Round-10 architecture note: accepted entries are now
-        # {breakout, mean_reversion, copy_trading}. Trailing Stop is an
-        # EXIT policy, not an entry — it's attached to every entry below
-        # via `exit_policy`. Wheel runs in its own scheduler path.
-        accepted_entries = ("breakout", "mean_reversion", "copy_trading")
+        # Round-10 architecture note: accepted entries are
+        # {breakout, mean_reversion}. Trailing Stop is an EXIT policy
+        # attached via `exit_policy`. Wheel runs in its own scheduler
+        # path. Copy Trading is currently disabled — no free data
+        # provider — see update_dashboard.COPY_TRADING_ENABLED.
+        accepted_entries = ("breakout", "mean_reversion")
         if best_strat in accepted_entries and news_map.get(symbol) == "bearish":
             log(f"[{user['username']}] {symbol}: Skipped (bearish news signal) — trying next pick", "deployer")
             skip_reasons.append(f"{symbol}: bearish news signal")
@@ -2542,21 +2543,23 @@ def scheduler_loop():
                 if should_run_daily_at("daily_backup_all", 3, 0):
                     run_daily_backup()
 
-            # Capitol Trades refresh — runs ONCE (not per-user) at 5 AM ET.
-            # Disclosures update at most once a day on the official side,
-            # so a nightly refresh is plenty. Runs at 5 AM (before the
-            # 9:35 AM deployer) so the cache is fresh for that day's
-            # screener pass. No-ops silently if FINNHUB_API_KEY is missing.
-            if now_et.hour == 5 and now_et.minute >= 0:
-                if should_run_daily_at("capitol_trades_refresh", 5, 0,
-                                        max_late_seconds=4*3600):
-                    try:
-                        import capitol_trades
-                        result = capitol_trades.refresh_cache()
-                        log(f"Capitol Trades refresh: {result.get('count', 0)} rows",
-                            "capitol")
-                    except Exception as e:
-                        log(f"Capitol Trades refresh failed: {e}", "capitol")
+            # Capitol Trades refresh DISABLED — no working free data
+            # provider as of 2026. The nightly task below is preserved
+            # for re-enable when a source returns (see
+            # update_dashboard.COPY_TRADING_ENABLED). To flip back on:
+            # set the flag, uncomment the block, and set QUIVER_API_KEY
+            # (paid) or an alternative provider env var.
+            #
+            # if now_et.hour == 5 and now_et.minute >= 0:
+            #     if should_run_daily_at("capitol_trades_refresh", 5, 0,
+            #                             max_late_seconds=4*3600):
+            #         try:
+            #             import capitol_trades
+            #             result = capitol_trades.refresh_cache()
+            #             log(f"Capitol Trades refresh: {result.get('count', 0)} rows",
+            #                 "capitol")
+            #         except Exception as e:
+            #             log(f"Capitol Trades refresh failed: {e}", "capitol")
 
             # Task-staleness watchdog — alert if an interval-based task is
             # overdue during market hours. Each alert fires at most once

@@ -285,7 +285,17 @@ def fetch_all_snapshots(symbols):
 # architecture change ("Option C"): if Trailing Stop ever reappears in a
 # scores dict (e.g. regime rotation sets it), it still can't win because
 # we pick the max from ENTRY_STRATEGIES only.
-ENTRY_STRATEGIES = ("Breakout", "Mean Reversion", "Copy Trading", "Wheel Strategy")
+# Copy Trading is disabled in 2026 — free providers (Stock Watcher)
+# shut down, paid tiers start at $30/mo (Quiver) or $99/mo (Finnhub) and
+# their endpoints 403 on free tiers. Infrastructure in capitol_trades.py
+# is preserved; flip the flag below to re-enable once a working data
+# source is available.
+COPY_TRADING_ENABLED = False
+ENTRY_STRATEGIES = (
+    ("Breakout", "Mean Reversion", "Copy Trading", "Wheel Strategy")
+    if COPY_TRADING_ENABLED
+    else ("Breakout", "Mean Reversion", "Wheel Strategy")
+)
 
 
 def pick_best_entry_strategy(scores):
@@ -347,21 +357,19 @@ def score_stocks(snapshots):
             if volume_surge > 50:
                 trailing_score += 5
 
-            # Copy Trading Score — driven by real politician disclosures.
-            # Previously this used a fake formula ("big-cap + modest move
-            # = copy_trading"), which had nothing to do with copy trading
-            # and only misled the auto-deployer. Now we score strictly
-            # off cached congressional disclosures: score > 0 only if
-            # a politician has actually filed a recent BUY on this
-            # symbol. See capitol_trades.py.
+            # Copy Trading Score — driven by real politician disclosures
+            # when enabled. Currently disabled (see COPY_TRADING_ENABLED
+            # flag above) because free providers are no longer available.
+            # Infrastructure in capitol_trades.py is preserved for
+            # re-enable once a working data source returns.
             copy_score = 0
             copy_signals = []
-            try:
-                import capitol_trades
-                copy_score, copy_signals = capitol_trades.score_symbol(symbol)
-            except Exception as _e:
-                # Never let a signal-fetch failure break the screener.
-                pass
+            if COPY_TRADING_ENABLED:
+                try:
+                    import capitol_trades
+                    copy_score, copy_signals = capitol_trades.score_symbol(symbol)
+                except Exception:
+                    pass
 
             # Wheel Strategy Score (bell curve: moderate volatility scores highest)
             if volatility <= 5:
@@ -672,7 +680,7 @@ def apply_strategy_rotation(picks, market_regime, vix_estimate=None):
         'bull': {
             'breakout': 1.4,
             'mean_reversion': 0.6,
-            'copy_trading': 1.1,
+            'copy_trading': 1.1,   # dormant — kept for when COPY_TRADING_ENABLED flips
             'wheel': 0.8,
             'short_sell': 0.3,  # Almost never short in bull
         },
@@ -695,7 +703,10 @@ def apply_strategy_rotation(picks, market_regime, vix_estimate=None):
     for pick in picks:
         pick['breakout_score'] = pick.get('breakout_score', 0) * weights['breakout']
         pick['mean_reversion_score'] = pick.get('mean_reversion_score', 0) * weights['mean_reversion']
-        pick['copy_score'] = pick.get('copy_score', 0) * weights['copy_trading']
+        if COPY_TRADING_ENABLED:
+            pick['copy_score'] = pick.get('copy_score', 0) * weights['copy_trading']
+        else:
+            pick['copy_score'] = 0
         pick['wheel_score'] = pick.get('wheel_score', 0) * weights['wheel']
         # Trailing Stop intentionally NOT weighted — it's an exit policy.
         scores = {

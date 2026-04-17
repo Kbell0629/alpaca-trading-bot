@@ -267,29 +267,23 @@ Recent actions taken by you or the bot. Color-coded:
 
 ---
 
-## 📈 The 6 Trading Strategies — Plain English
+## 📈 Trading Strategies — Plain English
 
-### 1. Trailing Stop 🔵 (Ride the uptrend)
+The bot has **3 entry strategies** (Breakout, Mean Reversion, Wheel), **1 universal exit policy** (Trailing Stop), and **1 gated bear-market entry** (Short Selling). Copy Trading is currently disabled — see the note below.
 
-**In plain English:** Buy a stock that's going up. Set a floor price (stop-loss). As the stock climbs higher, the floor moves up with it — never down. When the stock eventually drops to the floor, sell automatically. You keep most of the gains.
+### 🛡️ Trailing Stop — universal exit policy (always on)
 
-**Example:**
-- Buy NVDA at $200
-- Initial stop-loss at $180 (10% below)
-- NVDA rises to $250 → stop moves up to $237.50
-- NVDA drops to $237.50 → sell automatically for +18.75% profit
+**In plain English:** Trailing Stop is **not an entry strategy you pick** — it's automatically attached to every Breakout and Mean Reversion entry as the exit. The bot sets a floor price below the entry, and as the stock climbs the floor ratchets up with it (never down). When the stock drops to the floor, it sells.
 
-**When it wins:** Stocks in strong uptrends with good momentum.
-**When it loses:** Choppy, sideways markets (gets "whipsawed").
+**Example on a Breakout entry:**
+- Bot buys NVDA at $200 (Breakout signal)
+- Floor starts at $190 (5% stop-loss for breakouts)
+- NVDA rises to $250 → +25% activates trailing → floor moves up to $237.50
+- NVDA drops to $237.50 → auto-sell for +18.75% profit
 
-### 2. Copy Trading 🟢 (Follow the smart money)
+**Why universal:** Every long entry needs an exit. Trailing Stop handles it consistently across strategies, so the monitor only manages one exit shape regardless of how the position was opened.
 
-**In plain English:** US politicians are required to disclose their stock trades within 45 days. Some of them (senators on committees, for example) have access to information we don't. The bot watches public disclosures and buys what they buy.
-
-**When it wins:** When politicians have information edges (committee briefings, early bill drafts).
-**When it loses:** When the trade is disclosed too late and the move already happened.
-
-### 3. Wheel Strategy 🟣 (Get paid to wait)
+### 1. Wheel Strategy 🟣 (Get paid to wait)
 
 **In plain English:** Instead of buying a stock, "sell insurance" on it. You collect a premium payment. If the stock stays above your target price, you keep the money free. If it drops, you buy the stock at a discount (minus the premium you already collected). Repeat forever.
 
@@ -300,21 +294,21 @@ Recent actions taken by you or the bot. Color-coded:
 **When it wins:** Choppy, sideways markets. Stocks that swing $10-$50 range.
 **When it loses:** Strong trends — you miss most of the upside.
 
-### 4. Mean Reversion 🟠 (Buy the oversold dip)
+### 2. Mean Reversion 🟠 (Buy the oversold dip)
 
 **In plain English:** Stocks sometimes overreact to bad news and drop too far. If the drop is emotional (no actual bad fundamentals), the stock often bounces back to its average price within days. The bot buys the dip and sells when it recovers to the mean.
 
 **When it wins:** Stocks drop 15%+ on weak volume with no real bad news.
 **When it loses:** "Catching falling knives" — buying stocks with real problems that keep falling.
 
-### 5. Breakout 🔴 (Catch the explosion)
+### 3. Breakout 🔴 (Catch the explosion)
 
 **In plain English:** When a stock breaks above its 20-day high on 2x normal volume, it often keeps running. The bot buys the breakout, sets a tight 5% stop (breakouts fail fast if they're going to fail), and rides the move up.
 
 **When it wins:** Real news catalysts create real breakouts.
 **When it loses:** "Fake breakouts" — stock pokes above and quickly falls back.
 
-### 6. Short Selling ⚫ (Profit when stocks fall)
+### 4. Short Selling ⚫ (Profit when stocks fall — bear market only)
 
 **In plain English:** Borrow shares, sell them immediately at current price. When the stock falls, buy them back cheaper and return them. You keep the difference.
 
@@ -322,6 +316,17 @@ Recent actions taken by you or the bot. Color-coded:
 
 **When it wins:** Bear markets, specific stocks with bad news.
 **When it loses:** Unexpected rallies, short squeezes.
+
+### 🚫 Copy Trading — currently disabled
+
+US politicians are required to disclose stock trades within 45 days. The bot used to score and follow those disclosures, but in 2026 every free congressional-trading API was decommissioned (Stock Watcher), gated to enterprise-only (Quiver), or moved to paid tiers ($30-99/mo). The capitol-trades scoring code is preserved in `capitol_trades.py` and the strategy can be re-enabled by:
+
+1. Subscribing to a working data provider (Quiver Hobbyist $30/mo or Finnhub Strategy $99/mo)
+2. Setting the corresponding env var (`QUIVER_API_KEY` or `FINNHUB_API_KEY`)
+3. Flipping `COPY_TRADING_ENABLED = True` in `update_dashboard.py`
+4. Restoring the strategy card and score row in `templates/dashboard.html` (search for "Copy Trading strategy card hidden")
+
+Until then, Copy Trading silently scores 0 and never wins best_strategy. The other 3 entry strategies cover the gap.
 
 ---
 
@@ -336,11 +341,12 @@ Every 30 minutes during market hours, the bot scans **10,000+ US stocks**. Here'
 
 ### Step 2: Score Each Stock (5 Scores)
 Each stock gets a score for each strategy:
-- **Trailing Stop Score** = momentum * 0.5 + volatility * 0.3 + volume surge
-- **Copy Trading Score** = bonus for large caps + momentum
+Each stock gets a score for each ENTRY strategy (Trailing Stop is an exit, Copy Trading is disabled — see above):
 - **Wheel Score** = moderate volatility scores highest (extreme gets penalized)
 - **Mean Reversion Score** = rewards big drops (but penalizes news-driven drops)
 - **Breakout Score** = daily change + volume surge multiplier (2x/3x volume tiers)
+- **Momentum Score** (informational, not a competition entry) = momentum * 0.5 + volatility * 0.3 + volume surge — drives the trailing-stop exit on entries
+- **Copy Trading Score** = always 0 (disabled, no data provider)
 
 ### Step 3: Enrich Top 100 With More Data
 - **20-day momentum** (longer trend)
@@ -481,7 +487,7 @@ Switch between 3 risk profiles in the Settings section:
 - Max 3 positions
 - 5% per stock
 - 1 new trade/day
-- Only safe strategies (trailing stop, wheel, copy trading)
+- Only safe strategies (wheel, mean reversion, breakout — all with trailing-stop exits)
 - **Expected return:** 5-15% annually
 - **Max drawdown:** ~5-8%
 
@@ -549,7 +555,7 @@ Use this to understand what's working and what isn't.
 These features run automatically — you don't have to do anything, but here's what they do:
 
 ### Dynamic Strategy Rotation
-Bot knows bull markets favor trailing stops and breakouts. Bear markets favor shorts and mean reversion. Adjusts strategy weights automatically based on SPY's 20-day performance.
+Bot knows bull markets favor breakouts. Bear markets favor shorts and mean reversion. Neutral markets favor the Wheel (premium income). Adjusts strategy weights automatically based on SPY's 20-day performance.
 
 ### Sector Rotation
 Tracks 11 sector ETFs (tech, healthcare, energy, etc.). Boosts picks in sectors outperforming SPY. Penalizes picks in sectors underperforming.

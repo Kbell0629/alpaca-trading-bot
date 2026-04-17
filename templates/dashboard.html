@@ -1354,12 +1354,14 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
     <div class="form-group">
       <label>Strategy</label>
       <select id="deployStrategy" onchange="onStrategyChange()">
-        <option value="trailing_stop">Trailing Stop - Rides uptrends, auto-protects gains</option>
-        <option value="copy_trading">Copy Trading - Copies politician trades</option>
-        <option value="wheel">Wheel Strategy - Sells options, collects premium</option>
-        <option value="mean_reversion">Mean Reversion - Buys oversold dips, sells at recovery</option>
         <option value="breakout">Breakout - Catches explosive moves on high volume</option>
+        <option value="mean_reversion">Mean Reversion - Buys oversold dips, sells at recovery</option>
+        <option value="wheel">Wheel Strategy - Sells options, collects premium</option>
       </select>
+      <!-- Trailing Stop intentionally NOT listed: it's the default exit
+           policy attached to every breakout / mean reversion entry, not
+           an entry strategy you pick. See COPY_TRADING_ENABLED note. -->
+
       <div class="strategy-info-text" id="deployStrategyInfo"></div>
     </div>
     <div class="form-group">
@@ -2615,13 +2617,8 @@ function buildNextActionsPanel(d) {
         // Morning deploys
         '<div class="timeline-item' + (adOn ? '' : ' off') + '">' +
             '<span class="time">9:35 AM ET</span>' +
-            '<span class="action">Auto-Deployer screens ~12,000 stocks, deploys top picks (breakout / mean reversion / copy trading). Every entry uses a trailing-stop exit.</span>' +
+            '<span class="action">Auto-Deployer screens ~12,000 stocks, deploys top picks (breakout / mean reversion). Every entry uses a trailing-stop exit.</span>' +
             '<span class="' + (adOn ? 'badge-on' : 'badge-off') + '">' + (adOn ? 'ON' : 'OFF') + '</span>' +
-        '</div>' +
-        '<div class="timeline-item' + (copyOn ? '' : ' off') + '">' +
-            '<span class="time">9:35 AM ET</span>' +
-            '<span class="action">Copy Trading scans Capitol Trades for politician moves</span>' +
-            '<span class="' + (copyOn ? 'badge-on' : 'badge-off') + '">' + (copyOn ? 'ON' : 'OFF') + '</span>' +
         '</div>' +
         '<div class="timeline-item' + (wheelOn ? '' : ' off') + '">' +
             '<span class="time">9:40 AM ET</span>' +
@@ -2913,7 +2910,7 @@ function buildShortStrategyCard(d) {
 
     return (
         '<div class="strategy-card short-sell">' +
-            '<h2>6. Short Selling</h2>' +
+            '<h2>5. Short Selling</h2>' +
             '<div class="subtitle">Bear market plays — profit when stocks fall</div>' +
             '<div class="stat-grid">' +
                 '<div class="stat"><div class="stat-label">Status</div><div class="stat-value">' + statusBadge + '</div></div>' +
@@ -3127,8 +3124,16 @@ function renderDashboard() {
             '<div class="pick-stat"><span class="pick-stat-label">Volume</span><span class="pick-stat-value">' + ((p.daily_volume||0)/1e6).toFixed(1) + 'M</span></div>' +
             '<div class="pick-stat"><span class="pick-stat-label">Vol Surge</span><span class="pick-stat-value ' + vsCls + '">' + fmtPct(p.volume_surge||0).replace('.0','') + '</span></div></div>' +
             '<div class="pick-scores">' +
-            '<div class="score-row"><span class="score-label" style="color:#3b82f6">Trailing</span><div class="score-bar-bg"><div class="score-bar" style="width:' + tPct + '%;background:#3b82f6"></div></div><span class="score-val">' + Math.round(p.trailing_score||0) + '</span></div>' +
-            '<div class="score-row"><span class="score-label" style="color:#10b981">Copy</span><div class="score-bar-bg"><div class="score-bar" style="width:' + cPct + '%;background:#10b981"></div></div><span class="score-val">' + Math.round(p.copy_score||0) + '</span></div>' +
+            // "Momentum" replaces the old "Trailing" label — Trailing
+            // Stop is no longer a competing entry strategy, but the
+            // underlying score (daily_change × 0.5 + volatility × 0.3 +
+            // volume bonus) is still a useful "trend quality" gauge for
+            // why a Breakout pick is strong.
+            '<div class="score-row"><span class="score-label" style="color:#3b82f6" title="Momentum quality — drives the trailing-stop exit on entries">Momentum</span><div class="score-bar-bg"><div class="score-bar" style="width:' + tPct + '%;background:#3b82f6"></div></div><span class="score-val">' + Math.round(p.trailing_score||0) + '</span></div>' +
+            // Copy score row hidden while Copy Trading is disabled
+            // (no free data provider). Restore alongside the strategy
+            // card if/when re-enabled.
+            '' +
             '<div class="score-row"><span class="score-label" style="color:#8b5cf6">Wheel</span><div class="score-bar-bg"><div class="score-bar" style="width:' + wPct + '%;background:#8b5cf6"></div></div><span class="score-val">' + Math.round(p.wheel_score||0) + '</span></div>' +
             '<div class="score-row"><span class="score-label" style="color:#f59e0b">MeanRev</span><div class="score-bar-bg"><div class="score-bar" style="width:' + mrPct + '%;background:#f59e0b"></div></div><span class="score-val">' + Math.round(p.mean_reversion_score||0) + '</span></div>' +
             '<div class="score-row"><span class="score-label" style="color:#ef4444">Breakout</span><div class="score-bar-bg"><div class="score-bar" style="width:' + boPct + '%;background:#ef4444"></div></div><span class="score-val">' + Math.round(p.breakout_score||0) + '</span></div></div>' +
@@ -3469,8 +3474,8 @@ function renderDashboard() {
         '<div class="section-title">Active Strategies</div>' +
         '<div class="strategies">' +
             '<div class="strategy-card trailing">' +
-                '<h2>1. Trailing Stop</h2>' +
-                '<div class="subtitle">' + tsSymbol + ' - Auto stop-loss with ratcheting floor</div>' +
+                '<h2>1. Trailing Stop <span style="font-size:11px;font-weight:500;color:var(--text-dim);text-transform:none;letter-spacing:0">— universal exit policy</span></h2>' +
+                '<div class="subtitle">' + tsSymbol + ' - Auto-attached to every Breakout / Mean Reversion entry</div>' +
                 '<div class="stat-grid">' +
                     '<div class="stat"><div class="stat-label">Entry Price</div><div class="stat-value">' + (tsEntry ? '$'+tsEntry : 'Pending') + '</div></div>' +
                     '<div class="stat"><div class="stat-label">Shares Held</div><div class="stat-value">' + tsShares + '</div></div>' +
@@ -3478,29 +3483,19 @@ function renderDashboard() {
                     '<div class="stat"><div class="stat-label">Trailing</div><div class="stat-value">' + trailingBadge + '</div></div>' +
                     '<div class="stat"><div class="stat-label">Highest Seen</div><div class="stat-value">' + tsHighest + '</div></div>' +
                 '</div>' +
-                '<div class="strategy-visual"><strong>Rules:</strong> 10% stop-loss | +10% activates trailing | 5% trail distance | Floor only goes up</div>' +
+                '<div class="strategy-visual"><strong>Rules:</strong> 5-10% stop-loss | +10% activates trailing | 5% trail distance | Floor only goes up | Always on — not chosen at deploy time</div>' +
                 '<div class="strategy-actions">' +
                     '<button class="btn-warning btn-sm" onclick="if(confirm(\'Pause trailing stop? The monitor will skip this strategy until resumed.\')) fetch(\'/api/pause-strategy\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({strategy:\'trailing_stop\'})}).then(r=>r.json()).then(d=>{toast(d.message||\'Paused\',\'info\');addLog(\'Paused trailing stop strategy\',\'info\');refreshData();})">Pause</button>' +
                     '<button class="btn-danger btn-sm" onclick="if(confirm(\'Stop trailing stop? This will cancel related orders.\')) fetch(\'/api/stop-strategy\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({strategy:\'trailing_stop\'})}).then(r=>r.json()).then(d=>{toast(d.message||\'Stopped\',\'info\');addLog(\'Stopped trailing stop strategy\',\'info\');refreshData();})">Stop</button>' +
                 '</div>' +
             '</div>' +
-            '<div class="strategy-card copy">' +
-                '<h2>2. Copy Trading</h2>' +
-                '<div class="subtitle">Track & copy politician trades via Capitol Trades</div>' +
-                '<div class="stat-grid">' +
-                    '<div class="stat"><div class="stat-label">Tracking</div><div class="stat-value">' + ctPolitician + '</div></div>' +
-                    '<div class="stat"><div class="stat-label">Status</div><div class="stat-value">' + ctBadge + '</div></div>' +
-                    '<div class="stat"><div class="stat-label">Trades Copied</div><div class="stat-value">' + ctTrades.length + '</div></div>' +
-                    '<div class="stat"><div class="stat-label">Realized P&L</div><div class="stat-value">' + fmtMoney(ctPnl) + '</div></div>' +
-                '</div>' +
-                '<div class="strategy-visual"><strong>Rules:</strong> 5% position size | Max 10 positions | Skip if moved 15%+ | 10% stop-loss</div>' +
-                '<div class="strategy-actions">' +
-                    '<button class="btn-warning btn-sm" onclick="if(confirm(\'Pause copy trading?\')) fetch(\'/api/pause-strategy\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({strategy:\'copy_trading\'})}).then(r=>r.json()).then(d=>{toast(d.message||\'Paused\',\'info\');addLog(\'Paused copy trading strategy\',\'info\');refreshData();})">Pause</button>' +
-                    '<button class="btn-danger btn-sm" onclick="if(confirm(\'Stop copy trading?\')) fetch(\'/api/stop-strategy\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({strategy:\'copy_trading\'})}).then(r=>r.json()).then(d=>{toast(d.message||\'Stopped\',\'info\');addLog(\'Stopped copy trading strategy\',\'info\');refreshData();})">Stop</button>' +
-                '</div>' +
-            '</div>' +
+            // Copy Trading strategy card hidden — no free data provider
+            // as of 2026. Flip update_dashboard.COPY_TRADING_ENABLED and
+            // restore this block to re-enable. The deploy_copy_trading
+            // handler and capitol_trades.py stay in place for that day.
+            '' +
             '<div class="strategy-card wheel">' +
-                '<h2>3. Wheel Strategy</h2>' +
+                '<h2>2. Wheel Strategy</h2>' +
                 '<div class="subtitle">Sell puts \u2192 Assigned \u2192 Sell calls \u2192 Repeat</div>' +
                 '<div class="stat-grid">' +
                     '<div class="stat"><div class="stat-label">Current Stage</div><div class="stat-value" style="font-size:13px">' + wsStageLabel + '</div></div>' +
@@ -3516,7 +3511,7 @@ function renderDashboard() {
                 '</div>' +
             '</div>' +
             '<div class="strategy-card meanrev">' +
-                '<h2>4. Mean Reversion</h2>' +
+                '<h2>3. Mean Reversion</h2>' +
                 '<div class="subtitle">Buy oversold dips, sell at recovery to the mean</div>' +
                 '<div class="stat-grid">' +
                     '<div class="stat"><div class="stat-label">How It Works</div><div class="stat-value" style="font-size:12px">Buys stocks that dropped 15%+ on no real news</div></div>' +
@@ -3531,7 +3526,7 @@ function renderDashboard() {
                 '</div>' +
             '</div>' +
             '<div class="strategy-card breakout">' +
-                '<h2>5. Breakout</h2>' +
+                '<h2>4. Breakout</h2>' +
                 '<div class="subtitle">Catch explosive moves on high volume</div>' +
                 '<div class="stat-grid">' +
                     '<div class="stat"><div class="stat-label">How It Works</div><div class="stat-value" style="font-size:12px">Buys stocks breaking 20-day highs on 2x+ volume</div></div>' +
@@ -3626,7 +3621,7 @@ function renderDashboard() {
         '<div id="section-settings">' +
             buildStrategyTemplates(d) +
         '</div>' +
-        '<div class="footer">Stock Trading Bot - Strategies: Trailing Stop | Copy Trading | Wheel | Mean Reversion | Breakout | Short Selling - Full market screener across NYSE, NASDAQ, ARCA</div>';
+        '<div class="footer">Stock Trading Bot - Strategies: Trailing Stop (exit) | Wheel | Mean Reversion | Breakout | Short Selling - Full market screener across NYSE, NASDAQ, ARCA</div>';
 
     renderLog();
     refreshSchedulerStatus();
