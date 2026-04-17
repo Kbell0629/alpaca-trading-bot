@@ -657,39 +657,48 @@ def record_trade_close(user, symbol, strategy, exit_price, pnl, exit_reason,
                         qty=None, side="sell"):
     """Mark the matching open journal entry as closed. Idempotent:
     if the entry is already closed, does nothing.
+
+    Round-10 audit: the read-modify-write must hold strategy_file_lock
+    around the whole sequence. Six exit paths call this (stop hit,
+    target hit, PEAD 60d, PEAD pre-earnings, friday reduction,
+    profit-ladder final sell) and update_scorecard.py also appends
+    daily_snapshots into the same file. Two near-simultaneous exits
+    without the lock silently drop one of the close writebacks —
+    same class of bug the round-7 writeback fix was meant to prevent.
     """
+    journal_path = user_file(user, "trade_journal.json")
     try:
-        journal_path = user_file(user, "trade_journal.json")
-        journal = load_json(journal_path) or {"trades": [], "daily_snapshots": []}
-        trades = journal.get("trades", [])
-        # Walk newest->oldest; find the most recent OPEN entry for this symbol+strategy
-        for t in reversed(trades):
-            if (t.get("symbol") == symbol
-                    and t.get("strategy") == strategy
-                    and t.get("status", "open") == "open"):
-                t["status"] = "closed"
-                t["exit_timestamp"] = now_et().isoformat()
-                t["exit_price"] = round(float(exit_price), 4) if exit_price else None
-                t["exit_reason"] = exit_reason
-                try:
-                    t["pnl"] = round(float(pnl), 2)
-                except (TypeError, ValueError):
-                    t["pnl"] = None
-                # P&L % relative to entry price
-                try:
-                    entry_px = float(t.get("price") or 0)
-                    t_qty = int(float(qty if qty is not None else t.get("qty") or 0))
-                    if entry_px and t_qty:
-                        if side == "sell":  # long close
-                            t["pnl_pct"] = round((float(exit_price) / entry_px - 1) * 100, 2)
-                        else:  # short cover
-                            t["pnl_pct"] = round((entry_px / float(exit_price) - 1) * 100, 2)
-                except Exception:
-                    pass
-                t["exit_side"] = side
-                save_json(journal_path, journal)
-                return True
-        return False  # No matching open trade found
+        with strategy_file_lock(journal_path):
+            journal = load_json(journal_path) or {"trades": [], "daily_snapshots": []}
+            trades = journal.get("trades", [])
+            # Walk newest->oldest; find the most recent OPEN entry for this symbol+strategy
+            for t in reversed(trades):
+                if (t.get("symbol") == symbol
+                        and t.get("strategy") == strategy
+                        and t.get("status", "open") == "open"):
+                    t["status"] = "closed"
+                    t["exit_timestamp"] = now_et().isoformat()
+                    t["exit_price"] = round(float(exit_price), 4) if exit_price else None
+                    t["exit_reason"] = exit_reason
+                    try:
+                        t["pnl"] = round(float(pnl), 2)
+                    except (TypeError, ValueError):
+                        t["pnl"] = None
+                    # P&L % relative to entry price
+                    try:
+                        entry_px = float(t.get("price") or 0)
+                        t_qty = int(float(qty if qty is not None else t.get("qty") or 0))
+                        if entry_px and t_qty:
+                            if side == "sell":  # long close
+                                t["pnl_pct"] = round((float(exit_price) / entry_px - 1) * 100, 2)
+                            else:  # short cover
+                                t["pnl_pct"] = round((entry_px / float(exit_price) - 1) * 100, 2)
+                    except Exception:
+                        pass
+                    t["exit_side"] = side
+                    save_json(journal_path, journal)
+                    return True
+            return False  # No matching open trade found
     except Exception as e:
         log(f"[{user.get('username','?')}] Journal close writeback failed for {symbol}: {e}", "monitor")
         return False
@@ -1261,13 +1270,23 @@ def check_correlation_allowed(new_symbol, existing_positions):
     if same_sector_count >= MAX_PER_SECTOR:
         return False, f"Already have {same_sector_count} positions in {new_sector} sector (max {MAX_PER_SECTOR})"
 
-    # Also check concentration: total market value in same sector
+    # Also check concentration: total market value in same sector.
+    # Round-10 audit: "Other" is a catch-all bucket for tickers not in
+    # SECTOR_MAP. Applying the same 40% cap as real sectors was overly
+    # conservative — multiple unrelated stocks (MARA crypto, HIMS
+    # healthcare, TAL education) all landing in "Other" would block
+    # entries that have no real correlation. Raised Other-only cap to
+    # 60% while keeping real sectors at 40%. SECTOR_MAP is also being
+    # expanded this round so fewer tickers end up in "Other" to begin with.
     total_value = sum(float(p.get("market_value", 0)) for p in existing_positions)
     sector_value = sum(float(p.get("market_value", 0)) for p in existing_positions
                        if SECTOR_MAP.get(p.get("symbol", ""), "Other") == new_sector)
 
-    if total_value > 0 and sector_value / total_value > 0.4:
-        return False, f"{new_sector} sector already {sector_value/total_value*100:.0f}% of portfolio (max 40%)"
+    max_pct = 0.6 if new_sector == "Other" else 0.4
+    if total_value > 0 and sector_value / total_value > max_pct:
+        return False, (f"{new_sector} sector already "
+                       f"{sector_value/total_value*100:.0f}% of portfolio "
+                       f"(max {int(max_pct*100)}%)")
 
     return True, f"Sector diversification OK ({new_sector})"
 
@@ -2624,7 +2643,15 @@ def scheduler_loop():
             # 9:35 AM auto-deployer needs the cache. Universe is
             # ~120 large/mid-caps; ~50s with 0.4s spacing per Yahoo
             # call. No-ops silently if yfinance isn't installed.
-            if now_et.hour == 6 and now_et.minute >= 0:
+            #
+            # Round-10 audit: widen the outer hour gate from just
+            # `hour == 6` to `6 <= hour < 10` so a Railway restart
+            # between 7 AM and 9:35 AM still catches up the morning
+            # refresh before the auto-deployer needs the cache.
+            # should_run_daily_at's max_late_seconds=4h enforces the
+            # upper bound with its own time math (same pattern as
+            # daily_close, fixed in round 8).
+            if now_et.hour >= 6 and now_et.hour < 10:
                 if should_run_daily_at("pead_refresh", 6, 0,
                                         max_late_seconds=4*3600):
                     try:

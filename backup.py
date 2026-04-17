@@ -63,6 +63,13 @@ INCLUDES = [
     "trade_journal.json",
     "learned_weights.json",
     "capital_status.json",
+    # Round-10: new shared caches. Restoring from backup without
+    # these means PEAD's next-earnings exit guard has no data until
+    # the next 6 AM refresh, and the (currently-disabled) copy-trading
+    # signals go empty. Both files are small (<100KB typical).
+    "pead_signals.json",
+    "capitol_trades.json",
+    "scheduler_last_runs.json",  # persist task schedule across restores
 ]
 
 

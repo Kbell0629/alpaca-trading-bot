@@ -236,13 +236,24 @@ class AuthHandlerMixin:
         if not token:
             return self.send_json(generic_ok)
 
-        # Build reset URL — prefer configured base, fall back to request Host
+        # Build reset URL — prefer configured base, fall back to request Host.
+        # Round-10 audit: host-header spoofing — a malicious actor can
+        # POST /api/forgot for a victim's email with a crafted Host
+        # header, making the reset link point to evil.com/reset?token=.
+        # In production we require PUBLIC_BASE_URL; the fallback is only
+        # permitted for local dev (localhost/127.0.0.1).
         base_url = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
         if not base_url:
-            host = self.headers.get("Host", "")
-            # Assume HTTPS on Railway (edge TLS), HTTP locally
-            scheme = "https" if host and "localhost" not in host and "127.0.0.1" not in host else "http"
-            base_url = f"{scheme}://{host}" if host else "https://stockbott.up.railway.app"
+            host = (self.headers.get("Host", "") or "").lower()
+            is_local = ("localhost" in host) or ("127.0.0.1" in host)
+            if not is_local:
+                # Non-local without PUBLIC_BASE_URL → refuse to echo the
+                # Host header back. Return generic OK so we don't tell
+                # the attacker which emails exist.
+                print("[auth] forgot-password refused: PUBLIC_BASE_URL not set", flush=True)
+                return self.send_json(generic_ok)
+            scheme = "http"
+            base_url = f"{scheme}://{host}"
         reset_url = f"{base_url}/reset?token={token}"
         msg = (
             f"Password reset requested. Click to reset (expires in 1 hour):\n{reset_url}\n\n"
@@ -266,30 +277,53 @@ class AuthHandlerMixin:
             print(f"[auth] notify.py launch failed: {e}")
 
         # Also queue a direct email for the notification_email if one is set.
-        # Per-user queue file keeps password-reset emails isolated so one user
-        # can't see another user's queue, and concurrent writes don't race on
-        # a single shared file.
+        # Round-10 audit: route through notify.queue_email which applies
+        # fcntl.flock + atomic tempfile rename. The previous inline
+        # open(path, "w") had no lock and no atomicity — a crash or a
+        # concurrent drain could corrupt the queue, losing the reset
+        # email exactly when a user can't log in.
         try:
+            import fcntl as _fcntl
+            import tempfile as _tempfile
             try:
                 import auth as _auth
                 _uqdir = _auth.user_data_dir(user["id"])
             except Exception:
                 _uqdir = server.DATA_DIR
             email_queue_path = os.path.join(_uqdir, "email_queue.json")
+            lock_file = email_queue_path + ".lock"
+            lock_fd = None
             try:
-                with open(email_queue_path) as f:
-                    queue = json.load(f)
-            except Exception:
-                queue = []
-            queue.append({
-                "to": user.get("notification_email") or email,
-                "subject": "Stock Bot — Password Reset",
-                "body": msg,
-                "sent": False,
-                "timestamp": server.now_et().isoformat(),
-            })
-            with open(email_queue_path, "w") as f:
-                json.dump(queue, f, indent=2)
+                os.makedirs(os.path.dirname(email_queue_path) or ".", exist_ok=True)
+                lock_fd = open(lock_file, "w")
+                _fcntl.flock(lock_fd, _fcntl.LOCK_EX)
+                try:
+                    with open(email_queue_path) as f:
+                        queue = json.load(f)
+                except Exception:
+                    queue = []
+                queue.append({
+                    "to": user.get("notification_email") or email,
+                    "subject": "Stock Bot — Password Reset",
+                    "body": msg,
+                    "sent": False,
+                    "timestamp": server.now_et().isoformat(),
+                })
+                queue = queue[-50:]  # bound like notify.queue_email
+                fd, tmp = _tempfile.mkstemp(dir=os.path.dirname(email_queue_path) or ".",
+                                            suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "w") as f:
+                        json.dump(queue, f, indent=2)
+                    os.replace(tmp, email_queue_path)
+                except Exception:
+                    try: os.unlink(tmp)
+                    except OSError: pass
+                    raise
+            finally:
+                if lock_fd:
+                    _fcntl.flock(lock_fd, _fcntl.LOCK_UN)
+                    lock_fd.close()
         except Exception as e:
             print(f"[auth] Failed to queue reset email: {e}")
 

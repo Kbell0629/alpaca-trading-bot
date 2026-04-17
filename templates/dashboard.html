@@ -1797,6 +1797,12 @@ const STRATEGY_INFO = {
         desc: 'Catches explosive moves on high volume. Best for: stocks breaking out.',
         details: 'Tight 5% stop | Rides momentum | Best on 2x+ volume',
         stopPct: 0.05, profitPct: 0.20
+    },
+    pead: {
+        name: 'PEAD',
+        desc: 'Rides 30-60 day drift after big earnings beats. Best for: stocks that just beat EPS 5%+.',
+        details: '8% stop | 8% trail | 60d max hold | Close 5d before next earnings',
+        stopPct: 0.08, profitPct: 0.12
     }
 };
 
@@ -1927,6 +1933,7 @@ function openDeployModal(symbol, strategy, qty, price) {
     if (strategy === 'Trailing Stop') sel.value = 'trailing_stop';
     else if (strategy === 'Wheel Strategy') sel.value = 'wheel';
     else if (strategy === 'Copy Trading') sel.value = 'copy_trading';
+    else if (strategy === 'PEAD') sel.value = 'pead';
     else if (strategy === 'Mean Reversion') sel.value = 'mean_reversion';
     else if (strategy === 'Breakout') sel.value = 'breakout';
     document.getElementById('deployQty').value = qty || 2;
@@ -2336,12 +2343,25 @@ async function loadGuardrails() {
 }
 
 /* ---- Scheduler Panel ---- */
-// Scheduler now stores last-run keys suffixed with user id, e.g. "screener_1",
-// "auto_deployer_env". Find the most-recent entry across all users for a task.
+// Scheduler stores per-user task keys suffixed with user id
+// ("screener_1", "auto_deployer_env"), and SYSTEM task keys without
+// a suffix ("pead_refresh", "email_drain", "daily_backup_all").
+// Round-10 audit fix: check the bare key first before the prefix walk,
+// otherwise the system tasks never match the `taskKey + '_'` prefix
+// and the UI is stuck showing "Not yet today" forever.
 function latestForTask(lastRuns, taskKey) {
-    var prefix = taskKey + '_';
     var best = null;
     var bestMs = -1;
+    // 1. Exact-match (system tasks: pead_refresh, email_drain, daily_backup_all)
+    if (Object.prototype.hasOwnProperty.call(lastRuns, taskKey)) {
+        var sv = lastRuns[taskKey];
+        var sms;
+        if (typeof sv === 'number') sms = sv * 1000;
+        else if (typeof sv === 'string' && sv.match(/^\d{4}-\d{2}-\d{2}/)) sms = new Date(sv).getTime();
+        if (sms != null) { bestMs = sms; best = sv; }
+    }
+    // 2. Prefix walk (per-user tasks)
+    var prefix = taskKey + '_';
     Object.keys(lastRuns).forEach(function(k) {
         if (k.indexOf(prefix) !== 0) return;
         var v = lastRuns[k];
@@ -3117,9 +3137,15 @@ function renderDashboard() {
         const surprisePart = (typeof surprise === 'number')
             ? ('+' + surprise.toFixed(1) + '%')
             : 'beat';
+        // Guard against null/undefined EPS values — "actual $undefined
+        // vs est $undefined" shows up when yfinance returns a partial
+        // row. Fall back to em-dash, matching the fmtMoney pattern
+        // used elsewhere.
+        const actualS = (actual == null ? '\u2014' : String(actual));
+        const estS = (est == null ? '\u2014' : String(est));
         return '<div class="pick-pead-signal" style="font-size:11px;color:#06b6d4;background:rgba(6,182,212,0.08);border:1px solid rgba(6,182,212,0.25);border-radius:6px;padding:6px 10px;margin-top:6px;line-height:1.4">' +
             '\ud83d\udcc8 EPS beat <strong>' + esc(surprisePart) + '</strong>' +
-            ' (actual $' + esc(String(actual)) + ' vs est $' + esc(String(est)) + ')' +
+            ' (actual $' + esc(actualS) + ' vs est $' + esc(estS) + ')' +
             ', ' + esc(ageS) +
             (next_e ? '. Next earnings <strong>' + esc(next_e) + '</strong> — close 5d before.' : '') +
         '</div>';

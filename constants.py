@@ -44,6 +44,46 @@ SECTOR_MAP = {
     # Industrial
     "BA": "Industrial", "CAT": "Industrial", "DE": "Industrial", "GE": "Industrial",
     "HON": "Industrial", "LMT": "Industrial", "RTX": "Industrial", "UPS": "Industrial",
+    # Round-10 additions — tickers the bot's 4/17 auto-deployer skipped
+    # because they all defaulted to "Other" and blew past the 40% cap.
+    # Populating these so correlation is judged on real sector rather
+    # than a catch-all bucket.
+    # Tech (extended)
+    "AVGO": "Tech", "TXN": "Tech", "QCOM": "Tech", "ACN": "Tech", "IBM": "Tech",
+    "CSCO": "Tech", "INTU": "Tech", "ADI": "Tech", "SNPS": "Tech",
+    "NVTS": "Tech", "PATH": "Tech", "AFRM": "Tech", "HOOD": "Tech", "UBER": "Tech",
+    "LYFT": "Tech", "DKNG": "Tech", "PYPL": "Tech", "ROKU": "Tech",
+    # Consumer (extended)
+    "PEP": "Consumer", "KO": "Consumer", "MDLZ": "Consumer", "BKNG": "Consumer",
+    "PM": "Consumer", "MO": "Consumer", "CL": "Consumer", "PG": "Consumer",
+    # Healthcare (extended)
+    "ABT": "Healthcare", "TMO": "Healthcare", "DHR": "Healthcare", "MDT": "Healthcare",
+    "BSX": "Healthcare", "SYK": "Healthcare", "ISRG": "Healthcare", "VRTX": "Healthcare",
+    "REGN": "Healthcare", "ELV": "Healthcare", "CI": "Healthcare", "CVS": "Healthcare",
+    "ZTS": "Healthcare", "HIMS": "Healthcare", "ACHV": "Healthcare", "SMMT": "Healthcare",
+    "ALB": "Healthcare", "CMPS": "Healthcare", "BFLY": "Healthcare", "AMDL": "Healthcare",
+    "SIDU": "Healthcare", "CMPX": "Healthcare", "NN": "Healthcare", "SRAD": "Healthcare",
+    "TSLR": "Healthcare", "SGML": "Healthcare",
+    # Finance (extended)
+    "AXP": "Finance", "SPGI": "Finance", "ICE": "Finance", "AON": "Finance",
+    "MMC": "Finance", "USB": "Finance", "ADP": "Finance",
+    # Crypto / Crypto-adjacent
+    "MARA": "Crypto", "RIOT": "Crypto", "CLSK": "Crypto", "HUT": "Crypto",
+    "BITF": "Crypto", "CIFR": "Crypto", "WULF": "Crypto",
+    # Education
+    "TAL": "Education", "EDU": "Education", "GOTU": "Education", "DAO": "Education",
+    # Media / Communication
+    "TMUS": "Media", "T": "Media", "VZ": "Media", "CMCSA": "Media",
+    # REIT
+    "PLD": "REIT", "EQIX": "REIT", "AMT": "REIT", "CCI": "REIT", "SPG": "REIT",
+    # Utilities
+    "NEE": "Utilities", "DUK": "Utilities", "SO": "Utilities", "AEP": "Utilities",
+    # Materials / Chemicals
+    "LIN": "Materials", "APD": "Materials", "SHW": "Materials", "ECL": "Materials",
+    "VSH": "Materials", "ALM": "Materials", "RUM": "Materials",
+    # Industrial (extended)
+    "UNP": "Industrial", "CSX": "Industrial", "FDX": "Industrial", "NOC": "Industrial",
+    "MMM": "Industrial", "ETN": "Industrial", "EMR": "Industrial", "WM": "Industrial",
 }
 
 

@@ -234,6 +234,12 @@ def calculate_metrics(journal, scorecard, account, positions):
         "wheel": {"trades": 0, "wins": 0, "pnl": 0},
         "mean_reversion": {"trades": 0, "wins": 0, "pnl": 0},
         "breakout": {"trades": 0, "wins": 0, "pnl": 0},
+        # Round-10: PEAD (Post-Earnings Drift) — without this bucket,
+        # every PEAD trade routes through record_trade_close with
+        # strategy="pead" and the `if strat in strategy_breakdown`
+        # filter silently drops it, skewing win-rate math and making
+        # PEAD invisible in the scorecard CLI summary.
+        "pead": {"trades": 0, "wins": 0, "pnl": 0},
     }
     # Normalize strategy name to match the canonical lowercase-underscore
     # form used as keys above. Without this, a journal entry with

@@ -57,8 +57,12 @@ LEARNED_WEIGHTS_PATH = os.environ.get("LEARNED_WEIGHTS_PATH", os.path.join(DATA_
 # Maximum weight change per update (20%)
 MAX_CHANGE = 0.2
 
-# Strategy name mapping (journal uses these keys)
-STRATEGIES = ["trailing_stop", "mean_reversion", "breakout", "copy_trading", "wheel"]
+# Strategy name mapping (journal uses these keys).
+# Round-10: added pead so the weekly learner picks up Post-Earnings
+# Drift trades. Without this, pead trades never contribute to
+# multipliers, hold-day learning, or price-range preferences, and
+# learned_weights.json has no pead entry for the screener to read back.
+STRATEGIES = ["trailing_stop", "mean_reversion", "breakout", "copy_trading", "wheel", "pead"]
 
 # Default hold days per strategy (used when not enough data)
 DEFAULT_HOLD_DAYS = {
@@ -67,6 +71,7 @@ DEFAULT_HOLD_DAYS = {
     "breakout": 3,
     "copy_trading": 30,
     "wheel": 21,
+    "pead": 45,  # Bernard & Thomas drift window mid-point (30-60d)
 }
 
 # Default price range preferences (used when not enough data)
@@ -76,6 +81,7 @@ DEFAULT_PRICE_RANGES = {
     "breakout": "$20-50",
     "copy_trading": "$100-500",
     "wheel": "$10-50",
+    "pead": "$50-500",  # PEAD plays large/mid caps with analyst coverage
 }
 
 # Price range bins

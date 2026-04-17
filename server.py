@@ -1593,13 +1593,21 @@ def main():
     print(f"Dashboard running at http://localhost:{port}")
     print("Press Ctrl+C to stop")
 
-    # Start cloud scheduler (makes bot autonomous 24/7 on Railway)
+    # Start cloud scheduler (makes bot autonomous 24/7 on Railway).
+    # Round-10 audit: on a scheduler-start failure we USED to just log
+    # a warning and keep the HTTP server running — that produced a
+    # zombie state where /healthz returned 503 forever (staleness
+    # threshold tripped), Railway restarted 10 times, then gave up
+    # and let the container hold idle. Exit with a non-zero code
+    # instead so Railway redeploys us cleanly.
     if SCHEDULER_AVAILABLE and os.environ.get("ENABLE_CLOUD_SCHEDULER", "true").lower() == "true":
         try:
             start_scheduler()
             print("[INFO] Cloud scheduler started — bot running autonomously", flush=True)
         except Exception as e:
-            print(f"[WARN] Could not start cloud scheduler: {e}", flush=True)
+            print(f"[FATAL] Could not start cloud scheduler: {e}. Exiting for restart.", flush=True)
+            import sys as _sys_exit
+            _sys_exit.exit(1)
 
     # Register SIGTERM (Railway redeploy) + SIGINT (Ctrl+C) handlers for
     # graceful shutdown. Without these, Python exits immediately and any

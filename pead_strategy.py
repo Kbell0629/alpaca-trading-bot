@@ -128,7 +128,7 @@ def _fetch_yfinance(symbols: list[str]) -> list[dict]:
         return []
 
     out: list[dict] = []
-    today = date.today()
+    today = now_et().date()  # ET, not UTC — matches scheduler + monitor dates
     cutoff_date = today - timedelta(days=MAX_DAYS_SINCE_REPORT * 2)  # calendar pad
     next_earnings_block = today + timedelta(days=HOLDING_PERIOD_DAYS - 5)
 
