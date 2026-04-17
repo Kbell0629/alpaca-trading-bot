@@ -1100,9 +1100,9 @@ def process_strategy_file(user, filepath, strat):
 
     # Trailing-stop exit — applied to every non-wheel entry strategy.
     # Round-10 architecture: trailing_stop is an exit policy, not an
-    # entry, so breakout / copy_trading / legacy-trailing_stop all
-    # share the same floor-raising logic.
-    if strategy_type in ("trailing_stop", "breakout", "copy_trading"):
+    # entry, so breakout / pead / copy_trading / legacy-trailing_stop
+    # all share the same floor-raising logic.
+    if strategy_type in ("trailing_stop", "breakout", "copy_trading", "pead"):
         highest = state.get("highest_price_seen") or entry
         if price > highest:
             state["highest_price_seen"] = price
@@ -1150,6 +1150,58 @@ def process_strategy_file(user, filepath, strat):
                 notify_user(user, f"Profit taken on {symbol}: sold at ${price:.2f} (+{((price/entry-1)*100):.1f}%)", "exit")
                 record_trade_close(user, symbol, strategy_type, price, pnl,
                                     "target_hit", qty=shares, side="sell")
+
+    # PEAD time-based exit + earnings-event guard.
+    # PEAD's edge is the 30-60 day post-earnings drift; holding past
+    # the window risks giving back gains AND running into the next
+    # earnings event (which would re-roll the dice on a different SUE).
+    # Two exit triggers:
+    #   1. max_hold_days reached (default 60d) → close at market
+    #   2. next earnings within exit_before_next_earnings_days (5d) →
+    #      close to avoid event risk (signal recorded at deploy time
+    #      from yfinance; refreshed on each PEAD scan)
+    if strategy_type == "pead":
+        try:
+            created_str = strat.get("created") or ""
+            # Created is "YYYY-MM-DD" (no tz). Compare to ET date.
+            created_dt = datetime.strptime(created_str, "%Y-%m-%d").date()
+            days_held = (get_et_time().date() - created_dt).days
+            max_hold = int(rules.get("max_hold_days", 60))
+            should_exit_time = days_held >= max_hold
+            should_exit_earnings = False
+            sig = rules.get("pead_signal") or {}
+            next_e = sig.get("next_earnings_date")
+            if next_e:
+                try:
+                    next_dt = datetime.strptime(next_e, "%Y-%m-%d").date()
+                    days_to_earnings = (next_dt - get_et_time().date()).days
+                    buffer_days = int(rules.get("exit_before_next_earnings_days", 5))
+                    should_exit_earnings = 0 < days_to_earnings <= buffer_days
+                except Exception:
+                    pass
+            if should_exit_time or should_exit_earnings:
+                reason = ("pead_window_complete" if should_exit_time
+                          else "pre_earnings_exit")
+                order = user_api_post(user, "/orders", {
+                    "symbol": symbol, "qty": str(shares), "side": "sell",
+                    "type": "market", "time_in_force": "day"
+                })
+                if isinstance(order, dict) and "id" in order:
+                    strat["status"] = "closed"
+                    state["exit_reason"] = reason
+                    state["exit_price"] = price
+                    pnl = (price - entry) * shares
+                    pnl_pct = ((price / entry - 1) * 100) if entry else 0
+                    log(f"[{user['username']}] {symbol}: PEAD exit ({reason}, "
+                        f"held {days_held}d). P&L ${pnl:.2f} ({pnl_pct:+.1f}%)", "monitor")
+                    notify_user(user,
+                                f"PEAD exit on {symbol}: ${price:.2f} "
+                                f"({pnl_pct:+.1f}% in {days_held}d, {reason})",
+                                "exit")
+                    record_trade_close(user, symbol, strategy_type, price,
+                                        pnl, reason, qty=shares, side="sell")
+        except Exception as _e:
+            log(f"[{user['username']}] {symbol}: PEAD timer check failed: {_e}", "monitor")
 
     # Feature 8: Partial profit taking
     check_profit_ladder(user, filepath, strat, price, entry, shares)
@@ -1369,11 +1421,11 @@ def run_auto_deployer(user):
         # ignore it.
         #
         # Round-10 architecture note: accepted entries are
-        # {breakout, mean_reversion}. Trailing Stop is an EXIT policy
-        # attached via `exit_policy`. Wheel runs in its own scheduler
-        # path. Copy Trading is currently disabled — no free data
-        # provider — see update_dashboard.COPY_TRADING_ENABLED.
-        accepted_entries = ("breakout", "mean_reversion")
+        # {breakout, mean_reversion, pead}. Trailing Stop is an EXIT
+        # policy attached via `exit_policy`. Wheel runs in its own
+        # scheduler path. Copy Trading is currently disabled — no
+        # free data provider — see update_dashboard.COPY_TRADING_ENABLED.
+        accepted_entries = ("breakout", "mean_reversion", "pead")
         if best_strat in accepted_entries and news_map.get(symbol) == "bearish":
             log(f"[{user['username']}] {symbol}: Skipped (bearish news signal) — trying next pick", "deployer")
             skip_reasons.append(f"{symbol}: bearish news signal")
@@ -1419,16 +1471,33 @@ def run_auto_deployer(user):
             # with `stop_order_id` + `highest_price_seen`, so nothing
             # in the monitor needs to know which entry strategy opened
             # the position — the exit logic is shared.
-            # Copy Trading inherits the mean-reversion style defaults
-            # (wider stop, later trailing activation) because politician
-            # buys are slow-moving signals, not breakout spikes.
+            # Per-strategy tuning:
+            #   breakout       — tight 5% stop, immediate trail (high
+            #                     conviction, fails fast if it fails)
+            #   mean_reversion — wider 10% stop, +10% trail trigger
+            #                     (volatile setup, give it room)
+            #   pead           — 8% stop, +8% trail trigger, 8% trail
+            #                     distance, 60-day max hold (PEAD drift
+            #                     window — Bernard & Thomas 1989)
             is_breakout = best_strat == "breakout"
-            rules = {
-                "stop_loss_pct": 0.05 if is_breakout else 0.10,
-                "trailing_activation_pct": 0 if is_breakout else 0.10,
-                "trailing_distance_pct": 0.05,
-                "exit_policy": "trailing_stop",
-            }
+            is_pead = best_strat == "pead"
+            if is_pead:
+                rules = {
+                    "stop_loss_pct": 0.08,
+                    "trailing_activation_pct": 0.08,
+                    "trailing_distance_pct": 0.08,
+                    "exit_policy": "trailing_stop",
+                    "max_hold_days": 60,  # PEAD drift window
+                    "exit_before_next_earnings_days": 5,
+                    "pead_signal": pick.get("pead_signal"),
+                }
+            else:
+                rules = {
+                    "stop_loss_pct": 0.05 if is_breakout else 0.10,
+                    "trailing_activation_pct": 0 if is_breakout else 0.10,
+                    "trailing_distance_pct": 0.05,
+                    "exit_policy": "trailing_stop",
+                }
             strat_file = {
                 "symbol": symbol,
                 "strategy": best_strat,
@@ -2546,20 +2615,26 @@ def scheduler_loop():
             # Capitol Trades refresh DISABLED — no working free data
             # provider as of 2026. The nightly task below is preserved
             # for re-enable when a source returns (see
-            # update_dashboard.COPY_TRADING_ENABLED). To flip back on:
-            # set the flag, uncomment the block, and set QUIVER_API_KEY
-            # (paid) or an alternative provider env var.
-            #
-            # if now_et.hour == 5 and now_et.minute >= 0:
-            #     if should_run_daily_at("capitol_trades_refresh", 5, 0,
-            #                             max_late_seconds=4*3600):
-            #         try:
-            #             import capitol_trades
-            #             result = capitol_trades.refresh_cache()
-            #             log(f"Capitol Trades refresh: {result.get('count', 0)} rows",
-            #                 "capitol")
-            #         except Exception as e:
-            #             log(f"Capitol Trades refresh failed: {e}", "capitol")
+            # update_dashboard.COPY_TRADING_ENABLED).
+
+            # PEAD refresh — runs ONCE (not per-user) at 6 AM ET.
+            # Yfinance scrapes Yahoo for recent earnings (actuals,
+            # estimates, surprise %). 6 AM is after most overnight
+            # earnings reports are published and well before the
+            # 9:35 AM auto-deployer needs the cache. Universe is
+            # ~120 large/mid-caps; ~50s with 0.4s spacing per Yahoo
+            # call. No-ops silently if yfinance isn't installed.
+            if now_et.hour == 6 and now_et.minute >= 0:
+                if should_run_daily_at("pead_refresh", 6, 0,
+                                        max_late_seconds=4*3600):
+                    try:
+                        import pead_strategy
+                        result = pead_strategy.refresh_cache()
+                        log(f"PEAD refresh: scanned {result.get('universe_size', 0)} symbols, "
+                            f"found {result.get('signal_count', 0)} signals",
+                            "pead")
+                    except Exception as e:
+                        log(f"PEAD refresh failed: {e}", "pead")
 
             # Task-staleness watchdog — alert if an interval-based task is
             # overdue during market hours. Each alert fires at most once

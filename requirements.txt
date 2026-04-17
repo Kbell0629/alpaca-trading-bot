@@ -14,3 +14,11 @@ cryptography>=42.0.0,<46.0.0
 # check but are trivially guessable. Graceful degradation at runtime: if
 # this package fails to install, auth falls back to the 8-char minimum only.
 zxcvbn>=4.4.28,<5.0.0
+
+# yfinance — free Yahoo Finance scraper. Used by pead_strategy.py to
+# fetch EPS actuals + estimates + surprise % needed for the
+# Post-Earnings Announcement Drift strategy (Alpaca doesn't expose
+# earnings-surprise data; yfinance has been the de-facto free source
+# for ~5 years). Graceful degrade: if import fails at runtime, PEAD
+# scoring returns 0 silently and other strategies are unaffected.
+yfinance>=0.2.40,<0.3.0

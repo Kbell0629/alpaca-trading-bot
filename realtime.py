@@ -190,7 +190,7 @@ def check_stop_conditions(strategies, prices):
         # trailing_activated) is the same regardless of which entry
         # strategy opened the position — the exit logic is unified
         # (round-10 architecture).
-        elif strat.get("strategy") in ("trailing_stop", "breakout", "copy_trading"):
+        elif strat.get("strategy") in ("trailing_stop", "breakout", "copy_trading", "pead"):
             highest = state.get("highest_price_seen", 0)
             trailing_active = state.get("trailing_activated", False)
             trail_pct = strat.get("rules", {}).get("trailing_distance_pct", 0.05)

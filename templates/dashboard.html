@@ -1356,11 +1356,12 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
       <select id="deployStrategy" onchange="onStrategyChange()">
         <option value="breakout">Breakout - Catches explosive moves on high volume</option>
         <option value="mean_reversion">Mean Reversion - Buys oversold dips, sells at recovery</option>
+        <option value="pead">PEAD - Rides 30-60d drift after big earnings beats</option>
         <option value="wheel">Wheel Strategy - Sells options, collects premium</option>
       </select>
       <!-- Trailing Stop intentionally NOT listed: it's the default exit
-           policy attached to every breakout / mean reversion entry, not
-           an entry strategy you pick. See COPY_TRADING_ENABLED note. -->
+           policy attached to every breakout / mean reversion / pead
+           entry, not an entry strategy you pick. -->
 
       <div class="strategy-info-text" id="deployStrategyInfo"></div>
     </div>
@@ -2614,10 +2615,15 @@ function buildNextActionsPanel(d) {
             '<span class="action">Daily backup: snapshots users.db + all per-user data (14-day retention)</span>' +
             '<span class="badge-on">AUTO</span>' +
         '</div>' +
+        '<div class="timeline-item">' +
+            '<span class="time">6:00 AM ET</span>' +
+            '<span class="action">PEAD scan: yfinance pulls EPS actuals/estimates for ~120 large-caps; flags symbols that beat by 5%+ within last 3 days for the post-earnings drift play</span>' +
+            '<span class="badge-on">AUTO</span>' +
+        '</div>' +
         // Morning deploys
         '<div class="timeline-item' + (adOn ? '' : ' off') + '">' +
             '<span class="time">9:35 AM ET</span>' +
-            '<span class="action">Auto-Deployer screens ~12,000 stocks, deploys top picks (breakout / mean reversion). Every entry uses a trailing-stop exit.</span>' +
+            '<span class="action">Auto-Deployer screens ~12,000 stocks, deploys top picks (breakout / mean reversion / PEAD). Every entry uses a trailing-stop exit.</span>' +
             '<span class="' + (adOn ? 'badge-on' : 'badge-off') + '">' + (adOn ? 'ON' : 'OFF') + '</span>' +
         '</div>' +
         '<div class="timeline-item' + (wheelOn ? '' : ' off') + '">' +
@@ -2910,7 +2916,7 @@ function buildShortStrategyCard(d) {
 
     return (
         '<div class="strategy-card short-sell">' +
-            '<h2>5. Short Selling</h2>' +
+            '<h2>6. Short Selling</h2>' +
             '<div class="subtitle">Bear market plays — profit when stocks fall</div>' +
             '<div class="stat-grid">' +
                 '<div class="stat"><div class="stat-label">Status</div><div class="stat-value">' + statusBadge + '</div></div>' +
@@ -3039,7 +3045,7 @@ function renderDashboard() {
     const picks = d.picks || [];
     const top3 = picks.slice(0,3);
     const maxScore = Math.max(...picks.map(p=>p.best_score||0), 1);
-    const stratColors = {'Trailing Stop':'#3b82f6','Copy Trading':'#10b981','Wheel Strategy':'#8b5cf6','Mean Reversion':'#f59e0b','Breakout':'#ef4444'};
+    const stratColors = {'Trailing Stop':'#3b82f6','Copy Trading':'#10b981','Wheel Strategy':'#8b5cf6','Mean Reversion':'#f59e0b','Breakout':'#ef4444','PEAD':'#06b6d4'};
     const rankLabels = ['TOP PICK','RUNNER UP','STRONG OPTION'];
 
     // Helper: build technical indicators HTML for a pick
@@ -3094,6 +3100,29 @@ function renderDashboard() {
         '</div>';
     }
 
+    // Helper: PEAD earnings-beat badge. Renders only when pead_signal
+    // is populated on the pick (i.e. the screener found a recent
+    // qualifying earnings beat for this symbol).
+    function buildPeadSignal(p) {
+        const sig = p.pead_signal;
+        if (!sig) return '';
+        const surprise = sig.surprise_pct;
+        const days = sig.days_since_report;
+        const actual = sig.eps_actual;
+        const est = sig.eps_estimate;
+        const next_e = sig.next_earnings_date || '';
+        const ageS = (typeof days === 'number') ? (days + 'd ago') : 'recent';
+        const surprisePart = (typeof surprise === 'number')
+            ? ('+' + surprise.toFixed(1) + '%')
+            : 'beat';
+        return '<div class="pick-pead-signal" style="font-size:11px;color:#06b6d4;background:rgba(6,182,212,0.08);border:1px solid rgba(6,182,212,0.25);border-radius:6px;padding:6px 10px;margin-top:6px;line-height:1.4">' +
+            '\ud83d\udcc8 EPS beat <strong>' + esc(surprisePart) + '</strong>' +
+            ' (actual $' + esc(String(actual)) + ' vs est $' + esc(String(est)) + ')' +
+            ', ' + esc(ageS) +
+            (next_e ? '. Next earnings <strong>' + esc(next_e) + '</strong> — close 5d before.' : '') +
+        '</div>';
+    }
+
     let picksHtml = '';
     top3.forEach((p,i) => {
         const color = stratColors[p.best_strategy] || '#3b82f6';
@@ -3104,6 +3133,7 @@ function renderDashboard() {
         const wPct = Math.max(5, Math.min(100, (p.wheel_score||0) / maxScore * 100));
         const mrPct = Math.max(5, Math.min(100, (p.mean_reversion_score||0) / maxScore * 100));
         const boPct = Math.max(5, Math.min(100, (p.breakout_score||0) / maxScore * 100));
+        const peadPct = Math.max(5, Math.min(100, (p.pead_score||0) / maxScore * 100));
         // Guard against 0 price (Infinity shares) and missing/zero recommended_shares
         const safePrice = (p.price && p.price > 0) ? p.price : 1;
         let recShares = p.recommended_shares;
@@ -3136,10 +3166,12 @@ function renderDashboard() {
             '' +
             '<div class="score-row"><span class="score-label" style="color:#8b5cf6">Wheel</span><div class="score-bar-bg"><div class="score-bar" style="width:' + wPct + '%;background:#8b5cf6"></div></div><span class="score-val">' + Math.round(p.wheel_score||0) + '</span></div>' +
             '<div class="score-row"><span class="score-label" style="color:#f59e0b">MeanRev</span><div class="score-bar-bg"><div class="score-bar" style="width:' + mrPct + '%;background:#f59e0b"></div></div><span class="score-val">' + Math.round(p.mean_reversion_score||0) + '</span></div>' +
-            '<div class="score-row"><span class="score-label" style="color:#ef4444">Breakout</span><div class="score-bar-bg"><div class="score-bar" style="width:' + boPct + '%;background:#ef4444"></div></div><span class="score-val">' + Math.round(p.breakout_score||0) + '</span></div></div>' +
+            '<div class="score-row"><span class="score-label" style="color:#ef4444">Breakout</span><div class="score-bar-bg"><div class="score-bar" style="width:' + boPct + '%;background:#ef4444"></div></div><span class="score-val">' + Math.round(p.breakout_score||0) + '</span></div>' +
+            '<div class="score-row"><span class="score-label" style="color:#06b6d4" title="Post-Earnings Drift — drives 30-60d holds after big beats">PEAD</span><div class="score-bar-bg"><div class="score-bar" style="width:' + peadPct + '%;background:#06b6d4"></div></div><span class="score-val">' + Math.round(p.pead_score||0) + '</span></div></div>' +
             buildPickIndicators(p) +
             buildPickSocial(p) +
             buildCopySignal(p) +
+            buildPeadSignal(p) +
             '<div class="backtest-result">Rec. shares: ' + recShares + ' | 30d backtest: <span class="' + (parseFloat(backtestPct)>=0?'positive':'negative') + '">' + (parseFloat(backtestPct)>=0?'+':'') + backtestPct + '%</span></div>' +
             (p.earnings_warning ? '<div class="earnings-badge">\u26A0 Earnings Soon</div>' : '') +
             '<div class="pick-actions">' +
@@ -3540,6 +3572,21 @@ function renderDashboard() {
                     '<button class="btn-danger btn-sm" onclick="if(confirm(\'Stop breakout strategy?\')) fetch(\'/api/stop-strategy\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({strategy:\'breakout\'})}).then(r=>r.json()).then(d=>{toast(d.message||\'Stopped\',\'info\');addLog(\'Stopped breakout strategy\',\'info\');refreshData();})">Stop</button>' +
                 '</div>' +
             '</div>' +
+            '<div class="strategy-card pead" style="border-top:3px solid #06b6d4">' +
+                '<h2>5. PEAD <span style="font-size:11px;font-weight:500;color:var(--text-dim);text-transform:none;letter-spacing:0">— Post-Earnings Drift</span></h2>' +
+                '<div class="subtitle">Ride the 30-60d drift after big earnings beats</div>' +
+                '<div class="stat-grid">' +
+                    '<div class="stat"><div class="stat-label">How It Works</div><div class="stat-value" style="font-size:12px">Buys stocks that beat EPS by 5%+ within last 3 days</div></div>' +
+                    '<div class="stat"><div class="stat-label">Status</div><div class="stat-value"><span class="badge-active">READY</span></div></div>' +
+                    '<div class="stat"><div class="stat-label">Hold Window</div><div class="stat-value" style="font-size:12px">Up to 60 days (Bernard & Thomas 1989)</div></div>' +
+                    '<div class="stat"><div class="stat-label">Stop-Loss</div><div class="stat-value">8% trailing</div></div>' +
+                '</div>' +
+                '<div class="strategy-visual"><strong>Rules:</strong> Beat 5%+ | Gap up 2%+ | Volume surge 50%+ | 8% stop, 8% trail | Close 5d before next earnings | Skip if next earnings within hold window</div>' +
+                '<div class="strategy-actions">' +
+                    '<button class="btn-warning btn-sm" onclick="if(confirm(\'Pause PEAD strategy?\')) fetch(\'/api/pause-strategy\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({strategy:\'pead\'})}).then(r=>r.json()).then(d=>{toast(d.message||\'Paused\',\'info\');addLog(\'Paused PEAD strategy\',\'info\');refreshData();})">Pause</button>' +
+                    '<button class="btn-danger btn-sm" onclick="if(confirm(\'Stop PEAD strategy?\')) fetch(\'/api/stop-strategy\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({strategy:\'pead\'})}).then(r=>r.json()).then(d=>{toast(d.message||\'Stopped\',\'info\');addLog(\'Stopped PEAD strategy\',\'info\');refreshData();})">Stop</button>' +
+                '</div>' +
+            '</div>' +
             buildShortStrategyCard(d) +
         '</div>' +
         '</div>' +
@@ -3621,7 +3668,7 @@ function renderDashboard() {
         '<div id="section-settings">' +
             buildStrategyTemplates(d) +
         '</div>' +
-        '<div class="footer">Stock Trading Bot - Strategies: Trailing Stop (exit) | Wheel | Mean Reversion | Breakout | Short Selling - Full market screener across NYSE, NASDAQ, ARCA</div>';
+        '<div class="footer">Stock Trading Bot - Strategies: Trailing Stop (exit) | Wheel | Mean Reversion | Breakout | PEAD | Short Selling - Full market screener across NYSE, NASDAQ, ARCA</div>';
 
     renderLog();
     refreshSchedulerStatus();

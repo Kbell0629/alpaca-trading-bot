@@ -291,11 +291,21 @@ def fetch_all_snapshots(symbols):
 # is preserved; flip the flag below to re-enable once a working data
 # source is available.
 COPY_TRADING_ENABLED = False
-ENTRY_STRATEGIES = (
-    ("Breakout", "Mean Reversion", "Copy Trading", "Wheel Strategy")
-    if COPY_TRADING_ENABLED
-    else ("Breakout", "Mean Reversion", "Wheel Strategy")
-)
+
+# PEAD (Post-Earnings Announcement Drift) — entry strategy that scores
+# stocks which just beat earnings and rides the academically-validated
+# 30-60 day post-earnings drift. Data via yfinance (free, no key).
+# See pead_strategy.py.
+PEAD_ENABLED = True
+
+# ENTRY_STRATEGIES is the white-list for the screener competition.
+# Compose dynamically so flag flips don't require list-edit churn.
+_ENTRY_BASE = ["Breakout", "Mean Reversion", "Wheel Strategy"]
+if COPY_TRADING_ENABLED:
+    _ENTRY_BASE.append("Copy Trading")
+if PEAD_ENABLED:
+    _ENTRY_BASE.append("PEAD")
+ENTRY_STRATEGIES = tuple(_ENTRY_BASE)
 
 
 def pick_best_entry_strategy(scores):
@@ -371,6 +381,18 @@ def score_stocks(snapshots):
                 except Exception:
                     pass
 
+            # PEAD Score — non-zero only if symbol just beat earnings
+            # by >= MIN_SURPRISE_PCT and the cache says it's still in
+            # the post-announcement drift window. See pead_strategy.py.
+            pead_score = 0
+            pead_signal = None
+            if PEAD_ENABLED:
+                try:
+                    import pead_strategy
+                    pead_score, pead_signal = pead_strategy.score_symbol(symbol)
+                except Exception:
+                    pass
+
             # Wheel Strategy Score (bell curve: moderate volatility scores highest)
             if volatility <= 5:
                 wheel_score = volatility * 3
@@ -434,10 +456,13 @@ def score_stocks(snapshots):
                 "Wheel Strategy": wheel_score,
                 "Mean Reversion": mean_reversion_score,
                 "Breakout": breakout_score,
+                "PEAD": pead_score,
             }
             scores = {"Trailing Stop": 0, **entry_scores}
-            best_strategy = max(entry_scores, key=entry_scores.get)
-            best_score = entry_scores[best_strategy]
+            # Restrict the argmax to entries we actually want competing
+            # — pick_best_entry_strategy enforces ENTRY_STRATEGIES.
+            best_strategy = pick_best_entry_strategy(scores)
+            best_score = entry_scores.get(best_strategy, 0)
 
             # Sector (Improvement 3)
             sector = SECTOR_MAP.get(symbol, "Other")
@@ -459,6 +484,8 @@ def score_stocks(snapshots):
                 "mean_reversion_score": mean_reversion_score,
                 "breakout_score": breakout_score,
                 "breakout_note": breakout_note,
+                "pead_score": pead_score,
+                "pead_signal": pead_signal,  # earnings detail for UI tooltip
                 "sector": sector,
             })
         except Exception:
@@ -683,6 +710,7 @@ def apply_strategy_rotation(picks, market_regime, vix_estimate=None):
             'copy_trading': 1.1,   # dormant — kept for when COPY_TRADING_ENABLED flips
             'wheel': 0.8,
             'short_sell': 0.3,  # Almost never short in bull
+            'pead': 1.2,  # Beats drift longer in bull markets
         },
         'neutral': {
             'breakout': 1.0,
@@ -690,6 +718,7 @@ def apply_strategy_rotation(picks, market_regime, vix_estimate=None):
             'copy_trading': 1.0,
             'wheel': 1.3,  # Range-bound = premium
             'short_sell': 0.7,
+            'pead': 1.0,  # Standard PEAD — academic baseline
         },
         'bear': {
             'breakout': 0.5,  # False breakouts
@@ -697,6 +726,7 @@ def apply_strategy_rotation(picks, market_regime, vix_estimate=None):
             'copy_trading': 0.9,
             'wheel': 1.4,  # High vol = fat premiums
             'short_sell': 1.5,  # Bear market shorts
+            'pead': 0.8,  # Beats get sold into in bear markets
         }
     }
     weights = regime_weights.get(market_regime, regime_weights['neutral'])
@@ -708,6 +738,10 @@ def apply_strategy_rotation(picks, market_regime, vix_estimate=None):
         else:
             pick['copy_score'] = 0
         pick['wheel_score'] = pick.get('wheel_score', 0) * weights['wheel']
+        if PEAD_ENABLED:
+            pick['pead_score'] = pick.get('pead_score', 0) * weights.get('pead', 1.0)
+        else:
+            pick['pead_score'] = 0
         # Trailing Stop intentionally NOT weighted — it's an exit policy.
         scores = {
             'Trailing Stop': 0,
@@ -715,6 +749,7 @@ def apply_strategy_rotation(picks, market_regime, vix_estimate=None):
             'Wheel Strategy': pick.get('wheel_score', 0),
             'Mean Reversion': pick.get('mean_reversion_score', 0),
             'Breakout': pick.get('breakout_score', 0),
+            'PEAD': pick.get('pead_score', 0),
         }
         pick['scores'] = scores
         pick['best_strategy'] = pick_best_entry_strategy(scores)

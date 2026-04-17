@@ -57,6 +57,8 @@ class StrategyHandlerMixin:
             self.deploy_mean_reversion(symbol, qty)
         elif strategy == "breakout":
             self.deploy_breakout(symbol, qty)
+        elif strategy == "pead":
+            self.deploy_pead(symbol, qty)
         else:
             self.send_json({"error": f"Unknown strategy: {strategy}"}, 400)
     def deploy_trailing_stop(self, symbol, qty):
@@ -400,6 +402,84 @@ class StrategyHandlerMixin:
             "price": price,
             "note": "Trailing stop will be placed by strategy-monitor after buy fills.",
         })
+    def deploy_pead(self, symbol, qty):
+        """Manual PEAD entry — buys shares with 8% stop / 8% trail / 60d
+        max hold. Pulls the current PEAD signal from cache (so the
+        strategy file records the surprise % and next-earnings date the
+        monitor needs for time-based exits)."""
+        snap_url = f"{self.user_data_endpoint}/stocks/{symbol}/snapshot?feed=iex"
+        snap = self.user_api_get(snap_url)
+        if "error" in snap:
+            snap_url = f"{self.user_data_endpoint}/stocks/{symbol}/snapshot"
+            snap = self.user_api_get(snap_url)
+        price = 0
+        if isinstance(snap, dict):
+            lt = snap.get("latestTrade", {})
+            price = lt.get("p", 0)
+        if not price:
+            self.send_json({"error": f"Could not get price for {symbol}"}, 400)
+            return
+
+        # Pull PEAD signal from cache (may be None if user is force-deploying
+        # a symbol that isn't on today's list — that's allowed; the monitor
+        # just won't have an exit_before_next_earnings_days trigger).
+        pead_signal = None
+        try:
+            import pead_strategy
+            _score, pead_signal = pead_strategy.score_symbol(symbol)
+        except Exception:
+            pass
+
+        buy_order = self.user_api_post(f"{self.user_api_endpoint}/orders", {
+            "symbol": symbol,
+            "qty": str(qty),
+            "side": "buy",
+            "type": "market",
+            "time_in_force": "day",
+        })
+        if isinstance(buy_order, dict) and "error" in buy_order:
+            self.send_json({"error": f"Buy order failed: {buy_order['error']}"}, 400)
+            return
+        buy_order_id = buy_order.get("id", "")
+
+        strategy_data = {
+            "symbol": symbol,
+            "strategy": "pead",
+            "created": now_et().strftime("%Y-%m-%d"),
+            "entry_price_estimate": price,
+            "initial_qty": qty,
+            "status": "awaiting_fill",
+            "rules": {
+                "stop_loss_pct": 0.08,
+                "trailing_activation_pct": 0.08,
+                "trailing_distance_pct": 0.08,
+                "exit_policy": "trailing_stop",
+                "max_hold_days": 60,
+                "exit_before_next_earnings_days": 5,
+                "pead_signal": pead_signal,
+            },
+            "state": {
+                "entry_order_id": buy_order_id,
+                "stop_order_id": None,
+                "highest_price_seen": None,
+                "trailing_activated": False,
+                "current_stop_price": None,
+                "total_shares_held": 0,
+                "stop_pending": True,
+                "entry_fill_price": None,
+            },
+        }
+        server.save_json(os.path.join(self._user_strategies_dir(), f"pead_{symbol}.json"), strategy_data)
+
+        self.send_json({
+            "success": True,
+            "strategy": "pead",
+            "symbol": symbol,
+            "buy_order_id": buy_order_id,
+            "price": price,
+            "pead_signal": pead_signal,
+            "note": "Trailing stop placed after fill. Auto-exits at 60d or 5d before next earnings.",
+        })
     def _find_strategy_files(self, strategy_key):
         """Find strategy JSON files matching the given strategy key."""
         patterns = {
@@ -408,6 +488,7 @@ class StrategyHandlerMixin:
             "wheel": "wheel_strategy.json",
             "mean_reversion": "mean_reversion_*.json",
             "breakout": "breakout_*.json",
+            "pead": "pead_*.json",
         }
         # Reject unknown strategy keys to prevent glob injection via user input
         # (e.g. strategy="../*" matching files outside the strategies dir).

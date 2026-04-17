@@ -269,7 +269,7 @@ Recent actions taken by you or the bot. Color-coded:
 
 ## 📈 Trading Strategies — Plain English
 
-The bot has **3 entry strategies** (Breakout, Mean Reversion, Wheel), **1 universal exit policy** (Trailing Stop), and **1 gated bear-market entry** (Short Selling). Copy Trading is currently disabled — see the note below.
+The bot has **4 entry strategies** (Breakout, Mean Reversion, Wheel, PEAD), **1 universal exit policy** (Trailing Stop), and **1 gated bear-market entry** (Short Selling). Copy Trading is currently disabled — see the note below.
 
 ### 🛡️ Trailing Stop — universal exit policy (always on)
 
@@ -301,14 +301,29 @@ The bot has **3 entry strategies** (Breakout, Mean Reversion, Wheel), **1 univer
 **When it wins:** Stocks drop 15%+ on weak volume with no real bad news.
 **When it loses:** "Catching falling knives" — buying stocks with real problems that keep falling.
 
-### 3. Breakout 🔴 (Catch the explosion)
+### 3. PEAD 🔵 (Post-Earnings Announcement Drift)
+
+**In plain English:** Stocks that beat earnings by a lot tend to keep drifting up for 30-60 days after the announcement — this is the most replicated anomaly in academic finance (Bernard & Thomas 1989). The bot scans large/mid-cap earnings every morning, flags any that beat by 5%+ within the last 3 days, and rides the drift with an 8% trailing stop and a 60-day max hold. It also closes 5 days before the next earnings event so it never gets caught in fresh surprise risk.
+
+**Example:**
+- AAPL reports Q4: actual $2.18, estimate $2.05 → +6.3% surprise → score = 8
+- Bot buys at next-day open with 8% stop, 8% trail
+- Stock drifts up over 30-60 days as institutions slowly add to their positions
+- Bot exits at +12-15% (trailing-stop trigger) or at the 60-day mark
+
+**When it wins:** Big quarterly beats by widely-followed names. Institutional money slowly absorbs the surprise.
+**When it loses:** Beat-on-low-bar setups, sector rotation against the stock, or another shock event during the hold.
+
+**Data source:** Yahoo Finance (free, via yfinance Python lib). EPS actuals + estimates + surprise % refreshed nightly at 6 AM ET.
+
+### 4. Breakout 🔴 (Catch the explosion)
 
 **In plain English:** When a stock breaks above its 20-day high on 2x normal volume, it often keeps running. The bot buys the breakout, sets a tight 5% stop (breakouts fail fast if they're going to fail), and rides the move up.
 
 **When it wins:** Real news catalysts create real breakouts.
 **When it loses:** "Fake breakouts" — stock pokes above and quickly falls back.
 
-### 4. Short Selling ⚫ (Profit when stocks fall — bear market only)
+### 5. Short Selling ⚫ (Profit when stocks fall — bear market only)
 
 **In plain English:** Borrow shares, sell them immediately at current price. When the stock falls, buy them back cheaper and return them. You keep the difference.
 
@@ -345,6 +360,7 @@ Each stock gets a score for each ENTRY strategy (Trailing Stop is an exit, Copy 
 - **Wheel Score** = moderate volatility scores highest (extreme gets penalized)
 - **Mean Reversion Score** = rewards big drops (but penalizes news-driven drops)
 - **Breakout Score** = daily change + volume surge multiplier (2x/3x volume tiers)
+- **PEAD Score** = > 0 only if the symbol just beat earnings by 5%+ within 3 days. Surprise-magnitude tiered (5-9% → 8 pts, 10-19% → 14, 20-49% → 22, 50%+ → 30). Refreshed nightly via yfinance.
 - **Momentum Score** (informational, not a competition entry) = momentum * 0.5 + volatility * 0.3 + volume surge — drives the trailing-stop exit on entries
 - **Copy Trading Score** = always 0 (disabled, no data provider)
 
