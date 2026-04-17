@@ -30,18 +30,9 @@
 nixPkgs = ["python312"]
 
 [phases.install]
-cmds = [
-    "python -m venv --copies /opt/venv && . /opt/venv/bin/activate && pip install -r requirements.txt",
-    # Make /usr/lib/x86_64-linux-gnu/*.so* visible to the default
-    # loader. We do this two ways for resilience:
-    #   1. Symlink every .so* file into /usr/lib/ — wildcard glob
-    #      catches libstdc++, libz, and any future transitive C dep
-    #      yfinance/numpy/pandas might pick up.
-    #   2. Also append the dir to /etc/ld.so.conf.d/ + ldconfig.
-    # On the previous deploy, ldconfig alone wasn't enough — the
-    # cache it built at build time apparently doesn't get used at
-    # runtime in this Nixpacks image. Symlinks are guaranteed to
-    # work because they live in the filesystem layer that persists.
-    "echo /usr/lib/x86_64-linux-gnu > /etc/ld.so.conf.d/multiarch.conf && ldconfig || true",
-    "for f in /usr/lib/x86_64-linux-gnu/*.so*; do ln -sf \"$f\" \"/usr/lib/$(basename $f)\" 2>/dev/null || true; done",
-]
+# Nixpacks default install. The C-lib path issues that yfinance + numpy
+# triggered are solved at process start by start.sh (sets LD_LIBRARY_PATH
+# before exec'ing python), not at install/build phase — earlier attempts
+# to fix it here all failed because the runtime image doesn't keep
+# /usr/lib changes from build, and Nix Python ignores ld.so.cache anyway.
+cmds = ["python -m venv --copies /opt/venv && . /opt/venv/bin/activate && pip install -r requirements.txt"]
