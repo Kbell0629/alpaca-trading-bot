@@ -2415,7 +2415,9 @@ function renderSchedulerPanel(s) {
         { key: 'daily_close',        name: 'Daily Close Summary',   schedule: 'Weekdays 4:05 PM ET',                  needsMarket: false },
         { key: 'weekly_learning',    name: 'Weekly Learning',       schedule: 'Fridays 5:00 PM ET',                   needsMarket: false },
         { key: 'monthly_rebalance',  name: 'Monthly Rebalance',     schedule: '1st trading day 9:45 AM ET',           needsMarket: false },
-        { key: 'daily_backup_all',   name: 'Daily Volume Backup',   schedule: 'Daily 3:00 AM ET (14-day retention)',  needsMarket: false }
+        { key: 'daily_backup_all',   name: 'Daily Volume Backup',   schedule: 'Daily 3:00 AM ET (14-day retention)',  needsMarket: false },
+        { key: 'pead_refresh',       name: 'PEAD Earnings Scan',    schedule: 'Daily 6:00 AM ET (yfinance)',          needsMarket: false },
+        { key: 'email_drain',        name: 'Email Queue Drain',     schedule: 'Every 60s (trade/exit/alert emails)',  needsMarket: false }
     ];
 
     var gridHtml = '<div class="scheduler-grid">';
