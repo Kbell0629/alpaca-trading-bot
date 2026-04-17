@@ -3200,10 +3200,23 @@ function renderDashboard() {
             buildPickSocial(p) +
             buildCopySignal(p) +
             buildPeadSignal(p) +
-            '<div class="backtest-result">Rec. shares: ' + recShares + ' | 30d backtest: <span class="' + (parseFloat(backtestPct)>=0?'positive':'negative') + '">' + (parseFloat(backtestPct)>=0?'+':'') + backtestPct + '%</span></div>' +
+            (function(){
+                const estCost = (Number(recShares)||0) * (Number(p.price)||0);
+                const portVal = Number(portfolioValue) || 0;
+                const costPctPortf = (portVal > 0) ? (estCost / portVal * 100) : 0;
+                return '<div class="backtest-result">'
+                    + 'Rec. <strong>' + recShares + ' shares</strong> @ '
+                    + fmtMoney(p.price) + ' = <strong>'
+                    + fmtMoney(estCost) + '</strong>'
+                    + (portVal > 0 ? ' <span style="opacity:0.7">(' + costPctPortf.toFixed(1) + '% of portfolio)</span>' : '')
+                    + ' | 30d backtest: <span class="'
+                    + (parseFloat(backtestPct)>=0?'positive':'negative') + '">'
+                    + (parseFloat(backtestPct)>=0?'+':'') + backtestPct + '%</span>'
+                    + '</div>';
+            })() +
             (p.earnings_warning ? '<div class="earnings-badge">\u26A0 Earnings Soon</div>' : '') +
             '<div class="pick-actions">' +
-            '<button class="pick-deploy-btn" onclick="openDeployModal(\'' + jsStr(p.symbol) + '\',\'' + jsStr(p.best_strategy) + '\',' + Number(recShares||0) + ',' + Number(p.price||0) + ')">Deploy ' + esc(p.best_strategy) + '</button></div></div>';
+            '<button class="pick-deploy-btn" onclick="openDeployModal(\'' + jsStr(p.symbol) + '\',\'' + jsStr(p.best_strategy) + '\',' + Number(recShares||0) + ',' + Number(p.price||0) + ')">Deploy ' + esc(p.best_strategy) + ' — ' + recShares + ' sh @ ' + fmtMoney((Number(recShares)||0)*(Number(p.price)||0)) + '</button></div></div>';
     });
     if (!picksHtml) picksHtml = '<div class="empty" style="grid-column:1/-1">No picks available - market may be closed</div>';
 

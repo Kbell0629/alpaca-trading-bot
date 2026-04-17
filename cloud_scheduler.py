@@ -338,6 +338,12 @@ def user_api_post(user, url_path, data, timeout=10):
         url = url_path
     else:
         url = user["_api_endpoint"] + url_path
+    # Round-10: route through circuit breaker so Alpaca outages gate
+    # POSTs too. Previously CB only tracked GET — a dead endpoint kept
+    # receiving fresh order submissions and the failure counter never
+    # incremented, so CB never tripped.
+    if _cb_blocked(user):
+        return {"error": "circuit_breaker_open"}
     req = urllib.request.Request(
         url,
         data=json.dumps(data).encode(),
@@ -346,8 +352,11 @@ def user_api_post(user, url_path, data, timeout=10):
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
+            body = json.loads(resp.read().decode())
+            _cb_record_success(user)
+            return body
     except Exception as e:
+        _cb_record_failure(user)
         return {"error": str(e)}
 
 def user_api_delete(user, url_path, timeout=10):
@@ -355,12 +364,16 @@ def user_api_delete(user, url_path, timeout=10):
         url = url_path
     else:
         url = user["_api_endpoint"] + url_path
+    if _cb_blocked(user):
+        return {"error": "circuit_breaker_open"}
     req = urllib.request.Request(url, headers=_user_headers(user), method="DELETE")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read()
+            _cb_record_success(user)
             return json.loads(body.decode()) if body else {}
     except Exception as e:
+        _cb_record_failure(user)
         return {"error": str(e)}
 
 
@@ -374,6 +387,8 @@ def user_api_patch(user, url_path, data, timeout=10):
         url = url_path
     else:
         url = user["_api_endpoint"] + url_path
+    if _cb_blocked(user):
+        return {"error": "circuit_breaker_open"}
     req = urllib.request.Request(
         url,
         data=json.dumps(data).encode(),
@@ -382,8 +397,11 @@ def user_api_patch(user, url_path, data, timeout=10):
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
+            body = json.loads(resp.read().decode())
+            _cb_record_success(user)
+            return body
     except Exception as e:
+        _cb_record_failure(user)
         return {"error": str(e)}
 
 def user_file(user, filename):
@@ -586,6 +604,53 @@ def notify_user(user, message, notify_type="info"):
         log(f"Notification failed: {e}")
 
 
+def _flatten_all_user(user):
+    """Emergency flatten helper — cancels orders, closes equity AND
+    option positions. Used by auto kill-switch paths (daily loss,
+    max drawdown). Previously these paths only called DELETE /orders +
+    DELETE /positions; /positions closes equity but NOT options, so
+    short puts and short calls were left unbounded.
+    """
+    try:
+        user_api_delete(user, "/orders")
+    except Exception as e:
+        log(f"[{user.get('username','?')}] flatten: DELETE /orders failed: {e}", "monitor")
+    # Close wheel option contracts BEFORE equity liquidation so their
+    # BTC orders don't collide with cancellations.
+    try:
+        import wheel_strategy as ws
+        for wpath in ws.list_wheel_files(user):
+            try:
+                wstate = load_json(wpath) or {}
+                active = wstate.get("active_contract") or {}
+                occ_sym = active.get("symbol")
+                if not occ_sym:
+                    continue
+                # Buy-to-close at 2x the current ask (aggressive to
+                # guarantee fill during a panic exit).
+                try:
+                    quote = ws.get_option_quote(user, occ_sym) or {}
+                    ask = float(quote.get("ask") or quote.get("c") or 0.01)
+                except Exception:
+                    ask = 0.01
+                limit_px = max(0.01, round(ask * 2, 2))
+                user_api_post(user, "/orders", {
+                    "symbol": occ_sym, "qty": "1",
+                    "side": "buy", "type": "limit",
+                    "limit_price": str(limit_px),
+                    "time_in_force": "day",
+                })
+            except Exception as e:
+                log(f"[{user.get('username','?')}] flatten: wheel close "
+                    f"failed on {wpath}: {e}", "monitor")
+    except Exception as e:
+        log(f"[{user.get('username','?')}] flatten: wheel enumeration failed: {e}", "monitor")
+    try:
+        user_api_delete(user, "/positions")
+    except Exception as e:
+        log(f"[{user.get('username','?')}] flatten: DELETE /positions failed: {e}", "monitor")
+
+
 def notify_rich(user, short_message, notify_type="info",
                 rich_subject=None, rich_body=None):
     """Send a push notification (short one-liner to ntfy) AND queue a
@@ -769,7 +834,12 @@ def record_trade_close(user, symbol, strategy, exit_price, pnl, exit_reason,
 def monitor_strategies(user):
     try:
         guardrails_path = user_file(user, "guardrails.json")
-        guardrails = load_json(guardrails_path) or {}
+        # Round-10: hold the file lock across the read + subsequent
+        # writes so a concurrent handler kill-switch set doesn't get
+        # silently overwritten by our monitor-tick flush. We release
+        # and re-acquire around the slower Alpaca calls.
+        with strategy_file_lock(guardrails_path):
+            guardrails = load_json(guardrails_path) or {}
         if guardrails.get("kill_switch"):
             return
 
@@ -788,8 +858,45 @@ def monitor_strategies(user):
             if current_val > 0 and (not daily_start or stored_date != today_et):
                 guardrails["daily_starting_value"] = current_val
                 guardrails["daily_starting_value_date"] = today_et
-                save_json(guardrails_path, guardrails)
+                with strategy_file_lock(guardrails_path):
+                    # Re-read under lock, merge our field set, write atomically.
+                    _cur = load_json(guardrails_path) or {}
+                    _cur.update(guardrails)
+                    save_json(guardrails_path, _cur)
                 daily_start = current_val
+            # Round-10 audit: enforce max_drawdown (peak→trough) in
+            # addition to the daily loss limit. The guardrails config
+            # already carries `max_drawdown_pct: 0.10` but nothing was
+            # reading it — a 9% slide over a week with <3% daily moves
+            # would never trigger the kill switch. Check peak/current
+            # and fire the same flatten path on breach.
+            peak_val = guardrails.get("peak_portfolio_value")
+            if peak_val and current_val and peak_val > 0:
+                dd_pct = (peak_val - current_val) / peak_val
+                if dd_pct > guardrails.get("max_drawdown_pct", 0.10):
+                    guardrails["kill_switch"] = True
+                    guardrails["kill_switch_triggered_at"] = now_et().isoformat()
+                    reason_dd = (f"Max drawdown {dd_pct*100:.1f}% "
+                                 f"(peak ${peak_val:,.0f} → current ${current_val:,.0f})")
+                    guardrails["kill_switch_reason"] = reason_dd
+                    with strategy_file_lock(guardrails_path):
+                        _cur = load_json(guardrails_path) or {}
+                        _cur.update(guardrails)
+                        save_json(guardrails_path, _cur)
+                    _flatten_all_user(user)  # cancels orders + positions + wheel options
+                    try:
+                        import notification_templates as _nt
+                        _subj, _body = _nt.kill_switch(
+                            reason=reason_dd,
+                            portfolio_value=current_val,
+                            daily_pnl=current_val - (daily_start or peak_val),
+                        )
+                    except Exception:
+                        _subj = _body = None
+                    notify_rich(user, f"KILL SWITCH: Max drawdown {dd_pct*100:.1f}% exceeded.",
+                                "kill", rich_subject=_subj, rich_body=_body)
+                    log(f"[{user['username']}] KILL SWITCH triggered: {dd_pct*100:.1f}% drawdown", "monitor")
+                    return
             if daily_start:
                 loss_pct = (daily_start - current_val) / daily_start
                 if loss_pct > guardrails.get("daily_loss_limit_pct", 0.03):
@@ -797,9 +904,11 @@ def monitor_strategies(user):
                     guardrails["kill_switch_triggered_at"] = now_et().isoformat()
                     reason = f"Daily loss {loss_pct*100:.1f}% (auto-trigger at {guardrails.get('daily_loss_limit_pct', 0.03)*100:.1f}% limit)"
                     guardrails["kill_switch_reason"] = reason
-                    save_json(guardrails_path, guardrails)
-                    user_api_delete(user, "/orders")
-                    user_api_delete(user, "/positions")
+                    with strategy_file_lock(guardrails_path):
+                        _cur = load_json(guardrails_path) or {}
+                        _cur.update(guardrails)
+                        save_json(guardrails_path, _cur)
+                    _flatten_all_user(user)  # orders + wheel options + equity
                     try:
                         import notification_templates as _nt
                         daily_pnl = current_val - daily_start
@@ -924,18 +1033,26 @@ def check_profit_ladder(user, filepath, strat, price, entry, shares):
             old_stop_id = state.get("stop_order_id")
             current_stop_price = state.get("current_stop_price")
             if old_stop_id and remaining > 0 and current_stop_price:
-                new_stop = user_api_post(user, "/orders", {
-                    "symbol": symbol, "qty": str(remaining), "side": "sell",
-                    "type": "stop", "stop_price": str(current_stop_price),
-                    "time_in_force": "gtc"
-                })
-                if isinstance(new_stop, dict) and "id" in new_stop:
-                    # New stop placed — safe to cancel old
+                # Round-10 audit: use PATCH to atomically bump the qty
+                # on the existing stop. The old "place new + cancel
+                # old" path hits Alpaca's duplicate-order 403 (same
+                # bug class as the trailing-stop raise). Fall back to
+                # cancel-then-place if PATCH fails.
+                patched = user_api_patch(user, f"/orders/{old_stop_id}",
+                                          {"qty": str(remaining)})
+                new_stop = patched if (isinstance(patched, dict)
+                                        and "id" in patched) else None
+                if not new_stop:
                     user_api_delete(user, f"/orders/{old_stop_id}")
+                    new_stop = user_api_post(user, "/orders", {
+                        "symbol": symbol, "qty": str(remaining), "side": "sell",
+                        "type": "stop", "stop_price": str(current_stop_price),
+                        "time_in_force": "gtc"
+                    })
+                if isinstance(new_stop, dict) and "id" in new_stop:
                     state["stop_order_id"] = new_stop["id"]
                 else:
-                    # Keep old oversized stop as-is; log and retry next tick.
-                    log(f"[{user['username']}] {symbol}: WARN stop resize failed after profit-take — keeping old oversized stop. Err: {new_stop}", "monitor")
+                    log(f"[{user['username']}] {symbol}: WARN stop resize failed after profit-take. Err: {new_stop}", "monitor")
             elif old_stop_id and remaining <= 0:
                 user_api_delete(user, f"/orders/{old_stop_id}")
                 state["stop_order_id"] = None
@@ -1022,13 +1139,23 @@ def process_short_strategy(user, filepath, strat, state, rules):
             # For shorts: stop moves DOWN as price falls (locks in gains)
             if new_stop < current_stop:
                 old_id = state.get("cover_order_id")
-                new_order = user_api_post(user, "/orders", {
-                    "symbol": symbol, "qty": str(shares), "side": "buy",
-                    "type": "stop", "stop_price": str(new_stop), "time_in_force": "gtc"
-                })
-                if isinstance(new_order, dict) and "id" in new_order:
+                # Round-10: PATCH first, cancel-then-place fallback
+                # (same pattern as the long trailing-stop fix).
+                new_order = None
+                if old_id:
+                    patched = user_api_patch(user, f"/orders/{old_id}",
+                                              {"stop_price": str(new_stop)})
+                    if isinstance(patched, dict) and "id" in patched:
+                        new_order = patched
+                if not new_order:
                     if old_id:
                         user_api_delete(user, f"/orders/{old_id}")
+                    new_order = user_api_post(user, "/orders", {
+                        "symbol": symbol, "qty": str(shares), "side": "buy",
+                        "type": "stop", "stop_price": str(new_stop),
+                        "time_in_force": "gtc"
+                    })
+                if isinstance(new_order, dict) and "id" in new_order:
                     state["cover_order_id"] = new_order["id"]
                     state["current_stop_price"] = new_stop
                     log(f"[{user['username']}] {symbol}: SHORT stop lowered ${current_stop:.2f} -> ${new_stop:.2f}", "monitor")
@@ -1055,12 +1182,17 @@ def process_short_strategy(user, filepath, strat, state, rules):
             # Writeback to journal so scorecard + learning see the close
             record_trade_close(user, symbol, strat.get("strategy", "short_sell"),
                                 cover_price, pnl, "short_stop_covered", qty=shares, side="buy")
-            # Record short loss for cooldown
+            # Record short loss for cooldown. Round-10: also set the
+            # GENERAL last_loss_time so the global 60-min cooldown fires
+            # for new long entries too — a short loss is still a signal
+            # the regime is hostile to our edge.
             if pnl < 0:
                 gpath = user_file(user, "guardrails.json")
-                guardrails = load_json(gpath) or {}
-                guardrails["last_short_loss_time"] = now_et().isoformat()
-                save_json(gpath, guardrails)
+                with strategy_file_lock(gpath):
+                    guardrails = load_json(gpath) or {}
+                    guardrails["last_short_loss_time"] = now_et().isoformat()
+                    guardrails["last_loss_time"] = now_et().isoformat()
+                    save_json(gpath, guardrails)
 
     # Check if target hit — profit scenario
     elif state.get("target_order_id"):
@@ -1091,16 +1223,21 @@ def process_short_strategy(user, filepath, strat, state, rules):
             age_days = (now_et().date() - datetime.strptime(created, "%Y-%m-%d").date()).days
             if age_days >= max_hold and shares > 0:
                 log(f"[{user['username']}] {symbol}: SHORT held {age_days} days, forcing cover", "monitor")
+                # Round-10: cancel GTC cover-stop and target limit BEFORE
+                # the market buy — otherwise up to 3 buys compete
+                # (cover-stop, target-limit, market) and we can double-
+                # cover (flip short to long).
+                if state.get("cover_order_id"):
+                    user_api_delete(user, f"/orders/{state['cover_order_id']}")
+                    state["cover_order_id"] = None
+                if state.get("target_order_id"):
+                    user_api_delete(user, f"/orders/{state['target_order_id']}")
+                    state["target_order_id"] = None
                 order = user_api_post(user, "/orders", {
                     "symbol": symbol, "qty": str(shares), "side": "buy",
                     "type": "market", "time_in_force": "day"
                 })
                 if isinstance(order, dict) and "id" in order:
-                    # Cancel pending orders
-                    if state.get("cover_order_id"):
-                        user_api_delete(user, f"/orders/{state['cover_order_id']}")
-                    if state.get("target_order_id"):
-                        user_api_delete(user, f"/orders/{state['target_order_id']}")
                     strat["status"] = "closed"
                     state["exit_reason"] = "max_hold_exceeded"
                     pnl = (entry - price) * shares
@@ -1235,6 +1372,15 @@ def process_strategy_file(user, filepath, strat):
     # Mean reversion target check
     if strategy_type == "mean_reversion":
         if price >= entry * 1.15:
+            # Round-10 audit: cancel the live GTC stop FIRST. If we post
+            # the market sell while the stop is open, the stop remains
+            # orphaned in Alpaca after shares are gone — on a short-
+            # enabled account it can even open a new short equal to the
+            # sold qty. Same class as SOXL orphan + trailing-stop-403.
+            old_stop_id = state.get("stop_order_id")
+            if old_stop_id:
+                user_api_delete(user, f"/orders/{old_stop_id}")
+                state["stop_order_id"] = None
             order = user_api_post(user, "/orders", {
                 "symbol": symbol, "qty": str(shares), "side": "sell",
                 "type": "market", "time_in_force": "day"
@@ -1293,6 +1439,12 @@ def process_strategy_file(user, filepath, strat):
             if should_exit_time or should_exit_earnings:
                 reason = ("pead_window_complete" if should_exit_time
                           else "pre_earnings_exit")
+                # Cancel the live GTC stop FIRST (see mean-reversion
+                # target block for the orphan-stop rationale).
+                old_stop_id = state.get("stop_order_id")
+                if old_stop_id:
+                    user_api_delete(user, f"/orders/{old_stop_id}")
+                    state["stop_order_id"] = None
                 order = user_api_post(user, "/orders", {
                     "symbol": symbol, "qty": str(shares), "side": "sell",
                     "type": "market", "time_in_force": "day"
@@ -1544,7 +1696,11 @@ def run_auto_deployer(user):
         if symbol in existing_syms:
             skip_reasons.append(f"{symbol}: already held")
             continue
-        if pick.get("earnings_warning"):
+        # Round-10 audit: PEAD explicitly wants stocks that just beat
+        # earnings — blocking on earnings_warning (which fires whenever
+        # the news feed contains "earnings"/"Q1 results"/etc.) would
+        # make PEAD permanently undeployable. Only skip for non-PEAD.
+        if pick.get("earnings_warning") and best_strat != "pead":
             log(f"[{user['username']}] {symbol}: Skipped (earnings warning) — trying next pick", "deployer")
             skip_reasons.append(f"{symbol}: earnings warning")
             continue
@@ -2253,6 +2409,15 @@ def run_friday_risk_reduction(user):
     """Scale out of profitable positions before weekend gap risk."""
     log(f"[{user['username']}] Running Friday risk reduction...", "friday")
 
+    # Round-10: respect kill switch. Without this, Friday trim would
+    # transact on positions the auto-kill flatten missed or the user
+    # re-opened.
+    gpath = user_file(user, "guardrails.json")
+    guardrails = load_json(gpath) or {}
+    if guardrails.get("kill_switch"):
+        log(f"[{user['username']}] Friday trim skipped (kill switch active)", "friday")
+        return
+
     positions = user_api_get(user, "/positions")
     if not isinstance(positions, list):
         log(f"[{user['username']}] Could not fetch positions: {positions}", "friday")
@@ -2329,12 +2494,22 @@ def run_friday_risk_reduction(user):
                     stop_price = state.get("current_stop_price")
                     if old_stop and remaining > 0 and stop_price:
                         new_stop_side = "sell" if raw_qty > 0 else "buy"
-                        new_stop_resp = user_api_post(user, "/orders", {
-                            "symbol": symbol, "qty": str(remaining), "side": new_stop_side,
-                            "type": "stop", "stop_price": str(stop_price), "time_in_force": "gtc",
-                        })
-                        if isinstance(new_stop_resp, dict) and "id" in new_stop_resp:
+                        # Round-10: PATCH qty atomically; fall back to
+                        # cancel-then-place. Previous path hit the
+                        # duplicate-order 403 on every Friday trim.
+                        patched = user_api_patch(user, f"/orders/{old_stop}",
+                                                  {"qty": str(remaining)})
+                        new_stop_resp = patched if (isinstance(patched, dict)
+                                                    and "id" in patched) else None
+                        if not new_stop_resp:
                             user_api_delete(user, f"/orders/{old_stop}")
+                            new_stop_resp = user_api_post(user, "/orders", {
+                                "symbol": symbol, "qty": str(remaining),
+                                "side": new_stop_side,
+                                "type": "stop", "stop_price": str(stop_price),
+                                "time_in_force": "gtc",
+                            })
+                        if isinstance(new_stop_resp, dict) and "id" in new_stop_resp:
                             state["stop_order_id"] = new_stop_resp["id"]
                         # else: keep old oversized stop — still protective
                     strat["state"] = state
@@ -2357,6 +2532,13 @@ def run_friday_risk_reduction(user):
 def run_monthly_rebalance(user):
     """Monthly review: close long-underwater positions, free capital."""
     log(f"[{user['username']}] Running monthly rebalance...", "rebalance")
+
+    # Round-10: respect kill switch.
+    gpath = user_file(user, "guardrails.json")
+    guardrails = load_json(gpath) or {}
+    if guardrails.get("kill_switch"):
+        log(f"[{user['username']}] Monthly rebalance skipped (kill switch active)", "rebalance")
+        return
 
     positions = user_api_get(user, "/positions")
     if not isinstance(positions, list):
@@ -2410,6 +2592,22 @@ def run_monthly_rebalance(user):
         # Close if old AND losing
         if too_old and unrealized_plpc < -2:
             log(f"[{user['username']}] {symbol}: 60+ days old, {unrealized_plpc:.1f}% down — closing for rebalance", "rebalance")
+            # Round-10: cancel any open stop on this symbol FIRST so we
+            # don't orphan a GTC stop in Alpaca after the shares are gone
+            # (same orphan-stop class as SOXL / mean-reversion target).
+            try:
+                for sf in os.listdir(sdir):
+                    if not (sf.endswith(f"_{symbol}.json") and not sf.startswith("wheel_")):
+                        continue
+                    sf_path = os.path.join(sdir, sf)
+                    strat_for_close = load_json(sf_path) or {}
+                    sid = (strat_for_close.get("state") or {}).get("stop_order_id")
+                    if sid:
+                        user_api_delete(user, f"/orders/{sid}")
+                        strat_for_close["state"]["stop_order_id"] = None
+                        save_json(sf_path, strat_for_close)
+            except Exception as _e:
+                log(f"[{user['username']}] rebalance cancel-stop failed for {symbol}: {_e}", "rebalance")
             order = user_api_post(user, "/orders", {
                 "symbol": symbol, "qty": str(qty),
                 "side": "sell" if float(pos.get("qty", 0)) > 0 else "buy",
@@ -2489,6 +2687,20 @@ def should_run_daily_at(task_name, hour_et, minute_et, max_late_seconds=1800):
     if fire:
         _save_last_runs()
     return fire
+
+
+def _clear_daily_stamp(task_name):
+    """Round-10 audit helper: revert a daily stamp so the task is
+    eligible to retry later today. Call this from the except block of
+    any daily task that raised — without it the stamp-before-run
+    pattern silently skips the task for the rest of the day even on
+    recoverable errors (yfinance rate limit, SMTP blip, etc.)."""
+    with _last_runs_lock:
+        _last_runs.pop(task_name, None)
+    try:
+        _save_last_runs()
+    except Exception:
+        pass
 
 # ============================================================================
 # TASK 8: WHEEL AUTO-DEPLOY (per user) — fires at 9:40 AM ET weekdays.
@@ -2616,6 +2828,15 @@ def _run_wheel_auto_deploy_inner(user):
 #   - Sell covered calls once shares are assigned
 # ============================================================================
 def run_wheel_monitor(user):
+    # Round-10: respect kill switch on wheel monitor too. Doesn't block
+    # BTC (buy-to-close) orders — those are exits, always safe — but
+    # skips the "maybe sell a covered call" leg that would open new
+    # risk while halted.
+    gpath = user_file(user, "guardrails.json")
+    guardrails = load_json(gpath) or {}
+    if guardrails.get("kill_switch"):
+        log(f"[{user['username']}] Wheel monitor skipped (kill switch active)", "wheel")
+        return
     try:
         import wheel_strategy as ws
     except Exception as e:
@@ -2816,7 +3037,8 @@ def scheduler_loop():
                             f"found {result.get('signal_count', 0)} signals",
                             "pead")
                     except Exception as e:
-                        log(f"PEAD refresh failed: {e}", "pead")
+                        log(f"PEAD refresh failed: {e} — will retry on next tick", "pead")
+                        _clear_daily_stamp("pead_refresh")  # allow retry today
 
             # Task-staleness watchdog — alert if an interval-based task is
             # overdue during market hours. Each alert fires at most once

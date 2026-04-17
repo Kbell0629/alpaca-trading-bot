@@ -675,6 +675,7 @@ def enrich_with_momentum(pick, bars):
         "Wheel Strategy": pick["wheel_score"],
         "Mean Reversion": pick["mean_reversion_score"],
         "Breakout": pick["breakout_score"],
+        "PEAD": pick.get("pead_score", 0),
     }
     pick["best_strategy"] = pick_best_entry_strategy(pick["scores"])
     pick["best_score"] = pick["scores"][pick["best_strategy"]]
@@ -700,14 +701,36 @@ def fetch_market_regime():
     else:
         spy_mom = 0.0
 
-    if spy_mom > 5:
-        regime = "bull"
-    elif spy_mom < -5:
-        regime = "bear"
+    # Round-10 audit: add a hysteresis band so SPY hovering near ±5%
+    # doesn't flap regime between screener cycles. Entering bull/bear
+    # needs a stronger signal than staying in it — neutral-to-bull
+    # requires >6%, bull-to-neutral requires <4% (same for bear side).
+    # Prior regime read from a small cache file so hysteresis survives
+    # restarts; absence → assume neutral.
+    _regime_cache = os.path.join(DATA_DIR, "market_regime.json")
+    try:
+        _prior = (load_json(_regime_cache) or {}).get("market_regime", "neutral")
+    except Exception:
+        _prior = "neutral"
+    if _prior == "bull":
+        regime = "bull" if spy_mom > 4 else ("bear" if spy_mom < -5 else "neutral")
+    elif _prior == "bear":
+        regime = "bear" if spy_mom < -4 else ("bull" if spy_mom > 5 else "neutral")
     else:
-        regime = "neutral"
+        if spy_mom > 6:
+            regime = "bull"
+        elif spy_mom < -6:
+            regime = "bear"
+        else:
+            regime = "neutral"
+    try:
+        safe_save_json(_regime_cache, {"market_regime": regime,
+                                        "spy_momentum_20d": round(spy_mom, 2),
+                                        "updated_at": now_et().isoformat()})
+    except Exception:
+        pass
 
-    print(f"  SPY 20d momentum: {spy_mom:+.1f}% -- Market regime: {regime}")
+    print(f"  SPY 20d momentum: {spy_mom:+.1f}% -- Market regime: {regime} (prior: {_prior})")
     return {"spy_momentum_20d": round(spy_mom, 2), "market_regime": regime}
 
 
@@ -957,7 +980,10 @@ def analyze_news(pick, news_items):
     # Improvement 4: Earnings avoidance (word-boundary matching)
     has_earnings = bool(EARNINGS_PATTERN.search(headlines_text) or Q_PATTERN.search(headlines_text))
     pick["earnings_warning"] = has_earnings
-    if has_earnings:
+    # Round-10 audit: PEAD wants exactly these stocks (post-earnings
+    # drift). Don't penalize other strategies' scores either when PEAD
+    # is the likely winner — let PEAD compete on its merits.
+    if has_earnings and pick.get("pead_score", 0) <= 0:
         pick["trailing_score"] -= 10
         pick["copy_score"] -= 10
         pick["wheel_score"] -= 10
@@ -991,6 +1017,7 @@ def analyze_news(pick, news_items):
         "Wheel Strategy": pick["wheel_score"],
         "Mean Reversion": pick["mean_reversion_score"],
         "Breakout": pick["breakout_score"],
+        "PEAD": pick.get("pead_score", 0),
     }
     pick["best_strategy"] = pick_best_entry_strategy(pick["scores"])
     pick["best_score"] = pick["scores"][pick["best_strategy"]]
@@ -1354,6 +1381,7 @@ def fetch_all_data():
                     "Wheel Strategy": pick["wheel_score"],
                     "Mean Reversion": pick["mean_reversion_score"],
                     "Breakout": pick["breakout_score"],
+                    "PEAD": pick.get("pead_score", 0),
                 }
                 pick["best_strategy"] = pick_best_entry_strategy(pick["scores"])
                 pick["best_score"] = pick["scores"][pick["best_strategy"]]
@@ -1486,6 +1514,7 @@ def fetch_all_data():
                 "Wheel Strategy": pick["wheel_score"],
                 "Mean Reversion": pick["mean_reversion_score"],
                 "Breakout": pick["breakout_score"],
+                "PEAD": pick.get("pead_score", 0),
             }
             pick["best_strategy"] = pick_best_entry_strategy(pick["scores"])
             pick["best_score"] = pick["scores"][pick["best_strategy"]]

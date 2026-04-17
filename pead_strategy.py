@@ -172,9 +172,26 @@ def _fetch_yfinance(symbols: list[str]) -> list[dict]:
             if recent_row is None:
                 continue
 
-            actual = float(recent_row.get("Reported EPS")
-                            or recent_row.get("EPS Actual") or 0)
-            estimate = float(recent_row.get("EPS Estimate") or 0)
+            # Round-10 audit: `or` short-circuit treats EPS=0.0 as falsy.
+            # A real beat (actual $0.00 vs estimate -$0.05) would be
+            # silently dropped. Use explicit None/NaN check instead.
+            _reported = recent_row.get("Reported EPS")
+            if _reported is None or _is_nan(_reported):
+                _reported = recent_row.get("EPS Actual")
+            if _reported is None or _is_nan(_reported):
+                continue
+            try:
+                actual = float(_reported)
+            except (TypeError, ValueError):
+                continue
+            _est = recent_row.get("EPS Estimate")
+            if _est is None or _is_nan(_est):
+                estimate = 0.0
+            else:
+                try:
+                    estimate = float(_est)
+                except (TypeError, ValueError):
+                    estimate = 0.0
             surprise_pct_raw = recent_row.get("Surprise(%)")
             if surprise_pct_raw is not None and not _is_nan(surprise_pct_raw):
                 surprise_pct = float(surprise_pct_raw)
@@ -273,9 +290,24 @@ def load_cache() -> dict[str, dict]:
 
 
 def refresh_cache(symbols: list[str] | None = None) -> dict:
-    """Pull fresh PEAD signals and atomically rewrite the cache."""
+    """Pull fresh PEAD signals and atomically rewrite the cache.
+
+    Round-10 audit: if the new fetch returns ZERO signals but a prior
+    cache had signals, log a loud WARN — this may indicate yfinance
+    schema change / rate limiting / network outage rather than a
+    genuinely signal-less day. The operator can then investigate
+    rather than silently trading no-PEAD until the next earnings
+    season. Cache is still atomically rewritten so a genuinely empty
+    window doesn't keep stale data forever.
+    """
     if not symbols:
         symbols = _DEFAULT_UNIVERSE
+    prior_count = 0
+    try:
+        prior = load_cache()
+        prior_count = len(prior)
+    except Exception:
+        pass
     signals = _fetch_yfinance(symbols)
     payload = {
         "refreshed_at": now_et().isoformat(),
@@ -288,6 +320,9 @@ def refresh_cache(symbols: list[str] | None = None) -> dict:
     with open(tmp, "w") as f:
         json.dump(payload, f, indent=2, default=str)
     os.replace(tmp, CACHE_FILE)
+    if len(signals) == 0 and prior_count > 0:
+        _log(f"WARN: refresh emptied cache — prior had {prior_count}. "
+             f"Possible yfinance schema change / rate limit / outage.")
     _log(f"refresh: scanned {len(symbols)}, found {len(signals)} signals")
     return payload
 

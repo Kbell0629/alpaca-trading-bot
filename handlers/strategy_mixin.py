@@ -47,6 +47,32 @@ class StrategyHandlerMixin:
         if qty < 1 or qty > 1000:
             return self.send_json({"error": "Invalid quantity. Must be 1-1000."}, 400)
 
+        # Round-10 audit: manual Deploy modal was bypassing kill-switch
+        # and loss-cooldown guardrails. Enforce the same pre-deploy
+        # checks the auto-deployer runs so a user can't accidentally
+        # deploy while the bot is halted.
+        try:
+            gpath = self._user_file("guardrails.json")
+            guardrails = server.load_json(gpath) or {}
+            if guardrails.get("kill_switch"):
+                return self.send_json({
+                    "error": "Kill switch is active — trading halted. Deactivate from the dashboard before deploying.",
+                }, 403)
+            last_loss_iso = guardrails.get("last_loss_time")
+            if last_loss_iso:
+                try:
+                    from datetime import datetime, timedelta
+                    last_loss = datetime.fromisoformat(last_loss_iso)
+                    cooldown_min = int(guardrails.get("cooldown_after_loss_min", 60))
+                    if (server.now_et() - last_loss) < timedelta(minutes=cooldown_min):
+                        return self.send_json({
+                            "error": f"In loss cooldown ({cooldown_min} min) — can't deploy new positions yet.",
+                        }, 403)
+                except Exception:
+                    pass  # malformed timestamp; fail open rather than block
+        except Exception as e:
+            print(f"[deploy] guardrails pre-check failed: {e}", flush=True)
+
         if strategy == "trailing_stop":
             self.deploy_trailing_stop(symbol, qty)
         elif strategy == "wheel":

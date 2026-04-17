@@ -154,15 +154,25 @@ def has_stop_order(orders):
 
 
 def create_orphan_strategy(symbol, qty, current_price, avg_entry):
-    """Create a basic trailing_stop strategy file for an orphan position."""
-    stop_price = round(float(avg_entry) * 0.90, 2)  # 10% stop-loss
+    """Create a basic trailing_stop strategy file for an orphan position.
+    Round-10: handles SHORT positions by inverting direction so we
+    don't write a sell-stop BELOW entry on a short (which would close
+    a winning short on a drop, wrong direction)."""
+    qty_f = float(qty)
+    is_short = qty_f < 0
+    if is_short:
+        stop_price = round(float(avg_entry) * 1.10, 2)  # 10% above entry
+        strategy_name = "short_sell"
+    else:
+        stop_price = round(float(avg_entry) * 0.90, 2)
+        strategy_name = "trailing_stop"
     strategy = {
         "symbol": symbol,
-        "strategy": "trailing_stop",
+        "strategy": strategy_name,
         "created": now_et().strftime("%Y-%m-%d"),
         "status": "active",
         "entry_price_estimate": float(avg_entry),
-        "initial_qty": int(float(qty)),
+        "initial_qty": int(abs(qty_f)),
         "auto_recovered": True,
         "recovery_note": "Created by error_recovery.py — orphan position found without strategy file",
         "rules": {
@@ -174,11 +184,16 @@ def create_orphan_strategy(symbol, qty, current_price, avg_entry):
         "state": {
             "entry_fill_price": float(avg_entry),
             "entry_order_id": None,
-            "stop_order_id": None,
-            "highest_price_seen": float(current_price),
-            "trailing_activated": float(current_price) >= float(avg_entry) * 1.10,
+            "stop_order_id": None if not is_short else None,
+            "cover_order_id": None if is_short else None,
+            "highest_price_seen": float(current_price) if not is_short else None,
+            "lowest_price_seen": float(current_price) if is_short else None,
+            "trailing_activated": (float(current_price) >= float(avg_entry) * 1.10)
+                                   if not is_short
+                                   else (float(current_price) <= float(avg_entry) * 0.90),
             "current_stop_price": stop_price,
-            "total_shares_held": int(float(qty)),
+            "total_shares_held": int(abs(qty_f)),
+            "shares_shorted": int(abs(qty_f)) if is_short else 0,
             "ladder_fills": [],
             "profit_takes": [],
         },
@@ -186,15 +201,19 @@ def create_orphan_strategy(symbol, qty, current_price, avg_entry):
     return strategy
 
 
-def place_stop_loss_order(symbol, qty, stop_price):
-    """Place a stop-loss order via Alpaca API."""
+def place_stop_loss_order(symbol, qty, stop_price, side="sell"):
+    """Place a stop-loss order via Alpaca API.
+    Round-10: caller passes `side` so a short orphan gets a buy-stop
+    ABOVE entry (correct). Also idempotent via client_order_id so a
+    timeout-retry in the outer caller doesn't duplicate."""
     order_data = {
         "symbol": symbol,
         "qty": str(int(float(qty))),
-        "side": "sell",
+        "side": side,
         "type": "stop",
         "stop_price": str(round(stop_price, 2)),
         "time_in_force": "gtc",
+        "client_order_id": f"recovery-stop-{symbol}-{side}-{now_et().strftime('%Y%m%d')}",
     }
     result = api_post(f"{API_ENDPOINT}/orders", order_data)
     return result
@@ -271,22 +290,38 @@ def main():
             qty = pos.get("qty", 0)
             avg_entry = float(pos.get("avg_entry_price", 0))
             current_price = float(pos.get("current_price", 0))
-            print(f"\n  ORPHAN: {sym} ({qty} shares, entry ${avg_entry:.2f}, current ${current_price:.2f})")
+            qty_f = float(qty)
+            is_short = qty_f < 0
 
-            # Create strategy file
+            # Round-10: skip if a wheel strategy already manages this
+            # symbol's shares. Creating a trailing_stop alongside would
+            # race the wheel's covered-call logic on the same 100 shares.
+            wheel_fname = f"wheel_{sym}.json"
+            wheel_fpath = os.path.join(STRATEGIES_DIR, wheel_fname)
+            if os.path.exists(wheel_fpath):
+                try:
+                    with open(wheel_fpath) as f:
+                        import json as _json
+                        wstate = _json.load(f)
+                    if str(wstate.get("stage", "")).startswith("stage_2_"):
+                        print(f"\n  {sym}: Skipping orphan — wheel owns these shares (stage_2)")
+                        continue
+                except Exception:
+                    pass
+
+            print(f"\n  ORPHAN: {sym} ({qty} shares, entry ${avg_entry:.2f}, current ${current_price:.2f})")
             strategy = create_orphan_strategy(sym, qty, current_price, avg_entry)
-            fname = f"trailing_stop_{sym}.json"
+            strat_prefix = "short_sell" if is_short else "trailing_stop"
+            fname = f"{strat_prefix}_{sym}.json"
             fpath = os.path.join(STRATEGIES_DIR, fname)
             safe_save_json(fpath, strategy)
-            print(f"    FIXED: Created {fname} with 10% stop-loss at ${strategy['state']['current_stop_price']:.2f}")
+            print(f"    FIXED: Created {fname} with stop at ${strategy['state']['current_stop_price']:.2f}")
             issues_fixed += 1
-
-            # Also check if it needs a stop-loss order (will be caught in Check 2)
             strategy_symbol_map[sym] = (fname, {
                 "path": fpath,
                 "data": strategy,
                 "symbol": sym,
-                "strategy": "trailing_stop",
+                "strategy": strat_prefix,
                 "status": "active",
             })
 
@@ -332,11 +367,19 @@ def main():
             elif strat_data.get("strategy") == "breakout":
                 stop_loss_pct = 0.05
 
-            stop_price = round(avg_entry * (1 - stop_loss_pct), 2)
-            print(f"\n  MISSING STOP: {sym} ({int(qty)} shares, entry ${avg_entry:.2f})")
-            print(f"    Placing stop-loss at ${stop_price:.2f} ({stop_loss_pct*100:.0f}% below entry)")
+            is_short = qty < 0
+            if is_short:
+                stop_price = round(avg_entry * (1 + stop_loss_pct), 2)
+                side = "buy"
+                arrow = "above entry (short cover)"
+            else:
+                stop_price = round(avg_entry * (1 - stop_loss_pct), 2)
+                side = "sell"
+                arrow = "below entry"
+            print(f"\n  MISSING STOP: {sym} ({int(abs(qty))} shares {'short' if is_short else 'long'}, entry ${avg_entry:.2f})")
+            print(f"    Placing stop-loss at ${stop_price:.2f} ({stop_loss_pct*100:.0f}% {arrow})")
 
-            result = place_stop_loss_order(sym, qty, stop_price)
+            result = place_stop_loss_order(sym, abs(qty), stop_price, side=side)
             if isinstance(result, dict) and "error" not in result:
                 order_id = result.get("id", "unknown")
                 print(f"    FIXED: Stop-loss order placed (order_id: {order_id})")

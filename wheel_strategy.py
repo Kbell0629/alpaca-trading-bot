@@ -563,7 +563,8 @@ def open_short_put(user, pick):
     premium_received = round(limit_price * 100, 2)  # one contract = 100 shares
     now_iso = now_et().isoformat()
 
-    state = dict(WHEEL_STATE_TEMPLATE)
+    import copy as _copy
+    state = _copy.deepcopy(WHEEL_STATE_TEMPLATE)  # avoid shared history[] refs across wheels
     state["symbol"] = symbol
     state["created"] = now_iso
     state["stage"] = "stage_1_put_active"
@@ -763,6 +764,18 @@ def _advance_wheel_state_locked(user, state, events):
                 events.append(f"{symbol}: {contract_meta['type']} open order {status} — resetting")
                 save_wheel_state(user, state)
                 return events
+            # Round-10: log-only handling for in-flight / transitional
+            # states. Without this, values like partially_filled,
+            # pending_new, accepted, done_for_day silently fell through
+            # and the status stayed "pending" forever.
+            elif status in ("partially_filled", "pending_new", "accepted",
+                             "pending_cancel", "replaced", "done_for_day",
+                             "pending_replace"):
+                log_history(state, f"{contract_meta['type']}_pending", {
+                    "status": status, "order_id": order.get("id"),
+                })
+                # Stay pending; next tick re-checks.
+                events.append(f"{symbol}: {contract_meta['type']} open order status={status}, waiting")
 
     # --- If we have an active (filled) contract, check if we should buy-to-close or if assigned/expired ---
     if contract_meta.get("status") == "active":
@@ -770,7 +783,14 @@ def _advance_wheel_state_locked(user, state, events):
         current_quote = get_option_quote(user, contract_sym)
         if current_quote:
             premium_originally = contract_meta.get("premium_received", 0) / 100.0 / contract_meta.get("quantity", 1)
-            current_ask = current_quote["ask"]
+            # Round-10: fall back to bid when ask is missing / zero
+            # (deep-ITM, weekend snapshot, or illiquid near expiration).
+            # Without this the 50%-profit close never triggered on
+            # contracts that were deeply profitable (ask=0 means "nobody
+            # wants to sell it to us" which implies deep OTM/profitable).
+            current_ask = current_quote.get("ask") or 0
+            if current_ask <= 0:
+                current_ask = current_quote.get("bid") or 0.01
             # 50% profit = current ask is <= 50% of original premium
             if current_ask > 0 and premium_originally > 0 and current_ask <= premium_originally * (1 - PROFIT_CLOSE_PCT):
                 # Buy to close
@@ -910,6 +930,18 @@ def _advance_wheel_state_locked(user, state, events):
                 state["stage"] = "stage_2_shares_owned"
             state["active_contract"] = None
             events.append(f"{symbol}: closed {contract_meta['type']} for net ${net_premium:.2f} premium profit")
+        elif ("error" not in close_order
+              and close_order.get("status") in ("canceled", "expired", "rejected", "done_for_day")):
+            # Round-10: close order didn't fill and is now terminal.
+            # Reset status so next tick re-evaluates the 50%-profit
+            # threshold and can submit a fresh BTC. Without this,
+            # status="closing" stuck forever and the wheel stalled.
+            contract_meta["status"] = "active"
+            contract_meta.pop("close_order_id", None)
+            log_history(state, f"{contract_meta['type']}_btc_unfilled", {
+                "reason": close_order.get("status"),
+            })
+            events.append(f"{symbol}: BTC order {close_order.get('status')} — returning to active, will retry")
 
     save_wheel_state(user, state)
     return events
