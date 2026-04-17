@@ -4,7 +4,7 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-} python3 -u server.py",
+    "startCommand": "/usr/bin/env LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/usr/lib python3 -u server.py",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10,
     "healthcheckPath": "/healthz",
