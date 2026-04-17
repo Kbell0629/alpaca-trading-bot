@@ -458,7 +458,111 @@ def _fetch_quiver(symbols: list[str] | None = None,
     return out
 
 
+# ===== Provider: Financial Modeling Prep (FMP) =====
+def _fetch_fmp(symbols: list[str] | None = None,
+               days: int = 60) -> list[dict]:
+    """Pull congressional trades from FMP's RSS-feed endpoints (cheap,
+    returns ALL recent trades paginated — no per-symbol fan-out needed).
+
+    We fetch Senate + House separately, each paginated until we drop
+    below the `days` cutoff. On FMP's free tier (250 req/day) this is
+    well within budget: ~3-5 pages per chamber per nightly refresh.
+    """
+    key = os.environ.get("FMP_API_KEY", "").strip()
+    if not key:
+        _log("FMP_API_KEY not set — returning empty signal set")
+        return []
+
+    cutoff = date.today() - timedelta(days=days)
+    filter_set = {s.upper() for s in symbols} if symbols else None
+    out: list[dict] = []
+    max_pages = 10  # safety valve — 100 trades/page * 10 = 1000 recent trades
+
+    def _pull(chamber_endpoint: str, chamber_label: str, politician_key: str,
+              office_label: str):
+        """Paginate one chamber's RSS feed until we fall off `cutoff`."""
+        for page in range(max_pages):
+            url = (f"https://financialmodelingprep.com/api/v4/"
+                   f"{chamber_endpoint}?page={page}&apikey="
+                   f"{urllib.parse.quote(key)}")
+            try:
+                req = urllib.request.Request(url, headers={
+                    "User-Agent": "AlpacaBot/1.0 (+https://github.com/Kbell0629/alpaca-trading-bot)"
+                })
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    rows = json.loads(resp.read().decode())
+            except urllib.error.HTTPError as e:
+                _log(f"fmp {chamber_label} HTTPError {e.code}: {e.reason}")
+                return
+            except Exception as e:
+                _log(f"fmp {chamber_label} fetch failed: {type(e).__name__}: {e}")
+                return
+
+            if not isinstance(rows, list) or not rows:
+                return  # empty page = end of data
+
+            oldest_on_page = None
+            for r in rows:
+                try:
+                    tx_type = (r.get("type") or "").lower()
+                    if not any(b in tx_type for b in ("purchase", "buy")):
+                        continue
+                    sym = (r.get("symbol") or r.get("ticker") or "").upper().strip()
+                    if not sym or sym == "--":
+                        continue
+                    if filter_set and sym not in filter_set:
+                        # Still track date for cutoff logic below
+                        pass
+                    tx_str = (r.get("transactionDate") or r.get("dateReceived")
+                              or r.get("date") or "")
+                    try:
+                        tx_date = datetime.fromisoformat(
+                            tx_str.split("T")[0]).date()
+                    except (TypeError, ValueError, AttributeError):
+                        try:
+                            tx_date = datetime.strptime(tx_str, "%m/%d/%Y").date()
+                        except Exception:
+                            continue
+                    if oldest_on_page is None or tx_date < oldest_on_page:
+                        oldest_on_page = tx_date
+                    if tx_date < cutoff:
+                        continue
+                    if filter_set and sym not in filter_set:
+                        continue
+                    amount = r.get("amount") or ""
+                    politician = (r.get(politician_key) or r.get("representative")
+                                  or r.get("senator") or r.get("firstName", "")
+                                  + " " + r.get("lastName", "")).strip()
+                    out.append({
+                        "symbol": sym,
+                        "politician": politician or "Unknown",
+                        "chamber": chamber_label,
+                        "position": office_label,
+                        "transaction_date": tx_date.isoformat(),
+                        "filing_date": (r.get("disclosureDate")
+                                        or r.get("dateReceived") or ""),
+                        "amount_from": None,
+                        "amount_to": None,
+                        "amount_label": _normalize_amount_label(amount),
+                        "asset_type": (r.get("assetDescription")
+                                        or r.get("assetType") or "stock").lower(),
+                    })
+                except Exception:
+                    continue
+
+            # Stop paginating once the oldest trade on this page is
+            # older than the cutoff — everything beyond is irrelevant.
+            if oldest_on_page and oldest_on_page < cutoff:
+                return
+
+    _pull("senate-disclosure-rss-feed", "senate", "senator", "U.S. Senator")
+    _pull("house-disclosure-rss-feed", "house", "representative",
+          "U.S. Representative")
+    return out
+
+
 _providers = {
+    "fmp": _fetch_fmp,
     "quiver": _fetch_quiver,
     "stock_watcher": _fetch_stock_watcher,
     "finnhub": _fetch_finnhub,
@@ -468,16 +572,18 @@ _providers = {
 def refresh_cache(symbols: list[str] | None = None, days: int = 60,
                   provider: str | None = None) -> dict:
     """Auto-select the best available provider unless one is explicitly
-    named. Preference order: Quiver (free, both chambers) > Finnhub
-    (paid fallback) > Stock Watcher (deprecated, returns []).
+    named. Preference order: FMP (free tier, both chambers) > Quiver
+    (paid) > Finnhub (paid) > Stock Watcher (deprecated).
     """
     if provider is None:
-        if os.environ.get("QUIVER_API_KEY"):
+        if os.environ.get("FMP_API_KEY"):
+            provider = "fmp"
+        elif os.environ.get("QUIVER_API_KEY"):
             provider = "quiver"
         elif os.environ.get("FINNHUB_API_KEY"):
             provider = "finnhub"
         else:
-            provider = "quiver"  # still call it so _log prints the missing-key message
+            provider = "fmp"  # still call it so _log prints the missing-key message
     """Pull fresh disclosures and atomically rewrite the cache file."""
     fn = _providers.get(provider)
     if not fn:
