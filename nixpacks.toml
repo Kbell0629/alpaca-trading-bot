@@ -1,0 +1,23 @@
+# Nixpacks build configuration for the Alpaca trading bot.
+#
+# Why this exists: numpy / pandas (pulled in transitively by yfinance,
+# which powers the PEAD strategy) need the C++ standard runtime
+# (libstdc++.so.6) at import time. Nixpacks' default Python image is
+# slim and doesn't ship that lib, so `import yfinance` blew up with:
+#   ImportError: libstdc++.so.6: cannot open shared object file
+# Adding gcc to the runtime packages installs libstdc++.so.6.
+#
+# `stdenv.cc.cc.lib` is the canonical Nix pattern for getting just the
+# C++ stdlib without the full toolchain bloating the image, but
+# Nixpacks' simpler approach is to declare gcc as both a build and
+# runtime package — Nixpacks will resolve the shared libs into
+# LD_LIBRARY_PATH automatically.
+[phases.setup]
+nixPkgs = ["python312", "gcc"]
+
+[phases.install]
+# Use the same install command Nixpacks would generate by default;
+# declaring the phase here keeps the rest of the auto-detection in
+# place. Without this block, our [phases.setup] override would replace
+# the default install logic.
+cmds = ["python -m venv --copies /opt/venv && . /opt/venv/bin/activate && pip install -r requirements.txt"]
