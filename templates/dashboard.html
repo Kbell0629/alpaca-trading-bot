@@ -2357,35 +2357,67 @@ async function loadGuardrails() {
 // Round-10 audit fix: check the bare key first before the prefix walk,
 // otherwise the system tasks never match the `taskKey + '_'` prefix
 // and the UI is stuck showing "Not yet today" forever.
+// Round-11: parse a scheduler last-run value. Returns epoch-ms.
+// Bug this fixes: `new Date("2026-04-17")` parses as UTC midnight, which
+// in ET is 8 PM the PREVIOUS day — so a daily task that actually ran
+// TODAY (2026-04-17) displayed as "1d ago" at any evening browser time.
+// We parse bare YYYY-MM-DD as LOCAL midnight to stay on the correct
+// calendar day. Task-specific scheduled times (e.g. Weekly Learning =
+// 5 PM ET Fri) are approximated via SCHEDULED_TIME_MAP so "Xh ago"
+// reads more accurately than "local midnight" would.
+var SCHEDULED_TIME_MAP = {
+    auto_deployer: { h: 9,  m: 35 },
+    wheel_deploy:  { h: 9,  m: 40 },
+    monthly_rebalance: { h: 9, m: 45 },
+    daily_close:   { h: 16, m: 5 },
+    friday_reduction: { h: 15, m: 45 },
+    weekly_learning: { h: 17, m: 0 },
+    daily_backup_all: { h: 3, m: 0 },
+    pead_refresh:  { h: 6, m: 0 }
+};
+
+function parseSchedTs(v, taskKey) {
+    if (v == null) return null;
+    if (typeof v === 'number') return v * 1000;
+    if (typeof v !== 'string') return null;
+    var m = v.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (m) {
+        var y = parseInt(m[1], 10), mo = parseInt(m[2], 10) - 1, d = parseInt(m[3], 10);
+        // Use the task's scheduled fire time when known, otherwise noon as
+        // a neutral fallback. Times are interpreted in the BROWSER'S local
+        // TZ — good enough for "Xh ago" readouts; the calendar-day
+        // rollover is what matters.
+        var sched = taskKey && SCHEDULED_TIME_MAP[taskKey];
+        var hh = sched ? sched.h : 12, mm = sched ? sched.m : 0;
+        return new Date(y, mo, d, hh, mm, 0).getTime();
+    }
+    if (v.match(/^\d{4}-\d{2}-\d{2}/)) return new Date(v).getTime();
+    return null;
+}
+
 function latestForTask(lastRuns, taskKey) {
     var best = null;
     var bestMs = -1;
     // 1. Exact-match (system tasks: pead_refresh, email_drain, daily_backup_all)
     if (Object.prototype.hasOwnProperty.call(lastRuns, taskKey)) {
-        var sv = lastRuns[taskKey];
-        var sms;
-        if (typeof sv === 'number') sms = sv * 1000;
-        else if (typeof sv === 'string' && sv.match(/^\d{4}-\d{2}-\d{2}/)) sms = new Date(sv).getTime();
-        if (sms != null) { bestMs = sms; best = sv; }
+        var sms = parseSchedTs(lastRuns[taskKey], taskKey);
+        if (sms != null) { bestMs = sms; best = lastRuns[taskKey]; }
     }
     // 2. Prefix walk (per-user tasks)
     var prefix = taskKey + '_';
     Object.keys(lastRuns).forEach(function(k) {
         if (k.indexOf(prefix) !== 0) return;
-        var v = lastRuns[k];
-        var ms;
-        if (typeof v === 'number') {
-            ms = v * 1000;
-        } else if (typeof v === 'string' && v.match(/^\d{4}-\d{2}-\d{2}/)) {
-            ms = new Date(v).getTime();
-        } else {
-            return;
-        }
-        if (ms > bestMs) { bestMs = ms; best = v; }
+        var ms = parseSchedTs(lastRuns[k], taskKey);
+        if (ms == null) return;
+        if (ms > bestMs) { bestMs = ms; best = lastRuns[k]; }
     });
     return best;
 }
 
+// fmtRelative kept for non-scheduler callers (logs etc) — still uses
+// the plain `new Date(str)` parse which is correct when the string
+// already carries a time/offset. DO NOT use for bare YYYY-MM-DD
+// scheduler last-runs — use fmtSchedLast instead.
 function fmtRelative(isoOrTs) {
     if (!isoOrTs) return 'never';
     var when;
@@ -2403,6 +2435,34 @@ function fmtRelative(isoOrTs) {
     if (mins < 60) return mins + 'm ago';
     var hrs = Math.floor(mins / 60);
     if (hrs < 24) return hrs + 'h ago';
+    return Math.floor(hrs / 24) + 'd ago';
+}
+
+// Round-11: scheduler-aware relative time. Treats bare YYYY-MM-DD
+// date stamps as LOCAL midnight + the task's known scheduled time,
+// so a daily task that ran today renders as "today" / "Xh ago"
+// instead of the old UTC-midnight "1d ago" bug.
+function fmtSchedLast(v, taskKey) {
+    if (v == null) return 'never';
+    var ms = parseSchedTs(v, taskKey);
+    if (ms == null) return String(v);
+    var diff = Date.now() - ms;
+    if (diff < 0) return 'scheduled';
+    var mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return mins + 'm ago';
+    var hrs = Math.floor(mins / 60);
+    if (hrs < 24) return hrs + 'h ago';
+    // For date-only entries, also do calendar-day math for a cleaner
+    // "Nd ago" count (hours/24 can round down one short on DST days).
+    if (typeof v === 'string' && v.match(/^\d{4}-\d{2}-\d{2}$/)) {
+        var t = new Date(); var today = new Date(t.getFullYear(), t.getMonth(), t.getDate());
+        var m2 = v.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        var that = new Date(parseInt(m2[1],10), parseInt(m2[2],10)-1, parseInt(m2[3],10));
+        var days = Math.round((today.getTime() - that.getTime()) / 86400000);
+        if (days === 1) return 'yesterday';
+        if (days > 1) return days + 'd ago';
+    }
     return Math.floor(hrs / 24) + 'd ago';
 }
 
@@ -2460,7 +2520,7 @@ function renderSchedulerPanel(s) {
         } else {
             statusClass = 'pending'; statusLabel = 'Pending';
         }
-        var lastStr = hasRun ? fmtRelative(last) : 'Not yet today';
+        var lastStr = hasRun ? fmtSchedLast(last, t.key) : 'Not yet today';
         gridHtml += '<div class="sched-task ' + (statusClass === 'ok' ? 'active' : '') + '">' +
             '<div class="sched-task-header">' +
                 '<span class="sched-task-name">' + esc(t.name) + '</span>' +
