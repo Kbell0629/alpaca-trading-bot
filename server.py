@@ -1668,6 +1668,9 @@ class DashboardHandler(
         elif path == "/api/kill-switch":
             self.handle_kill_switch(body)
 
+        elif path == "/api/factor-bypass":
+            self.handle_factor_bypass(body)
+
         elif path == "/api/pause-strategy":
             self.handle_pause_strategy(body)
 

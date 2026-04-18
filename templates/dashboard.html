@@ -2799,16 +2799,57 @@ function renderFactorHealth(d) {
         '</div>' +
     '</div>';
 
-    // --- Factor bypass flag (BATCH 3) ---
+    // --- Factor bypass toggle (BATCH 3) ---
+    // Always renders — its own card with a toggle button so Kevin can
+    // flip bypass on/off directly from this panel. When ON the card
+    // is red-bordered and prominent; when OFF it's a compact status
+    // line with an "enable" button for emergencies.
     if (d.factor_bypass) {
-        html += '<div class="factor-card" style="border-color:rgba(239,68,68,0.4)">' +
-            '<div class="factor-card-title" style="color:var(--red)">\u26A0 Factor Bypass Active</div>' +
-            '<div class="factor-card-sub">All factor filters (breadth, quality, IV rank, RS, sector) are BYPASSED. Deploys use raw screener scores only. Disable in Settings when ready.</div>' +
+        html += '<div class="factor-card" style="border-color:rgba(239,68,68,0.5);background:rgba(239,68,68,0.06)">' +
+            '<div class="factor-card-title" style="color:var(--red)">\u26A0 Factor Bypass ACTIVE</div>' +
+            '<div class="factor-card-sub">All factor filters (breadth gate, quality, IV rank, RS, sector rotation, bullish prioritization) are BYPASSED. Deploys use raw screener scores only (pre-round-11 behavior).</div>' +
+            '<button class="btn-success btn-sm" style="margin-top:10px" onclick="toggleFactorBypass(false)">Re-enable factors</button>' +
+        '</div>';
+    } else {
+        html += '<div class="factor-card">' +
+            '<div class="factor-card-title">Factor Bypass</div>' +
+            '<div class="factor-card-value" style="color:var(--green)">Off</div>' +
+            '<div class="factor-card-sub">Escape hatch: bypass all factor filters in one click if they block every deploy. Use only if you know what you\'re doing — raw screener scores only while active.</div>' +
+            '<button class="btn-ghost btn-sm" style="margin-top:10px" onclick="toggleFactorBypass(true)">Enable bypass</button>' +
         '</div>';
     }
 
     html += '</div>';
     panel.innerHTML = html;
+}
+
+// Round-11: toggle factor_bypass in guardrails. On ON, asks for
+// confirmation since this disables meaningful trading guards.
+async function toggleFactorBypass(enable) {
+    if (enable) {
+        if (!confirm('Disable ALL factor filters?\n\nThis turns off:\n- Market breadth gate (weak breadth block)\n- Quality filter (ROE/D-E/FCF scoring)\n- Relative strength + sector rotation\n- IV rank gate for wheels\n- Bullish-news prioritization\n\nDeploys will use raw screener scores only. Only use this if factors are wrongly blocking ALL deploys and you need to force one through.\n\nContinue?')) {
+            return;
+        }
+    }
+    try {
+        var resp = await fetch(API_BASE + '/api/factor-bypass', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {'Content-Type': 'application/json', 'X-CSRF-Token': getCSRFToken()},
+            body: JSON.stringify({enable: enable})
+        });
+        var r = await resp.json();
+        if (!resp.ok || !r.ok) {
+            toast('Bypass toggle failed: ' + (r.error || 'unknown'), 'error');
+            return;
+        }
+        toast(r.message || (enable ? 'Factor bypass enabled' : 'Factor bypass disabled'),
+               enable ? 'info' : 'success');
+        addLog('Factor bypass toggled to ' + (enable ? 'ON' : 'OFF'), enable ? 'info' : 'success');
+        refreshFactorHealth();
+    } catch(e) {
+        toast('Bypass toggle error: ' + e.message, 'error');
+    }
 }
 
 async function refreshSchedulerStatus() {

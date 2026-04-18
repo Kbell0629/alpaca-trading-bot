@@ -297,6 +297,44 @@ class ActionsHandlerMixin:
                 "message": "Kill switch deactivated. Auto-deployer remains off - re-enable manually.",
             })
 
+    def handle_factor_bypass(self, body):
+        """Round-11 escape hatch. Toggles factor_bypass in guardrails.json,
+        which run_auto_deployer checks before applying the breadth gate,
+        quality filter, RS ranking, sector rotation, IV rank, and bullish
+        news prioritization. When ON, deploys fall back to raw screener
+        scores (old round-10 behaviour).
+
+        When to use: if all factor filters together somehow block every
+        pick and you need to force a deploy. Should be temporary — turn
+        back off once you know why the filters were blocking.
+
+        Audit-logged on every toggle so we have forensic attribution.
+        """
+        enable = bool(body.get("enable", False))
+        try:
+            ip = self.client_address[0] if self.client_address else None
+            server.auth.log_admin_action(
+                "factor_bypass_enable" if enable else "factor_bypass_disable",
+                actor=self.current_user,
+                target_user_id=self.current_user.get("id") if self.current_user else None,
+                ip_address=ip,
+            )
+        except Exception as _e:
+            print(f"[audit] factor_bypass log failed: {_e}", flush=True)
+        guardrails_path = self._user_file("guardrails.json")
+        guardrails = server.load_json(guardrails_path) or {}
+        guardrails["factor_bypass"] = enable
+        guardrails["factor_bypass_changed_at"] = now_et().isoformat()
+        server.save_json(guardrails_path, guardrails)
+        self.send_json({
+            "ok": True,
+            "factor_bypass": enable,
+            "message": (
+                "Factor filters BYPASSED — deploys now use raw screener scores only. "
+                "Turn back OFF once you've verified normal flow."
+            ) if enable else "Factor filters re-enabled (breadth, quality, RS, sector, IV rank).",
+        })
+
     def handle_force_auto_deploy(self):
         """Admin: force the FULL morning deploy cycle to run NOW for the current user.
         Bypasses the once-per-day lock so you can see it execute on demand.

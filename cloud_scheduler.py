@@ -1689,19 +1689,27 @@ def run_auto_deployer(user):
     # Skip breakout + PEAD deploys in weak-breadth regimes (mean_reversion
     # and wheel strategies work fine in weak breadth — MR buys the dip,
     # wheel sells premium on range-bound names).
+    # Round-11 escape hatch: factor_bypass flag in guardrails disables
+    # all factor gates (breadth, RS, sector rotation, IV rank, quality,
+    # bullish prioritization). Deploys fall back to raw screener scores.
+    factor_bypass = bool(guardrails.get("factor_bypass"))
     weak_breadth = False
     breadth_pct_val = None
-    try:
-        import market_breadth as _mb
-        _b = _mb.get_breadth_pct(data_dir=DATA_DIR)
-        breadth_pct_val = _b.get("breadth_pct")
-        if breadth_pct_val is not None and breadth_pct_val < 40:
-            weak_breadth = True
-            log(f"[{user['username']}] Market breadth {breadth_pct_val:.0f}% < 40% — "
-                f"pausing BREAKOUT and PEAD deploys (MR + Wheel still run)", "deployer")
-    except Exception as _e:
-        # Breadth is a nice-to-have — never block a deploy on its error.
-        log(f"[{user['username']}] breadth check failed: {_e}. Continuing without it.", "deployer")
+    if factor_bypass:
+        log(f"[{user['username']}] FACTOR BYPASS active — skipping breadth/quality/"
+            "RS/sector/IV-rank gates. Raw screener scores only.", "deployer")
+    else:
+        try:
+            import market_breadth as _mb
+            _b = _mb.get_breadth_pct(data_dir=DATA_DIR)
+            breadth_pct_val = _b.get("breadth_pct")
+            if breadth_pct_val is not None and breadth_pct_val < 40:
+                weak_breadth = True
+                log(f"[{user['username']}] Market breadth {breadth_pct_val:.0f}% < 40% — "
+                    f"pausing BREAKOUT and PEAD deploys (MR + Wheel still run)", "deployer")
+        except Exception as _e:
+            # Breadth is a nice-to-have — never block a deploy on its error.
+            log(f"[{user['username']}] breadth check failed: {_e}. Continuing without it.", "deployer")
 
     # Set daily starting value — ONCE per trading day. Previously this
     # unconditionally overwrote on every auto-deployer run (including
@@ -1811,16 +1819,18 @@ def run_auto_deployer(user):
     # screener already added has_bullish_catalyst to each pick. Sort so
     # bullish-catalyst names are evaluated FIRST within their strategy
     # tier — the deployer stops at `max_per_day` so ordering matters.
-    try:
-        _bull_count = sum(1 for p in top_picks if p.get("has_bullish_catalyst"))
-        if _bull_count > 0:
-            top_picks = sorted(top_picks,
-                                key=lambda p: (not p.get("has_bullish_catalyst", False),
-                                               -(p.get("best_score", 0) or 0)))
-            log(f"[{user['username']}] {_bull_count} candidates with bullish news "
-                f"catalysts — prioritized in queue", "deployer")
-    except Exception as _e:
-        log(f"[{user['username']}] bullish-news prioritization failed: {_e}", "deployer")
+    # Skipped when factor_bypass is active.
+    if not factor_bypass:
+        try:
+            _bull_count = sum(1 for p in top_picks if p.get("has_bullish_catalyst"))
+            if _bull_count > 0:
+                top_picks = sorted(top_picks,
+                                    key=lambda p: (not p.get("has_bullish_catalyst", False),
+                                                   -(p.get("best_score", 0) or 0)))
+                log(f"[{user['username']}] {_bull_count} candidates with bullish news "
+                    f"catalysts — prioritized in queue", "deployer")
+        except Exception as _e:
+            log(f"[{user['username']}] bullish-news prioritization failed: {_e}", "deployer")
 
     log(f"[{user['username']}] Evaluating {len(top_picks)} candidates from filtered screener list", "deployer")
 
