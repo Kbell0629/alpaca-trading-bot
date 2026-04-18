@@ -3723,12 +3723,25 @@ function renderDashboard() {
         shortHtml +
         '<div id="section-backtest">' +
         '<div class="backtest-section">' +
-            '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:12px">' +
-                '<div>' +
+            '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:12px">' +
+                '<div style="flex:1;min-width:240px">' +
                     '<h3 style="margin:0">Visual Backtest</h3>' +
-                    '<div style="font-size:12px;color:var(--text-dim);margin-top:4px">Shows how a trailing stop would have performed on this stock over the last 30 days</div>' +
+                    '<div style="font-size:12px;color:var(--text-dim);margin-top:4px">Simulate how a strategy would have performed on any stock over the last 30 trading days</div>' +
                 '</div>' +
-                '<select id="backtestStockSelector" onchange="renderBacktest(this.value)" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:14px;min-width:200px"></select>' +
+                '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">' +
+                    '<input id="backtestSymbolInput" type="text" placeholder="Any symbol (e.g. AAPL)" ' +
+                        'maxlength="10" autocapitalize="characters" autocomplete="off" spellcheck="false" ' +
+                        'onkeydown="if(event.key===\'Enter\'){runBacktestFromInput();}" ' +
+                        'style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:14px;width:170px;text-transform:uppercase" />' +
+                    '<select id="backtestStrategySelect" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:14px">' +
+                        '<option value="trailing_stop">Trailing Stop</option>' +
+                        '<option value="breakout">Breakout</option>' +
+                        '<option value="mean_reversion">Mean Reversion</option>' +
+                        '<option value="pead">PEAD</option>' +
+                    '</select>' +
+                    '<button class="btn-primary btn-sm" onclick="runBacktestFromInput()" style="height:36px">Run Backtest</button>' +
+                    '<select id="backtestStockSelector" onchange="renderBacktest(this.value)" title="Quick-pick from Top 50 screener" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:14px;min-width:200px"></select>' +
+                '</div>' +
             '</div>' +
             '<div id="backtestSummary" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px"></div>' +
             '<div style="position:relative;height:320px;width:100%"><canvas id="backtestChart"></canvas></div>' +
@@ -3828,33 +3841,87 @@ function renderDashboard() {
 
 var _backtestChart = null;
 
-async function renderBacktest(symbol) {
-    if (!lastData || !lastData.picks) return;
-    var pick = lastData.picks.find(function(p) { return p.symbol === symbol; });
-    if (!pick) return;
-    // If backtest data isn't pre-computed, fetch it on-demand
-    if (!pick.backtest_detail || !pick.backtest_detail.equity_curve) {
+// Round-11: Kicks off a backtest for whatever symbol is typed into the
+// backtestSymbolInput field, using the strategy from backtestStrategySelect.
+// Works for ANY symbol — no need for it to appear in the Top-50 picks.
+function runBacktestFromInput() {
+    var input = document.getElementById('backtestSymbolInput');
+    var stratSel = document.getElementById('backtestStrategySelect');
+    if (!input) return;
+    var sym = (input.value || '').trim().toUpperCase();
+    if (!sym) {
+        toast('Enter a ticker symbol first', 'info');
+        input.focus();
+        return;
+    }
+    // Backend validates ^[A-Z.]{1,10}$; match here so we don't waste a
+    // round-trip on obviously-wrong input.
+    if (!/^[A-Z.]{1,10}$/.test(sym)) {
+        toast('Invalid symbol — letters and dots only, up to 10 chars', 'error');
+        input.focus();
+        return;
+    }
+    var strat = stratSel ? stratSel.value : 'trailing_stop';
+    input.value = sym;  // normalize uppercase in the UI
+    renderBacktest(sym, strat);
+}
+
+// renderBacktest now accepts an optional strategy override. If the symbol
+// isn't in lastData.picks (arbitrary user-entered symbol), we synthesize a
+// minimal pick stub so the fetch + render pipeline works the same way as
+// for Top-50 picks. The stub caches its own backtest_detail for the life
+// of the page so repeat clicks on the same symbol are instant.
+var _adHocBacktestCache = {};
+
+async function renderBacktest(symbol, strategyOverride) {
+    if (!symbol) return;
+    symbol = String(symbol).toUpperCase();
+    var pick = (lastData && lastData.picks) ? lastData.picks.find(function(p) { return p.symbol === symbol; }) : null;
+    if (!pick) {
+        // Ad-hoc symbol — use a cached stub if we've fetched it before
+        pick = _adHocBacktestCache[symbol] || {
+            symbol: symbol,
+            best_strategy: strategyOverride || 'trailing_stop',
+            price: 0
+        };
+        _adHocBacktestCache[symbol] = pick;
+    }
+    // Strategy override wins over pick.best_strategy for the fetch, so
+    // the user can re-run the same symbol under a different strategy.
+    var strat = strategyOverride || pick.best_strategy || 'trailing_stop';
+    // Resolve a cached backtest. If the pick's default backtest_detail
+    // was computed for the same strategy we're about to run, reuse it.
+    // Otherwise check a strategy-specific slot we populate ourselves.
+    var defaultBT = pick.backtest_detail;
+    var defaultMatches = defaultBT && defaultBT.equity_curve &&
+        ((pick.best_strategy || '').toLowerCase() === String(strat).toLowerCase());
+    var stratKey = '__bt_' + String(strat).toLowerCase();
+    var cachedBT = defaultMatches ? defaultBT : pick[stratKey];
+
+    if (!cachedBT || !cachedBT.equity_curve) {
         var summary = document.getElementById('backtestSummary');
-        if (summary) summary.innerHTML = '<div class="metric" style="grid-column:1/-1;text-align:center;color:var(--text-dim)">Computing backtest for ' + esc(symbol) + '...</div>';
+        if (summary) summary.innerHTML = '<div class="metric" style="grid-column:1/-1;text-align:center;color:var(--text-dim)">Computing ' + esc(strat) + ' backtest for ' + esc(symbol) + '...</div>';
         var expl = document.getElementById('backtestExplanation');
-        if (expl) expl.innerHTML = '<em>Fetching 30-day price history and simulating strategy...</em>';
+        if (expl) expl.innerHTML = '<em>Fetching 30-day price history and simulating ' + esc(strat) + '...</em>';
         if (_backtestChart) { _backtestChart.destroy(); _backtestChart = null; }
         try {
-            var resp = await fetch(API_BASE + '/api/compute-backtest?symbol=' + encodeURIComponent(symbol) + '&strategy=' + encodeURIComponent(pick.best_strategy || 'trailing_stop'), {credentials: 'same-origin'});
+            var resp = await fetch(API_BASE + '/api/compute-backtest?symbol=' + encodeURIComponent(symbol) + '&strategy=' + encodeURIComponent(strat), {credentials: 'same-origin'});
             var data = await resp.json();
             if (!resp.ok || data.error) {
                 if (summary) summary.innerHTML = '<div class="metric" style="grid-column:1/-1;text-align:center;color:var(--red)">Backtest unavailable: ' + esc(data.error || 'computation failed') + '</div>';
-                if (expl) expl.innerHTML = '<em>Not enough 30-day price history for ' + esc(symbol) + '.</em>';
+                if (expl) expl.innerHTML = '<em>' + esc(data.error || 'Could not compute backtest') + ' for ' + esc(symbol) + '. Try a different symbol or check the spelling.</em>';
                 return;
             }
-            // Attach to pick so subsequent renders are cached
-            pick.backtest_detail = data.backtest_detail;
+            cachedBT = data.backtest_detail;
+            // Cache for fast re-renders during this page lifetime
+            pick[stratKey] = cachedBT;
+            if (!pick.backtest_detail) pick.backtest_detail = cachedBT;
         } catch (e) {
             if (summary) summary.innerHTML = '<div class="metric" style="grid-column:1/-1;text-align:center;color:var(--red)">Backtest error: ' + esc(e.message) + '</div>';
             return;
         }
     }
-    var bt = pick.backtest_detail;
+    var bt = cachedBT;
     if (!bt || !bt.equity_curve) return;
 
     // Summary cards
@@ -3879,7 +3946,9 @@ async function renderBacktest(symbol) {
     var expl = document.getElementById('backtestExplanation');
     if (expl) {
         var profitDollar = Math.abs(exit - entry) * 100;  // assume 100 shares for illustration
-        var strategy = pick.best_strategy || 'Trailing Stop';
+        // Round-11: prefer the strategy we just ran (strat) over the
+        // pick's default strategy, since the user may have overridden.
+        var strategy = strat || pick.best_strategy || 'Trailing Stop';
         var why = stoppedOut
             ? 'The stop-loss was triggered — the stock dropped 10% from its peak and was automatically sold. This LIMITED your losses.'
             : 'The position was held the full 30 days without hitting the stop-loss. The trailing stop would have ratcheted up as the price climbed.';
