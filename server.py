@@ -1312,6 +1312,40 @@ class DashboardHandler(
                 result["factor_bypass"] = False
             self.send_json(result)
 
+        elif path.startswith("/static/"):
+            # Round-11 expansion item 16: serve PWA static assets
+            # (manifest.json, service-worker.js, icons). Strict path
+            # safety: only single-segment files allowed under /static/.
+            import re as _re
+            fname = path[len("/static/"):]
+            if not _re.match(r"^[a-zA-Z0-9._-]+$", fname):
+                self.send_json({"error": "invalid static path"}, 400)
+                return
+            local_path = os.path.join(BASE_DIR, "static", fname)
+            if not os.path.exists(local_path):
+                self.send_json({"error": "not found"}, 404)
+                return
+            content_type = "text/plain"
+            if fname.endswith(".json"): content_type = "application/json"
+            elif fname.endswith(".js"): content_type = "application/javascript"
+            elif fname.endswith(".svg"): content_type = "image/svg+xml"
+            elif fname.endswith(".png"): content_type = "image/png"
+            elif fname.endswith(".css"): content_type = "text/css"
+            try:
+                with open(local_path, "rb") as f:
+                    body = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Cache-Control", "public, max-age=3600")
+                # Service worker needs this to register at root scope
+                if fname == "service-worker.js":
+                    self.send_header("Service-Worker-Allowed", "/")
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception as e:
+                self.send_json({"error": f"read failed: {e}"}, 500)
+            return
+
         elif path == "/api/readme":
             readme_path = os.path.join(BASE_DIR, "README.md")
             try:

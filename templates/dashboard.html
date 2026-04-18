@@ -4,11 +4,28 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Stock Trading Bot Dashboard</title>
-<link rel="manifest" href="/manifest.json">
+<link rel="manifest" href="/static/manifest.json">
+<link rel="apple-touch-icon" href="/static/icon.svg">
+<link rel="icon" type="image/svg+xml" href="/static/icon.svg">
 <meta name="theme-color" content="#3b82f6">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="StockBot">
+<script>
+// Round-11 expansion item 16: Register service worker for PWA install.
+// Must be at the top so the registration fires before other scripts.
+if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function() {
+        navigator.serviceWorker.register('/static/service-worker.js', {scope: '/'})
+            .then(function(reg) {
+                console.log('[SW] registered, scope:', reg.scope);
+            })
+            .catch(function(err) {
+                console.log('[SW] registration failed:', err);
+            });
+    });
+}
+</script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
 <style>
@@ -2173,6 +2190,60 @@ function updateDeployDetails() {
             'If assigned, you own shares and sell calls on them.<br><br>' +
             'Risk: stock drops significantly while you hold shares.';
     }
+    // Round-11 expansion item 15: strategy explainer card.
+    // Adds a "What this strategy does" block below the basic info so
+    // the user understands the bot's full strategy before clicking Confirm.
+    const STRATEGY_EXPLAINERS = {
+        breakout: {
+            title: 'Breakout — momentum entry on strength',
+            how: 'Buys stocks breaking out of recent highs with above-average volume. Typically holds 5-15 days while the trend extends.',
+            target: 'Tight 5% stop (fail-fast on failed breakouts) + immediate trailing stop activation. No fixed profit target — rides the trend.',
+            best_in: 'Strong/healthy market breadth (>40% of S&P above 50dma). Pauses in weak breadth.',
+            tags: ['momentum', 'short-hold', 'trend-following']
+        },
+        mean_reversion: {
+            title: 'Mean Reversion — buy oversold dips',
+            how: 'Buys stocks that have dropped 15%+ on no fundamental news, betting on a bounce back to recent average.',
+            target: 'Fixed +15% profit target / 10% stop loss. No trailing — either bounces or stops out. Avg hold 3-7 days.',
+            best_in: 'Range-bound markets, post-earnings overreactions. Skip if news genuinely bearish.',
+            tags: ['counter-trend', 'fast', 'fixed-target']
+        },
+        pead: {
+            title: 'PEAD — Post-Earnings Announcement Drift',
+            how: 'Bernard & Thomas 1989 anomaly: stocks beating EPS by ≥5% drift higher 30-60 days. Bot buys 1-3 days post-beat.',
+            target: '8% stop / 8% trailing activation / 60-day max hold. Auto-closes 5d before next earnings.',
+            best_in: 'Recently-beat companies in healthy sector regimes. Quality + RS bonuses help select winners.',
+            tags: ['post-earnings', 'long-hold', 'fundamental']
+        },
+        wheel: {
+            title: 'Wheel — premium income via cash-secured puts',
+            how: 'Sells put options below current price to collect premium. If assigned, sells covered calls on the shares.',
+            target: '~30 DTE puts at 0.20-0.30 delta. IV rank ≥30 required (premium rich enough). Strike never below cost basis on calls.',
+            best_in: 'Sideways or mildly bullish stocks $10-50. Earnings avoidance: 30d window. Max 2 concurrent.',
+            tags: ['options', 'income', 'medium-hold']
+        },
+        trailing_stop: {
+            title: 'Trailing Stop — universal exit policy',
+            how: 'Not an entry strategy — auto-attached to every Breakout / PEAD entry. Ratchets the stop UP as price climbs.',
+            target: 'Activates +10% above entry; trails 5% below highest seen. Only trails up, never down.',
+            best_in: 'Used as the exit on every long-equity entry. Mean Reversion uses fixed targets instead.',
+            tags: ['exit-policy', 'universal']
+        },
+    };
+    const explainer = STRATEGY_EXPLAINERS[stratKey];
+    if (explainer) {
+        infoHtml += '<div style="margin-top:14px;padding:12px;background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.2);border-radius:8px">' +
+            '<div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:6px">' + esc(explainer.title) + '</div>' +
+            '<div style="font-size:12px;line-height:1.5;color:var(--text-dim)">' +
+                '<div style="margin-bottom:4px"><strong style="color:var(--text)">How it works:</strong> ' + esc(explainer.how) + '</div>' +
+                '<div style="margin-bottom:4px"><strong style="color:var(--text)">Exit rules:</strong> ' + esc(explainer.target) + '</div>' +
+                '<div style="margin-bottom:6px"><strong style="color:var(--text)">Works best:</strong> ' + esc(explainer.best_in) + '</div>' +
+                '<div>' + explainer.tags.map(function(t) {
+                    return '<span class="pick-chip iv-lo" style="margin-right:4px">' + esc(t) + '</span>';
+                }).join('') + '</div>' +
+            '</div>' +
+        '</div>';
+    }
     document.getElementById('deployInfoContent').innerHTML = infoHtml;
     document.getElementById('deployStrategyInfo').textContent = strat.details;
 
@@ -3689,6 +3760,61 @@ function toggleShortSelling(enable) {
     }).catch(function(e){ toast('Error: ' + e.message, 'error'); });
 }
 
+// Round-11 expansion item 17: section visibility preferences saved to
+// localStorage. User can hide sections they don't use; persists across
+// reloads. Toggle UI lives in the user dropdown.
+const SECTION_KEYS = [
+    {id: 'section-positions', label: 'Positions & Open Orders'},
+    {id: 'section-screener', label: 'Top 50 Screener'},
+    {id: 'section-backtest', label: 'Visual Backtest'},
+    {id: 'section-perf-attribution', label: 'Performance Attribution'},
+    {id: 'section-tax-report', label: 'Tax Report'},
+    {id: 'section-factor-health', label: 'Factor Health'},
+    {id: 'section-scheduler', label: 'Cloud Scheduler'},
+    {id: 'section-heatmap', label: 'Trade Heatmap'},
+    {id: 'section-comparison', label: 'Paper vs Live'},
+    {id: 'section-settings', label: 'Settings & Strategies'},
+];
+function getHiddenSections() {
+    try { return JSON.parse(localStorage.getItem('hiddenSections') || '[]'); }
+    catch(_e) { return []; }
+}
+function setHiddenSections(arr) {
+    try { localStorage.setItem('hiddenSections', JSON.stringify(arr || [])); }
+    catch(_e) {}
+}
+function applyHiddenSections() {
+    const hidden = getHiddenSections();
+    SECTION_KEYS.forEach(function(s) {
+        const el = document.getElementById(s.id);
+        if (el) el.style.display = hidden.indexOf(s.id) >= 0 ? 'none' : '';
+    });
+}
+function toggleSection(sectionId) {
+    const hidden = getHiddenSections();
+    const idx = hidden.indexOf(sectionId);
+    if (idx >= 0) hidden.splice(idx, 1);
+    else hidden.push(sectionId);
+    setHiddenSections(hidden);
+    applyHiddenSections();
+    // Re-render the menu so the toggle state updates
+    if (typeof renderSectionToggleMenu === 'function') renderSectionToggleMenu();
+}
+function renderSectionToggleMenu() {
+    const target = document.getElementById('sectionToggleMenu');
+    if (!target) return;
+    const hidden = getHiddenSections();
+    let html = '<div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Show / Hide Sections</div>';
+    SECTION_KEYS.forEach(function(s) {
+        const on = hidden.indexOf(s.id) < 0;
+        html += '<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;cursor:pointer">' +
+            '<input type="checkbox" ' + (on ? 'checked' : '') +
+            ' onchange="toggleSection(\'' + s.id + '\')" ' +
+            ' style="cursor:pointer">' + esc(s.label) + '</label>';
+    });
+    target.innerHTML = html;
+}
+
 function renderDashboard() {
     const d = dashboardData;
     if (!d) return;
@@ -4602,6 +4728,7 @@ function renderDashboard() {
                         '<button class="user-btn-v2" onclick="toggleUserMenu(event)">' + esc(window.currentUsername || 'Account') + ' \u25BE</button>' +
                         '<div class="user-dropdown" id="userDropdown" style="display:none">' +
                             '<a href="#" onclick="event.preventDefault();openSettingsModal();">\u2699\ufe0f Settings</a>' +
+                            '<a href="#" onclick="event.preventDefault();openSectionToggleModal();">\u{1F441} Show / Hide Sections</a>' +
                             (window.currentUserIsAdmin ? '<a href="#" onclick="event.preventDefault();openAdminPanel();">\ud83d\udc65 Manage Users</a>' : '') +
                             '<a href="#" onclick="event.preventDefault();doLogout();return false">\ud83d\udeaa Logout</a>' +
                         '</div>' +
@@ -4891,6 +5018,7 @@ function renderDashboard() {
     refreshFactorHealth();  // Round-11: load the Factor Health panel
     refreshPerfAttribution();  // Round-11 expansion: per-strategy attribution
     refreshTaxReport();        // Round-11 expansion: tax-lot report
+    applyHiddenSections();     // Round-11 expansion: section visibility prefs
     // Every renderDashboard() rebuilds the #heatmapContent div back to
     // the "Loading heatmap data..." placeholder. Without this call the
     // heatmap stayed stuck on "Loading..." after every 60s auto-refresh
@@ -5083,6 +5211,30 @@ async function renderBacktest(symbol, strategyOverride) {
     var ctx = document.getElementById('backtestChart');
     if (!ctx || !bt.equity_curve) return;
 
+    // Round-11 expansion item 14: Visual annotations on backtest chart.
+    // Build per-point datasets for entry, exit, and stop-trigger markers
+    // so the user sees concrete moments on the chart, not just lines.
+    var entryIdx = 0;  // entry on day 1 (index 0)
+    var exitIdx = bt.equity_curve.length - 1;
+    var stoppedOut = bt.stopped_out;
+    // Find the stop-trigger day if applicable: first index where price dropped below stop
+    var stopTriggerIdx = -1;
+    if (stoppedOut && bt.stop_levels && bt.stop_levels.length) {
+        for (var i = 0; i < bt.equity_curve.length; i++) {
+            if (bt.equity_curve[i] <= bt.stop_levels[i]) { stopTriggerIdx = i; break; }
+        }
+    }
+    // Entry / exit / stop marker datasets — sparse arrays so only the
+    // marker points render dots
+    function sparseAt(idx, val) {
+        var arr = new Array(bt.equity_curve.length).fill(null);
+        if (idx >= 0 && idx < arr.length) arr[idx] = val;
+        return arr;
+    }
+    var entryMarker = sparseAt(entryIdx, bt.entry || bt.equity_curve[0]);
+    var exitMarker = sparseAt(stoppedOut && stopTriggerIdx >= 0 ? stopTriggerIdx : exitIdx,
+                                bt.exit || bt.equity_curve[exitIdx]);
+
     _backtestChart = new Chart(ctx, {
         type: 'line',
         data: {
@@ -5104,6 +5256,26 @@ async function renderBacktest(symbol, strategyOverride) {
                 fill: false,
                 pointRadius: 0,
                 borderWidth: 2,
+            }, {
+                label: 'Entry',
+                data: entryMarker,
+                borderColor: '#10b981',
+                backgroundColor: '#10b981',
+                pointRadius: 8,
+                pointStyle: 'triangle',
+                pointBorderWidth: 2,
+                pointBorderColor: '#fff',
+                showLine: false,
+            }, {
+                label: stoppedOut ? 'Stopped Out' : 'Exit',
+                data: exitMarker,
+                borderColor: stoppedOut ? '#ef4444' : '#10b981',
+                backgroundColor: stoppedOut ? '#ef4444' : '#10b981',
+                pointRadius: 8,
+                pointStyle: stoppedOut ? 'crossRot' : 'rectRot',
+                pointBorderWidth: 2,
+                pointBorderColor: '#fff',
+                showLine: false,
             }]
         },
         options: {
@@ -5149,6 +5321,32 @@ function openSettingsModal() {
         modal.classList.add('active');
         switchSettingsTab('profile');
     });
+}
+
+// Round-11 expansion item 17: section-toggle modal
+function openSectionToggleModal() {
+    var hideDropdown = document.getElementById('userDropdown');
+    if (hideDropdown) hideDropdown.style.display = 'none';
+    var existing = document.getElementById('sectionToggleModal');
+    if (existing) { existing.remove(); }
+    var html = '<div class="modal-overlay active" id="sectionToggleModal" onclick="if(event.target===this)closeModal(\'sectionToggleModal\')">' +
+        '<div class="modal" style="max-width:420px">' +
+            '<h2>Customize Dashboard</h2>' +
+            '<p style="font-size:13px;color:var(--text-dim);margin-bottom:14px">Hide sections you don\'t use. Preferences save to this browser.</p>' +
+            '<div id="sectionToggleMenu"></div>' +
+            '<div class="modal-actions" style="margin-top:14px">' +
+                '<button class="btn-ghost" onclick="resetSectionVisibility()">Show all</button>' +
+                '<button class="btn-primary" onclick="closeModal(\'sectionToggleModal\')">Done</button>' +
+            '</div>' +
+        '</div>' +
+    '</div>';
+    document.body.insertAdjacentHTML('beforeend', html);
+    renderSectionToggleMenu();
+}
+function resetSectionVisibility() {
+    setHiddenSections([]);
+    applyHiddenSections();
+    renderSectionToggleMenu();
 }
 
 function switchSettingsTab(name) {

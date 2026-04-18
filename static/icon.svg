@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="80" fill="#0a0e17"/>
+  <rect x="80" y="80" width="352" height="352" rx="40" fill="#3b82f6" opacity="0.15"/>
+  <!-- Trending arrow -->
+  <path d="M120 360 L200 280 L260 320 L380 200 L380 240 L420 240 L420 160 L340 160 L340 200 L260 280 L200 240 L120 320 Z" fill="#10b981"/>
+  <!-- Dollar sign -->
+  <text x="256" y="430" font-family="-apple-system, sans-serif" font-size="80"
+        font-weight="900" fill="#e2e8f0" text-anchor="middle">$</text>
+</svg>
