@@ -3330,10 +3330,20 @@ function renderDashboard() {
     // Round-11: compute aggregate stats for the summary strip above the
     // Positions table so the user can eyeball total exposure / P&L /
     // portfolio concentration without adding up rows manually.
+    //
+    // Today's P&L is sourced from the ACCOUNT level (portfolio_value -
+    // last_equity) — same source the header's Daily P&L metric uses,
+    // so the two numbers stay in lockstep. Previous per-position sum of
+    // `unrealized_intraday_pl` was wrong because that field: (a) behaves
+    // inconsistently for positions opened today, (b) ignores any
+    // closed-today positions' contribution to the day's P&L, and (c)
+    // doesn't always include option mark-to-market changes.
     let posStats = {
         count: 0, longCount: 0, shortCount: 0,
         marketValue: 0, costBasis: 0,
-        unrealizedPL: 0, dayPL: 0,
+        unrealizedPL: 0,
+        dayPL: (typeof dailyPnl === 'number') ? dailyPnl : 0,
+        dayPLPct: (typeof dailyPnlPct === 'number') ? dailyPnlPct : 0,
         biggestSym: '', biggestVal: 0
     };
     positions.forEach(p => {
@@ -3346,13 +3356,11 @@ function renderDashboard() {
         const sym = p.symbol||'';
         const mv = Math.abs(qty) * curPrice;
         const cb = Math.abs(qty) * avgEntry;
-        const dayPL = parseFloat(p.unrealized_intraday_pl || 0);
         posStats.count++;
         if (qty < 0) posStats.shortCount++; else posStats.longCount++;
         posStats.marketValue += mv;
         posStats.costBasis += cb;
         posStats.unrealizedPL += upl;
-        posStats.dayPL += dayPL;
         if (mv > posStats.biggestVal) { posStats.biggestVal = mv; posStats.biggestSym = sym; }
         // Detect deploy source badge
         const srcBadge = p._auto_deployed
@@ -3403,9 +3411,10 @@ function renderDashboard() {
                 '<div class="pos-stat" title="Percent of portfolio currently in open positions. Green <40%, orange 40-70%, red >70%">' +
                     '<div class="pos-stat-label">% of Portfolio</div>' +
                     '<div class="pos-stat-value" style="color:' + portColor + '">' + portPct.toFixed(1) + '%</div></div>' +
-                '<div class="pos-stat" title="Today\'s open-to-now change across all positions">' +
+                '<div class="pos-stat" title="Account equity change since yesterday\'s 4 PM close (portfolio_value - last_equity). Same source as the header Daily P&L, so the numbers always agree. Includes closed positions and option mark-to-market.">' +
                     '<div class="pos-stat-label">Today\'s P&L</div>' +
-                    '<div class="pos-stat-value ' + dayCls + '">' + fmtMoney(posStats.dayPL) + '</div></div>' +
+                    '<div class="pos-stat-value ' + dayCls + '">' + fmtMoney(posStats.dayPL) +
+                    ' <span style="font-size:11px;opacity:0.8">(' + (posStats.dayPLPct >= 0 ? '+' : '') + posStats.dayPLPct.toFixed(2) + '%)</span></div></div>' +
                 '<div class="pos-stat" title="Total unrealized P&L vs cost basis">' +
                     '<div class="pos-stat-label">Unrealized P&L</div>' +
                     '<div class="pos-stat-value ' + uplCls + '">' + fmtMoney(posStats.unrealizedPL) +
