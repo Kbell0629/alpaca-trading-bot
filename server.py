@@ -340,12 +340,20 @@ def _load_with_shared_fallback(user_path, shared_path, user_id):
 
 
 def _mark_auto_deployed(positions, strats_dir):
-    """Round-11: annotate each position with `_auto_deployed` so the
-    dashboard can show the correct AUTO/MANUAL badge. A position is
-    considered AUTO if the auto-deployer (or wheel) dropped a strategy
-    file for its symbol. For option positions (asset_class == us_option)
-    we parse the OCC-format underlying from the symbol prefix and look
-    for a wheel_<underlying>.json file.
+    """Round-11: annotate each position with `_auto_deployed` AND
+    `_strategy` so the dashboard can show the correct AUTO/MANUAL
+    badge plus which strategy the bot is actively running on this
+    position. A position is considered AUTO if the auto-deployer
+    (or wheel) dropped a strategy file for its symbol. For option
+    positions (asset_class == us_option) we parse the OCC-format
+    underlying from the symbol prefix and look for
+    wheel_<underlying>.json.
+
+    Sets on each position dict:
+      _auto_deployed : bool  (True if any strategy file matches)
+      _strategy      : str   (e.g. "trailing_stop", "wheel", "breakout",
+                              "mean_reversion", "pead", "short"; "" if
+                              no match)
     """
     if not isinstance(positions, list) or not positions or not strats_dir:
         return positions
@@ -353,18 +361,31 @@ def _mark_auto_deployed(positions, strats_dir):
         existing = set(os.listdir(strats_dir)) if os.path.isdir(strats_dir) else set()
     except OSError:
         existing = set()
-    # Any strategy file matching *_<SYMBOL>.json marks an equity auto-deploy.
-    # Build a quick set of underlying-symbols we've deployed.
-    deployed_symbols = set()
+    # Build a quick map: underlying-symbol -> strategy name.
+    # Filenames look like: trailing_stop_SOXL.json, wheel_HIMS.json,
+    # breakout_AAPL.json, mean_reversion_XYZ.json, pead_NVDA.json,
+    # short_ABC.json. rsplit on "_" once isolates the SYMBOL from the
+    # multi-word strategy prefix.
+    symbol_to_strategy = {}
     for fname in existing:
         if not fname.endswith(".json"):
             continue
         stem = fname[:-5]  # strip .json
-        # Pattern: <strategy>_<SYMBOL> — take the last underscore chunk
-        if "_" in stem:
-            sym = stem.rsplit("_", 1)[-1]
-            if sym and sym.isalnum():
-                deployed_symbols.add(sym.upper())
+        if "_" not in stem:
+            continue
+        strat, _, sym = stem.rpartition("_")
+        if not sym or not sym.isalnum() or not strat:
+            continue
+        sym_u = sym.upper()
+        # If multiple strategies somehow share one symbol (shouldn't
+        # happen in practice, but: breakout_ + trailing_stop_ side-by-
+        # side during migration), prefer wheel > trailing_stop > the
+        # actual entry strategy. That surfaces the "what's actively
+        # managing this position right now" answer, not stale files.
+        priority = {"wheel": 3, "trailing_stop": 2}.get(strat, 1)
+        existing_prio = {"wheel": 3, "trailing_stop": 2}.get(symbol_to_strategy.get(sym_u), 0)
+        if priority >= existing_prio:
+            symbol_to_strategy[sym_u] = strat
     for p in positions:
         try:
             sym = (p.get("symbol") or "").upper()
@@ -374,12 +395,15 @@ def _mark_auto_deployed(positions, strats_dir):
                 # Underlying is the leading letters (up to 6 chars before
                 # the first digit run).
                 m = re.match(r"^([A-Z]{1,6})\d", sym)
-                underlying = m.group(1) if m else sym
-                p["_auto_deployed"] = underlying in deployed_symbols
+                lookup = m.group(1) if m else sym
             else:
-                p["_auto_deployed"] = sym in deployed_symbols
+                lookup = sym
+            strat = symbol_to_strategy.get(lookup, "")
+            p["_auto_deployed"] = bool(strat)
+            p["_strategy"] = strat
         except Exception:
             p["_auto_deployed"] = False
+            p["_strategy"] = ""
     return positions
 
 

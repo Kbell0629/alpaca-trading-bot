@@ -3479,11 +3479,39 @@ function renderDashboard() {
         const srcBadge = p._auto_deployed
             ? '<span class="deploy-source-badge auto">AUTO</span>'
             : '<span class="deploy-source-badge manual">MANUAL</span>';
+        // Round-11: strategy badge — shows which strategy is actively
+        // managing this position (set by _mark_auto_deployed on the
+        // backend). Color matches the strategy-card accent used
+        // elsewhere in the UI.
+        const stratRaw = (p._strategy || '').toLowerCase();
+        const stratLabelMap = {
+            'trailing_stop': 'Trailing Stop',
+            'wheel': 'Wheel',
+            'breakout': 'Breakout',
+            'mean_reversion': 'Mean Reversion',
+            'pead': 'PEAD',
+            'short': 'Short Selling',
+            'copy_trading': 'Copy Trading'
+        };
+        const stratColorMap = {
+            'trailing_stop': '#3b82f6',
+            'wheel': '#8b5cf6',
+            'breakout': '#ef4444',
+            'mean_reversion': '#f59e0b',
+            'pead': '#06b6d4',
+            'short': '#10b981',
+            'copy_trading': '#10b981'
+        };
+        const stratLabel = stratLabelMap[stratRaw] || '';
+        const stratColor = stratColorMap[stratRaw] || '#64748b';
+        const stratBadge = stratLabel
+            ? ' <span class="strategy-pill" title="Strategy actively managing this position" style="background:' + stratColor + '22;color:' + stratColor + ';border:1px solid ' + stratColor + '44;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.4px;margin-left:6px">' + esc(stratLabel) + '</span>'
+            : '';
         // Round-11: for option positions, decode the cryptic OCC symbol
         // into a human-readable summary so Kevin can see underlying,
         // strike, and cash-at-risk at a glance without decoding
         // HIMS260508P00027000 in his head every time.
-        let symCell = '<strong>' + esc(sym) + '</strong>' + srcBadge;
+        let symCell = '<strong>' + esc(sym) + '</strong>' + srcBadge + stratBadge;
         if (occ) {
             const sideWord = qty < 0 ? 'short' : 'long';
             const riskStr = cashAtRisk > 0
