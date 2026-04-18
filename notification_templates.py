@@ -633,3 +633,126 @@ def _strategy_explainer(strategy: str) -> str:
     }
     return explainers.get(strategy,
         "An entry position opened via the screener's best-strategy selector.")
+
+
+# ============================================================================
+# Round-11 LIVE-BATCH 4: daily scorecard email digest
+# ============================================================================
+
+def scorecard_digest(username, scorecard, today_trades, positions, account):
+    """Daily 4:30 PM ET scorecard digest email.
+    Returns (subject, body) tuple. Plain text for Gmail SMTP simplicity.
+
+    Shows:
+      - Today's P&L (from account.equity - account.last_equity)
+      - Today's trades (opens + closes)
+      - Open positions snapshot
+      - Scorecard stats (win rate, Sharpe, max drawdown)
+      - Readiness score + go-live gate
+    """
+    from datetime import datetime
+    try:
+        from et_time import now_et
+        today = now_et().strftime("%A, %B %d, %Y")
+    except ImportError:
+        today = datetime.now().strftime("%A, %B %d, %Y")
+
+    acct = account or {}
+    pv = float(acct.get("portfolio_value") or 0)
+    last_eq = float(acct.get("last_equity") or pv)
+    day_pnl = pv - last_eq
+    day_pnl_pct = (day_pnl / last_eq * 100) if last_eq > 0 else 0
+    day_arrow = "▲" if day_pnl >= 0 else "▼"
+
+    sc = scorecard or {}
+    lines = []
+    lines.append(f"DAILY SCORECARD — {today}")
+    lines.append("=" * 60)
+    lines.append("")
+    lines.append(f"TODAY")
+    lines.append(f"  Portfolio value:  ${pv:,.2f}")
+    lines.append(f"  Today's P&L:      {day_arrow} {_fmt_signed_money(day_pnl)}  ({day_pnl_pct:+.2f}%)")
+    lines.append(f"  Cash available:   ${float(acct.get('cash') or 0):,.2f}")
+    lines.append(f"  Open positions:   {len(positions or [])}")
+    lines.append("")
+
+    # Today's trades
+    if today_trades:
+        lines.append(f"TODAY'S ACTIVITY ({len(today_trades)} events)")
+        for t in today_trades[:20]:
+            side = (t.get("side") or "?").upper()
+            qty = t.get("qty", "?")
+            sym = t.get("symbol", "?")
+            px = t.get("price", 0)
+            strat = t.get("strategy", "")
+            pnl = t.get("pnl")
+            line = f"  {side} {qty} {sym} @ ${float(px or 0):.2f} ({strat})"
+            if pnl is not None:
+                line += f"  →  {_fmt_signed_money(pnl)}"
+            lines.append(line)
+        if len(today_trades) > 20:
+            lines.append(f"  ... and {len(today_trades) - 20} more")
+        lines.append("")
+
+    # Open positions
+    if positions:
+        lines.append("OPEN POSITIONS")
+        for p in positions[:15]:
+            sym = p.get("symbol", "?")
+            qty = p.get("qty", "?")
+            entry = float(p.get("avg_entry_price") or 0)
+            cur = float(p.get("current_price") or 0)
+            pnl = float(p.get("unrealized_pl") or 0)
+            pnl_pct = float(p.get("unrealized_plpc") or 0) * 100
+            lines.append(f"  {sym:8} {qty:>6}  entry ${entry:>7.2f}  now ${cur:>7.2f}  "
+                         f"{_fmt_signed_money(pnl):>10}  ({pnl_pct:+.1f}%)")
+        lines.append("")
+
+    # Scorecard
+    lines.append("ALL-TIME SCORECARD")
+    lines.append(f"  Total trades:      {sc.get('total_trades', 0)}")
+    lines.append(f"  Win rate:          {sc.get('win_rate', 0):.1f}%"
+                 if sc.get('win_rate') is not None else "  Win rate:          —")
+    lines.append(f"  Total P&L:         {_fmt_signed_money(sc.get('total_pnl', 0))}")
+    lines.append(f"  Sharpe ratio:      {float(sc.get('sharpe_ratio') or 0):.2f}")
+    lines.append(f"  Max drawdown:      {float(sc.get('max_drawdown_pct') or 0):.1f}%")
+    lines.append(f"  Profit factor:     {float(sc.get('profit_factor') or 0):.2f}")
+    lines.append("")
+
+    # Readiness
+    readiness = int(sc.get("readiness_score") or 0)
+    ready_bar = "█" * (readiness // 10) + "░" * (10 - readiness // 10)
+    lines.append(f"GO-LIVE READINESS")
+    lines.append(f"  Score: {readiness}/100  [{ready_bar}]")
+    if readiness >= 80:
+        lines.append(f"  Status: READY — meeting criteria to enable live trading.")
+    elif readiness >= 50:
+        lines.append(f"  Status: Building — keep trading and the score will climb.")
+    else:
+        lines.append(f"  Status: Early days — need more trades to judge.")
+    lines.append("")
+
+    # Strategy breakdown (top 3 by P&L)
+    breakdown = sc.get("strategy_breakdown", {}) or {}
+    ranked = sorted(
+        [(k, v) for k, v in breakdown.items() if int(v.get("trades", 0) or 0) > 0],
+        key=lambda kv: float(kv[1].get("pnl", 0) or 0),
+        reverse=True,
+    )
+    if ranked:
+        lines.append("STRATEGY LEADERBOARD")
+        for strat, s in ranked[:6]:
+            trades_n = int(s.get("trades", 0) or 0)
+            wins_n = int(s.get("wins", 0) or 0)
+            pnl = float(s.get("pnl", 0) or 0)
+            wr = (wins_n / trades_n * 100) if trades_n else 0
+            lines.append(f"  {strat:18} {trades_n:>3} trades  {wr:>5.1f}% win  {_fmt_signed_money(pnl):>10}")
+        lines.append("")
+
+    lines.append(_footer())
+
+    if day_pnl >= 0:
+        subj = f"✅ Scorecard — {today} — {_fmt_signed_money(day_pnl)} ({day_pnl_pct:+.2f}%)"
+    else:
+        subj = f"⚠️ Scorecard — {today} — {_fmt_signed_money(day_pnl)} ({day_pnl_pct:+.2f}%)"
+    return subj, "\n".join(lines)

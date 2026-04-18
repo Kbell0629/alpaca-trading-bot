@@ -945,6 +945,105 @@ class DashboardHandler(
         self.end_headers()
         self.wfile.write(html.encode("utf-8"))
 
+    def handle_csv_export(self, path):
+        """Generate a CSV for the given export route + stream it as a
+        download. Rows depend on path:
+          /api/export/positions.csv  — current open positions (live from Alpaca)
+          /api/export/orders.csv     — current open orders
+          /api/export/trades.csv     — full trade journal (closed + open)
+          /api/export/picks.csv      — latest screener top-50
+          /api/export/tax-lots.csv   — FIFO tax lots (closed only)
+        """
+        import io, csv
+        if not self.current_user:
+            return self.send_json({"error": "Auth required"}, 401)
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        filename = path.rsplit("/", 1)[-1]
+        try:
+            if path == "/api/export/positions.csv":
+                positions = self.user_api_get(f"{self.user_api_endpoint}/positions")
+                positions = positions if isinstance(positions, list) else []
+                w.writerow(["Symbol", "Qty", "AvgEntry", "Current", "MarketValue",
+                            "UnrealizedPL", "UnrealizedPLPct", "AssetClass"])
+                for p in positions:
+                    w.writerow([
+                        p.get("symbol", ""), p.get("qty", ""),
+                        p.get("avg_entry_price", ""), p.get("current_price", ""),
+                        p.get("market_value", ""), p.get("unrealized_pl", ""),
+                        p.get("unrealized_plpc", ""), p.get("asset_class", ""),
+                    ])
+            elif path == "/api/export/orders.csv":
+                orders = self.user_api_get(f"{self.user_api_endpoint}/orders?status=open")
+                orders = orders if isinstance(orders, list) else []
+                w.writerow(["Symbol", "Side", "Type", "Qty", "LimitPrice",
+                            "StopPrice", "Status", "CreatedAt"])
+                for o in orders:
+                    w.writerow([
+                        o.get("symbol", ""), o.get("side", ""),
+                        o.get("type", ""), o.get("qty", ""),
+                        o.get("limit_price", ""), o.get("stop_price", ""),
+                        o.get("status", ""), o.get("created_at", ""),
+                    ])
+            elif path == "/api/export/trades.csv":
+                journal = load_json(self._user_file("trade_journal.json")) or {}
+                trades = journal.get("trades", [])
+                w.writerow(["Timestamp", "Symbol", "Side", "Qty", "Price",
+                            "Strategy", "Status", "PnL", "Reason"])
+                for t in trades:
+                    w.writerow([
+                        t.get("timestamp", ""), t.get("symbol", ""),
+                        t.get("side", ""), t.get("qty", ""), t.get("price", ""),
+                        t.get("strategy", ""), t.get("status", ""),
+                        t.get("pnl", ""), t.get("reason", ""),
+                    ])
+            elif path == "/api/export/picks.csv":
+                data = get_dashboard_data(
+                    api_endpoint=self.user_api_endpoint,
+                    api_headers=self.user_headers(),
+                    user_id=self.current_user.get("id"),
+                )
+                picks = (data or {}).get("picks", [])[:50]
+                w.writerow(["Rank", "Symbol", "Price", "Volume", "Volatility",
+                            "BestStrategy", "BestScore", "QualityTier", "RS",
+                            "SectorETF", "HVRank"])
+                for i, p in enumerate(picks, 1):
+                    w.writerow([
+                        i, p.get("symbol", ""), p.get("price", ""),
+                        p.get("daily_volume", ""), p.get("volatility", ""),
+                        p.get("best_strategy", ""), p.get("best_score", ""),
+                        p.get("quality_tier", ""), p.get("rs_composite", ""),
+                        p.get("sector_etf", ""), p.get("hv_rank", ""),
+                    ])
+            elif path == "/api/export/tax-lots.csv":
+                try:
+                    import tax_lots
+                    journal = load_json(self._user_file("trade_journal.json")) or {}
+                    report = tax_lots.compute_tax_lots(journal)
+                    w.writerow(["Symbol", "Qty", "AcquiredDate", "SoldDate",
+                                "HoldingDays", "Term", "CostBasis", "Proceeds",
+                                "GainLoss", "Strategy"])
+                    for lot in report.get("lots", []):
+                        w.writerow([
+                            lot["symbol"], lot["qty"], lot["acquired_date"],
+                            lot["sold_date"], lot["holding_days"], lot["term"],
+                            lot["cost_basis"], lot["proceeds"], lot["gain_loss"],
+                            lot.get("strategy", ""),
+                        ])
+                except Exception as e:
+                    w.writerow(["error", str(e)])
+        except Exception as e:
+            self._send_error_safe(e, 500, "csv-export")
+            return
+        csv_text = buf.getvalue()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition",
+                         f'attachment; filename="{filename}"')
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(csv_text.encode("utf-8"))
+
     def serve_track_record(self, user_id_str):
         """Public read-only track-record page. Round-11 LIVE-BATCH 3.
         Only renders if the user has opted in (track_record_public=1).
@@ -1442,6 +1541,16 @@ class DashboardHandler(
                 })
             except Exception as e:
                 self._send_error_safe(e, 500, "perf-attribution")
+
+        elif path in ("/api/export/positions.csv", "/api/export/orders.csv",
+                        "/api/export/trades.csv", "/api/export/picks.csv",
+                        "/api/export/tax-lots.csv"):
+            # Round-11 LIVE-BATCH 4: CSV exports for every major table.
+            # Each pulls from the user's current state + streams CSV with
+            # proper Content-Disposition so the browser downloads instead
+            # of rendering. Admin-auth only; same session cookie.
+            self.handle_csv_export(path)
+            return
 
         elif path == "/api/factor-health":
             # Round-11 visibility: exposes the state of the new factor

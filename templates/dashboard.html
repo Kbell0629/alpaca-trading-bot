@@ -1835,6 +1835,19 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
         Control what parts of your bot's activity are public. Off by default — nothing is shared without your explicit consent.
       </div>
 
+      <h3 style="margin:16px 0 8px;font-size:14px">Data Export</h3>
+      <div class="settings-hint" style="margin-bottom:8px">Download your data as CSV. Useful for tax prep, archiving, or migrating to another tool.</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px">
+        <a class="btn-ghost btn-sm" href="/api/export/positions.csv" download="positions.csv" style="text-decoration:none">⬇ Positions</a>
+        <a class="btn-ghost btn-sm" href="/api/export/orders.csv" download="orders.csv" style="text-decoration:none">⬇ Orders</a>
+        <a class="btn-ghost btn-sm" href="/api/export/trades.csv" download="trades.csv" style="text-decoration:none">⬇ Trade Journal</a>
+        <a class="btn-ghost btn-sm" href="/api/export/picks.csv" download="picks.csv" style="text-decoration:none">⬇ Screener Top 50</a>
+        <a class="btn-ghost btn-sm" href="/api/export/tax-lots.csv" download="tax_lots.csv" style="text-decoration:none">⬇ Tax Lots (FIFO)</a>
+        <a class="btn-ghost btn-sm" href="/api/tax-report.csv" download="form_8949.csv" style="text-decoration:none">⬇ IRS Form 8949</a>
+      </div>
+
+      <h3 style="margin:16px 0 8px;font-size:14px">Public Sharing</h3>
+
       <div class="settings-row">
         <label style="display:flex;align-items:center;gap:10px">
           <input type="checkbox" id="setTrackRecordPublic" onchange="toggleTrackRecord(this.checked)">
@@ -4935,7 +4948,10 @@ function renderDashboard() {
         '<section id="section-positions" aria-label="Positions and open orders">' +
         '<div class="tables">' +
             '<div class="table-card" aria-label="Open positions">' +
-                '<h3>Positions' + freshnessChip(d.updated_at, 'live') + '</h3>' +
+                '<h3 style="display:flex;justify-content:space-between;align-items:center">' +
+                    '<span>Positions' + freshnessChip(d.updated_at, 'live') + '</span>' +
+                    '<a class="btn-ghost btn-sm" href="/api/export/positions.csv" download="positions.csv" style="text-decoration:none" title="Download positions as CSV">⬇ CSV</a>' +
+                '</h3>' +
                 posSummaryHtml +
                 '<table><thead><tr>' +
                     '<th>Symbol</th>' +
@@ -4952,7 +4968,10 @@ function renderDashboard() {
                 '<tbody>' + posHtml + '</tbody></table>' +
             '</div>' +
             '<div class="table-card" aria-label="Open orders">' +
-                '<h3>Open Orders' + freshnessChip(d.updated_at, 'live') + '</h3>' +
+                '<h3 style="display:flex;justify-content:space-between;align-items:center">' +
+                    '<span>Open Orders' + freshnessChip(d.updated_at, 'live') + '</span>' +
+                    '<a class="btn-ghost btn-sm" href="/api/export/orders.csv" download="orders.csv" style="text-decoration:none" title="Download orders as CSV">⬇ CSV</a>' +
+                '</h3>' +
                 ordSummaryHtml +
                 '<table><thead><tr><th>Symbol</th><th>Side</th><th>Type</th><th>Qty</th><th>Price</th><th class="hide-narrow">Status</th><th>Actions</th></tr></thead>' +
                 '<tbody>' + ordHtml + '</tbody></table>' +
@@ -4963,7 +4982,10 @@ function renderDashboard() {
         '</section>' +
         '<section id="section-screener" aria-label="Full stock screener">' +
         '<div class="screener">' +
-            '<h3>Full Stock Screener - Top 50' + freshnessChip(d.updated_at) + '</h3>' +
+            '<h3 style="display:flex;justify-content:space-between;align-items:center">' +
+                '<span>Full Stock Screener - Top 50' + freshnessChip(d.updated_at) + '</span>' +
+                '<a class="btn-ghost btn-sm" href="/api/export/picks.csv" download="picks.csv" style="text-decoration:none" title="Download screener top 50 as CSV">⬇ CSV</a>' +
+            '</h3>' +
             '<div class="screener-stats">' +
                 'Screened: <strong>' + (d.total_screened||0).toLocaleString() + '</strong> stocks &nbsp;|&nbsp; ' +
                 'Passed filters: <strong>' + (d.total_passed||0).toLocaleString() + '</strong> &nbsp;|&nbsp; ' +

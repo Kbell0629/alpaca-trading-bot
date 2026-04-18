@@ -2750,6 +2750,56 @@ def _build_daily_close_report(user, account, scorecard, guardrails,
     return "\n".join(lines)
 
 # ============================================================================
+# ROUND-11 LIVE-BATCH 4: DAILY SCORECARD EMAIL DIGEST (per user, 4:30 PM ET)
+# ============================================================================
+def run_scorecard_digest(user):
+    """Send the opt-in daily scorecard email. Skip if user hasn't opted in."""
+    # Only run for users who opted in
+    try:
+        import auth as _auth
+        u = _auth.get_user_by_id(user["id"]) or {}
+        if not u.get("scorecard_email_enabled"):
+            return  # silent skip — not opted in
+    except Exception as e:
+        log(f"[{user['username']}] scorecard_digest: user lookup failed: {e}", "digest")
+        return
+
+    log(f"[{user['username']}] Building scorecard digest...", "digest")
+    # Load scorecard + journal
+    udir = user_data_dir(user)
+    scorecard = load_json(os.path.join(udir, "scorecard.json")) or {}
+    journal = load_json(os.path.join(udir, "trade_journal.json")) or {}
+    # Today's trades (filter by today's ET date)
+    today = now_et().strftime("%Y-%m-%d")
+    today_trades = [
+        t for t in (journal.get("trades") or [])
+        if (t.get("timestamp") or "")[:10] == today
+    ]
+    # Live positions + account
+    account = user_api_get(user, "/account")
+    positions = user_api_get(user, "/positions")
+    if not isinstance(positions, list):
+        positions = []
+
+    # Build digest
+    try:
+        import notification_templates as _nt
+        subject, body = _nt.scorecard_digest(
+            user["username"], scorecard, today_trades, positions, account
+        )
+    except Exception as e:
+        log(f"[{user['username']}] scorecard_digest: template failed: {e}", "digest")
+        return
+
+    # Queue email. Uses same pattern as other rich emails.
+    try:
+        _queue_direct_email(user, subject, body)
+        log(f"[{user['username']}] Scorecard digest queued to {user.get('_notification_email')}", "digest")
+    except Exception as e:
+        log(f"[{user['username']}] scorecard_digest: queue failed: {e}", "digest")
+
+
+# ============================================================================
 # TASK 5: WEEKLY LEARNING (per user)
 # ============================================================================
 def run_weekly_learning(user):
@@ -3404,6 +3454,19 @@ def scheduler_loop():
                                 log(f"[{user['username']}] daily_close failed: {_e} — retrying", "scheduler")
                                 _clear_daily_stamp(f"daily_close_{uid}")
                                 raise
+
+                    # Round-11 LIVE-BATCH 4: Daily scorecard email digest,
+                    # weekdays 4:30 PM ET. Opt-in per user (scorecard_email_enabled=1).
+                    # Sends the full scorecard + today's trades + positions
+                    # snapshot to the user's notification_email via Gmail SMTP.
+                    if is_weekday and now_et.hour == 16 and now_et.minute >= 30:
+                        if should_run_daily_at(f"scorecard_digest_{uid}", 16, 30,
+                                                max_late_seconds=4*3600):
+                            try:
+                                run_scorecard_digest(user)
+                            except Exception as _e:
+                                log(f"[{user['username']}] scorecard_digest failed: {_e}", "scheduler")
+                                _clear_daily_stamp(f"scorecard_digest_{uid}")
 
                     # Weekly learning: Fridays 5:00 PM ET
                     if weekday == 4 and now_et.hour == 17:
