@@ -4,7 +4,51 @@
 
 ---
 
-## 🆕 What's New (2026-04-19 Round-11 Expansion)
+## 🆕 What's New (2026-04-19 LIVE-TRADING READY)
+
+Weekend 2, Batch 2: the bot is now **live-trading ready**. Full in-app
+control of paper/live mode, credentials, safety rails. Nothing on
+Railway env vars anymore — everything toggles from the UI.
+
+### Ship list (all live)
+
+| Feature | Where |
+|---|---|
+| **In-app API key management** (paper + live separately) | Settings → Alpaca API tab |
+| **Test Connection** before save (validates against Alpaca) | Settings → Alpaca API → Test Connection |
+| **Live-trading toggle with safety gates** | Settings → 🔴 Live Trading tab |
+| &nbsp;&nbsp;→ Requires paper keys + live keys + email + ntfy topic | |
+| &nbsp;&nbsp;→ Readiness score ≥ 80 (override available) | |
+| &nbsp;&nbsp;→ Hard cap on per-trade position size ($500 default) | |
+| &nbsp;&nbsp;→ Confirm by typing "YES" prompt | |
+| &nbsp;&nbsp;→ Audit-logged + critical alert on every toggle | |
+| **Public track record page** (opt-in, read-only) | Settings → Sharing → enable; URL: `/track-record/<user_id>` |
+| **Daily scorecard email digest** (4:30 PM ET weekdays) | Settings → Sharing → Daily scorecard email |
+| **CSV export for every table** | ⬇ CSV buttons on each table + Settings → Sharing → Data Export |
+| &nbsp;&nbsp;positions, orders, trades, picks, tax lots, IRS 8949 | |
+
+### Live-trading go-live flow (when you're ready)
+
+1. **Get live API keys** from [app.alpaca.markets](https://app.alpaca.markets) → your LIVE account → API Keys
+2. **Settings → Alpaca API → Live Trading Keys** → paste key + secret → Test Connection → Save
+3. **Settings → 🔴 Live Trading** → set max position size (recommended $500 for week 1) → Enable Live Trading → type "YES" to confirm
+4. Bot immediately switches to your live account. All new trades use real money. All existing paper positions stay in the paper account.
+
+### Critical safety rails active in live mode
+
+- Every trade capped at your `live_max_position_dollars` regardless of strategy config
+- Beta-adjusted exposure gate blocks new high-beta entries when portfolio already heavily leveraged
+- Drawdown-adaptive sizing (0.25x-1.0x) automatically shrinks positions after losses
+- Correlation gate blocks trades that would put your book too correlated
+- All round-11 factor gates still apply: breadth, RS, sector, quality, IV rank
+
+### Disabling live mode
+
+Settings → 🔴 Live Trading → Disable Live Trading. Positions stay open in your Alpaca live account (you manage them there or come back to live mode). Bot immediately switches back to paper.
+
+---
+
+## 🆕 Round-11 Expansion (2026-04-19)
 
 This weekend shipped **20 major upgrades** across factor intelligence, risk management, UX, and observability. Quick tour of where each one lives:
 

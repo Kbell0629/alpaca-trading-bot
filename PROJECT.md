@@ -103,6 +103,34 @@ Six additional modules + integrations layered on top of the factor batches:
 
 ### Docs (`docs/`)
 - `MONITORING_SETUP.md` — 2-minute setup guide for Sentry (DSN pre-provisioned), UptimeRobot, and ntfy critical alerts
+- `legal/TERMS_OF_SERVICE.md` — SaaS ToS draft (needs lawyer review before publishing)
+- `legal/PRIVACY_POLICY.md` — GDPR+CCPA privacy draft
+- `legal/DISCLAIMER.md` — Trading disclaimer (not investment advice)
+- `legal/README.md` — Lawyer review checklist + business setup costs
+
+### Live-trading infrastructure (2026-04-19 LIVE batches)
+All controlled from Settings modal — no env var changes required:
+- **auth.py migration**: added `alpaca_live_{key,secret}_encrypted`, `live_mode`, `live_enabled_at`, `live_max_position_dollars`, `track_record_public`, `scorecard_email_enabled` columns to `users` table. Idempotent ALTER TABLE on boot.
+- **auth.get_user_alpaca_creds(user_id)**: returns LIVE endpoint + creds when `user.live_mode == 1`, paper otherwise. Callers (scheduler, handlers) don't need to know which mode is active.
+- **auth.save_user_alpaca_creds(paper_key=, paper_secret=, live_key=, live_secret=)**: partial updates.
+- **auth.set_live_mode(user_id, enabled, max_position_dollars=)**: toggle helper.
+- **Routes (server.py)**:
+  - `/api/test-alpaca-keys` — POST {api_key, api_secret, mode} — validates against Alpaca before saving
+  - `/api/save-alpaca-keys` — POST {api_key, api_secret, mode} — tested + encrypted save
+  - `/api/toggle-live-mode` — POST {enable, confirm_understand_risks, live_max_position_dollars, override_readiness}
+  - `/api/toggle-track-record-public` — POST {enable}
+  - `/api/toggle-scorecard-email` — POST {enable}
+  - `/track-record/<user_id>` — PUBLIC, no auth, only renders if `track_record_public=1`
+  - `/api/export/{positions,orders,trades,picks,tax-lots}.csv` — session auth required
+- **cloud_scheduler.run_auto_deployer**: enforces `live_max_position_dollars` cap when `user.live_mode=True`.
+- **cloud_scheduler.run_scorecard_digest(user)**: 4:30 PM ET weekdays, opt-in via `scorecard_email_enabled`. Uses `notification_templates.scorecard_digest`.
+- **templates/track_record.html**: public, read-only, Chart.js equity curve + 8 stat cards + strategy breakdown. CSP-locked, no PII.
+
+### Handler additions (handlers/auth_mixin.py)
+- `handle_test_alpaca_keys(body)` — dry-run /account call
+- `handle_save_alpaca_keys(body)` — verify-then-save
+- `handle_toggle_live_mode(body)` — readiness gate + audit log + critical_alert
+- `handle_toggle_track_record_public(body)` / `handle_toggle_scorecard_email(body)`
 
 ### Management Modules
 - `capital_check.py` — Capital sustainability
