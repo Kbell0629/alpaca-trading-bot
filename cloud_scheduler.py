@@ -1911,10 +1911,38 @@ def run_auto_deployer(user):
             log(f"[{user['username']}] {symbol}: Skipped (recommended_shares < 1)", "deployer")
             continue
 
-        order = user_api_post(user, "/orders", {
-            "symbol": symbol, "qty": str(qty), "side": "buy",
-            "type": "market", "time_in_force": "day"
-        })
+        # Round-11: smart limit-at-mid order with 90s timeout + market
+        # fallback. Saves 0.1-0.5% slippage per round-trip when going
+        # live. Set SMART_ORDERS=0 in Railway env to disable (defaults
+        # to enabled).
+        if os.environ.get("SMART_ORDERS", "1") == "1":
+            try:
+                from smart_orders import place_smart_buy
+                _ep = user.get("_api_endpoint") or API_ENDPOINT
+                _data_ep = user.get("_data_endpoint") or DATA_ENDPOINT
+                # The existing user_api_* helpers accept full URLs too,
+                # so wrap them as the HTTP-style functions smart_orders expects
+                _ag = lambda u, **kw: user_api_get(user, u)
+                _ap = lambda u, body=None: user_api_post(user, u, body)
+                _ad = lambda u: user_api_delete(user, u)
+                order = place_smart_buy(
+                    _ag, _ap, _ad, _ep, _data_ep,
+                    symbol, qty, headers=None,
+                    timeout_sec=int(os.environ.get("SMART_ORDER_TIMEOUT", "90")),
+                    max_spread_pct=float(os.environ.get("SMART_MAX_SPREAD", "0.005")),
+                    client_order_id=f"deploy-{symbol}-{now_et().strftime('%Y%m%d%H%M%S')}",
+                )
+            except Exception as _smart_err:
+                log(f"[{user['username']}] {symbol}: smart-order failed ({_smart_err}) — market fallback", "deployer")
+                order = user_api_post(user, "/orders", {
+                    "symbol": symbol, "qty": str(qty), "side": "buy",
+                    "type": "market", "time_in_force": "day"
+                })
+        else:
+            order = user_api_post(user, "/orders", {
+                "symbol": symbol, "qty": str(qty), "side": "buy",
+                "type": "market", "time_in_force": "day"
+            })
 
         if isinstance(order, dict) and "id" in order:
             # Round-10 architecture: every non-Wheel entry uses a

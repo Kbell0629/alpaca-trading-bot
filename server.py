@@ -1163,6 +1163,94 @@ class DashboardHandler(
             else:
                 self.send_json({"running": False, "error": "Scheduler module not loaded"})
 
+        elif path == "/api/tax-report":
+            # Round-11 expansion: per-lot tax reporting (FIFO basis,
+            # short/long-term split, wash-sale warnings). Pulls from
+            # the user's trade journal.
+            try:
+                import tax_lots
+                journal = load_json(self._user_file("trade_journal.json")) or {"trades": []}
+                qs = urllib.parse.urlparse(self.path).query
+                params = urllib.parse.parse_qs(qs)
+                method = (params.get("method") or ["FIFO"])[0].upper()
+                if method not in ("FIFO", "LIFO"):
+                    method = "FIFO"
+                report = tax_lots.compute_tax_lots(journal, basis_method=method)
+                self.send_json(report)
+            except Exception as e:
+                self._send_error_safe(e, 500, "tax-report")
+
+        elif path == "/api/tax-report.csv":
+            # Form 8949 CSV download. Returns text/csv with Content-Disposition
+            # so the browser triggers a save dialog.
+            try:
+                import tax_lots, io, csv
+                journal = load_json(self._user_file("trade_journal.json")) or {"trades": []}
+                report = tax_lots.compute_tax_lots(journal, basis_method="FIFO")
+                buf = io.StringIO()
+                w = csv.writer(buf)
+                w.writerow(["Description (a)", "Date Acquired (b)", "Date Sold (c)",
+                            "Proceeds (d)", "Cost Basis (e)", "Gain/Loss (h)",
+                            "Term", "Strategy"])
+                for term in ("short", "long"):
+                    for lot in [l for l in report["lots"] if l["term"] == term]:
+                        w.writerow([
+                            f"{lot['qty']} sh {lot['symbol']}",
+                            lot["acquired_date"], lot["sold_date"],
+                            f"{lot['proceeds']:.2f}", f"{lot['cost_basis']:.2f}",
+                            f"{lot['gain_loss']:.2f}",
+                            "Long-term" if term == "long" else "Short-term",
+                            lot.get("strategy", ""),
+                        ])
+                csv_text = buf.getvalue()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/csv")
+                self.send_header("Content-Disposition", 'attachment; filename="form_8949.csv"')
+                self.end_headers()
+                self.wfile.write(csv_text.encode("utf-8"))
+            except Exception as e:
+                self._send_error_safe(e, 500, "tax-report-csv")
+
+        elif path == "/api/perf-attribution":
+            # Round-11 expansion: dollars-per-strategy attribution.
+            # Reads from the user's scorecard (already computed by
+            # update_scorecard.py — strategy_breakdown has trades/wins/pnl).
+            # This endpoint just shapes the data + adds derived fields.
+            try:
+                scorecard = load_json(self._user_file("scorecard.json")) or {}
+                breakdown = scorecard.get("strategy_breakdown", {}) or {}
+                rows = []
+                for strat, s in breakdown.items():
+                    trades = int(s.get("trades", 0) or 0)
+                    wins = int(s.get("wins", 0) or 0)
+                    pnl = float(s.get("pnl", 0) or 0)
+                    if trades == 0 and pnl == 0:
+                        continue  # skip empty buckets
+                    win_rate = (wins / trades * 100) if trades > 0 else 0
+                    avg_pnl = (pnl / trades) if trades > 0 else 0
+                    rows.append({
+                        "strategy": strat,
+                        "trades": trades,
+                        "wins": wins,
+                        "losses": max(0, trades - wins),
+                        "total_pnl": round(pnl, 2),
+                        "avg_pnl": round(avg_pnl, 2),
+                        "win_rate": round(win_rate, 1),
+                    })
+                rows.sort(key=lambda r: r["total_pnl"], reverse=True)
+                total_pnl = sum(r["total_pnl"] for r in rows)
+                best = rows[0] if rows else None
+                worst = rows[-1] if rows and rows[-1]["total_pnl"] < 0 else None
+                self.send_json({
+                    "rows": rows,
+                    "total_pnl": round(total_pnl, 2),
+                    "best_strategy": best,
+                    "worst_strategy": worst,
+                    "scorecard_updated_at": scorecard.get("updated_at"),
+                })
+            except Exception as e:
+                self._send_error_safe(e, 500, "perf-attribution")
+
         elif path == "/api/factor-health":
             # Round-11 visibility: exposes the state of the new factor
             # modules so the dashboard can render a "Factor Health"

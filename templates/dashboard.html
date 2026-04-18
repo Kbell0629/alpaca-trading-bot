@@ -2699,6 +2699,165 @@ function freshnessChip(updatedAt, label) {
         esc(updatedAt) + '"><span class="dot"></span>' + prefix + ageStr + '</span>';
 }
 
+// Round-11 Item 1: Performance Attribution panel.
+async function refreshPerfAttribution() {
+    var panel = document.getElementById('perfAttributionPanel');
+    if (!panel) return;
+    try {
+        var resp = await fetch(API_BASE + '/api/perf-attribution', {credentials: 'same-origin'});
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        var d = await resp.json();
+        renderPerfAttribution(d);
+    } catch (e) {
+        panel.innerHTML = '<div class="empty-state error"><div class="icon">\u26A0</div>' +
+            '<div class="title">Attribution unavailable</div>' +
+            '<div class="subtitle">' + esc(e.message) + '</div></div>';
+    }
+}
+
+function renderPerfAttribution(d) {
+    var panel = document.getElementById('perfAttributionPanel');
+    if (!panel) return;
+    var rows = d.rows || [];
+    if (!rows.length) {
+        panel.innerHTML = '<div class="empty-state"><div class="icon">\u{1F4CA}</div>' +
+            '<div class="title">No closed trades yet</div>' +
+            '<div class="subtitle">Per-strategy attribution starts populating once trades close. Until then this panel waits for data.</div></div>';
+        return;
+    }
+    var html = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:14px">';
+    if (d.best_strategy) {
+        html += '<div class="factor-card" style="border-color:rgba(16,185,129,0.3)">' +
+            '<div class="factor-card-title" style="color:var(--green)">\u{1F3C6} Best</div>' +
+            '<div class="factor-card-value">' + esc(d.best_strategy.strategy) + '</div>' +
+            '<div class="factor-card-sub">' + fmtMoney(d.best_strategy.total_pnl) + ' over ' + d.best_strategy.trades + ' trades</div>' +
+        '</div>';
+    }
+    if (d.worst_strategy) {
+        html += '<div class="factor-card" style="border-color:rgba(239,68,68,0.3)">' +
+            '<div class="factor-card-title" style="color:var(--red)">\u{1F4C9} Worst</div>' +
+            '<div class="factor-card-value">' + esc(d.worst_strategy.strategy) + '</div>' +
+            '<div class="factor-card-sub">' + fmtMoney(d.worst_strategy.total_pnl) + ' over ' + d.worst_strategy.trades + ' trades</div>' +
+        '</div>';
+    }
+    html += '<div class="factor-card">' +
+        '<div class="factor-card-title">Total P&L</div>' +
+        '<div class="factor-card-value ' + pnlClass(d.total_pnl) + '">' + fmtMoney(d.total_pnl) + '</div>' +
+        '<div class="factor-card-sub">across all closed trades</div>' +
+    '</div>';
+    html += '</div>';
+    // Per-strategy table
+    html += '<table style="width:100%;font-size:13px"><thead><tr>' +
+        '<th style="text-align:left">Strategy</th>' +
+        '<th style="text-align:right">Trades</th>' +
+        '<th style="text-align:right">Win Rate</th>' +
+        '<th style="text-align:right">Avg P&L</th>' +
+        '<th style="text-align:right">Total P&L</th>' +
+        '<th style="text-align:left">Bar</th>' +
+        '</tr></thead><tbody>';
+    var maxAbs = Math.max.apply(null, rows.map(function(r) { return Math.abs(r.total_pnl); }).concat([1]));
+    rows.forEach(function(r) {
+        var barWidth = Math.min(100, (Math.abs(r.total_pnl) / maxAbs * 100));
+        var barColor = r.total_pnl >= 0 ? 'var(--green)' : 'var(--red)';
+        html += '<tr>' +
+            '<td style="font-weight:600">' + esc(r.strategy) + '</td>' +
+            '<td style="text-align:right">' + r.trades + ' (' + r.wins + 'W/' + r.losses + 'L)</td>' +
+            '<td style="text-align:right">' + r.win_rate.toFixed(1) + '%</td>' +
+            '<td class="' + pnlClass(r.avg_pnl) + '" style="text-align:right">' + fmtMoney(r.avg_pnl) + '</td>' +
+            '<td class="' + pnlClass(r.total_pnl) + '" style="text-align:right;font-weight:700">' + fmtMoney(r.total_pnl) + '</td>' +
+            '<td><div style="background:rgba(148,163,184,0.1);width:100%;height:14px;border-radius:3px;overflow:hidden"><div style="background:' + barColor + ';width:' + barWidth + '%;height:100%"></div></div></td>' +
+            '</tr>';
+    });
+    html += '</tbody></table>';
+    panel.innerHTML = html;
+}
+
+// Round-11 Item 2: Tax Report panel.
+async function refreshTaxReport() {
+    var panel = document.getElementById('taxReportPanel');
+    if (!panel) return;
+    try {
+        var resp = await fetch(API_BASE + '/api/tax-report?method=FIFO', {credentials: 'same-origin'});
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        var d = await resp.json();
+        renderTaxReport(d);
+    } catch (e) {
+        panel.innerHTML = '<div class="empty-state error"><div class="icon">\u26A0</div>' +
+            '<div class="title">Tax report unavailable</div>' +
+            '<div class="subtitle">' + esc(e.message) + '</div></div>';
+    }
+}
+
+function renderTaxReport(d) {
+    var panel = document.getElementById('taxReportPanel');
+    if (!panel) return;
+    var s = d.summary || {};
+    var lots = d.lots || [];
+    if (!lots.length) {
+        panel.innerHTML = '<div class="empty-state"><div class="icon">\u{1F4DD}</div>' +
+            '<div class="title">No closed lots yet</div>' +
+            '<div class="subtitle">Tax-lot accounting starts populating after the first sell. Open positions show in the Open Lots Remaining section once available.</div></div>';
+        return;
+    }
+    var html = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:14px">';
+    html += '<div class="factor-card"><div class="factor-card-title">Total Proceeds</div>' +
+        '<div class="factor-card-value">' + fmtMoney(s.total_proceeds) + '</div></div>';
+    html += '<div class="factor-card"><div class="factor-card-title">Cost Basis</div>' +
+        '<div class="factor-card-value">' + fmtMoney(s.total_cost_basis) + '</div></div>';
+    html += '<div class="factor-card"><div class="factor-card-title">Total Gain/Loss</div>' +
+        '<div class="factor-card-value ' + pnlClass(s.total_gain_loss) + '">' + fmtMoney(s.total_gain_loss) + '</div></div>';
+    html += '<div class="factor-card"><div class="factor-card-title">Short-term</div>' +
+        '<div class="factor-card-value ' + pnlClass(s.short_term_gain) + '">' + fmtMoney(s.short_term_gain) + '</div>' +
+        '<div class="factor-card-sub">< 365 days held \u00b7 ordinary income tax</div></div>';
+    html += '<div class="factor-card"><div class="factor-card-title">Long-term</div>' +
+        '<div class="factor-card-value ' + pnlClass(s.long_term_gain) + '">' + fmtMoney(s.long_term_gain) + '</div>' +
+        '<div class="factor-card-sub">>= 365 days held \u00b7 long-term cap gains rate</div></div>';
+    html += '</div>';
+    // Wash-sale warnings
+    if ((s.wash_sale_warnings || []).length) {
+        html += '<div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.3);border-radius:8px;padding:10px;margin-bottom:14px">' +
+            '<strong style="color:var(--red)">\u26A0 Wash-Sale Warnings (' + s.wash_sale_warnings.length + ')</strong><br>' +
+            '<div style="font-size:12px;margin-top:4px;color:var(--text-dim)">';
+        s.wash_sale_warnings.forEach(function(w) {
+            html += '\u2022 <strong>' + esc(w.symbol) + '</strong> sold ' + esc(w.sale_date) +
+                ' for ' + fmtMoney(w.loss_amount) + ' loss, repurchased ' + esc(w.repurchase_date) +
+                ' (' + Math.abs(w.days_apart) + 'd later) \u2014 IRS may disallow loss<br>';
+        });
+        html += '</div></div>';
+    }
+    // Lots table (showing recent 30)
+    var displayLots = lots.slice(0, 30);
+    html += '<table style="width:100%;font-size:12px"><thead><tr>' +
+        '<th style="text-align:left">Symbol</th>' +
+        '<th style="text-align:right">Qty</th>' +
+        '<th style="text-align:right">Acquired</th>' +
+        '<th style="text-align:right">Sold</th>' +
+        '<th style="text-align:right">Days Held</th>' +
+        '<th>Term</th>' +
+        '<th style="text-align:right">Cost</th>' +
+        '<th style="text-align:right">Proceeds</th>' +
+        '<th style="text-align:right">G/L</th>' +
+        '</tr></thead><tbody>';
+    displayLots.forEach(function(lot) {
+        html += '<tr>' +
+            '<td>' + esc(lot.symbol) + '</td>' +
+            '<td style="text-align:right">' + lot.qty + '</td>' +
+            '<td style="text-align:right">' + esc(lot.acquired_date) + '</td>' +
+            '<td style="text-align:right">' + esc(lot.sold_date) + '</td>' +
+            '<td style="text-align:right">' + lot.holding_days + '</td>' +
+            '<td><span class="pick-chip ' + (lot.term === 'long' ? 'rs-pos' : 'iv-lo') + '">' + lot.term + '</span></td>' +
+            '<td style="text-align:right">' + fmtMoney(lot.cost_basis) + '</td>' +
+            '<td style="text-align:right">' + fmtMoney(lot.proceeds) + '</td>' +
+            '<td class="' + pnlClass(lot.gain_loss) + '" style="text-align:right;font-weight:600">' + fmtMoney(lot.gain_loss) + '</td>' +
+            '</tr>';
+    });
+    html += '</tbody></table>';
+    if (lots.length > 30) {
+        html += '<div style="font-size:11px;color:var(--text-dim);margin-top:8px">Showing 30 of ' + lots.length + ' lots. Download CSV for the full list.</div>';
+    }
+    panel.innerHTML = html;
+}
+
 // Round-11: Factor Health panel — renders market breadth, top/bottom
 // sectors, cache counts, and yfinance budget state so Kevin can
 // verify all new factor modules are actually working before the
@@ -4565,6 +4724,33 @@ function renderDashboard() {
             '<h3 style="display:flex;justify-content:space-between;align-items:center">Cloud Scheduler <button class="btn-ghost btn-sm" onclick="refreshSchedulerStatus()" aria-label="Refresh scheduler status">Refresh</button></h3>' +
             '<div id="schedulerPanel" role="region" aria-live="polite"><div class="empty-state loading"><div class="icon">\u{23F3}</div><div class="title">Loading scheduler status</div><div class="subtitle">Fetching last-run times and task states\u2026</div></div></div>' +
         '</section>' +
+        '<section id="section-perf-attribution" class="factor-health-section" aria-label="Performance attribution by strategy">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">' +
+                '<div>' +
+                    '<h3 style="margin:0">Performance Attribution</h3>' +
+                    '<div style="font-size:12px;color:var(--text-dim);margin-top:4px">Total $ contribution by strategy. Best-performing strategies should be scaled up; losing strategies disabled or tuned.</div>' +
+                '</div>' +
+                '<button class="btn-ghost btn-sm" onclick="refreshPerfAttribution()" aria-label="Refresh performance attribution">Refresh</button>' +
+            '</div>' +
+            '<div id="perfAttributionPanel" role="region" aria-live="polite">' +
+                '<div class="empty-state loading"><div class="icon">\u{23F3}</div><div class="title">Loading attribution</div><div class="subtitle">Computing per-strategy P&L from scorecard\u2026</div></div>' +
+            '</div>' +
+        '</section>' +
+        '<section id="section-tax-report" class="factor-health-section" aria-label="Tax report">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">' +
+                '<div>' +
+                    '<h3 style="margin:0">Tax Report</h3>' +
+                    '<div style="font-size:12px;color:var(--text-dim);margin-top:4px">FIFO cost-basis lots, short/long-term split, wash-sale warnings. Download Form 8949 CSV for tax filing.</div>' +
+                '</div>' +
+                '<div style="display:flex;gap:8px">' +
+                    '<button class="btn-ghost btn-sm" onclick="refreshTaxReport()" aria-label="Refresh tax report">Refresh</button>' +
+                    '<a class="btn-primary btn-sm" href="/api/tax-report.csv" style="text-decoration:none;line-height:1.6" download="form_8949.csv">Download 8949 CSV</a>' +
+                '</div>' +
+            '</div>' +
+            '<div id="taxReportPanel" role="region" aria-live="polite">' +
+                '<div class="empty-state loading"><div class="icon">\u{23F3}</div><div class="title">Loading tax report</div><div class="subtitle">Computing FIFO lots from trade journal\u2026</div></div>' +
+            '</div>' +
+        '</section>' +
         '<section id="section-factor-health" class="factor-health-section" aria-label="Factor health">' +
             '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">' +
                 '<div>' +
@@ -4603,6 +4789,8 @@ function renderDashboard() {
     renderLog();
     refreshSchedulerStatus();
     refreshFactorHealth();  // Round-11: load the Factor Health panel
+    refreshPerfAttribution();  // Round-11 expansion: per-strategy attribution
+    refreshTaxReport();        // Round-11 expansion: tax-lot report
     // Every renderDashboard() rebuilds the #heatmapContent div back to
     // the "Loading heatmap data..." placeholder. Without this call the
     // heatmap stayed stuck on "Loading..." after every 60s auto-refresh
