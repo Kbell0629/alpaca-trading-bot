@@ -261,6 +261,30 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
 .side-sell { color: var(--red); font-weight: 600; }
 .empty { text-align: center; color: var(--text-dim); padding: 20px; }
 
+/* Positions / Orders summary strip (round-11) — compact stat chips
+   that render above each table so risk/exposure is visible at a
+   glance without adding up rows. Uses CSS grid so the chips wrap
+   cleanly on narrow screens. */
+.pos-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px;
+    margin-bottom: 14px;
+    padding: 10px 12px;
+    background: rgba(59, 130, 246, 0.05);
+    border: 1px solid rgba(59, 130, 246, 0.15);
+    border-radius: 8px;
+}
+.pos-stat { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pos-stat-label {
+    font-size: 10px; color: var(--text-dim); text-transform: uppercase;
+    letter-spacing: 0.5px; font-weight: 600;
+}
+.pos-stat-value {
+    font-size: 15px; font-weight: 700; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
 /* Screener */
 .screener {
     background: var(--card); border: 1px solid var(--border);
@@ -3303,6 +3327,15 @@ function renderDashboard() {
     // Positions table
     const positions = d.positions || [];
     let posHtml = '';
+    // Round-11: compute aggregate stats for the summary strip above the
+    // Positions table so the user can eyeball total exposure / P&L /
+    // portfolio concentration without adding up rows manually.
+    let posStats = {
+        count: 0, longCount: 0, shortCount: 0,
+        marketValue: 0, costBasis: 0,
+        unrealizedPL: 0, dayPL: 0,
+        biggestSym: '', biggestVal: 0
+    };
     positions.forEach(p => {
         const upl = parseFloat(p.unrealized_pl||0);
         const uplPct = parseFloat(p.unrealized_plpc||0) * 100;
@@ -3311,6 +3344,16 @@ function renderDashboard() {
         const avgEntry = parseFloat(p.avg_entry_price||0);
         const curPrice = parseFloat(p.current_price||0);
         const sym = p.symbol||'';
+        const mv = Math.abs(qty) * curPrice;
+        const cb = Math.abs(qty) * avgEntry;
+        const dayPL = parseFloat(p.unrealized_intraday_pl || 0);
+        posStats.count++;
+        if (qty < 0) posStats.shortCount++; else posStats.longCount++;
+        posStats.marketValue += mv;
+        posStats.costBasis += cb;
+        posStats.unrealizedPL += upl;
+        posStats.dayPL += dayPL;
+        if (mv > posStats.biggestVal) { posStats.biggestVal = mv; posStats.biggestSym = sym; }
         // Detect deploy source badge
         const srcBadge = p._auto_deployed
             ? '<span class="deploy-source-badge auto">AUTO</span>'
@@ -3329,13 +3372,81 @@ function renderDashboard() {
     });
     if (!posHtml) posHtml = '<tr><td colspan="7" class="empty">No open positions</td></tr>';
 
+    // Positions summary strip — compact stat chips rendered above the table
+    let posSummaryHtml = '';
+    if (posStats.count > 0) {
+        const totalUnrealPct = posStats.costBasis > 0
+            ? (posStats.unrealizedPL / posStats.costBasis * 100) : 0;
+        const portPct = portfolioValue > 0
+            ? (posStats.marketValue / portfolioValue * 100) : 0;
+        const biggestPct = portfolioValue > 0 && posStats.biggestVal > 0
+            ? (posStats.biggestVal / portfolioValue * 100) : 0;
+        const uplCls = pnlClass(posStats.unrealizedPL);
+        const dayCls = pnlClass(posStats.dayPL);
+        // Color the portfolio-% chip like the screener: green <40, orange 40-70, red >70
+        let portColor = 'var(--green)';
+        if (portPct > 70) portColor = 'var(--red)';
+        else if (portPct > 40) portColor = 'var(--orange)';
+        const longShortStr = posStats.shortCount > 0
+            ? posStats.longCount + ' long / ' + posStats.shortCount + ' short'
+            : posStats.count + (posStats.count === 1 ? ' position' : ' positions');
+        posSummaryHtml =
+            '<div class="pos-summary">' +
+                '<div class="pos-stat"><div class="pos-stat-label">Positions</div>' +
+                    '<div class="pos-stat-value">' + esc(longShortStr) + '</div></div>' +
+                '<div class="pos-stat" title="Sum of current market value across all positions">' +
+                    '<div class="pos-stat-label">Market Value</div>' +
+                    '<div class="pos-stat-value">' + fmtMoney(posStats.marketValue) + '</div></div>' +
+                '<div class="pos-stat" title="Total cost basis — what you paid to enter all positions">' +
+                    '<div class="pos-stat-label">Cost Basis</div>' +
+                    '<div class="pos-stat-value">' + fmtMoney(posStats.costBasis) + '</div></div>' +
+                '<div class="pos-stat" title="Percent of portfolio currently in open positions. Green <40%, orange 40-70%, red >70%">' +
+                    '<div class="pos-stat-label">% of Portfolio</div>' +
+                    '<div class="pos-stat-value" style="color:' + portColor + '">' + portPct.toFixed(1) + '%</div></div>' +
+                '<div class="pos-stat" title="Today\'s open-to-now change across all positions">' +
+                    '<div class="pos-stat-label">Today\'s P&L</div>' +
+                    '<div class="pos-stat-value ' + dayCls + '">' + fmtMoney(posStats.dayPL) + '</div></div>' +
+                '<div class="pos-stat" title="Total unrealized P&L vs cost basis">' +
+                    '<div class="pos-stat-label">Unrealized P&L</div>' +
+                    '<div class="pos-stat-value ' + uplCls + '">' + fmtMoney(posStats.unrealizedPL) +
+                    ' <span style="font-size:11px;opacity:0.8">(' + (totalUnrealPct >= 0 ? '+' : '') + totalUnrealPct.toFixed(2) + '%)</span></div></div>' +
+                (posStats.biggestSym ? '<div class="pos-stat" title="Largest single position — watch concentration risk">' +
+                    '<div class="pos-stat-label">Biggest</div>' +
+                    '<div class="pos-stat-value">' + esc(posStats.biggestSym) + ' <span style="font-size:11px;opacity:0.8">(' + biggestPct.toFixed(1) + '%)</span></div></div>' : '') +
+            '</div>';
+    }
+
     // Orders table
     const orders = d.open_orders || [];
     let ordHtml = '';
+    // Round-11: aggregate stats for Open Orders summary strip
+    let ordStats = {
+        count: 0, buyCount: 0, sellCount: 0, stopCount: 0, limitCount: 0, marketCount: 0,
+        buyReserved: 0,     // capital tied up in pending buy orders
+        stopProtected: 0,   // shares × stop price (value covered by protective stops)
+        sellProceeds: 0     // expected proceeds if all sells fill at limit
+    };
     orders.forEach(o => {
         const sideCls = o.side === 'buy' ? 'side-buy' : 'side-sell';
         const price = o.limit_price || o.stop_price || 'Market';
         const priceDisplay = (price === 'Market') ? 'Market' : ('$' + price);
+        const qtyN = parseFloat(o.qty||0) || 0;
+        const lim = parseFloat(o.limit_price||0) || 0;
+        const stp = parseFloat(o.stop_price||0) || 0;
+        const side = (o.side||'').toLowerCase();
+        const typeStr = (o.type||'').toLowerCase();
+        ordStats.count++;
+        if (side === 'buy') {
+            ordStats.buyCount++;
+            ordStats.buyReserved += (lim || stp) * qtyN;
+        } else if (side === 'sell') {
+            ordStats.sellCount++;
+            if (typeStr.indexOf('stop') !== -1) ordStats.stopProtected += stp * qtyN;
+            else ordStats.sellProceeds += lim * qtyN;
+        }
+        if (typeStr.indexOf('stop') !== -1) ordStats.stopCount++;
+        else if (typeStr === 'limit') ordStats.limitCount++;
+        else if (typeStr === 'market') ordStats.marketCount++;
         ordHtml += '<tr>' +
             '<td><strong>' + esc(o.symbol||'') + '</strong></td>' +
             '<td><span class="' + sideCls + '">' + esc((o.side||'').toUpperCase()) + '</span></td>' +
@@ -3346,6 +3457,37 @@ function renderDashboard() {
             '<td><button class="btn-danger btn-sm" onclick="openCancelOrderModal(\'' + esc(o.id||'') + '\',\'' + esc(o.symbol||'') + '\',\'' + esc(o.side||'') + '\',\'' + esc(o.type||'') + '\',\'' + esc(o.qty||'') + '\',\'' + esc(price) + '\')">Cancel</button></td></tr>';
     });
     if (!ordHtml) ordHtml = '<tr><td colspan="7" class="empty">No open orders</td></tr>';
+
+    // Open Orders summary strip
+    let ordSummaryHtml = '';
+    if (ordStats.count > 0) {
+        const reservePct = portfolioValue > 0 ? (ordStats.buyReserved / portfolioValue * 100) : 0;
+        ordSummaryHtml =
+            '<div class="pos-summary">' +
+                '<div class="pos-stat"><div class="pos-stat-label">Open Orders</div>' +
+                    '<div class="pos-stat-value">' + ordStats.count + '</div></div>' +
+                '<div class="pos-stat" title="Breakdown by order type">' +
+                    '<div class="pos-stat-label">Types</div>' +
+                    '<div class="pos-stat-value" style="font-size:13px">' +
+                    (ordStats.stopCount ? ordStats.stopCount + ' stop ' : '') +
+                    (ordStats.limitCount ? ordStats.limitCount + ' limit ' : '') +
+                    (ordStats.marketCount ? ordStats.marketCount + ' mkt' : '') +
+                    '</div></div>' +
+                (ordStats.buyCount > 0 ? '<div class="pos-stat" title="Capital reserved if all buy orders fill at their limit/stop price">' +
+                    '<div class="pos-stat-label">Buys (reserved)</div>' +
+                    '<div class="pos-stat-value">' + fmtMoney(ordStats.buyReserved) +
+                    ' <span style="font-size:11px;opacity:0.8">(' + reservePct.toFixed(1) + '%)</span></div></div>' : '') +
+                (ordStats.stopProtected > 0 ? '<div class="pos-stat" title="Position value covered by protective stop orders">' +
+                    '<div class="pos-stat-label">Stop Coverage</div>' +
+                    '<div class="pos-stat-value">' + fmtMoney(ordStats.stopProtected) + '</div></div>' : '') +
+                (ordStats.sellProceeds > 0 ? '<div class="pos-stat" title="Expected proceeds if all limit-sell orders fill at their limit price">' +
+                    '<div class="pos-stat-label">Sells (target)</div>' +
+                    '<div class="pos-stat-value">' + fmtMoney(ordStats.sellProceeds) + '</div></div>' : '') +
+                '<div class="pos-stat" title="Breakdown of buy vs sell orders">' +
+                    '<div class="pos-stat-label">Buy / Sell</div>' +
+                    '<div class="pos-stat-value" style="font-size:13px">' + ordStats.buyCount + ' / ' + ordStats.sellCount + '</div></div>' +
+            '</div>';
+    }
 
     // Screener (top 50, sortable)
     let screenerPicks = picks.slice(0,50).map((p,i) => ({...p, rank: i+1}));
@@ -3744,11 +3886,13 @@ function renderDashboard() {
         '<div class="tables">' +
             '<div class="table-card">' +
                 '<h3>Positions</h3>' +
+                posSummaryHtml +
                 '<table><thead><tr><th>Symbol</th><th>Qty</th><th>Avg Entry</th><th>Current</th><th>P&L</th><th>P&L %</th><th>Actions</th></tr></thead>' +
                 '<tbody>' + posHtml + '</tbody></table>' +
             '</div>' +
             '<div class="table-card">' +
                 '<h3>Open Orders</h3>' +
+                ordSummaryHtml +
                 '<table><thead><tr><th>Symbol</th><th>Side</th><th>Type</th><th>Qty</th><th>Price</th><th>Status</th><th>Actions</th></tr></thead>' +
                 '<tbody>' + ordHtml + '</tbody></table>' +
             '</div>' +
