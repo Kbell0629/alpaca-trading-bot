@@ -1290,25 +1290,49 @@ class DashboardHandler(
             # close, etc.), which can drift hours behind the live value
             # as after-hours feeds revise close prices. Past days stay
             # locked to their snapshots — only the current day recomputes.
+            #
+            # Round-11 fix: ONLY fire the overlay on actual trading days.
+            # On weekends/holidays, Alpaca's `last_equity` is still the
+            # prior trading day's pre-open value (it only rolls over at
+            # market open), so `portfolio_value - last_equity` returns
+            # the most-recent trading day's entire gain again — getting
+            # double-counted as a fake weekend "day" in the heatmap.
             try:
                 today_str = now_et().strftime("%Y-%m-%d")
-                live_acct = self.user_api_get(f"{self.user_api_endpoint}/account")
-                if isinstance(live_acct, dict) and "error" not in live_acct:
-                    pv = float(live_acct.get("portfolio_value") or 0)
-                    le = float(live_acct.get("last_equity") or pv)
-                    live_pnl = pv - le
-                    live_pnl_pct = (live_pnl / le * 100) if le else 0
-                    existing = daily_pnl.get(today_str, {})
-                    daily_pnl[today_str] = {
-                        "date": today_str,
-                        "pnl": round(live_pnl, 2),
-                        "pnl_pct": round(live_pnl_pct, 2),
-                        "trades": existing.get("trades", 0),
-                        "wins": existing.get("wins", 0),
-                        "losses": existing.get("losses", 0),
-                        "weekday": datetime.strptime(today_str, "%Y-%m-%d").strftime("%A"),
-                        "live": True,  # flag for UI so it can mark "as of now"
-                    }
+                # Weekend guard: Saturday (5) or Sunday (6) is never a
+                # trading day.
+                _is_weekday = now_et().weekday() < 5
+                # Holiday / half-day check via Alpaca's own clock —
+                # is_open during market hours is the cleanest signal.
+                # When market is closed mid-week (holiday) we still want
+                # to allow the overlay (today's snapshot is valid) BUT
+                # only if Alpaca's calendar agrees this is a trading day.
+                _is_trading_day = _is_weekday
+                if _is_trading_day:
+                    try:
+                        _cal = self.user_api_get(f"{self.user_api_endpoint}/calendar?start={today_str}&end={today_str}")
+                        if isinstance(_cal, list):
+                            _is_trading_day = bool(_cal)  # empty list = holiday
+                    except Exception:
+                        pass  # fall through to weekday guard only
+                if _is_trading_day:
+                    live_acct = self.user_api_get(f"{self.user_api_endpoint}/account")
+                    if isinstance(live_acct, dict) and "error" not in live_acct:
+                        pv = float(live_acct.get("portfolio_value") or 0)
+                        le = float(live_acct.get("last_equity") or pv)
+                        live_pnl = pv - le
+                        live_pnl_pct = (live_pnl / le * 100) if le else 0
+                        existing = daily_pnl.get(today_str, {})
+                        daily_pnl[today_str] = {
+                            "date": today_str,
+                            "pnl": round(live_pnl, 2),
+                            "pnl_pct": round(live_pnl_pct, 2),
+                            "trades": existing.get("trades", 0),
+                            "wins": existing.get("wins", 0),
+                            "losses": existing.get("losses", 0),
+                            "weekday": datetime.strptime(today_str, "%Y-%m-%d").strftime("%A"),
+                            "live": True,  # flag for UI so it can mark "as of now"
+                        }
             except Exception as _e:
                 # Live overlay is a nice-to-have — fall back to snapshot
                 # if the Alpaca call fails.
