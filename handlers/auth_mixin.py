@@ -151,8 +151,14 @@ class AuthHandlerMixin:
                 "error": "Invalid ntfy topic. Allowed: letters, digits, _, - (4-64 chars)."
             }, 400)
         # Notification email: default to login email, but allow the user to
-        # route bot emails to a different inbox. Reject malformed addresses.
-        if notification_email_raw and "@" not in notification_email_raw:
+        # route bot emails to a different inbox. Reject malformed addresses
+        # with a lenient RFC5322-ish regex — the SMTP sender is the final
+        # authority, this just rejects obvious garbage ("asdf", "a@b",
+        # addresses with spaces) before it hits the queue.
+        if notification_email_raw and not re.match(
+            r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$",
+            notification_email_raw,
+        ):
             return self.send_json({"error": "Notification email looks invalid"}, 400)
 
         # Gate: SIGNUP_DISABLED env var blocks all signups; SIGNUP_INVITE_CODE

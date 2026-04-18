@@ -2038,7 +2038,19 @@ def run_auto_deployer(user):
         # the sensitive first weeks of real-money trading.
         if user.get("live_mode"):
             max_live_dollars = float(user.get("live_max_position_dollars") or 500)
-            symbol_price = float(pick.get("price") or 0)
+            try:
+                symbol_price = float(pick.get("price") or 0)
+            except (TypeError, ValueError):
+                symbol_price = 0.0
+            # NaN/inf would silently pass the `> 0` check on inf side and
+            # silently fail it on NaN side — either way, bypassing the
+            # live-mode dollar cap. Reject both explicitly so yfinance
+            # returning bad data for a delisted/halted ticker can't size
+            # a live position past the per-trade safety limit.
+            if symbol_price != symbol_price or symbol_price in (float("inf"), float("-inf")):
+                log(f"[{user['username']}] {symbol}: LIVE skipped — invalid price "
+                    f"({pick.get('price')!r})", "deployer")
+                continue
             if symbol_price > 0:
                 max_qty_by_cap = int(max_live_dollars / symbol_price)
                 if max_qty_by_cap < qty:
