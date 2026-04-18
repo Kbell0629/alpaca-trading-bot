@@ -1407,6 +1407,60 @@ def fetch_all_data():
             pick.setdefault("news_sentiment", "neutral")
             pick.setdefault("sentiment_score", 0)
 
+        # Round-11 Tier 2: Fundamental quality + Bullish news boost.
+        # Applied to top 30 picks only (yfinance rate limit + cache TTL
+        # 24h). Low-quality names (tier D: neg ROE + high debt + neg FCF)
+        # get penalized; bullish news catalysts add up to +15.
+        try:
+            from quality_filter import apply_quality_filter
+            # Reuse the news_map built in the news-fetch loop above.
+            # news_map keys to (items, err) tuples; extract just items.
+            news_map_for_quality = {}
+            for _sym, _pair in (news_map or {}).items():
+                if isinstance(_pair, tuple) and _pair[0]:
+                    news_map_for_quality[_sym] = _pair[0]
+                elif isinstance(_pair, list):
+                    news_map_for_quality[_sym] = _pair
+            print("Applying fundamental quality + bullish news filters...")
+            apply_quality_filter(top_candidates, data_dir=DATA_DIR,
+                                  news_map=news_map_for_quality, only_top_n=30)
+            _tier_counts = {}
+            for p in top_candidates[:30]:
+                _t = p.get("quality_tier", "?")
+                _tier_counts[_t] = _tier_counts.get(_t, 0) + 1
+            print(f"  Quality tiers in top 30: {_tier_counts}")
+        except Exception as _qerr:
+            print(f"  Quality filter failed: {_qerr}. Continuing.")
+
+        # Round-11 Tier 2: IV Rank for wheel candidates. Only score up
+        # picks whose historical volatility is in the upper half of its
+        # 1y range — rich premium is where the wheel's edge lives.
+        try:
+            from iv_rank import get_hv_rank_for_symbol, iv_rank_score_bonus
+            # Only top wheel candidates to stay under yfinance rate limits
+            _wheel_sorted = sorted(top_candidates[:30],
+                                    key=lambda p: p.get("wheel_score", 0),
+                                    reverse=True)[:15]
+            print("Computing IV rank (HV proxy) for top 15 wheel candidates...")
+            for p in _wheel_sorted:
+                try:
+                    hv = get_hv_rank_for_symbol(p["symbol"], data_dir=DATA_DIR)
+                    p["hv_rank"] = hv.get("hv_rank", 50.0)
+                    p["current_hv"] = hv.get("current_hv", 0)
+                    bonus = iv_rank_score_bonus(p["hv_rank"])
+                    p["iv_rank_bonus"] = bonus
+                    if "wheel_score" in p and isinstance(p["wheel_score"], (int, float)):
+                        p["wheel_score"] = round(p["wheel_score"] + bonus, 2)
+                except Exception:
+                    p["hv_rank"] = 50.0
+                    p["iv_rank_bonus"] = 0
+            # Defaults for wheel candidates we didn't score
+            for p in top_candidates:
+                p.setdefault("hv_rank", 50.0)
+                p.setdefault("iv_rank_bonus", 0)
+        except Exception as _iverr:
+            print(f"  IV rank enrichment failed: {_iverr}. Continuing.")
+
         # --- Social Sentiment for top 10 candidates (PARALLEL, 4 workers — StockTwits rate-limited) ---
         print("Fetching social sentiment for top 10 candidates in parallel (4 workers)...")
         social_top = top_candidates[:10]

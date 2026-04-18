@@ -1807,6 +1807,21 @@ def run_auto_deployer(user):
     except Exception as _e:
         log(f"[{user['username']}] news_signals parse failed: {_e}. Continuing without it.", "deployer")
 
+    # Round-11 Tier 2: Prioritize picks with bullish news catalysts. The
+    # screener already added has_bullish_catalyst to each pick. Sort so
+    # bullish-catalyst names are evaluated FIRST within their strategy
+    # tier — the deployer stops at `max_per_day` so ordering matters.
+    try:
+        _bull_count = sum(1 for p in top_picks if p.get("has_bullish_catalyst"))
+        if _bull_count > 0:
+            top_picks = sorted(top_picks,
+                                key=lambda p: (not p.get("has_bullish_catalyst", False),
+                                               -(p.get("best_score", 0) or 0)))
+            log(f"[{user['username']}] {_bull_count} candidates with bullish news "
+                f"catalysts — prioritized in queue", "deployer")
+    except Exception as _e:
+        log(f"[{user['username']}] bullish-news prioritization failed: {_e}", "deployer")
+
     log(f"[{user['username']}] Evaluating {len(top_picks)} candidates from filtered screener list", "deployer")
 
     for pick in top_picks:

@@ -507,6 +507,20 @@ def open_short_put(user, pick):
     if has_earnings_soon(pick):
         return False, f"{symbol} has earnings within {EARNINGS_AVOID_DAYS} days — skipping to avoid IV crush", None
 
+    # Round-11 Tier 2: IV rank gate. Historical volatility rank as a
+    # proxy for IV rank — only sell puts when premium is "rich" (HV
+    # rank >= 30). Published option-seller data: IV rank < 30 leaves
+    # 50%+ of the edge on the table. Falls through if hv_rank not
+    # attached (screener didn't enrich this symbol) so legacy behaviour
+    # preserved for edge cases.
+    try:
+        _hv = pick.get("hv_rank")
+        if _hv is not None and _hv < 30:
+            return False, (f"{symbol} HV rank {_hv:.0f} < 30 — premium too thin, "
+                            "skipping (wheel edge lives in rich-IV regimes)"), None
+    except Exception:
+        pass
+
     # Concurrent-wheel cap
     if count_active_wheels(user) >= MAX_CONCURRENT_WHEELS:
         return False, f"Already at max {MAX_CONCURRENT_WHEELS} concurrent wheels", None
