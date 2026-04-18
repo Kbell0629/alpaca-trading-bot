@@ -3353,6 +3353,7 @@ function renderDashboard() {
         const qty = parseInt(p.qty||0);
         const avgEntry = parseFloat(p.avg_entry_price||0);
         const curPrice = parseFloat(p.current_price||0);
+        const lastdayPrice = parseFloat(p.lastday_price||0);
         const sym = p.symbol||'';
         const mv = Math.abs(qty) * curPrice;
         const cb = Math.abs(qty) * avgEntry;
@@ -3362,6 +3363,26 @@ function renderDashboard() {
         posStats.costBasis += cb;
         posStats.unrealizedPL += upl;
         if (mv > posStats.biggestVal) { posStats.biggestVal = mv; posStats.biggestSym = sym; }
+        // Round-11: per-row stats. Market value, portfolio concentration,
+        // and day change on the stock itself (from Alpaca's change_today
+        // or lastday_price — the stock's % move today, not your position
+        // P&L which the summary chip already covers accurately).
+        const portPctRow = portfolioValue > 0 ? (mv / portfolioValue * 100) : 0;
+        let portColorRow = 'var(--green)';
+        if (portPctRow > 10) portColorRow = 'var(--red)';
+        else if (portPctRow > 5) portColorRow = 'var(--orange)';
+        // change_today is Alpaca's daily stock move (decimal, e.g. 0.015).
+        // If missing, derive from lastday_price.
+        let dayChgPct = parseFloat(p.change_today||0) * 100;
+        if (!dayChgPct && lastdayPrice > 0 && curPrice > 0) {
+            dayChgPct = ((curPrice - lastdayPrice) / lastdayPrice) * 100;
+        }
+        const dayChgDollar = (lastdayPrice > 0 ? (curPrice - lastdayPrice) * qty : 0);
+        const dayCls2 = pnlClass(dayChgDollar);
+        const dayChgStr = (lastdayPrice > 0)
+            ? (dayChgDollar >= 0 ? '+' : '') + fmtMoney(dayChgDollar).replace(/^-/, '-') +
+              ' <span style="font-size:11px;opacity:0.8">(' + (dayChgPct >= 0 ? '+' : '') + dayChgPct.toFixed(2) + '%)</span>'
+            : '<span style="color:var(--text-dim)">—</span>';
         // Detect deploy source badge
         const srcBadge = p._auto_deployed
             ? '<span class="deploy-source-badge auto">AUTO</span>'
@@ -3371,6 +3392,9 @@ function renderDashboard() {
             '<td>' + qty + '</td>' +
             '<td>' + fmtMoney(avgEntry) + '</td>' +
             '<td>' + fmtMoney(curPrice) + '</td>' +
+            '<td title="Market value = |qty| × current price" style="white-space:nowrap">' + fmtMoney(mv) + '</td>' +
+            '<td title="Position size as a percent of portfolio. Green <5%, orange 5-10%, red >10%" style="color:' + portColorRow + ';font-weight:600">' + portPctRow.toFixed(1) + '%</td>' +
+            '<td title="Change since yesterday\'s close — stock-level move × qty" class="' + dayCls2 + '" style="white-space:nowrap">' + dayChgStr + '</td>' +
             '<td class="' + cls + '">' + fmtMoney(upl) + '</td>' +
             '<td class="' + cls + '">' + fmtPct(uplPct) + '</td>' +
             '<td>' +
@@ -3378,7 +3402,7 @@ function renderDashboard() {
             '<button class="btn-warning btn-sm" onclick="openSellHalfModal(\'' + sym + '\',' + qty + ',' + avgEntry + ',' + curPrice + ',' + upl + ',' + uplPct + ')">Sell Half</button>' +
             '</td></tr>';
     });
-    if (!posHtml) posHtml = '<tr><td colspan="7" class="empty">No open positions</td></tr>';
+    if (!posHtml) posHtml = '<tr><td colspan="10" class="empty">No open positions</td></tr>';
 
     // Positions summary strip — compact stat chips rendered above the table
     let posSummaryHtml = '';
@@ -3896,7 +3920,18 @@ function renderDashboard() {
             '<div class="table-card">' +
                 '<h3>Positions</h3>' +
                 posSummaryHtml +
-                '<table><thead><tr><th>Symbol</th><th>Qty</th><th>Avg Entry</th><th>Current</th><th>P&L</th><th>P&L %</th><th>Actions</th></tr></thead>' +
+                '<table><thead><tr>' +
+                    '<th>Symbol</th>' +
+                    '<th>Qty</th>' +
+                    '<th>Avg Entry</th>' +
+                    '<th>Current</th>' +
+                    '<th title="Market value = |qty| × current price">Value</th>' +
+                    '<th title="Percent of portfolio this position represents">% Portf</th>' +
+                    '<th title="Stock\'s change since yesterday\'s close × qty">Day Chg</th>' +
+                    '<th>P&L</th>' +
+                    '<th>P&L %</th>' +
+                    '<th>Actions</th>' +
+                '</tr></thead>' +
                 '<tbody>' + posHtml + '</tbody></table>' +
             '</div>' +
             '<div class="table-card">' +
