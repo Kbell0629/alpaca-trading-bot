@@ -3344,8 +3344,32 @@ function renderDashboard() {
         unrealizedPL: 0,
         dayPL: (typeof dailyPnl === 'number') ? dailyPnl : 0,
         dayPLPct: (typeof dailyPnlPct === 'number') ? dailyPnlPct : 0,
-        biggestSym: '', biggestVal: 0
+        biggestSym: '', biggestVal: 0,
+        optionCount: 0,
+        optionCashAtRisk: 0
     };
+    // Round-11: parse an OCC-formatted option symbol into its components
+    // so we can show human-readable details + true cash-at-risk for
+    // option positions. Input: "HIMS260508P00027000"
+    // Returns: { underlying: "HIMS", type: "put", strike: 27,
+    //            expiry: Date(2026-05-08), expiryLabel: "May 8, 2026" }
+    function parseOCCSymbol(sym) {
+        const m = /^([A-Z]{1,6})(\d{2})(\d{2})(\d{2})([CP])(\d{8})$/.exec(sym || '');
+        if (!m) return null;
+        const yy = 2000 + parseInt(m[2], 10);
+        const mm = parseInt(m[3], 10);
+        const dd = parseInt(m[4], 10);
+        const strike = parseInt(m[6], 10) / 1000;
+        const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        return {
+            underlying: m[1],
+            type: m[5] === 'C' ? 'call' : 'put',
+            strike: strike,
+            expiry: new Date(yy, mm - 1, dd),
+            expiryLabel: monthNames[mm - 1] + ' ' + dd + ', ' + yy,
+            expiryShort: monthNames[mm - 1] + ' ' + dd
+        };
+    }
     positions.forEach(p => {
         const upl = parseFloat(p.unrealized_pl||0);
         const uplPct = parseFloat(p.unrealized_plpc||0) * 100;
@@ -3360,16 +3384,43 @@ function renderDashboard() {
         // (negative). Use it directly; fall back to a manual compute
         // that respects asset_class only when Alpaca's field is absent.
         const assetClass = (p.asset_class || 'us_equity').toLowerCase();
-        const optMult = (assetClass === 'us_option') ? 100 : 1;
+        const isOption = assetClass === 'us_option';
+        const optMult = isOption ? 100 : 1;
         const mvAlpaca = parseFloat(p.market_value||0);
         const cbAlpaca = parseFloat(p.cost_basis||0);
         const mv = Math.abs(mvAlpaca) || (Math.abs(qty) * curPrice * optMult);
         const cb = Math.abs(cbAlpaca) || (Math.abs(qty) * avgEntry * optMult);
+        // Parse OCC symbol for options so we can surface the true
+        // underlying cash-at-risk (strike × 100 × |qty| for a short put:
+        // that's the cash that gets locked up if assigned). For calls or
+        // long options the "risk" is just the premium paid (≈ cost basis).
+        const occ = isOption ? parseOCCSymbol(sym) : null;
+        let cashAtRisk = 0;
+        if (occ) {
+            if (qty < 0 && occ.type === 'put') {
+                // Short cash-secured put: max loss = (strike × 100 × |qty|) - premium
+                // But for capital-reserved purposes we show the full cash amount
+                // that's tied up if assigned.
+                cashAtRisk = occ.strike * 100 * Math.abs(qty);
+            } else if (qty < 0 && occ.type === 'call') {
+                // Short call: if uncovered, risk is theoretically unlimited.
+                // If covered (we own the stock), risk was taken when we bought
+                // the stock. Show "—" via 0.
+                cashAtRisk = 0;
+            } else {
+                // Long option: risk capped at premium paid
+                cashAtRisk = cb;
+            }
+        }
         posStats.count++;
         if (qty < 0) posStats.shortCount++; else posStats.longCount++;
         posStats.marketValue += mv;
         posStats.costBasis += cb;
         posStats.unrealizedPL += upl;
+        if (isOption) {
+            posStats.optionCount++;
+            posStats.optionCashAtRisk += cashAtRisk;
+        }
         if (mv > posStats.biggestVal) { posStats.biggestVal = mv; posStats.biggestSym = sym; }
         // Per-row stats.
         const portPctRow = portfolioValue > 0 ? (mv / portfolioValue * 100) : 0;
@@ -3428,8 +3479,26 @@ function renderDashboard() {
         const srcBadge = p._auto_deployed
             ? '<span class="deploy-source-badge auto">AUTO</span>'
             : '<span class="deploy-source-badge manual">MANUAL</span>';
+        // Round-11: for option positions, decode the cryptic OCC symbol
+        // into a human-readable summary so Kevin can see underlying,
+        // strike, and cash-at-risk at a glance without decoding
+        // HIMS260508P00027000 in his head every time.
+        let symCell = '<strong>' + esc(sym) + '</strong>' + srcBadge;
+        if (occ) {
+            const sideWord = qty < 0 ? 'short' : 'long';
+            const riskStr = cashAtRisk > 0
+                ? ' · <span style="color:var(--orange)" title="Cash at risk: if this ' +
+                  occ.type + ' is assigned, ' + fmtMoney(cashAtRisk) + ' of your cash gets used to buy ' +
+                  (100 * Math.abs(qty)) + ' shares of ' + occ.underlying + ' at \$' + occ.strike.toFixed(2) + '">' +
+                  fmtMoney(cashAtRisk) + ' at risk</span>'
+                : '';
+            symCell += '<div style="font-size:11px;color:var(--text-dim);margin-top:4px;font-weight:400">' +
+                occ.underlying + ' · ' + sideWord + ' $' + occ.strike.toFixed(2) + ' ' + occ.type +
+                ' · exp ' + occ.expiryShort + riskStr +
+                '</div>';
+        }
         posHtml += '<tr>' +
-            '<td><strong>' + esc(sym) + '</strong>' + srcBadge + '</td>' +
+            '<td>' + symCell + '</td>' +
             '<td>' + qty + '</td>' +
             '<td>' + fmtMoney(avgEntry) + '</td>' +
             '<td>' + fmtMoney(curPrice) + '</td>' +
@@ -3487,6 +3556,13 @@ function renderDashboard() {
                 (posStats.biggestSym ? '<div class="pos-stat" title="Largest single position — watch concentration risk">' +
                     '<div class="pos-stat-label">Biggest</div>' +
                     '<div class="pos-stat-value">' + esc(posStats.biggestSym) + ' <span style="font-size:11px;opacity:0.8">(' + biggestPct.toFixed(1) + '%)</span></div></div>' : '') +
+                (posStats.optionCount > 0 ? (function(){
+                    const optRiskPct = portfolioValue > 0 ? (posStats.optionCashAtRisk / portfolioValue * 100) : 0;
+                    return '<div class="pos-stat" title="Total cash that would be required if every short-put option position got assigned. For covered calls and long options this is 0 (risk is capped at premium paid).">' +
+                        '<div class="pos-stat-label">Option Risk</div>' +
+                        '<div class="pos-stat-value">' + fmtMoney(posStats.optionCashAtRisk) +
+                        ' <span style="font-size:11px;opacity:0.8">(' + optRiskPct.toFixed(1) + '%)</span></div></div>';
+                })() : '') +
             '</div>';
     }
 
