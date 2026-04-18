@@ -1815,6 +1815,27 @@ def run_auto_deployer(user):
     except Exception as _e:
         log(f"[{user['username']}] news_signals parse failed: {_e}. Continuing without it.", "deployer")
 
+    # Round-11 expansion item 6: Premarket gappers get TOP priority.
+    # Reads premarket_picks.json saved by the 8:30 AM scanner. Picks
+    # listed there bubble up to the front of top_picks regardless of
+    # screener score (their gap+volume is real-time signal that
+    # outranks yesterday's daily-bar score).
+    if not factor_bypass:
+        try:
+            from premarket_scanner import load_premarket_picks
+            udir = user_data_dir(user)
+            pm_picks = load_premarket_picks(udir)
+            pm_symbols = {p["symbol"] for p in pm_picks if p.get("symbol")}
+            if pm_symbols:
+                # Reorder top_picks so premarket gappers come first
+                pm_in_picks = [p for p in top_picks if p.get("symbol") in pm_symbols]
+                others = [p for p in top_picks if p.get("symbol") not in pm_symbols]
+                top_picks = pm_in_picks + others
+                log(f"[{user['username']}] Premarket gappers prioritized: "
+                    f"{len(pm_in_picks)}/{len(pm_symbols)} matched today's screener", "deployer")
+        except Exception as _pe:
+            log(f"[{user['username']}] premarket prioritization failed: {_pe}", "deployer")
+
     # Round-11 Tier 2: Prioritize picks with bullish news catalysts. The
     # screener already added has_bullish_catalyst to each pick. Sort so
     # bullish-catalyst names are evaluated FIRST within their strategy
@@ -3172,6 +3193,43 @@ def scheduler_loop():
             for user in users:
                 try:
                     uid = user["id"]
+
+                    # Round-11 expansion item 6: Pre-market scanner.
+                    # Weekdays at 8:30 AM ET — scans top-100 by liquidity
+                    # for >2% gaps + meaningful pre-market volume. Saves
+                    # premarket_picks.json which the auto-deployer
+                    # prioritizes at 9:45 AM. No new positions opened
+                    # here — just identifies overnight movers worth
+                    # deploying as soon as the market opens.
+                    if is_weekday and now_et.hour == 8 and now_et.minute >= 30:
+                        if should_run_daily_at(f"premarket_scan_{uid}", 8, 30,
+                                                max_late_seconds=2*3600):
+                            try:
+                                from premarket_scanner import (
+                                    scan_premarket, save_premarket_picks
+                                )
+                                udir = user_data_dir(user)
+                                # Use the user's existing top-100 universe
+                                # from dashboard_data.json (cached top-50
+                                # by liquidity from yesterday).
+                                _dpath = os.path.join(udir, "dashboard_data.json")
+                                _ddata = (load_json(_dpath) or {})
+                                _top_syms = [p.get("symbol") for p in (_ddata.get("picks") or [])
+                                             if p.get("symbol")][:100]
+                                if _top_syms:
+                                    _ag = lambda u, **kw: user_api_get(user, u)
+                                    pm_picks = scan_premarket(
+                                        _ag,
+                                        user.get("_api_endpoint") or API_ENDPOINT,
+                                        user.get("_data_endpoint") or DATA_ENDPOINT,
+                                        _top_syms,
+                                    )
+                                    save_premarket_picks(udir, pm_picks)
+                                    log(f"[{user['username']}] Premarket scan: "
+                                        f"{len(pm_picks)} gappers found", "premarket")
+                            except Exception as _pe:
+                                log(f"[{user['username']}] premarket_scan failed: {_pe}", "premarket")
+                                _clear_daily_stamp(f"premarket_scan_{uid}")
 
                     # Auto-deployer: weekdays 9:45 AM ET (skip opening chop).
                     # Round-11 Tier 1: shifted from 9:35 → 9:45 to dodge

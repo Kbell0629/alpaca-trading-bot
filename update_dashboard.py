@@ -1433,6 +1433,85 @@ def fetch_all_data():
         except Exception as _qerr:
             print(f"  Quality filter failed: {_qerr}. Continuing.")
 
+        # Round-11 expansion item 7: SEC EDGAR insider buys.
+        # Cluster insider buying (3+ insiders in 30d) = +10..+15 score
+        # bonus on breakout + pead. Cached 24h per symbol; respects
+        # SEC's 1-req/sec polite-bot guidance.
+        try:
+            from insider_signals import enrich_picks_with_insiders
+            print("Fetching SEC EDGAR Form 4 insider activity for top 20...")
+            enrich_picks_with_insiders(top_candidates, top_n=20)
+            _ins_count = sum(1 for p in top_candidates[:20]
+                              if (p.get("insider_data") or {}).get("has_cluster_buy"))
+            print(f"  {_ins_count} stocks with cluster insider buys (3+ filers in 30d)")
+        except Exception as _ie:
+            print(f"  Insider signals failed: {_ie}. Continuing.")
+
+        # Round-11 expansion item 8: LLM-powered news sentiment.
+        # Re-scores the news items already fetched above using Gemini
+        # 1.5 Flash (or whichever provider env var is set). Catches
+        # nuance the keyword scanner misses ("lawsuit dismissed" =
+        # bullish despite "lawsuit"). Bonus -10..+15 added to score.
+        try:
+            from llm_sentiment import score_news, _detect_provider
+            _provider = _detect_provider()
+            if _provider:
+                print(f"LLM news scoring via {_provider} for top 15 picks...")
+                _llm_count = 0
+                for p in top_candidates[:15]:
+                    sym = p.get("symbol", "")
+                    items = (news_map or {}).get(sym, ([],))[0] or []
+                    if not items:
+                        continue
+                    # Score the most recent headline
+                    first = items[0]
+                    result = score_news(
+                        headline=first.get("headline", ""),
+                        summary=first.get("summary", ""),
+                        symbol=sym,
+                    )
+                    p["llm_sentiment_score"] = result.get("score", 0)
+                    p["llm_reasoning"] = result.get("reasoning", "")
+                    p["llm_provider"] = result.get("provider")
+                    # Apply: ±15 bonus to breakout + pead, half on others
+                    bonus = result.get("score", 0) * 1.5  # -10..+10 → -15..+15
+                    for k in ("breakout_score", "pead_score"):
+                        if k in p and isinstance(p[k], (int, float)):
+                            p[k] = round(p[k] + bonus, 2)
+                    for k in ("mean_reversion_score", "wheel_score"):
+                        if k in p and isinstance(p[k], (int, float)):
+                            p[k] = round(p[k] + bonus * 0.5, 2)
+                    _llm_count += 1
+                print(f"  LLM-scored {_llm_count} headlines")
+            else:
+                print("  LLM sentiment skipped — no provider env var set "
+                      "(GEMINI_API_KEY / OPENAI_API_KEY / GROQ_API_KEY)")
+        except Exception as _le:
+            print(f"  LLM sentiment failed: {_le}. Continuing.")
+
+        # Round-11 expansion item 9: Multi-timeframe confirmation.
+        # Fetch 6mo of WEEKLY bars for top 20 breakout/PEAD picks and
+        # confirm the daily breakout has weekly trend agreement.
+        # +10 bonus when both timeframes bullish; -10 when daily up
+        # but weekly down (counter-trend bounce → likely fade).
+        try:
+            from multi_timeframe import (
+                fetch_weekly_bars_for_symbols, enrich_picks_with_mtf
+            )
+            mtf_top = [p for p in top_candidates[:20]
+                        if (p.get("best_strategy") or "").lower() in ("breakout", "pead")]
+            if mtf_top:
+                print(f"Fetching weekly bars for {len(mtf_top)} breakout/PEAD picks (multi-TF)...")
+                weekly_map = fetch_weekly_bars_for_symbols(
+                    [p["symbol"] for p in mtf_top]
+                )
+                enrich_picks_with_mtf(top_candidates, bars_map, weekly_map,
+                                       only_breakouts=True, top_n=20)
+                _conf = sum(1 for p in mtf_top if p.get("mtf_confirmed"))
+                print(f"  Multi-TF confirmed: {_conf}/{len(mtf_top)}")
+        except Exception as _me:
+            print(f"  Multi-TF confirmation failed: {_me}. Continuing.")
+
         # Round-11 Tier 2: IV Rank for wheel candidates. Only score up
         # picks whose historical volatility is in the upper half of its
         # 1y range — rich premium is where the wheel's edge lives.
