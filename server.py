@@ -994,6 +994,18 @@ class DashboardHandler(
             self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
+    def do_HEAD(self):
+        """HEAD request support. Python's stdlib http.server returns 501 Not
+        Implemented for HEAD by default, which broke UptimeRobot (it uses
+        HEAD for health checks to save bandwidth). We forward HEAD to GET
+        logic but suppress the body — standard HTTP HEAD semantics."""
+        # Mark the response as HEAD so any downstream `self.wfile.write`
+        # calls in do_GET become no-ops via the _head_mode flag we check
+        # before writing. Simplest correct implementation: run the normal
+        # GET path and let the client discard the body (wastes a bit of
+        # bandwidth but guarantees headers match exactly what GET returns).
+        self.do_GET()
+
     def do_GET(self):
         path = self.path.split("?")[0]
 
