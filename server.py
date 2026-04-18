@@ -339,6 +339,50 @@ def _load_with_shared_fallback(user_path, shared_path, user_id):
     return None
 
 
+def _mark_auto_deployed(positions, strats_dir):
+    """Round-11: annotate each position with `_auto_deployed` so the
+    dashboard can show the correct AUTO/MANUAL badge. A position is
+    considered AUTO if the auto-deployer (or wheel) dropped a strategy
+    file for its symbol. For option positions (asset_class == us_option)
+    we parse the OCC-format underlying from the symbol prefix and look
+    for a wheel_<underlying>.json file.
+    """
+    if not isinstance(positions, list) or not positions or not strats_dir:
+        return positions
+    try:
+        existing = set(os.listdir(strats_dir)) if os.path.isdir(strats_dir) else set()
+    except OSError:
+        existing = set()
+    # Any strategy file matching *_<SYMBOL>.json marks an equity auto-deploy.
+    # Build a quick set of underlying-symbols we've deployed.
+    deployed_symbols = set()
+    for fname in existing:
+        if not fname.endswith(".json"):
+            continue
+        stem = fname[:-5]  # strip .json
+        # Pattern: <strategy>_<SYMBOL> — take the last underscore chunk
+        if "_" in stem:
+            sym = stem.rsplit("_", 1)[-1]
+            if sym and sym.isalnum():
+                deployed_symbols.add(sym.upper())
+    for p in positions:
+        try:
+            sym = (p.get("symbol") or "").upper()
+            asset_class = (p.get("asset_class") or "").lower()
+            if asset_class == "us_option":
+                # OCC option symbol: <UNDERLYING><YYMMDD><C|P><STRIKE8>
+                # Underlying is the leading letters (up to 6 chars before
+                # the first digit run).
+                m = re.match(r"^([A-Z]{1,6})\d", sym)
+                underlying = m.group(1) if m else sym
+                p["_auto_deployed"] = underlying in deployed_symbols
+            else:
+                p["_auto_deployed"] = sym in deployed_symbols
+        except Exception:
+            p["_auto_deployed"] = False
+    return positions
+
+
 def _load_overlay_files(user_dir, strats_dir, user_id):
     """Load per-user strategy + config files. Returns a dict ready to be
     merged into the response. Uses the share-fallback rule above."""
@@ -418,6 +462,9 @@ def get_dashboard_data(api_endpoint=None, api_headers=None, user_id=None):
         current_session = _live_session()
     except Exception:
         current_session = "unknown"
+
+    # Annotate AUTO/MANUAL on each position based on strategy-file presence.
+    positions = _mark_auto_deployed(positions, strats_dir)
 
     if data:
         data["account"] = account if isinstance(account, dict) and "error" not in account else data.get("account", {})

@@ -3355,34 +3355,51 @@ function renderDashboard() {
         const curPrice = parseFloat(p.current_price||0);
         const lastdayPrice = parseFloat(p.lastday_price||0);
         const sym = p.symbol||'';
-        const mv = Math.abs(qty) * curPrice;
-        const cb = Math.abs(qty) * avgEntry;
+        // Round-11: Alpaca returns market_value already scaled for
+        // options (100× contract multiplier) and signed for shorts
+        // (negative). Use it directly; fall back to a manual compute
+        // that respects asset_class only when Alpaca's field is absent.
+        const assetClass = (p.asset_class || 'us_equity').toLowerCase();
+        const optMult = (assetClass === 'us_option') ? 100 : 1;
+        const mvAlpaca = parseFloat(p.market_value||0);
+        const cbAlpaca = parseFloat(p.cost_basis||0);
+        const mv = Math.abs(mvAlpaca) || (Math.abs(qty) * curPrice * optMult);
+        const cb = Math.abs(cbAlpaca) || (Math.abs(qty) * avgEntry * optMult);
         posStats.count++;
         if (qty < 0) posStats.shortCount++; else posStats.longCount++;
         posStats.marketValue += mv;
         posStats.costBasis += cb;
         posStats.unrealizedPL += upl;
         if (mv > posStats.biggestVal) { posStats.biggestVal = mv; posStats.biggestSym = sym; }
-        // Round-11: per-row stats. Market value, portfolio concentration,
-        // and day change on the stock itself (from Alpaca's change_today
-        // or lastday_price — the stock's % move today, not your position
-        // P&L which the summary chip already covers accurately).
+        // Per-row stats.
         const portPctRow = portfolioValue > 0 ? (mv / portfolioValue * 100) : 0;
         let portColorRow = 'var(--green)';
         if (portPctRow > 10) portColorRow = 'var(--red)';
         else if (portPctRow > 5) portColorRow = 'var(--orange)';
-        // change_today is Alpaca's daily stock move (decimal, e.g. 0.015).
-        // If missing, derive from lastday_price.
-        let dayChgPct = parseFloat(p.change_today||0) * 100;
-        if (!dayChgPct && lastdayPrice > 0 && curPrice > 0) {
-            dayChgPct = ((curPrice - lastdayPrice) / lastdayPrice) * 100;
+        // Day Chg: compute directly from (current - lastday) × qty ×
+        // multiplier. This is more robust than unrealized_intraday_pl
+        // (which returned 0 for SOXL even though the stock moved) and
+        // gives P&L-sign-correct dollars for both longs and shorts.
+        // Percent is derived from dayChg/mv so signs always agree.
+        let dayChgDollar = 0;
+        let hasDayChg = false;
+        if (lastdayPrice > 0 && curPrice > 0) {
+            dayChgDollar = (curPrice - lastdayPrice) * qty * optMult;
+            hasDayChg = true;
+        } else if (p.unrealized_intraday_pl !== undefined && p.unrealized_intraday_pl !== null) {
+            dayChgDollar = parseFloat(p.unrealized_intraday_pl);
+            hasDayChg = true;
         }
-        const dayChgDollar = (lastdayPrice > 0 ? (curPrice - lastdayPrice) * qty : 0);
+        const dayChgPctRow = mv > 0 ? (dayChgDollar / mv * 100) : 0;
         const dayCls2 = pnlClass(dayChgDollar);
-        const dayChgStr = (lastdayPrice > 0)
-            ? (dayChgDollar >= 0 ? '+' : '') + fmtMoney(dayChgDollar).replace(/^-/, '-') +
-              ' <span style="font-size:11px;opacity:0.8">(' + (dayChgPct >= 0 ? '+' : '') + dayChgPct.toFixed(2) + '%)</span>'
-            : '<span style="color:var(--text-dim)">—</span>';
+        let dayChgStr;
+        if (!hasDayChg) {
+            dayChgStr = '<span style="color:var(--text-dim)">—</span>';
+        } else {
+            const dollarStr = (dayChgDollar >= 0 ? '+' : '-') + fmtMoney(Math.abs(dayChgDollar)).replace(/^-/, '');
+            dayChgStr = dollarStr +
+                ' <span style="font-size:11px;opacity:0.8">(' + (dayChgPctRow >= 0 ? '+' : '') + dayChgPctRow.toFixed(2) + '%)</span>';
+        }
         // Detect deploy source badge
         const srcBadge = p._auto_deployed
             ? '<span class="deploy-source-badge auto">AUTO</span>'
