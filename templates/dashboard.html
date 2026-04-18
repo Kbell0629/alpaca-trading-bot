@@ -1733,7 +1733,9 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
     <div class="settings-tabs">
       <button type="button" class="settings-tab active" data-tab="profile" onclick="switchSettingsTab('profile')">Profile</button>
       <button type="button" class="settings-tab" data-tab="alpaca" onclick="switchSettingsTab('alpaca')">Alpaca API</button>
+      <button type="button" class="settings-tab" data-tab="live" onclick="switchSettingsTab('live')">🔴 Live Trading</button>
       <button type="button" class="settings-tab" data-tab="notify" onclick="switchSettingsTab('notify')">Notifications</button>
+      <button type="button" class="settings-tab" data-tab="sharing" onclick="switchSettingsTab('sharing')">Sharing</button>
       <button type="button" class="settings-tab" data-tab="password" onclick="switchSettingsTab('password')">Password</button>
       <button type="button" class="settings-tab" data-tab="danger" onclick="switchSettingsTab('danger')">Danger Zone</button>
     </div>
@@ -1759,31 +1761,95 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
     <!-- Alpaca tab -->
     <div class="settings-panel" id="settingsPanel-alpaca">
       <div class="modal-info-box" style="margin-bottom:12px">
-        <strong>⚠️ Paper vs Live:</strong> Only change the endpoint if you know exactly what you're doing. Using live keys here will trade real money.
+        <strong>Two key pairs, one account.</strong> Save your paper and live keys separately here. The "Live Trading" tab controls which one is active. Keys are AES-256-GCM encrypted at rest; we never see them in cleartext after you save.
+      </div>
+
+      <h3 style="margin:16px 0 8px;font-size:14px;color:var(--green)">📝 Paper Trading Keys</h3>
+      <div class="settings-row">
+        <label>Paper API Key</label>
+        <input type="text" id="setPaperKey" placeholder="PKxxxxxxxxxxxxxxxx" autocomplete="off">
       </div>
       <div class="settings-row">
-        <label>API Key</label>
-        <input type="text" id="setAlpacaKey" placeholder="Leave blank to keep current" autocomplete="off">
-        <div class="settings-hint">Your current key is encrypted at rest. Leave blank to keep the existing key.</div>
-      </div>
-      <div class="settings-row">
-        <label>API Secret</label>
-        <input type="password" id="setAlpacaSecret" placeholder="Leave blank to keep current" autocomplete="new-password">
-      </div>
-      <div class="settings-row">
-        <label>Trading Endpoint</label>
-        <select id="setAlpacaEndpoint">
-          <option value="https://paper-api.alpaca.markets/v2">Paper (paper-api.alpaca.markets)</option>
-          <option value="https://api.alpaca.markets/v2">LIVE ($$$) (api.alpaca.markets)</option>
-        </select>
-      </div>
-      <div class="settings-row">
-        <label>Data Endpoint</label>
-        <input type="text" id="setAlpacaDataEndpoint" placeholder="https://data.alpaca.markets/v2">
+        <label>Paper API Secret</label>
+        <input type="password" id="setPaperSecret" placeholder="•••••••• (paste secret)" autocomplete="new-password">
       </div>
       <div class="settings-actions">
-        <button type="button" class="btn-ghost btn-sm" onclick="testAlpacaCreds()">Test Connection</button>
-        <span id="settingsAlpacaTestResult" style="font-size:12px;margin-left:8px"></span>
+        <button type="button" class="btn-ghost btn-sm" onclick="testAlpacaKeys('paper')">Test Connection</button>
+        <button type="button" class="btn-primary btn-sm" onclick="saveAlpacaKeys('paper')">Save Paper Keys</button>
+        <span id="paperKeyResult" style="font-size:12px;margin-left:8px"></span>
+      </div>
+
+      <h3 style="margin:20px 0 8px;font-size:14px;color:var(--red)">💰 Live Trading Keys</h3>
+      <div class="modal-info-box" style="margin-bottom:12px;background:rgba(239,68,68,0.05);border-color:rgba(239,68,68,0.3)">
+        <strong>⚠️ Real money.</strong> Get these at <a href="https://app.alpaca.markets/paper/dashboard/overview" target="_blank" style="color:var(--accent)">app.alpaca.markets</a> → your Live account → API Keys. Save them here first, then enable live mode on the <strong>Live Trading</strong> tab.
+      </div>
+      <div class="settings-row">
+        <label>Live API Key</label>
+        <input type="text" id="setLiveKey" placeholder="AKxxxxxxxxxxxxxxxx" autocomplete="off">
+      </div>
+      <div class="settings-row">
+        <label>Live API Secret</label>
+        <input type="password" id="setLiveSecret" placeholder="•••••••• (paste secret)" autocomplete="new-password">
+      </div>
+      <div class="settings-actions">
+        <button type="button" class="btn-ghost btn-sm" onclick="testAlpacaKeys('live')">Test Connection</button>
+        <button type="button" class="btn-danger btn-sm" onclick="saveAlpacaKeys('live')">Save Live Keys</button>
+        <span id="liveKeyResult" style="font-size:12px;margin-left:8px"></span>
+      </div>
+    </div>
+
+    <!-- Live Trading tab -->
+    <div class="settings-panel" id="settingsPanel-live">
+      <div class="modal-info-box" style="margin-bottom:12px;background:rgba(239,68,68,0.05);border-color:rgba(239,68,68,0.3)">
+        <strong>⚠️ This is where the bot trades real money.</strong> Before you enable live mode:
+        <ul style="margin:8px 0 0 20px;font-size:13px">
+          <li>✅ Complete 30 days of profitable paper trading (Readiness score ≥ 80)</li>
+          <li>✅ Save your LIVE API keys on the Alpaca tab + test the connection</li>
+          <li>✅ Set a notification email + ntfy topic so critical alerts reach you</li>
+          <li>✅ Fund your Alpaca Live account with capital you can afford to lose</li>
+          <li>✅ Start with a small max-position-size (recommended $500-1000 for week 1)</li>
+        </ul>
+      </div>
+
+      <div class="settings-row">
+        <label>Current Mode</label>
+        <div id="currentModeDisplay" style="font-size:16px;font-weight:700;padding:8px 12px;background:var(--bg);border-radius:6px">Loading…</div>
+      </div>
+
+      <div class="settings-row">
+        <label>Max Position Size (live)</label>
+        <input type="number" id="setLiveMaxPosition" min="100" max="50000" step="100" value="500">
+        <div class="settings-hint">Hard cap on any single position when live trading. Start small — recommended $500 for week 1, $1,000-2,500 after a profitable week. Protects against sizing bugs + catastrophic single-trade losses.</div>
+      </div>
+
+      <div class="settings-actions" style="margin-top:16px;flex-direction:column;align-items:stretch;gap:10px">
+        <button type="button" class="btn-danger" onclick="openLiveModeConfirm(true)" id="enableLiveBtn">Enable Live Trading</button>
+        <button type="button" class="btn-ghost" onclick="openLiveModeConfirm(false)" id="disableLiveBtn" style="display:none">Disable Live Trading (return to paper)</button>
+        <span id="liveModeResult" style="font-size:12px;text-align:center"></span>
+      </div>
+    </div>
+
+    <!-- Sharing tab -->
+    <div class="settings-panel" id="settingsPanel-sharing">
+      <div class="modal-info-box" style="margin-bottom:12px">
+        Control what parts of your bot's activity are public. Off by default — nothing is shared without your explicit consent.
+      </div>
+
+      <div class="settings-row">
+        <label style="display:flex;align-items:center;gap:10px">
+          <input type="checkbox" id="setTrackRecordPublic" onchange="toggleTrackRecord(this.checked)">
+          <span>Public track record page</span>
+        </label>
+        <div class="settings-hint">Creates a read-only public URL showing your equity curve, win rate, and strategy breakdown. No account credentials, no positions, no PII — just performance stats. Useful if you eventually sell the bot to friends / as a SaaS.</div>
+        <div id="trackRecordUrl" style="font-size:12px;margin-top:4px"></div>
+      </div>
+
+      <div class="settings-row">
+        <label style="display:flex;align-items:center;gap:10px">
+          <input type="checkbox" id="setScorecardEmail" onchange="toggleScorecardEmail(this.checked)">
+          <span>Daily scorecard email</span>
+        </label>
+        <div class="settings-hint">Sends your full scorecard + today's trades + P&L digest to your notification email at 4:30 PM ET every trading day.</div>
       </div>
     </div>
 
@@ -5371,17 +5437,71 @@ async function loadSettingsData() {
         setVal('setUsername', d.username || '');
         setVal('setEmail', d.email || '');
         setVal('setRole', d.is_admin ? 'Administrator' : 'User');
-        setVal('setAlpacaKey', '');  // Never pre-fill secrets
-        setVal('setAlpacaSecret', '');
-        var endpointSel = document.getElementById('setAlpacaEndpoint');
-        if (endpointSel) endpointSel.value = d.alpaca_endpoint || 'https://paper-api.alpaca.markets/v2';
-        setVal('setAlpacaDataEndpoint', d.alpaca_data_endpoint || 'https://data.alpaca.markets/v2');
+        // Round-11: new key inputs are always blank (never pre-fill secrets)
+        setVal('setPaperKey', '');
+        setVal('setPaperSecret', '');
+        setVal('setLiveKey', '');
+        setVal('setLiveSecret', '');
         setVal('setNtfyTopic', d.ntfy_topic || '');
         setVal('setNotifyEmail', d.notification_email || '');
+
+        // Live mode tab
+        var modeEl = document.getElementById('currentModeDisplay');
+        if (modeEl) {
+            if (d.live_mode) {
+                modeEl.innerHTML = '🔴 <span style="color:var(--red)">LIVE TRADING ACTIVE</span>' +
+                    (d.live_enabled_at ? ' <span style="font-size:12px;color:var(--text-dim);font-weight:400"> — enabled ' + esc(d.live_enabled_at.substring(0,10)) + '</span>' : '');
+            } else {
+                modeEl.innerHTML = '📝 <span style="color:var(--green)">Paper Trading</span> <span style="font-size:12px;color:var(--text-dim);font-weight:400"> — no real money at risk</span>';
+            }
+        }
+        setVal('setLiveMaxPosition', d.live_max_position_dollars || 500);
+        var enableBtn = document.getElementById('enableLiveBtn');
+        var disableBtn = document.getElementById('disableLiveBtn');
+        if (enableBtn && disableBtn) {
+            if (d.live_mode) {
+                enableBtn.style.display = 'none';
+                disableBtn.style.display = 'block';
+            } else {
+                enableBtn.style.display = 'block';
+                disableBtn.style.display = 'none';
+                // Disable if required pieces are missing
+                var missing = [];
+                if (!d.has_paper_keys) missing.push('paper keys');
+                if (!d.has_live_keys) missing.push('live keys');
+                if (!d.notification_email) missing.push('notification email');
+                if (!d.ntfy_topic) missing.push('ntfy topic');
+                if (missing.length) {
+                    enableBtn.disabled = true;
+                    enableBtn.textContent = 'Missing: ' + missing.join(', ');
+                } else {
+                    enableBtn.disabled = false;
+                    enableBtn.textContent = 'Enable Live Trading';
+                }
+            }
+        }
+
+        // Sharing tab
+        var trackEl = document.getElementById('setTrackRecordPublic');
+        if (trackEl) trackEl.checked = !!d.track_record_public;
+        var urlEl = document.getElementById('trackRecordUrl');
+        if (urlEl && d.track_record_public) {
+            var url = '/track-record/' + (d.user_id || '');
+            urlEl.innerHTML = '<strong>Public URL:</strong> <a href="' + url + '" target="_blank" style="color:var(--accent)">' + window.location.origin + url + '</a>';
+        } else if (urlEl) {
+            urlEl.innerHTML = '';
+        }
+        var emailEl = document.getElementById('setScorecardEmail');
+        if (emailEl) emailEl.checked = !!d.scorecard_email_enabled;
+
         var subtitle = document.getElementById('settingsSubtitle');
         if (subtitle) {
-            subtitle.textContent = 'Logged in as ' + (d.username || 'user') +
-                (d.has_alpaca_key ? ' · Alpaca credentials are set' : ' · No Alpaca credentials yet');
+            var mode = d.live_mode ? ' · 🔴 LIVE' : ' · 📝 Paper';
+            var keys = [];
+            if (d.has_paper_keys) keys.push('paper');
+            if (d.has_live_keys) keys.push('live');
+            subtitle.textContent = 'Logged in as ' + (d.username || 'user') + mode +
+                (keys.length ? ' · ' + keys.join('+') + ' keys saved' : ' · no keys yet');
         }
     } catch (e) {
         toast('Failed to load settings: ' + e.message, 'error');
@@ -5461,6 +5581,164 @@ async function testAlpacaCreds() {
         try { console.warn('[test-connection] network error', e); } catch(_){}
         if (result) { result.textContent = '✗ Network error — check your connection.'; result.style.color = 'var(--red)'; }
     }
+}
+
+// Round-11 live-trading: test a specific key pair (paper or live) before saving
+async function testAlpacaKeys(mode) {
+    var keyEl = document.getElementById(mode === 'live' ? 'setLiveKey' : 'setPaperKey');
+    var secEl = document.getElementById(mode === 'live' ? 'setLiveSecret' : 'setPaperSecret');
+    var resEl = document.getElementById(mode === 'live' ? 'liveKeyResult' : 'paperKeyResult');
+    var key = (keyEl.value || '').trim();
+    var secret = (secEl.value || '').trim();
+    if (!key || !secret) {
+        resEl.textContent = 'Enter key + secret first'; resEl.style.color = 'var(--red)'; return;
+    }
+    resEl.textContent = 'Testing...'; resEl.style.color = 'var(--text-dim)';
+    try {
+        var resp = await fetch(API_BASE + '/api/test-alpaca-keys', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'X-CSRF-Token': getCSRFToken()},
+            credentials: 'same-origin',
+            body: JSON.stringify({api_key: key, api_secret: secret, mode: mode}),
+        });
+        var d = await resp.json();
+        if (!resp.ok || d.error) {
+            resEl.textContent = '✗ ' + (d.error || 'Failed'); resEl.style.color = 'var(--red)';
+            return;
+        }
+        var cash = Number(d.cash || 0).toLocaleString();
+        var pv = Number(d.portfolio_value || 0).toLocaleString();
+        resEl.innerHTML = '<span style="color:var(--green)">✓ ' + mode.toUpperCase() + ' verified</span> · Acct ' +
+            esc(d.account_number || '?') + ' · $' + pv + ' pv · $' + cash + ' cash';
+    } catch (e) {
+        resEl.textContent = '✗ Network error: ' + e.message; resEl.style.color = 'var(--red)';
+    }
+}
+
+async function saveAlpacaKeys(mode) {
+    var keyEl = document.getElementById(mode === 'live' ? 'setLiveKey' : 'setPaperKey');
+    var secEl = document.getElementById(mode === 'live' ? 'setLiveSecret' : 'setPaperSecret');
+    var resEl = document.getElementById(mode === 'live' ? 'liveKeyResult' : 'paperKeyResult');
+    var key = (keyEl.value || '').trim();
+    var secret = (secEl.value || '').trim();
+    if (!key || !secret) {
+        resEl.textContent = 'Enter key + secret first'; resEl.style.color = 'var(--red)'; return;
+    }
+    resEl.textContent = 'Saving...'; resEl.style.color = 'var(--text-dim)';
+    try {
+        var resp = await fetch(API_BASE + '/api/save-alpaca-keys', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'X-CSRF-Token': getCSRFToken()},
+            credentials: 'same-origin',
+            body: JSON.stringify({api_key: key, api_secret: secret, mode: mode}),
+        });
+        var d = await resp.json();
+        if (!resp.ok || d.error) {
+            resEl.textContent = '✗ ' + (d.error || 'Save failed'); resEl.style.color = 'var(--red)';
+            return;
+        }
+        resEl.innerHTML = '<span style="color:var(--green)">✓ Saved</span>';
+        keyEl.value = ''; secEl.value = '';  // clear form
+        toast(mode.toUpperCase() + ' Alpaca keys saved', 'success');
+        addLog(mode.toUpperCase() + ' Alpaca keys saved', 'success');
+    } catch (e) {
+        resEl.textContent = '✗ ' + e.message; resEl.style.color = 'var(--red)';
+    }
+}
+
+function openLiveModeConfirm(enable) {
+    if (enable) {
+        var maxPos = parseFloat(document.getElementById('setLiveMaxPosition').value) || 500;
+        var warning = 'ENABLE LIVE TRADING?\n\n' +
+            'This will switch the bot to trade REAL MONEY in your Alpaca LIVE account.\n\n' +
+            'Max position size: $' + maxPos.toLocaleString() + ' per trade (hard cap).\n\n' +
+            'Requirements you should have met:\n' +
+            '  ✅ 30 days profitable paper trading (readiness score ≥ 80)\n' +
+            '  ✅ Live keys saved on Alpaca API tab\n' +
+            '  ✅ Notification email + ntfy topic set\n' +
+            '  ✅ Funded Alpaca Live account\n\n' +
+            'Type YES to confirm you understand the risks.';
+        var ans = prompt(warning);
+        if ((ans || '').trim().toUpperCase() !== 'YES') {
+            toast('Live mode NOT enabled', 'info');
+            return;
+        }
+        toggleLiveMode(true, maxPos, false);
+    } else {
+        if (!confirm('Disable live trading and return to paper mode?')) return;
+        toggleLiveMode(false);
+    }
+}
+
+async function toggleLiveMode(enable, maxPos, override) {
+    var resEl = document.getElementById('liveModeResult');
+    if (resEl) { resEl.textContent = 'Updating...'; resEl.style.color = 'var(--text-dim)'; }
+    try {
+        var body = {enable: enable};
+        if (enable) {
+            body.confirm_understand_risks = true;
+            body.live_max_position_dollars = maxPos;
+            if (override) body.override_readiness = true;
+        }
+        var resp = await fetch(API_BASE + '/api/toggle-live-mode', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'X-CSRF-Token': getCSRFToken()},
+            credentials: 'same-origin',
+            body: JSON.stringify(body),
+        });
+        var d = await resp.json();
+        if (!resp.ok || d.error) {
+            // If readiness gate failed, offer override
+            if (d.readiness !== undefined && d.readiness < 80 && enable) {
+                if (confirm(d.error + '\n\nOverride the readiness gate and enable anyway?')) {
+                    return toggleLiveMode(enable, maxPos, true);
+                }
+            }
+            if (resEl) { resEl.textContent = '✗ ' + (d.error || 'Failed'); resEl.style.color = 'var(--red)'; }
+            return;
+        }
+        if (resEl) { resEl.textContent = '✓ ' + (d.message || 'Updated'); resEl.style.color = enable ? 'var(--red)' : 'var(--green)'; }
+        toast(d.message || 'Mode updated', enable ? 'error' : 'success');
+        addLog((enable ? 'LIVE TRADING ENABLED' : 'Live trading disabled'), enable ? 'error' : 'success');
+        await loadSettingsData();  // refresh mode display
+        await loadCurrentUser();
+    } catch (e) {
+        if (resEl) { resEl.textContent = '✗ ' + e.message; resEl.style.color = 'var(--red)'; }
+    }
+}
+
+async function toggleTrackRecord(enable) {
+    try {
+        var resp = await fetch(API_BASE + '/api/toggle-track-record-public', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'X-CSRF-Token': getCSRFToken()},
+            credentials: 'same-origin',
+            body: JSON.stringify({enable: enable}),
+        });
+        var d = await resp.json();
+        if (!resp.ok || d.error) { toast(d.error || 'Failed', 'error'); return; }
+        var urlEl = document.getElementById('trackRecordUrl');
+        if (urlEl) {
+            urlEl.innerHTML = d.url
+                ? '<strong>Public URL:</strong> <a href="' + d.url + '" target="_blank" style="color:var(--accent)">' + window.location.origin + d.url + '</a>'
+                : '';
+        }
+        toast(enable ? 'Track record is now public' : 'Track record is now private', 'success');
+    } catch (e) { toast('Failed: ' + e.message, 'error'); }
+}
+
+async function toggleScorecardEmail(enable) {
+    try {
+        var resp = await fetch(API_BASE + '/api/toggle-scorecard-email', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'X-CSRF-Token': getCSRFToken()},
+            credentials: 'same-origin',
+            body: JSON.stringify({enable: enable}),
+        });
+        var d = await resp.json();
+        if (!resp.ok || d.error) { toast(d.error || 'Failed', 'error'); return; }
+        toast(enable ? 'Daily scorecard email enabled (4:30 PM ET)' : 'Scorecard email disabled', 'success');
+    } catch (e) { toast('Failed: ' + e.message, 'error'); }
 }
 
 async function changePassword() {

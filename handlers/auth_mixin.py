@@ -448,6 +448,188 @@ class AuthHandlerMixin:
 
         auth.update_user_credentials(self.current_user["id"], **updates)
         self.send_json({"success": True, "message": "Settings updated"})
+    def handle_test_alpaca_keys(self, body):
+        """Test a key pair (paper or live) by calling /account. Returns
+        account details on success so the UI can confirm "this is the
+        right account" before saving. Used by both the paper key form
+        and the live key form during setup.
+        """
+        key = (body.get("api_key") or "").strip()
+        secret = (body.get("api_secret") or "").strip()
+        mode = (body.get("mode") or "paper").strip().lower()
+        if not key or not secret:
+            return self.send_json({"error": "API key and secret required"}, 400)
+        if mode not in ("paper", "live"):
+            return self.send_json({"error": "mode must be 'paper' or 'live'"}, 400)
+        endpoint = ("https://api.alpaca.markets/v2" if mode == "live"
+                    else "https://paper-api.alpaca.markets/v2")
+        try:
+            import urllib.request, urllib.error, json as _json
+            req = urllib.request.Request(
+                endpoint + "/account",
+                headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                acct = _json.loads(resp.read().decode())
+            self.send_json({
+                "success": True,
+                "mode": mode,
+                "account_number": acct.get("account_number"),
+                "status": acct.get("status"),
+                "buying_power": acct.get("buying_power"),
+                "portfolio_value": acct.get("portfolio_value"),
+                "cash": acct.get("cash"),
+                "pattern_day_trader": acct.get("pattern_day_trader"),
+                "options_approved_level": acct.get("options_approved_level"),
+            })
+        except urllib.error.HTTPError as e:
+            code = e.code
+            if code in (401, 403):
+                self.send_json({"error": "Invalid API credentials"}, 400)
+            else:
+                self.send_json({"error": f"Alpaca error: HTTP {code}"}, 400)
+        except Exception as e:
+            self.send_json({"error": f"Connection failed: {str(e)[:120]}"}, 400)
+
+    def handle_save_alpaca_keys(self, body):
+        """Save paper and/or live Alpaca credentials. Accepts partial
+        updates: pass only the pair you're saving. Each pair is tested
+        BEFORE persisting so we never save a bad key."""
+        uid = self.current_user["id"]
+        updates = {}
+        mode = (body.get("mode") or "").strip().lower()
+        key = (body.get("api_key") or "").strip()
+        secret = (body.get("api_secret") or "").strip()
+        if not key or not secret:
+            return self.send_json({"error": "API key and secret required"}, 400)
+        if mode == "paper":
+            updates["paper_key"] = key
+            updates["paper_secret"] = secret
+        elif mode == "live":
+            updates["live_key"] = key
+            updates["live_secret"] = secret
+        else:
+            return self.send_json({"error": "mode must be 'paper' or 'live'"}, 400)
+        # Best practice: verify keys work before saving
+        endpoint = ("https://api.alpaca.markets/v2" if mode == "live"
+                    else "https://paper-api.alpaca.markets/v2")
+        try:
+            import urllib.request, json as _json
+            req = urllib.request.Request(
+                endpoint + "/account",
+                headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret},
+            )
+            urllib.request.urlopen(req, timeout=10).close()
+        except Exception as e:
+            return self.send_json({"error": f"Keys failed verification: {str(e)[:120]}"}, 400)
+        auth.save_user_alpaca_creds(uid, **updates)
+        try:
+            ip = self.client_address[0] if self.client_address else None
+            auth.log_admin_action(
+                f"save_alpaca_keys_{mode}",
+                actor=self.current_user,
+                target_user_id=uid, ip_address=ip,
+            )
+        except Exception:
+            pass
+        self.send_json({"success": True, "message": f"{mode.title()} keys saved"})
+
+    def handle_toggle_live_mode(self, body):
+        """Flip live_mode. Enabling requires:
+          - both paper + live keys saved
+          - readiness score >= 80 (from scorecard)
+          - notification_email set
+          - ntfy_topic set
+          - explicit confirm=true in request body
+        Disabling just flips the flag off (no safety required).
+        """
+        enable = bool(body.get("enable"))
+        uid = self.current_user["id"]
+        user = auth.get_user_by_id(uid) or {}
+        if enable:
+            if not body.get("confirm_understand_risks"):
+                return self.send_json({
+                    "error": "Must confirm understanding of live-trading risks"
+                }, 400)
+            # Require both key pairs present
+            if not (user.get("alpaca_key_encrypted") and user.get("alpaca_secret_encrypted")):
+                return self.send_json({"error": "Paper keys not set"}, 400)
+            if not (user.get("alpaca_live_key_encrypted") and user.get("alpaca_live_secret_encrypted")):
+                return self.send_json({"error": "Live keys not set — save them first"}, 400)
+            if not user.get("notification_email"):
+                return self.send_json({"error": "notification_email required for live mode"}, 400)
+            if not user.get("ntfy_topic"):
+                return self.send_json({"error": "ntfy_topic required for live mode"}, 400)
+            # Readiness gate — scorecard-based
+            try:
+                sc = server.load_json(self._user_file("scorecard.json")) or {}
+                readiness = int(sc.get("readiness_score") or 0)
+                if readiness < 80 and not body.get("override_readiness"):
+                    return self.send_json({
+                        "error": f"Readiness score {readiness}/100 — need ≥80 for live mode. "
+                                 "Pass override_readiness=true if you understand the risk.",
+                        "readiness": readiness,
+                    }, 400)
+            except Exception:
+                pass
+            max_pos = float(body.get("live_max_position_dollars") or 500)
+            auth.set_live_mode(uid, True, max_position_dollars=max_pos)
+            msg = (f"LIVE TRADING ENABLED. Max position: ${max_pos:,.0f}. "
+                   "Recommended: watch closely for the first week.")
+        else:
+            auth.set_live_mode(uid, False)
+            msg = "Live trading disabled. Back to paper."
+        # Audit log
+        try:
+            ip = self.client_address[0] if self.client_address else None
+            auth.log_admin_action(
+                "live_mode_enable" if enable else "live_mode_disable",
+                actor=self.current_user,
+                target_user_id=uid, ip_address=ip,
+            )
+        except Exception:
+            pass
+        # Critical alert (reuses round-11 observability module)
+        try:
+            from observability import critical_alert
+            critical_alert(
+                "LIVE TRADING TOGGLED" if enable else "Live trading disabled",
+                msg, tags={"event": "live_mode", "enabled": str(enable)},
+                user=user,
+            )
+        except Exception:
+            pass
+        self.send_json({"success": True, "live_mode": enable, "message": msg})
+
+    def handle_toggle_track_record_public(self, body):
+        """Flip track_record_public. When True, /track-record/<user_id>
+        becomes a public read-only page showing equity curve + stats."""
+        enable = bool(body.get("enable"))
+        uid = self.current_user["id"]
+        conn = auth._get_db()
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET track_record_public = ? WHERE id = ?",
+                    (1 if enable else 0, uid))
+        conn.commit()
+        conn.close()
+        self.send_json({
+            "success": True,
+            "track_record_public": enable,
+            "url": f"/track-record/{uid}" if enable else None,
+        })
+
+    def handle_toggle_scorecard_email(self, body):
+        """Enable/disable the daily 4:30 PM ET scorecard email."""
+        enable = bool(body.get("enable"))
+        uid = self.current_user["id"]
+        conn = auth._get_db()
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET scorecard_email_enabled = ? WHERE id = ?",
+                    (1 if enable else 0, uid))
+        conn.commit()
+        conn.close()
+        self.send_json({"success": True, "scorecard_email_enabled": enable})
+
     def handle_delete_account(self, body):
         """Soft-delete (deactivate) the current user. Cloud scheduler will stop
         iterating them because list_active_users filters is_active = 1.

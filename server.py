@@ -1161,6 +1161,7 @@ class DashboardHandler(
         elif path == "/api/me":
             u = self.current_user or {}
             self.send_json({
+                "user_id": u.get("id"),
                 "username": u.get("username", ""),
                 "email": u.get("email", ""),
                 "is_admin": bool(u.get("is_admin", 0)),
@@ -1169,6 +1170,14 @@ class DashboardHandler(
                 "ntfy_topic": u.get("ntfy_topic", ""),
                 "notification_email": u.get("notification_email", ""),
                 "has_alpaca_key": bool(self.user_api_key),
+                # Round-11 live-trading fields
+                "has_paper_keys": bool(u.get("alpaca_key_encrypted") and u.get("alpaca_secret_encrypted")),
+                "has_live_keys": bool(u.get("alpaca_live_key_encrypted") and u.get("alpaca_live_secret_encrypted")),
+                "live_mode": bool(u.get("live_mode")),
+                "live_enabled_at": u.get("live_enabled_at"),
+                "live_max_position_dollars": float(u.get("live_max_position_dollars") or 500),
+                "track_record_public": bool(u.get("track_record_public")),
+                "scorecard_email_enabled": bool(u.get("scorecard_email_enabled")),
             })
 
         elif path == "/api/data":
@@ -1797,6 +1806,21 @@ class DashboardHandler(
             return
         if path == "/api/update-settings":
             self.handle_update_settings(body)
+            return
+        if path == "/api/test-alpaca-keys":
+            self.handle_test_alpaca_keys(body)
+            return
+        if path == "/api/save-alpaca-keys":
+            self.handle_save_alpaca_keys(body)
+            return
+        if path == "/api/toggle-live-mode":
+            self.handle_toggle_live_mode(body)
+            return
+        if path == "/api/toggle-track-record-public":
+            self.handle_toggle_track_record_public(body)
+            return
+        if path == "/api/toggle-scorecard-email":
+            self.handle_toggle_scorecard_email(body)
             return
         if path == "/api/delete-account":
             self.handle_delete_account(body)

@@ -219,6 +219,13 @@ def get_all_users_for_scheduling():
                 "_notification_email": creds.get("notification_email") or u.get("email"),
                 "_data_dir": user_dir,
                 "_strategies_dir": os.path.join(user_dir, "strategies"),
+                # Round-11 live-trading: propagate the mode + per-trade cap so
+                # run_auto_deployer can enforce the live-mode max_position_dollars.
+                "_live_mode": bool(creds.get("live_mode")),
+                "_live_max_position_dollars": float(creds.get("live_max_position_dollars") or 500),
+                # Legacy field name used by auto-deployer scorecard code path
+                "live_mode": bool(creds.get("live_mode")),
+                "live_max_position_dollars": float(creds.get("live_max_position_dollars") or 500),
             })
         if result:
             return result
@@ -2025,6 +2032,20 @@ def run_auto_deployer(user):
         # Apply the multiplier computed at deployer start. 0.25..1.0.
         if drawdown_mult < 1.0:
             qty = max(1, int(qty * drawdown_mult))
+
+        # Round-11 live-trading: hard cap on position dollars when live_mode.
+        # Protects against sizing bugs + single-trade catastrophic losses during
+        # the sensitive first weeks of real-money trading.
+        if user.get("live_mode"):
+            max_live_dollars = float(user.get("live_max_position_dollars") or 500)
+            symbol_price = float(pick.get("price") or 0)
+            if symbol_price > 0:
+                max_qty_by_cap = int(max_live_dollars / symbol_price)
+                if max_qty_by_cap < qty:
+                    log(f"[{user['username']}] {symbol}: LIVE cap {qty} → {max_qty_by_cap} shares "
+                        f"(max ${max_live_dollars:.0f} per live position)", "deployer")
+                    qty = max_qty_by_cap
+
         if qty < 1:
             log(f"[{user['username']}] {symbol}: Skipped (recommended_shares < 1)", "deployer")
             continue

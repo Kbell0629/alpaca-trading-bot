@@ -146,6 +146,23 @@ def init_db():
     CREATE INDEX IF NOT EXISTS idx_audit_target ON admin_audit_log(target_user_id);
     CREATE INDEX IF NOT EXISTS idx_login_attempts_key ON login_attempts(ip, username, ts);
     """)
+    # Round-11 live-trading: add paper/live dual-credential columns + live toggle.
+    # Idempotent — PRAGMA table_info check before ALTER TABLE.
+    _existing = {row[1] for row in cur.execute("PRAGMA table_info(users)").fetchall()}
+    for col, ddl in [
+        ("alpaca_live_key_encrypted", "ALTER TABLE users ADD COLUMN alpaca_live_key_encrypted TEXT"),
+        ("alpaca_live_secret_encrypted", "ALTER TABLE users ADD COLUMN alpaca_live_secret_encrypted TEXT"),
+        ("live_mode", "ALTER TABLE users ADD COLUMN live_mode INTEGER DEFAULT 0"),
+        ("live_enabled_at", "ALTER TABLE users ADD COLUMN live_enabled_at TEXT"),
+        ("live_max_position_dollars", "ALTER TABLE users ADD COLUMN live_max_position_dollars REAL DEFAULT 500"),
+        ("track_record_public", "ALTER TABLE users ADD COLUMN track_record_public INTEGER DEFAULT 0"),
+        ("scorecard_email_enabled", "ALTER TABLE users ADD COLUMN scorecard_email_enabled INTEGER DEFAULT 0"),
+    ]:
+        if col not in _existing:
+            try:
+                cur.execute(ddl)
+            except Exception as _e:
+                print(f"[auth] migration {col} failed: {_e}")
     conn.commit()
     conn.close()
     os.makedirs(USERS_DIR, exist_ok=True)
@@ -665,18 +682,81 @@ def authenticate(username_or_email, password):
     return user
 
 def get_user_alpaca_creds(user_id):
-    """Return decrypted Alpaca credentials for a user."""
+    """Return decrypted Alpaca credentials for a user.
+
+    Round-11 live-trading: returns LIVE creds when user.live_mode == 1,
+    else PAPER creds. Endpoint automatically switches between paper and
+    live Alpaca URLs. Callers don't need to know which mode is active —
+    they just use whatever this function returns.
+    """
     user = get_user_by_id(user_id)
     if not user:
         return None
+    live = bool(user.get("live_mode"))
+    if live:
+        key_col = "alpaca_live_key_encrypted"
+        sec_col = "alpaca_live_secret_encrypted"
+        endpoint = "https://api.alpaca.markets/v2"  # LIVE endpoint
+    else:
+        key_col = "alpaca_key_encrypted"
+        sec_col = "alpaca_secret_encrypted"
+        endpoint = user.get("alpaca_endpoint") or "https://paper-api.alpaca.markets/v2"
     return {
-        "key": decrypt_secret(user.get("alpaca_key_encrypted", "")),
-        "secret": decrypt_secret(user.get("alpaca_secret_encrypted", "")),
-        "endpoint": user.get("alpaca_endpoint"),
-        "data_endpoint": user.get("alpaca_data_endpoint"),
+        "key": decrypt_secret(user.get(key_col, "")),
+        "secret": decrypt_secret(user.get(sec_col, "")),
+        "endpoint": endpoint,
+        "data_endpoint": user.get("alpaca_data_endpoint") or "https://data.alpaca.markets/v2",
         "ntfy_topic": user.get("ntfy_topic"),
         "notification_email": user.get("notification_email"),
+        "live_mode": live,
+        "live_max_position_dollars": float(user.get("live_max_position_dollars") or 500),
     }
+
+
+def save_user_alpaca_creds(user_id, *, paper_key=None, paper_secret=None,
+                             live_key=None, live_secret=None):
+    """Atomically update one or both credential pairs. Pass None to leave
+    a pair untouched. Returns True on success."""
+    conn = _get_db()
+    cur = conn.cursor()
+    updates = []
+    params = []
+    if paper_key is not None:
+        updates.append("alpaca_key_encrypted = ?")
+        params.append(encrypt_secret(paper_key))
+    if paper_secret is not None:
+        updates.append("alpaca_secret_encrypted = ?")
+        params.append(encrypt_secret(paper_secret))
+    if live_key is not None:
+        updates.append("alpaca_live_key_encrypted = ?")
+        params.append(encrypt_secret(live_key))
+    if live_secret is not None:
+        updates.append("alpaca_live_secret_encrypted = ?")
+        params.append(encrypt_secret(live_secret))
+    if not updates:
+        conn.close()
+        return False
+    params.append(user_id)
+    cur.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+    return True
+
+
+def set_live_mode(user_id, enabled, max_position_dollars=None):
+    """Toggle live trading. Returns the new user dict."""
+    conn = _get_db()
+    cur = conn.cursor()
+    if enabled:
+        cur.execute("""UPDATE users SET live_mode = 1, live_enabled_at = ?,
+                       live_max_position_dollars = COALESCE(?, live_max_position_dollars)
+                       WHERE id = ?""",
+                    (now_et().isoformat(), max_position_dollars, user_id))
+    else:
+        cur.execute("UPDATE users SET live_mode = 0 WHERE id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+    return get_user_by_id(user_id)
 
 # ===== Sessions =====
 def create_session(user_id, ip_address=None):
