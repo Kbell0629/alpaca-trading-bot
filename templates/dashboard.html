@@ -3376,19 +3376,38 @@ function renderDashboard() {
         let portColorRow = 'var(--green)';
         if (portPctRow > 10) portColorRow = 'var(--red)';
         else if (portPctRow > 5) portColorRow = 'var(--orange)';
-        // Day Chg: compute directly from (current - lastday) × qty ×
-        // multiplier. This is more robust than unrealized_intraday_pl
-        // (which returned 0 for SOXL even though the stock moved) and
-        // gives P&L-sign-correct dollars for both longs and shorts.
-        // Percent is derived from dayChg/mv so signs always agree.
+        // Day Chg: robust fallback chain, because Alpaca paper's data
+        // is sometimes stale after Railway redeploys (e.g. SOXL shows
+        // lastday_price == current_price even though the stock actually
+        // moved).
+        //   1st try: (current - lastday) × qty × multiplier
+        //   2nd try: change_today × market_value (uses same lastday
+        //            internally but via a different code path)
+        //   3rd try: unrealized_intraday_pl (Alpaca's computed field)
+        //   Fallback: "—" rather than a misleading $0.00
         let dayChgDollar = 0;
         let hasDayChg = false;
-        if (lastdayPrice > 0 && curPrice > 0) {
+        if (lastdayPrice > 0 && curPrice > 0 && lastdayPrice !== curPrice) {
             dayChgDollar = (curPrice - lastdayPrice) * qty * optMult;
             hasDayChg = true;
-        } else if (p.unrealized_intraday_pl !== undefined && p.unrealized_intraday_pl !== null) {
-            dayChgDollar = parseFloat(p.unrealized_intraday_pl);
-            hasDayChg = true;
+        }
+        if (!hasDayChg && p.change_today !== undefined && p.change_today !== null) {
+            const ct = parseFloat(p.change_today);
+            if (ct !== 0 && mv > 0) {
+                // change_today is a decimal stock-price % change vs lastday.
+                // Yesterday's position value ≈ mv / (1 + ct).
+                // Daily $ change = mv - yesterday_mv = mv × ct / (1 + ct).
+                // Flip sign for shorts so a stock-price drop shows +$ for shorts.
+                dayChgDollar = (mv * ct / (1 + ct)) * (qty >= 0 ? 1 : -1);
+                hasDayChg = true;
+            }
+        }
+        if (!hasDayChg && p.unrealized_intraday_pl !== undefined && p.unrealized_intraday_pl !== null) {
+            const uipl = parseFloat(p.unrealized_intraday_pl);
+            if (uipl !== 0) {
+                dayChgDollar = uipl;
+                hasDayChg = true;
+            }
         }
         const dayChgPctRow = mv > 0 ? (dayChgDollar / mv * 100) : 0;
         const dayCls2 = pnlClass(dayChgDollar);
@@ -3396,9 +3415,14 @@ function renderDashboard() {
         if (!hasDayChg) {
             dayChgStr = '<span style="color:var(--text-dim)">—</span>';
         } else {
+            // Round-11: stack dollar + percent vertically so the cell
+            // doesn't overflow the table-card on narrow/desktop widths.
+            // Kevin reported the "(+31.07%)" was bleeding off the card
+            // edge when both values rendered inline.
             const dollarStr = (dayChgDollar >= 0 ? '+' : '-') + fmtMoney(Math.abs(dayChgDollar)).replace(/^-/, '');
-            dayChgStr = dollarStr +
-                ' <span style="font-size:11px;opacity:0.8">(' + (dayChgPctRow >= 0 ? '+' : '') + dayChgPctRow.toFixed(2) + '%)</span>';
+            const pctStr = (dayChgPctRow >= 0 ? '+' : '') + dayChgPctRow.toFixed(2) + '%';
+            dayChgStr = '<div>' + dollarStr + '</div>' +
+                '<div style="font-size:11px;opacity:0.7;margin-top:2px">' + pctStr + '</div>';
         }
         // Detect deploy source badge
         const srcBadge = p._auto_deployed
