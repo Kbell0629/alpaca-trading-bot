@@ -116,18 +116,21 @@ def _fetch_fundamentals_live(symbol):
     """Pull ROE, Debt/Equity, FCF direction from yfinance. Returns a
     dict with roe, debt_equity, fcf_positive. Any field it can't
     compute becomes None (not 0 — so the scorer knows to skip it)."""
+    # Round-11: rate-limited via yfinance_budget (shared across factor modules)
     try:
-        import yfinance as yf
+        from yfinance_budget import yf_ticker_info
+        info = yf_ticker_info(symbol)
     except ImportError:
+        try:
+            import yfinance as yf
+            t = yf.Ticker(symbol)
+            info = t.info or {}
+        except Exception as e:
+            return {"roe": None, "debt_equity": None, "fcf_positive": None,
+                    "error": str(e)}
+    if not info:
         return {"roe": None, "debt_equity": None, "fcf_positive": None,
-                "error": "yfinance not installed"}
-
-    try:
-        t = yf.Ticker(symbol)
-        info = t.info or {}
-    except Exception as e:
-        return {"roe": None, "debt_equity": None, "fcf_positive": None,
-                "error": str(e)}
+                "error": "yfinance returned empty or rate-limited"}
 
     # yfinance key variations across versions — try several
     roe = (info.get("returnOnEquity") or info.get("returnOnEquityTTM")

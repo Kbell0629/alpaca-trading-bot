@@ -172,24 +172,30 @@ def rank_sectors_by_momentum(data_dir=None, max_age_hours=24):
         except (ValueError, TypeError):
             pass
 
+    # Round-11: shared rate-limit wrapper (yfinance_budget) so we don't
+    # contend with market_breadth + quality_filter + iv_rank for the
+    # same Yahoo quota on every screener run.
     try:
-        import yfinance as yf
+        from yfinance_budget import yf_download
     except ImportError:
-        return {}
+        try:
+            import yfinance as yf
+            yf_download = lambda **kw: yf.download(**kw)
+        except ImportError:
+            return {}
 
     etfs = list(SECTOR_ETFS.values())
-    try:
-        data = yf.download(
-            tickers=" ".join(etfs),
-            period="2mo",
-            interval="1d",
-            auto_adjust=True,
-            progress=False,
-            threads=True,
-            group_by="ticker",
-        )
-    except Exception as e:
-        print(f"[factor_enrichment] yfinance download failed: {e}")
+    data = yf_download(
+        tickers=" ".join(etfs),
+        period="2mo",
+        interval="1d",
+        auto_adjust=True,
+        progress=False,
+        threads=True,
+        group_by="ticker",
+    )
+    if data is None:
+        print("[factor_enrichment] yfinance download returned None (rate-limited?)")
         return {}
 
     returns = {}

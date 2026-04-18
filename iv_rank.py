@@ -146,14 +146,20 @@ def get_hv_rank_for_symbol(symbol, data_dir=None, max_age_hours=24):
         except (ValueError, TypeError):
             pass
 
+    # Round-11: rate-limited via yfinance_budget
     try:
-        import yfinance as yf
+        from yfinance_budget import yf_history
+        hist = yf_history(symbol, period="1y", interval="1d", auto_adjust=True)
     except ImportError:
-        return {"hv_rank": 50.0, "current_hv": 0, "error": "yfinance missing"}
+        try:
+            import yfinance as yf
+            hist = yf.Ticker(symbol).history(period="1y", interval="1d", auto_adjust=True)
+        except ImportError:
+            return {"hv_rank": 50.0, "current_hv": 0, "error": "yfinance missing"}
 
+    if hist is None:
+        return {"hv_rank": 50.0, "current_hv": 0, "error": "yfinance returned None (rate-limited?)"}
     try:
-        t = yf.Ticker(symbol)
-        hist = t.history(period="1y", interval="1d", auto_adjust=True)
         closes = hist["Close"].dropna().tolist()
         if len(closes) < 50:
             return {"hv_rank": 50.0, "current_hv": 0,

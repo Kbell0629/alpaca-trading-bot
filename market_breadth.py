@@ -93,34 +93,38 @@ def compute_breadth_live(symbols=None):
     vs its 50-day simple moving average via yfinance. Returns the full
     result dict. This is the expensive path — most callers should use
     `get_breadth_pct()` which caches for 24h."""
+    # Round-11: use the shared rate-limit + retry wrapper so we don't
+    # compete with other factor modules for Yahoo's per-minute budget.
     try:
-        import yfinance as yf
+        from yfinance_budget import yf_download
     except ImportError:
-        return {"error": "yfinance not installed", "breadth_pct": 50.0,
-                "above_50dma": 0, "total": 0, "regime": "healthy",
-                "computed_at": now_et().isoformat()}
+        yf_download = None
+
+    if yf_download is None:
+        try:
+            import yfinance as yf
+            yf_download = lambda **kw: yf.download(**kw)
+        except ImportError:
+            return {"error": "yfinance not installed", "breadth_pct": 50.0,
+                    "above_50dma": 0, "total": 0, "regime": "healthy",
+                    "computed_at": now_et().isoformat()}
 
     tickers = symbols or SP500_TOP_100
     above_count = 0
     checked = 0
     # Bulk download 60 trading days (enough for 50dma); period='3mo'
     # covers even after holidays. Use threads=True for parallel fetch.
-    try:
-        data = yf.download(
-            tickers=" ".join(tickers),
-            period="3mo",
-            interval="1d",
-            auto_adjust=True,
-            progress=False,
-            threads=True,
-            group_by="ticker",
-        )
-    except Exception as e:
-        return {"error": str(e), "breadth_pct": 50.0,
-                "above_50dma": 0, "total": 0, "regime": "healthy",
-                "computed_at": now_et().isoformat()}
+    data = yf_download(
+        tickers=" ".join(tickers),
+        period="3mo",
+        interval="1d",
+        auto_adjust=True,
+        progress=False,
+        threads=True,
+        group_by="ticker",
+    )
     if data is None or getattr(data, "empty", True):
-        return {"error": "yfinance returned empty", "breadth_pct": 50.0,
+        return {"error": "yfinance returned empty or rate-limited", "breadth_pct": 50.0,
                 "above_50dma": 0, "total": 0, "regime": "healthy",
                 "computed_at": now_et().isoformat()}
 
