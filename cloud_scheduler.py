@@ -1684,6 +1684,40 @@ def run_auto_deployer(user):
                 f"Skipping deploy to be safe.", "deployer")
             return
 
+    # Round-11 expansion items 11-12: Beta-adjusted exposure +
+    # drawdown sizing. Computed once per deployer run, applied as
+    # gates + multipliers below. Also skipped when factor_bypass on.
+    beta_exposure = {"regime": "unknown", "block_high_beta": False, "block_all": False}
+    drawdown_mult = 1.0
+    if not factor_bypass:
+        try:
+            from portfolio_risk import (
+                beta_adjusted_exposure, drawdown_size_multiplier,
+                is_high_beta_candidate
+            )
+            existing_positions_list = existing_positions if isinstance(existing_positions, list) else []
+            beta_exposure = beta_adjusted_exposure(existing_positions_list,
+                                                    portfolio_value)
+            log(f"[{user['username']}] Beta exposure: {beta_exposure['beta_weighted_pct']}% "
+                f"beta-weighted (β={beta_exposure['portfolio_beta']}, regime={beta_exposure['regime']})",
+                "deployer")
+            if beta_exposure["block_all"]:
+                log(f"[{user['username']}] EXTREME beta exposure — pausing all new entries", "deployer")
+                # Don't return — let existing skip-reasons handle it; we'll
+                # block per-pick below.
+            # Drawdown sizing
+            try:
+                journal = load_json(user_file(user, "trade_journal.json")) or {}
+                snapshots = journal.get("daily_snapshots", [])
+                drawdown_mult = drawdown_size_multiplier(snapshots)
+                if drawdown_mult < 1.0:
+                    log(f"[{user['username']}] Drawdown sizing active: {drawdown_mult:.2f}x "
+                        "(reducing position sizes after recent losses)", "deployer")
+            except Exception:
+                pass
+        except Exception as _re:
+            log(f"[{user['username']}] portfolio_risk failed: {_re}. Continuing.", "deployer")
+
     # Round-11 Tier 1: Market breadth gate. If fewer than 40% of S&P 500
     # components are above their 50dma, breakouts fail ~80% of the time.
     # Skip breakout + PEAD deploys in weak-breadth regimes (mean_reversion
@@ -1907,6 +1941,52 @@ def run_auto_deployer(user):
             skip_reasons.append(f"{symbol}: weak breadth for {best_strat}")
             continue
 
+        # Round-11 expansion item 11: beta-exposure gate.
+        # If portfolio is already beta-extreme, skip ALL new entries.
+        # If beta-high, skip only high-beta candidates (β > 1.5).
+        if beta_exposure.get("block_all"):
+            log(f"[{user['username']}] {symbol}: Skipped (portfolio at extreme beta-weighted exposure)", "deployer")
+            skip_reasons.append(f"{symbol}: beta-extreme portfolio")
+            continue
+        if beta_exposure.get("block_high_beta"):
+            try:
+                from portfolio_risk import is_high_beta_candidate
+                if is_high_beta_candidate(symbol):
+                    log(f"[{user['username']}] {symbol}: Skipped (high-beta candidate during high beta-exposure regime)", "deployer")
+                    skip_reasons.append(f"{symbol}: high-beta blocked")
+                    continue
+            except Exception:
+                pass
+
+        # Round-11 expansion item 13: correlation gate. Block if avg
+        # correlation with existing positions > 0.7. Skipped during
+        # factor bypass.
+        if not factor_bypass and existing_positions:
+            try:
+                from portfolio_risk import should_block_correlation
+                # Quick bars fetch: pick.bars or last 30d for symbol +
+                # each position. We use whatever bars are already in
+                # the picks_data — no extra API calls.
+                _bars_map = {}
+                _all_picks = picks_data.get("picks") or []
+                for _p in _all_picks:
+                    _sym = _p.get("symbol")
+                    if _sym and _p.get("bars"):
+                        _bars_map[_sym] = _p["bars"]
+                pos_syms = [p.get("symbol", "").upper() for p in existing_positions
+                             if p.get("symbol")]
+                # Only run if we have bars for at least one position
+                if any(s in _bars_map for s in pos_syms):
+                    block, reason = should_block_correlation(
+                        symbol, pos_syms, _bars_map, max_avg_corr=0.75
+                    )
+                    if block:
+                        log(f"[{user['username']}] {symbol}: Skipped ({reason})", "deployer")
+                        skip_reasons.append(f"{symbol}: high correlation")
+                        continue
+            except Exception:
+                pass
+
         # Feature 10: Correlation check. Reuses positions fetched at the top
         # of run_auto_deployer (existing_positions) — previously this re-fetched
         # /positions on EVERY candidate, an N+1 pattern that for a 20-candidate
@@ -1928,6 +2008,10 @@ def run_auto_deployer(user):
         except (TypeError, ValueError):
             log(f"[{user['username']}] {symbol}: Skipped (bad recommended_shares: {rs!r})", "deployer")
             continue
+        # Round-11 expansion item 12: drawdown-adaptive sizing.
+        # Apply the multiplier computed at deployer start. 0.25..1.0.
+        if drawdown_mult < 1.0:
+            qty = max(1, int(qty * drawdown_mult))
         if qty < 1:
             log(f"[{user['username']}] {symbol}: Skipped (recommended_shares < 1)", "deployer")
             continue
