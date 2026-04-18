@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{USERNAME}} — Track Record</title>
+<meta name="theme-color" content="#3b82f6">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+:root {
+    --bg: #0a0e17; --card: #111827; --border: #1e293b;
+    --text: #e2e8f0; --text-dim: #94a3b8; --accent: #3b82f6;
+    --green: #10b981; --red: #ef4444; --orange: #f59e0b; --purple: #8b5cf6;
+    --radius: 12px;
+}
+* { margin:0; padding:0; box-sizing: border-box; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text); padding: 24px; line-height: 1.5;
+    min-height: 100vh; max-width: 1200px; margin: 0 auto;
+}
+.hero {
+    background: linear-gradient(135deg, rgba(59,130,246,0.12), rgba(139,92,246,0.08));
+    border: 1px solid rgba(59,130,246,0.25);
+    border-radius: var(--radius);
+    padding: 28px;
+    margin-bottom: 24px;
+}
+.hero h1 { font-size: 26px; margin-bottom: 4px; }
+.hero .sub { color: var(--text-dim); font-size: 13px; }
+.disclaimer {
+    background: rgba(245,158,11,0.08);
+    border: 1px solid rgba(245,158,11,0.25);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 20px;
+    font-size: 12px;
+    color: var(--orange);
+}
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    margin-bottom: 24px;
+}
+.stat-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+}
+.stat-label {
+    font-size: 11px; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700;
+    margin-bottom: 6px;
+}
+.stat-value { font-size: 24px; font-weight: 700; }
+.stat-value.positive { color: var(--green); }
+.stat-value.negative { color: var(--red); }
+.stat-value.neutral { color: var(--text-dim); }
+.chart-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin-bottom: 20px;
+}
+.chart-card h2 {
+    font-size: 14px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 12px;
+}
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); text-align: left; }
+th { color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+.footer { margin-top: 40px; text-align: center; color: var(--text-dim); font-size: 11px; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 5px; font-size: 11px; font-weight: 600; }
+.badge.mode { background: rgba(16,185,129,0.15); color: var(--green); }
+.badge.mode.live { background: rgba(239,68,68,0.15); color: var(--red); }
+@media (max-width: 600px) {
+    body { padding: 12px; }
+    .hero { padding: 18px; }
+    .hero h1 { font-size: 22px; }
+}
+</style>
+</head>
+<body>
+
+<div class="hero">
+    <h1>{{USERNAME}}</h1>
+    <div class="sub">Automated trading bot track record
+        {{MODE_BADGE}}
+        <span style="color:var(--text-dim)"> · started {{STARTED_DATE}}</span>
+    </div>
+</div>
+
+<div class="disclaimer">
+    ⚠️ <strong>Not investment advice.</strong> Past performance is not indicative of future results. Trading involves risk of loss. This page shows simulated / historical results of an automated software tool and is not a recommendation to invest.
+</div>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-label">Total Return</div>
+        <div class="stat-value {{RETURN_CLASS}}">{{TOTAL_RETURN_PCT}}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Total P&L</div>
+        <div class="stat-value {{PNL_CLASS}}">{{TOTAL_PNL}}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Win Rate</div>
+        <div class="stat-value neutral">{{WIN_RATE}}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Trades</div>
+        <div class="stat-value neutral">{{TOTAL_TRADES}}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Sharpe Ratio</div>
+        <div class="stat-value neutral">{{SHARPE}}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Max Drawdown</div>
+        <div class="stat-value negative">{{MAX_DRAWDOWN}}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Profit Factor</div>
+        <div class="stat-value neutral">{{PROFIT_FACTOR}}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Days Tracked</div>
+        <div class="stat-value neutral">{{DAYS_TRACKED}}</div>
+    </div>
+</div>
+
+<div class="chart-card">
+    <h2>Equity Curve</h2>
+    <div style="position:relative;height:320px"><canvas id="equityChart"></canvas></div>
+</div>
+
+<div class="chart-card">
+    <h2>Strategy Breakdown</h2>
+    <table>
+        <thead><tr>
+            <th>Strategy</th>
+            <th>Trades</th>
+            <th>Win Rate</th>
+            <th>Avg P&L</th>
+            <th>Total P&L</th>
+        </tr></thead>
+        <tbody>{{STRATEGY_ROWS}}</tbody>
+    </table>
+</div>
+
+<div class="footer">
+    Page generated {{GENERATED_AT}} · Updates automatically on every trade close
+</div>
+
+<script>
+(function() {
+    var equityData = {{EQUITY_JSON}};
+    if (!equityData || !equityData.length) return;
+    var ctx = document.getElementById('equityChart');
+    if (!ctx) return;
+    new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: equityData.map(function(p) { return p.date; }),
+            datasets: [{
+                label: 'Portfolio Value',
+                data: equityData.map(function(p) { return p.equity; }),
+                borderColor: '#10b981',
+                backgroundColor: 'rgba(16,185,129,0.1)',
+                fill: true,
+                tension: 0.25,
+                pointRadius: 0,
+                borderWidth: 2,
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        label: function(ctx) {
+                            return '$' + Number(ctx.parsed.y).toLocaleString();
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: { ticks: { color: '#94a3b8', maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, grid: { color: '#1e293b' } },
+                y: {
+                    ticks: {
+                        color: '#94a3b8',
+                        callback: function(v) { return '$' + Number(v).toLocaleString(); }
+                    },
+                    grid: { color: '#1e293b' }
+                }
+            }
+        }
+    });
+})();
+</script>
+</body>
+</html>

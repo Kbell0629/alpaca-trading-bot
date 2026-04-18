@@ -945,6 +945,140 @@ class DashboardHandler(
         self.end_headers()
         self.wfile.write(html.encode("utf-8"))
 
+    def serve_track_record(self, user_id_str):
+        """Public read-only track-record page. Round-11 LIVE-BATCH 3.
+        Only renders if the user has opted in (track_record_public=1).
+        NO auth required — this is intentionally public. NO credentials,
+        positions, or PII are included — only aggregate performance stats.
+        """
+        # Load template
+        try:
+            tpl_path = os.path.join(BASE_DIR, "templates", "track_record.html")
+            with open(tpl_path) as f:
+                tpl = f.read()
+        except Exception as e:
+            self.send_response(500)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(f"Template error: {e}".encode())
+            return
+        # Validate user ID
+        try:
+            uid = int(user_id_str.strip("/"))
+        except (ValueError, TypeError):
+            self.send_response(404)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"Not found")
+            return
+        # Load user; abort if not opted in
+        user = auth.get_user_by_id(uid)
+        if not user or not user.get("track_record_public"):
+            self.send_response(404)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"Track record not available")
+            return
+        # Load scorecard + journal for this user
+        user_dir = auth.user_data_dir(uid)
+        scorecard = load_json(os.path.join(user_dir, "scorecard.json")) or {}
+        journal = load_json(os.path.join(user_dir, "trade_journal.json")) or {}
+        # Build equity curve from daily snapshots
+        snapshots = journal.get("daily_snapshots", []) or []
+        equity_series = [
+            {"date": s.get("date", ""),
+             "equity": float(s.get("portfolio_value") or s.get("equity") or 0)}
+            for s in snapshots if s.get("date")
+        ]
+        # Basic stats
+        total_pnl = float(scorecard.get("total_pnl") or 0)
+        total_return_pct = scorecard.get("total_return_pct")
+        if total_return_pct is None:
+            total_return_pct = scorecard.get("daily_pnl_pct") or 0
+        try:
+            total_return_pct = float(total_return_pct)
+        except (ValueError, TypeError):
+            total_return_pct = 0
+        win_rate = scorecard.get("win_rate")
+        total_trades = int(scorecard.get("total_trades") or 0)
+        sharpe = scorecard.get("sharpe_ratio") or 0
+        max_dd = scorecard.get("max_drawdown_pct") or 0
+        profit_factor = scorecard.get("profit_factor") or 0
+        days_tracked = len(snapshots)
+        # Strategy breakdown rows
+        strat_rows_html = ""
+        breakdown = scorecard.get("strategy_breakdown", {}) or {}
+        for strat, s in sorted(breakdown.items(),
+                                key=lambda kv: float(kv[1].get("pnl", 0) or 0),
+                                reverse=True):
+            trades_n = int(s.get("trades", 0) or 0)
+            if trades_n == 0:
+                continue
+            wins_n = int(s.get("wins", 0) or 0)
+            pnl = float(s.get("pnl", 0) or 0)
+            avg_pnl = pnl / trades_n if trades_n else 0
+            wr = (wins_n / trades_n * 100) if trades_n else 0
+            pnl_cls = "positive" if pnl > 0 else "negative" if pnl < 0 else "neutral"
+            strat_rows_html += (
+                f"<tr>"
+                f"<td><strong>{strat}</strong></td>"
+                f"<td>{trades_n} ({wins_n}W)</td>"
+                f"<td>{wr:.1f}%</td>"
+                f"<td>${avg_pnl:,.0f}</td>"
+                f"<td class='{pnl_cls}'>${pnl:,.0f}</td>"
+                f"</tr>"
+            )
+        if not strat_rows_html:
+            strat_rows_html = ('<tr><td colspan="5" style="text-align:center;'
+                                'color:var(--text-dim);padding:20px">'
+                                'No closed trades yet</td></tr>')
+        # Render
+        import json as _json
+        mode_badge = (
+            '<span class="badge mode live">🔴 LIVE</span>'
+            if user.get("live_mode")
+            else '<span class="badge mode">📝 Paper</span>'
+        )
+        started = user.get("created_at", "")[:10] if user.get("created_at") else "—"
+        try:
+            pnl_cls = "positive" if total_pnl > 0 else "negative" if total_pnl < 0 else "neutral"
+        except Exception:
+            pnl_cls = "neutral"
+        ret_cls = "positive" if total_return_pct > 0 else "negative" if total_return_pct < 0 else "neutral"
+        rendered = (tpl
+            .replace("{{USERNAME}}", user.get("username", "User"))
+            .replace("{{MODE_BADGE}}", mode_badge)
+            .replace("{{STARTED_DATE}}", started)
+            .replace("{{TOTAL_RETURN_PCT}}", f"{total_return_pct:+.2f}%")
+            .replace("{{TOTAL_PNL}}", f"${total_pnl:,.0f}")
+            .replace("{{WIN_RATE}}", f"{win_rate:.1f}%" if win_rate is not None else "—")
+            .replace("{{TOTAL_TRADES}}", str(total_trades))
+            .replace("{{SHARPE}}", f"{float(sharpe):.2f}" if sharpe else "—")
+            .replace("{{MAX_DRAWDOWN}}", f"{float(max_dd):.1f}%" if max_dd else "—")
+            .replace("{{PROFIT_FACTOR}}", f"{float(profit_factor):.2f}" if profit_factor else "—")
+            .replace("{{DAYS_TRACKED}}", str(days_tracked))
+            .replace("{{RETURN_CLASS}}", ret_cls)
+            .replace("{{PNL_CLASS}}", pnl_cls)
+            .replace("{{STRATEGY_ROWS}}", strat_rows_html)
+            .replace("{{EQUITY_JSON}}", _json.dumps(equity_series))
+            .replace("{{GENERATED_AT}}", now_et().strftime("%Y-%m-%d %I:%M %p ET"))
+        )
+        # Public HTML — no auth but still security headers + CSP
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "same-origin")
+        self.send_header("Cache-Control", "public, max-age=300")  # 5-min cache OK
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+            "frame-ancestors 'none';"
+        )
+        self.end_headers()
+        self.wfile.write(rendered.encode("utf-8"))
+
     def _serve_icon_placeholder(self, size):
         """Generate a simple PNG icon placeholder (solid blue square)."""
         import struct
@@ -1113,6 +1247,13 @@ class DashboardHandler(
             return
         if path == "/signup":
             self.send_html(SIGNUP_HTML)
+            return
+        # Round-11 LIVE-BATCH 3: public track-record page, opt-in per user.
+        # Route: /track-record/<user_id>. No auth. Only renders if
+        # user.track_record_public = 1. Shows equity curve + stats only,
+        # zero credentials, zero positions, zero PII.
+        if path.startswith("/track-record/"):
+            self.serve_track_record(path[len("/track-record/"):])
             return
         if path == "/forgot":
             self.send_html(FORGOT_HTML)
