@@ -116,6 +116,12 @@ except Exception:
 AUTH_USER = os.environ.get("DASHBOARD_USER", "")
 AUTH_PASS = os.environ.get("DASHBOARD_PASS", "")
 
+# Round-11: record process-start time for /healthz warmup grace period.
+# UptimeRobot was false-positive flagging the monitor "Down" during Railway
+# redeploys because the scheduler thread hadn't logged its first entry yet
+# (~30-90s window). /healthz now returns 200 in that warmup window.
+_PROCESS_START_TIME = time.time()
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # DATA_DIR is where persistent runtime data lives. On Railway, set to a volume
 # mount path (e.g. /data). Locally defaults to BASE_DIR so nothing changes.
@@ -1023,7 +1029,20 @@ class DashboardHandler(
                         log_stale = seconds_since_last_log is not None and seconds_since_last_log > 300
                     except Exception:
                         pass
-                healthy = thread_alive and last_log_count > 0 and not log_stale
+
+                # Round-11 fix: startup grace period. Railway redeploys
+                # briefly return 503 between "new container started" and
+                # "scheduler thread logged its first entry" — a ~30-90s
+                # window. UptimeRobot's 5-min polls sometimes catch this
+                # gap and flag the monitor as Down. Treat the first 120s
+                # after process start as "warming up" — return 200 if
+                # thread is alive even if log_count=0 during that window.
+                uptime_sec = int(time.time() - _PROCESS_START_TIME)
+                warming_up = uptime_sec < 120
+                if warming_up and thread_alive and last_log_count == 0:
+                    healthy = True  # grace period — scheduler still starting
+                else:
+                    healthy = thread_alive and last_log_count > 0 and not log_stale
                 status = 200 if healthy else 503
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
@@ -1035,6 +1054,8 @@ class DashboardHandler(
                     "log_count": last_log_count,
                     "seconds_since_last_log": seconds_since_last_log,
                     "stale": log_stale,
+                    "uptime_sec": uptime_sec,
+                    "warming_up": warming_up,
                 }).encode())
             except Exception as e:
                 self.send_response(503)
