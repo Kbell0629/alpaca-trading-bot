@@ -8,6 +8,15 @@ NOTE: HTTPS termination is handled by Railway's edge proxy. All traffic between
 the client and Railway is encrypted via TLS. The app itself listens on plain HTTP.
 """
 
+# Round-11 expansion item 18: Sentry observability — initialized as
+# early as possible so subsequent imports' exceptions get captured.
+# No-op if SENTRY_DSN env var isn't set (paper users don't need it).
+try:
+    import observability  # noqa: F401  side-effect init
+    observability.install_exception_hook()
+except Exception as _obs_err:
+    print(f"[startup] observability init skipped: {_obs_err}")
+
 import base64
 import glob
 import hmac

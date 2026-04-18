@@ -22,3 +22,13 @@ zxcvbn>=4.4.28,<5.0.0
 # for ~5 years). Graceful degrade: if import fails at runtime, PEAD
 # scoring returns 0 silently and other strategies are unaffected.
 yfinance>=0.2.40,<0.3.0
+
+# Round-11 expansion: sentry-sdk for error tracking. No-op at runtime
+# unless SENTRY_DSN env var is set (paper users don't need it). Free
+# tier covers 5K errors/month — more than enough for this bot's volume.
+sentry-sdk>=2.0.0,<3.0.0
+
+# Round-11 expansion: websocket-client for Alpaca real-time news stream
+# (news_websocket.py). Module fails soft if the import is missing, so
+# leaving this out is safe — just disables the live news feed.
+websocket-client>=1.7.0,<2.0.0

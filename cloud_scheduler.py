@@ -980,6 +980,19 @@ def monitor_strategies(user):
                         _cur = load_json(guardrails_path) or {}
                         _cur.update(guardrails)
                         save_json(guardrails_path, _cur)
+                    # Round-11 item 19: multi-channel critical alert
+                    # (Sentry + ntfy + email). Kill switches should
+                    # never be missed.
+                    try:
+                        from observability import critical_alert
+                        critical_alert(
+                            f"KILL SWITCH triggered for {user.get('username','?')}",
+                            reason_dd,
+                            tags={"event": "kill_switch", "kind": "max_drawdown"},
+                            user=user,
+                        )
+                    except Exception:
+                        pass
                     _flatten_all_user(user)  # cancels orders + positions + wheel options
                     try:
                         import notification_templates as _nt
