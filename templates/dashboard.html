@@ -2390,7 +2390,7 @@ async function loadGuardrails() {
 // 5 PM ET Fri) are approximated via SCHEDULED_TIME_MAP so "Xh ago"
 // reads more accurately than "local midnight" would.
 var SCHEDULED_TIME_MAP = {
-    auto_deployer: { h: 9,  m: 35 },
+    auto_deployer: { h: 9,  m: 45 },
     wheel_deploy:  { h: 9,  m: 40 },
     monthly_rebalance: { h: 9, m: 45 },
     daily_close:   { h: 16, m: 5 },
@@ -2520,7 +2520,7 @@ function renderSchedulerPanel(s) {
     var tasks = [
         { key: 'screener',           name: 'Stock Screener',        schedule: 'Every 30 min during market hours',    needsMarket: true },
         { key: 'monitor',            name: 'Strategy Monitor',      schedule: 'Every 60s during market hours',       needsMarket: true },
-        { key: 'auto_deployer',      name: 'Auto-Deployer',         schedule: 'Weekdays 9:35 AM ET',                  needsMarket: false },
+        { key: 'auto_deployer',      name: 'Auto-Deployer',         schedule: 'Weekdays 9:45 AM ET (skips chop)',     needsMarket: false },
         { key: 'wheel_deploy',       name: 'Wheel Auto-Deploy',     schedule: 'Weekdays 9:40 AM ET (sells puts)',     needsMarket: false },
         { key: 'wheel_monitor',      name: 'Wheel Monitor',         schedule: 'Every 15 min during market hours',    needsMarket: true },
         { key: 'friday_reduction',   name: 'Friday Risk Reduction', schedule: 'Fridays 3:45 PM ET',                   needsMarket: false },

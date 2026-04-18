@@ -1684,6 +1684,25 @@ def run_auto_deployer(user):
                 f"Skipping deploy to be safe.", "deployer")
             return
 
+    # Round-11 Tier 1: Market breadth gate. If fewer than 40% of S&P 500
+    # components are above their 50dma, breakouts fail ~80% of the time.
+    # Skip breakout + PEAD deploys in weak-breadth regimes (mean_reversion
+    # and wheel strategies work fine in weak breadth — MR buys the dip,
+    # wheel sells premium on range-bound names).
+    weak_breadth = False
+    breadth_pct_val = None
+    try:
+        import market_breadth as _mb
+        _b = _mb.get_breadth_pct(data_dir=DATA_DIR)
+        breadth_pct_val = _b.get("breadth_pct")
+        if breadth_pct_val is not None and breadth_pct_val < 40:
+            weak_breadth = True
+            log(f"[{user['username']}] Market breadth {breadth_pct_val:.0f}% < 40% — "
+                f"pausing BREAKOUT and PEAD deploys (MR + Wheel still run)", "deployer")
+    except Exception as _e:
+        # Breadth is a nice-to-have — never block a deploy on its error.
+        log(f"[{user['username']}] breadth check failed: {_e}. Continuing without it.", "deployer")
+
     # Set daily starting value — ONCE per trading day. Previously this
     # unconditionally overwrote on every auto-deployer run (including
     # Force Deploy), which could:
@@ -1834,6 +1853,13 @@ def run_auto_deployer(user):
         if best_strat not in accepted_entries:
             skip_reasons.append(f"{symbol}: unsupported strategy ({best_strat})")
             continue
+        # Round-11 Tier 1: breadth gate — block breakout + PEAD in weak
+        # breadth regimes. MR and wheel continue since they're not
+        # dependent on broad-market momentum.
+        if weak_breadth and best_strat in ("breakout", "pead"):
+            log(f"[{user['username']}] {symbol}: Skipped ({best_strat} in weak-breadth regime, breadth={breadth_pct_val:.0f}%)", "deployer")
+            skip_reasons.append(f"{symbol}: weak breadth for {best_strat}")
+            continue
 
         # Feature 10: Correlation check. Reuses positions fetched at the top
         # of run_auto_deployer (existing_positions) — previously this re-fetched
@@ -1882,22 +1908,49 @@ def run_auto_deployer(user):
             #                     window — Bernard & Thomas 1989)
             is_breakout = best_strat == "breakout"
             is_pead = best_strat == "pead"
+            # Round-11 Tier 1: volatility-aware stops via ATR. If the
+            # screener attached atr_pct to the pick (bars had ≥15 days
+            # of history), use 2.5× ATR% as the stop distance clamped
+            # to [5%, 15%]. Falls back to the strategy's legacy fixed
+            # stop when ATR isn't available (fresh IPOs, illiquid names).
+            _atr_pct_val = float(pick.get("atr_pct", 0) or 0)
+            _atr_stop_pct = None
+            if _atr_pct_val > 0:
+                try:
+                    from risk_sizing import atr_based_stop_pct as _abs
+                    # multiplier 2.5 is standard; breakouts use tighter
+                    # 2.0 to fail fast on failed breakouts, PEAD uses
+                    # 2.5 to ride the full 30-60d drift.
+                    mult = 2.0 if is_breakout else 2.5
+                    floor = 0.05 if is_breakout else 0.06
+                    # Re-compute from bars would be cleanest but we
+                    # already have atr_pct; recover stop from it.
+                    raw_stop = mult * _atr_pct_val
+                    _atr_stop_pct = round(max(floor, min(0.15, raw_stop)), 4)
+                except Exception:
+                    _atr_stop_pct = None
             if is_pead:
                 rules = {
-                    "stop_loss_pct": 0.08,
+                    "stop_loss_pct": _atr_stop_pct if _atr_stop_pct else 0.08,
                     "trailing_activation_pct": 0.08,
-                    "trailing_distance_pct": 0.08,
+                    "trailing_distance_pct": _atr_stop_pct if _atr_stop_pct else 0.08,
                     "exit_policy": "trailing_stop",
                     "max_hold_days": 60,  # PEAD drift window
                     "exit_before_next_earnings_days": 5,
                     "pead_signal": pick.get("pead_signal"),
+                    "atr_pct": _atr_pct_val,  # for audit/debug
+                    "stop_source": "atr" if _atr_stop_pct else "fixed",
                 }
             else:
+                _fallback = 0.05 if is_breakout else 0.10
+                _stop = _atr_stop_pct if _atr_stop_pct else _fallback
                 rules = {
-                    "stop_loss_pct": 0.05 if is_breakout else 0.10,
+                    "stop_loss_pct": _stop,
                     "trailing_activation_pct": 0 if is_breakout else 0.10,
-                    "trailing_distance_pct": 0.05,
+                    "trailing_distance_pct": min(_stop, 0.08),  # trail tighter than initial stop
                     "exit_policy": "trailing_stop",
+                    "atr_pct": _atr_pct_val,
+                    "stop_source": "atr" if _atr_stop_pct else "fixed",
                 }
             strat_file = {
                 "symbol": symbol,
@@ -3067,12 +3120,15 @@ def scheduler_loop():
                 try:
                     uid = user["id"]
 
-                    # Auto-deployer: weekdays 9:35 AM ET (skip on market holidays).
+                    # Auto-deployer: weekdays 9:45 AM ET (skip opening chop).
+                    # Round-11 Tier 1: shifted from 9:35 → 9:45 to dodge
+                    # the first-15-min opening volatility. Published data:
+                    # spreads/slippage ~3× normal in the opening window.
                     # Round-10: clear the daily stamp on exception so a
                     # transient Alpaca / screener / network error doesn't
                     # silently skip today's deploy — next tick retries.
-                    if is_weekday and now_et.hour == 9 and now_et.minute >= 35 and market_open_flag:
-                        if should_run_daily_at(f"auto_deployer_{uid}", 9, 35):
+                    if is_weekday and now_et.hour == 9 and now_et.minute >= 45 and market_open_flag:
+                        if should_run_daily_at(f"auto_deployer_{uid}", 9, 45):
                             try:
                                 run_auto_deployer(user)
                             except Exception as _e:

@@ -1259,6 +1259,15 @@ def fetch_all_data():
         bars_map = fetch_bars_for_picks(top_candidates, days=20, max_workers=6)
         print(f"  Fetched bars for {len(bars_map)} symbols in parallel")
 
+        # Round-11 Tier 1: ATR-based stop sizing. Attach atr_14 and
+        # atr_pct (ATR as % of current price) to every enriched pick.
+        # Auto-deployer consumes these to set volatility-sized stops
+        # instead of a fixed 10%.
+        try:
+            from risk_sizing import compute_atr, atr_pct as _atr_pct
+        except ImportError:
+            compute_atr = None
+            _atr_pct = None
         for pick in top_candidates:
             sym = pick["symbol"]
             try:
@@ -1283,6 +1292,20 @@ def fetch_all_data():
                     pick["rsi"] = 50
                     pick["macd_histogram"] = 0
                     pick["overall_bias"] = "neutral"
+
+                # ATR attachment (used by cloud_scheduler for volatility-aware stops)
+                if compute_atr and bars_20d and len(bars_20d) >= 15:
+                    try:
+                        _price = pick.get("price", 0) or (bars_20d[-1].get("c", 0) if bars_20d else 0)
+                        pick["atr_14"] = round(compute_atr(bars_20d, period=14), 4)
+                        pick["atr_pct"] = round(_atr_pct(bars_20d, period=14,
+                                                          current_price=_price), 4)
+                    except Exception:
+                        pick["atr_14"] = 0
+                        pick["atr_pct"] = 0
+                else:
+                    pick["atr_14"] = 0
+                    pick["atr_pct"] = 0
             except Exception as e:
                 print(f"    Error processing bars for {sym}: {e}")
                 pick["momentum_5d"] = 0.0
@@ -1292,6 +1315,8 @@ def fetch_all_data():
                 pick["rsi"] = 50
                 pick["macd_histogram"] = 0
                 pick["overall_bias"] = "neutral"
+                pick["atr_14"] = 0
+                pick["atr_pct"] = 0
 
         # Improvement 4 & 8: News sentiment + earnings avoidance for top 20 (PARALLEL)
         print("Fetching news for top 20 candidates in parallel (sentiment + earnings check)...")
