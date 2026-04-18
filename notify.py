@@ -123,14 +123,33 @@ def queue_email(subject, body, notify_type="info"):
             "sent": False
         })
 
-        # Keep last 50 queued emails. Previously this silently dropped
-        # older entries on overflow — surface a WARN so ops can notice if
-        # the email sender stops picking up and the queue saturates.
+        # Keep last 50 queued emails. Move overflow entries to a
+        # dead-letter file rather than silently dropping them — ops
+        # can diff the DLQ to recover lost trade notifications.
         if len(queue) > 50:
-            dropped = len(queue) - 50
-            print(f"[notify] WARN: email queue overflow — dropping {dropped} oldest entries. "
-                  f"Check that the email sender is processing the queue.", flush=True)
-        queue = queue[-50:]
+            overflow = queue[:-50]
+            queue = queue[-50:]
+            dlq_file = os.path.join(DATA_DIR, "email_queue_dlq.json")
+            try:
+                dlq = []
+                if os.path.exists(dlq_file):
+                    try:
+                        with open(dlq_file) as f:
+                            dlq = json.load(f)
+                    except (json.JSONDecodeError, OSError):
+                        dlq = []
+                dlq.extend(overflow)
+                # Cap DLQ at 500 so a wedged sender can't eat the volume.
+                if len(dlq) > 500:
+                    dlq = dlq[-500:]
+                safe_save_json(dlq_file, dlq)
+                print(f"[notify] WARN: email queue overflow — moved {len(overflow)} "
+                      f"entries to email_queue_dlq.json. Check the email sender.",
+                      flush=True)
+            except Exception as _dlq_e:
+                # DLQ write failed — log but DON'T block the queue write.
+                print(f"[notify] WARN: email queue overflow — dropping {len(overflow)} "
+                      f"oldest entries (DLQ write failed: {_dlq_e}).", flush=True)
 
         # Atomic write
         safe_save_json(queue_file, queue)

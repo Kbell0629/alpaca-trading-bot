@@ -91,6 +91,31 @@ def _poll_order_filled(api_get, api_endpoint, order_id, timeout_sec, poll_interv
     return {"status": last_status or "timeout", "id": order_id, "_smart_timeout": True}
 
 
+def _wait_cancel_settled(api_get, api_endpoint, order_id, max_wait=10, poll_interval=1):
+    """After requesting a cancel, poll until the order reaches a terminal
+    state (canceled / filled / rejected / expired) or `max_wait` seconds
+    elapse. Returns the final order dict OR None on timeout.
+
+    Critical for safety: the double-fill risk in smart_orders is that
+    after api_delete() returns, the limit can STILL fill in the tiny
+    window before Alpaca's matching engine processes the cancel. If we
+    fire the market fallback immediately, both can fill. Polling until
+    status is terminal removes that window."""
+    deadline = time.time() + max_wait
+    while time.time() < deadline:
+        try:
+            order = api_get(f"{api_endpoint}/orders/{order_id}")
+            if isinstance(order, dict):
+                status = order.get("status", "")
+                if status in ("canceled", "filled", "partially_filled",
+                              "rejected", "expired", "done_for_day"):
+                    return order
+        except Exception:
+            pass
+        time.sleep(poll_interval)
+    return None
+
+
 def place_smart_buy(api_get, api_post, api_delete,
                      api_endpoint, data_endpoint,
                      symbol, qty, headers=None,
@@ -150,16 +175,28 @@ def place_smart_buy(api_get, api_post, api_delete,
     except Exception as e:
         print(f"[smart_orders] {symbol}: cancel after timeout failed: {e}")
 
-    # Re-check filled qty
-    try:
-        check = api_get(f"{api_endpoint}/orders/{placed['id']}")
-        filled_so_far = int(float(check.get("filled_qty") or 0))
-    except Exception:
-        filled_so_far = 0
+    # CRITICAL safety gate: wait for the cancel to SETTLE at Alpaca
+    # before placing the market fallback. Without this wait, a limit
+    # that fills in the race window between api_delete() returning and
+    # the matching engine processing the cancel can coexist with the
+    # market fallback → double-filled shares.
+    settled = _wait_cancel_settled(api_get, api_endpoint, placed["id"])
+    if settled is None:
+        # Cancel didn't confirm within 10s. Rather than risk a
+        # double-fill, bail out with the unsettled limit in-flight.
+        # Caller sees _smart_cancel_pending and can decide whether to
+        # keep polling or treat as open.
+        print(f"[smart_orders] {symbol}: cancel unsettled after 10s — skipping "
+              f"market fallback to avoid double-fill")
+        return {"status": "pending_cancel", "id": placed["id"],
+                "_smart_cancel_pending": True}
+
+    # Re-check filled qty from the now-terminal order
+    filled_so_far = int(float(settled.get("filled_qty") or 0))
     remaining = qty - filled_so_far
     if remaining <= 0:
         print(f"[smart_orders] {symbol}: limit fully filled before cancel landed")
-        return check
+        return settled
     print(f"[smart_orders] {symbol}: timeout after {timeout_sec}s, market for {remaining} shares")
     market_result = _market_order(api_post, api_endpoint, symbol, remaining,
                                     "buy", coid + "-mkt")
@@ -203,14 +240,16 @@ def place_smart_sell(api_get, api_post, api_delete,
         api_delete(f"{api_endpoint}/orders/{placed['id']}")
     except Exception:
         pass
-    try:
-        check = api_get(f"{api_endpoint}/orders/{placed['id']}")
-        filled_so_far = int(float(check.get("filled_qty") or 0))
-    except Exception:
-        filled_so_far = 0
+    # Same cancel-settle gate as the buy path — don't let a late limit
+    # fill race the market fallback and double-sell the position.
+    settled = _wait_cancel_settled(api_get, api_endpoint, placed["id"])
+    if settled is None:
+        return {"status": "pending_cancel", "id": placed["id"],
+                "_smart_cancel_pending": True}
+    filled_so_far = int(float(settled.get("filled_qty") or 0))
     remaining = qty - filled_so_far
     if remaining <= 0:
-        return check
+        return settled
     market_result = _market_order(api_post, api_endpoint, symbol, remaining,
                                     "sell", coid + "-mkt")
     market_result["_smart_partial_limit"] = filled_so_far

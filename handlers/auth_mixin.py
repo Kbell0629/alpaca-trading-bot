@@ -52,7 +52,13 @@ class AuthHandlerMixin:
         max_age = 30 * 86400
         secure = ""
         xfp = self.headers.get("X-Forwarded-Proto", "").lower()
-        if xfp == "https" or os.environ.get("FORCE_SECURE_COOKIE") == "1":
+        # Production default: require Secure. Trusting only X-Forwarded-Proto
+        # is fragile — a misconfigured edge or a spoofed header strips the
+        # flag and the session cookie rides the next plaintext request.
+        # Set DEV_MODE=1 locally for http://localhost testing; leave unset
+        # (or FORCE_SECURE_COOKIE=1) for any deployed env.
+        dev_mode = os.environ.get("DEV_MODE") == "1"
+        if xfp == "https" or os.environ.get("FORCE_SECURE_COOKIE") == "1" or not dev_mode:
             secure = "; Secure"
         self.send_header(
             "Set-Cookie",

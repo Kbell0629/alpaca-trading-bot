@@ -267,6 +267,39 @@ def _user_headers(user):
 # under free-threading Python builds.
 _cb_state = {}            # user_id -> {"fails": int, "open_until": timestamp}
 _cb_lock = threading.Lock()
+
+# Per-user Alpaca rate limiter. Alpaca's published limit is 200 req/min per
+# API key. Under heavy cycles (screener + monitor + deployer) a single user
+# can exceed this; today the code treats 429 as a 4xx (no retry, no backoff)
+# which silently fails orders. Token bucket: 200 tokens refilled at 200/60
+# per second. Callers check _rl_acquire() before the HTTP call.
+_RL_MAX = 180              # leave 10% headroom under the 200/min limit
+_RL_REFILL_PER_SEC = _RL_MAX / 60.0
+_rl_state = {}             # user_id -> {"tokens": float, "updated": timestamp}
+_rl_lock = threading.Lock()
+
+
+def _rl_acquire(user, wait_max=2.0):
+    """Consume 1 token from this user's bucket. Returns True if acquired,
+    False if the bucket is empty for longer than wait_max seconds (caller
+    should surface a retry-later error). Sleeps briefly while waiting."""
+    key = _cb_key(user)
+    deadline = time.time() + wait_max
+    while True:
+        with _rl_lock:
+            now = time.time()
+            st = _rl_state.setdefault(key, {"tokens": _RL_MAX, "updated": now})
+            # Refill based on elapsed time
+            elapsed = now - st["updated"]
+            st["tokens"] = min(_RL_MAX, st["tokens"] + elapsed * _RL_REFILL_PER_SEC)
+            st["updated"] = now
+            if st["tokens"] >= 1:
+                st["tokens"] -= 1
+                return True
+        if time.time() > deadline:
+            return False
+        # Short sleep — refill rate is ~3/sec, so 150ms buys one token.
+        time.sleep(0.15)
 _CB_OPEN_THRESHOLD = 5    # consecutive failures before tripping
 _CB_OPEN_SECONDS = 300    # 5-minute cool-off once tripped
 
@@ -340,6 +373,12 @@ def user_api_get(user, url_path, timeout=10, retries=2):
     if _cb_blocked(user):
         return {"error": "circuit_breaker_open"}
 
+    # Rate-limit gate: Alpaca's 200 req/min per API key. If we're bucket-
+    # empty, surface a retry-later error instead of hitting 429 (which
+    # burns API quota + could get the key temporarily throttled by Alpaca).
+    if not _rl_acquire(user):
+        return {"error": "rate_limited_local"}
+
     if url_path.startswith("http"):
         url = url_path
     else:
@@ -355,7 +394,18 @@ def user_api_get(user, url_path, timeout=10, retries=2):
                 _cb_record_success(user)
                 return json.loads(resp.read().decode())
         except urllib.error.HTTPError as e:
-            # Retry on 5xx; don't retry on 4xx (bad request, auth, rate limit)
+            # 429 = server-side rate limit (local bucket may be stale or
+            # Alpaca counts an endpoint we don't). Honor Retry-After if
+            # present, otherwise back off exponentially.
+            if e.code == 429 and attempt < retries:
+                try:
+                    ra = float(e.headers.get("Retry-After", 0))
+                except (TypeError, ValueError):
+                    ra = 0
+                time.sleep(max(ra, 0.5 * (2 ** attempt)))
+                last_err = e
+                continue
+            # Retry on 5xx; don't retry on 4xx (bad request, auth)
             if 500 <= e.code < 600 and attempt < retries:
                 time.sleep(0.5 * (2 ** attempt))
                 last_err = e
@@ -389,6 +439,10 @@ def user_api_post(user, url_path, data, timeout=10):
     # would freeze the bot.
     if _cb_blocked(user):
         return {"error": "circuit_breaker_open"}
+    # Order POSTs also count against the 200/min budget. Blocking here
+    # is SAFER than silently 429'ing an order placement.
+    if not _rl_acquire(user, wait_max=5.0):
+        return {"error": "rate_limited_local"}
     req = urllib.request.Request(
         url,
         data=json.dumps(data).encode(),
@@ -1682,6 +1736,20 @@ def run_auto_deployer(user):
         log(f"[{user['username']}] Kill switch active. Skipping.", "deployer")
         return
 
+    # Atomic snapshot of trading-mode + per-trade cap for this deployer
+    # run. The HTTP handler thread can flip user.live_mode mid-run via
+    # the Live Trading toggle; if we re-read user.get("live_mode") in
+    # the per-pick loop, a paper-sized position can get routed to the
+    # live account halfway through. Freeze both here and pass down so
+    # every order uses the mode that was active when the deployer
+    # started.
+    LIVE_MODE_AT_START = bool(user.get("live_mode"))
+    LIVE_MAX_DOLLARS_AT_START = float(
+        user.get("live_max_position_dollars")
+        or guardrails.get("live_max_position_dollars")
+        or 500
+    )
+
     config = load_json(user_file(user, "auto_deployer_config.json")) or {}
     if not config.get("enabled", True):
         log(f"[{user['username']}] Auto-deployer disabled. Skipping.", "deployer")
@@ -2036,8 +2104,8 @@ def run_auto_deployer(user):
         # Round-11 live-trading: hard cap on position dollars when live_mode.
         # Protects against sizing bugs + single-trade catastrophic losses during
         # the sensitive first weeks of real-money trading.
-        if user.get("live_mode"):
-            max_live_dollars = float(user.get("live_max_position_dollars") or 500)
+        if LIVE_MODE_AT_START:
+            max_live_dollars = LIVE_MAX_DOLLARS_AT_START
             try:
                 symbol_price = float(pick.get("price") or 0)
             except (TypeError, ValueError):
@@ -2061,6 +2129,17 @@ def run_auto_deployer(user):
         if qty < 1:
             log(f"[{user['username']}] {symbol}: Skipped (recommended_shares < 1)", "deployer")
             continue
+
+        # Re-check kill_switch immediately before placing each order. A
+        # concurrent run_guardrails_check() can trip the switch mid-run
+        # (e.g. daily-loss limit crossed by another fill); without this
+        # check the deployer keeps firing new orders past the limit.
+        # Re-read from disk so we see writes from the guardrails thread.
+        _gr_now = load_json(gpath) or {}
+        if _gr_now.get("kill_switch"):
+            log(f"[{user['username']}] {symbol}: kill_switch tripped mid-run "
+                f"({_gr_now.get('kill_switch_reason','?')}) — aborting deployer", "deployer")
+            return
 
         # Round-11: smart limit-at-mid order with 90s timeout + market
         # fallback. Saves 0.1-0.5% slippage per round-trip when going
