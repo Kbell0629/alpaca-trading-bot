@@ -1576,6 +1576,8 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
       <div class="modal-detail-row"><span class="detail-label">Profit Target</span><span class="detail-value positive" id="deployProfitTarget">--</span></div>
       <div class="modal-detail-row"><span class="detail-label">Risk/Reward</span><span class="detail-value" id="deployRiskReward">--</span></div>
     </div>
+    <!-- Round-11 expansion item 5: portfolio impact preview rendered here -->
+    <div id="deployPortfolioImpact"></div>
     <div class="modal-actions">
       <button class="btn-ghost" onclick="closeModal('deployModal')">Cancel</button>
       <button class="btn-success" onclick="executeDeploy()" id="deployConfirmBtn">Confirm Buy</button>
@@ -2179,6 +2181,104 @@ function updateDeployDetails() {
     document.getElementById('deployProfitTarget').textContent = '+' + fmtMoney(profitTarget) + ' (+' + (strat.profitPct*100).toFixed(0) + '%)';
     document.getElementById('deployRiskReward').textContent = riskReward;
     document.getElementById('deployConfirmBtn').textContent = 'Confirm Buy';
+
+    // Round-11 expansion item 5: Portfolio impact preview.
+    // Computes "what would my portfolio look like AFTER this trade"
+    // from the live dashboardData. Surfaces concentration risk,
+    // sector weight changes, and total at-stop loss exposure.
+    try {
+        renderPortfolioImpact(symbol, stratKey, qty, price, cost, maxLoss);
+    } catch(_e) {}
+}
+
+function renderPortfolioImpact(symbol, stratKey, qty, price, cost, maxLoss) {
+    var target = document.getElementById('deployPortfolioImpact');
+    if (!target) return;
+    if (!dashboardData || !dashboardData.account) {
+        target.innerHTML = '';
+        return;
+    }
+    var acct = dashboardData.account;
+    var pv = parseFloat(acct.portfolio_value || 0);
+    var positions = dashboardData.positions || [];
+    if (pv <= 0) { target.innerHTML = ''; return; }
+
+    // Current state
+    var currentInvested = positions.reduce(function(sum, p) {
+        return sum + Math.abs(parseFloat(p.market_value || 0));
+    }, 0);
+    var currentInvestedPct = currentInvested / pv * 100;
+
+    // Sector exposure (using SECTOR_MAP from server data, or fallback)
+    var SECTOR_MAP_LITE = {  // matches constants.py top sectors
+        AAPL:'Tech',MSFT:'Tech',GOOGL:'Tech',NVDA:'Tech',META:'Tech',AMD:'Tech',
+        TSLA:'Consumer',AMZN:'Consumer',NKE:'Consumer',MCD:'Consumer',
+        JPM:'Finance',BAC:'Finance',GS:'Finance',V:'Finance',MA:'Finance',
+        JNJ:'Healthcare',UNH:'Healthcare',LLY:'Healthcare',MRK:'Healthcare',
+        XOM:'Energy',CVX:'Energy',
+        SOXL:'Tech',TQQQ:'Tech',SQQQ:'Tech',
+    };
+    var symSector = SECTOR_MAP_LITE[symbol] || 'Other';
+    var currentSectorTotal = 0;
+    positions.forEach(function(p) {
+        var s = SECTOR_MAP_LITE[p.symbol] || 'Other';
+        if (s === symSector) currentSectorTotal += Math.abs(parseFloat(p.market_value || 0));
+    });
+    var currentSectorPct = currentSectorTotal / pv * 100;
+
+    // After-trade state
+    var newInvested = currentInvested + cost;
+    var newInvestedPct = newInvested / pv * 100;
+    var newSectorTotal = currentSectorTotal + cost;
+    var newSectorPct = newSectorTotal / pv * 100;
+    var newPositionPct = cost / pv * 100;
+
+    // Max-loss exposure (sum of all stops + this trade's stop)
+    var existingMaxLoss = 0;
+    positions.forEach(function(p) {
+        var mv = Math.abs(parseFloat(p.market_value || 0));
+        existingMaxLoss += mv * 0.10;  // approximate 10% stop on existing
+    });
+    var newMaxLoss = existingMaxLoss + maxLoss;
+    var newMaxLossPct = newMaxLoss / pv * 100;
+
+    // Color thresholds
+    function colorFor(pct, warn, danger) {
+        if (pct >= danger) return 'var(--red)';
+        if (pct >= warn) return 'var(--orange)';
+        return 'var(--green)';
+    }
+    var investColor = colorFor(newInvestedPct, 60, 80);
+    var sectorColor = colorFor(newSectorPct, 30, 50);
+    var posColor = colorFor(newPositionPct, 7, 12);
+    var lossColor = colorFor(newMaxLossPct, 5, 10);
+
+    var arrow = function(from, to) {
+        var c = to > from ? 'var(--orange)' : 'var(--green)';
+        return ' <span style="color:' + c + '">→</span> ';
+    };
+
+    target.innerHTML =
+        '<div style="background:rgba(59,130,246,0.05);border:1px solid rgba(59,130,246,0.2);border-radius:8px;padding:12px;margin-top:12px">' +
+            '<div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.5px;font-weight:700;margin-bottom:8px">' +
+                'Portfolio Impact (after this trade)' +
+            '</div>' +
+            '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;font-size:12px">' +
+                '<div><div style="color:var(--text-dim)">% Invested</div>' +
+                    '<div>' + currentInvestedPct.toFixed(1) + '%' + arrow(currentInvestedPct, newInvestedPct) +
+                    '<strong style="color:' + investColor + '">' + newInvestedPct.toFixed(1) + '%</strong></div></div>' +
+                '<div><div style="color:var(--text-dim)">' + esc(symSector) + ' Sector</div>' +
+                    '<div>' + currentSectorPct.toFixed(1) + '%' + arrow(currentSectorPct, newSectorPct) +
+                    '<strong style="color:' + sectorColor + '">' + newSectorPct.toFixed(1) + '%</strong></div></div>' +
+                '<div><div style="color:var(--text-dim)">This Position</div>' +
+                    '<div><strong style="color:' + posColor + '">' + newPositionPct.toFixed(1) + '%</strong> of portfolio</div></div>' +
+                '<div><div style="color:var(--text-dim)">Total Risk-at-Stop</div>' +
+                    '<div><strong style="color:' + lossColor + '">' + newMaxLossPct.toFixed(1) + '%</strong> if all stops hit</div></div>' +
+            '</div>' +
+            (newSectorPct > 50 ? '<div style="color:var(--red);font-size:11px;margin-top:8px">\u26A0 Heavy ' + esc(symSector) + ' concentration after this trade</div>' : '') +
+            (newInvestedPct > 80 ? '<div style="color:var(--red);font-size:11px;margin-top:8px">\u26A0 Portfolio would be ' + newInvestedPct.toFixed(0) + '% invested — limited cash for new opportunities</div>' : '') +
+            (newPositionPct > 12 ? '<div style="color:var(--red);font-size:11px;margin-top:8px">\u26A0 Single position > 12% of portfolio — concentration risk</div>' : '') +
+        '</div>';
 }
 
 let _deployInFlight = false;  // round-11: double-submit guard

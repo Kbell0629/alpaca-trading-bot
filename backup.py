@@ -97,11 +97,34 @@ def create_backup():
 
     Concurrency: wrapped in a threading.Lock so rapid admin clicks on
     "Create Backup Now" don't spawn competing tarfile writers.
+
+    Round-11 expansion: after the local archive lands, also push to the
+    configured offsite destination (S3/B2/GitHub) so we have a copy
+    outside Railway's volume. Failure to push offsite NEVER fails the
+    local backup — logged + returned in the metadata only.
     """
     if not _backup_lock.acquire(blocking=False):
         return None, 0, "Another backup is already in progress"
     try:
-        return _create_backup_inner()
+        path, size, err = _create_backup_inner()
+        if path and not err:
+            try:
+                from offsite_backup import push_to_offsite, configured_destination
+                if configured_destination():
+                    offsite = push_to_offsite(path)
+                    if offsite.get("ok"):
+                        print(f"[backup] off-site push OK: {offsite.get('destination')} → "
+                              f"{offsite.get('remote_url')} ({offsite.get('bytes_uploaded', 0)} bytes)",
+                              flush=True)
+                    else:
+                        print(f"[backup] off-site push FAILED: {offsite.get('reason')}", flush=True)
+                else:
+                    # Quiet first-day reminder — uncomment if you want
+                    # the log to nag every backup until off-site is set up.
+                    pass  # print("[backup] no off-site destination configured (set S3/B2/GITHUB env vars)")
+            except Exception as _oe:
+                print(f"[backup] off-site push error: {_oe}", flush=True)
+        return path, size, err
     finally:
         _backup_lock.release()
 
