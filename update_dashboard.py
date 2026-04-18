@@ -1318,6 +1318,47 @@ def fetch_all_data():
                 pick["atr_14"] = 0
                 pick["atr_pct"] = 0
 
+        # Round-11 Tier 1: Relative Strength + Sector Rotation factors.
+        # RS: rank each pick's 3m/6m return vs SPY; boost momentum
+        # strategies (breakout, pead) by RS score (±25 clamp).
+        # Sector Rotation: multiply all entry-strategy scores by the
+        # pick's sector-ETF multiplier (0.85 for weak sectors, 1.20
+        # for leading sectors). Both factors mutate pick dicts in place;
+        # downstream ranking then picks the best strategy organically.
+        try:
+            from factor_enrichment import apply_factor_scores
+            # Fetch SPY 6-month bars once for RS baseline
+            print("Fetching SPY 6-month bars for Relative Strength ranking...")
+            spy_long_bars = fetch_historical_bars("SPY", days=130) or []
+            print(f"  SPY bars: {len(spy_long_bars)} days")
+            # Also need 3m/6m bars for each pick. Fetch now if missing.
+            factor_bars = {}
+            for p in top_candidates:
+                sym = p.get("symbol", "")
+                existing = bars_map.get(sym, [])
+                if len(existing) >= 100:
+                    factor_bars[sym] = existing
+            if len(factor_bars) < len(top_candidates):
+                # Re-fetch longer bars for top 20 only (full 50 would
+                # be too many API calls). RS needs ≥60 days for 3m,
+                # ≥120 for 6m. Degrades gracefully if bars come up short.
+                print("Fetching extended (6m) bars for top 20 for RS ranking...")
+                need_long = [p for p in top_candidates[:20] if p["symbol"] not in factor_bars]
+                if need_long:
+                    long_bars_map = fetch_bars_for_picks(need_long, days=130, max_workers=6)
+                    factor_bars.update(long_bars_map)
+                # Picks 21-50 fall back to the 20-day bars; RS will be
+                # weaker-signal for those but still better than nothing.
+                for p in top_candidates[20:]:
+                    sym = p.get("symbol", "")
+                    if sym not in factor_bars:
+                        factor_bars[sym] = bars_map.get(sym, [])
+            apply_factor_scores(top_candidates, spy_long_bars, bars_map=factor_bars,
+                                 data_dir=DATA_DIR)
+            print("  RS + Sector factors applied")
+        except Exception as _factor_err:
+            print(f"  Factor enrichment failed: {_factor_err}. Continuing without RS/sector factors.")
+
         # Improvement 4 & 8: News sentiment + earnings avoidance for top 20 (PARALLEL)
         print("Fetching news for top 20 candidates in parallel (sentiment + earnings check)...")
         news_top = top_candidates[:20]
