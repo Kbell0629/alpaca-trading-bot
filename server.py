@@ -1163,6 +1163,67 @@ class DashboardHandler(
             else:
                 self.send_json({"running": False, "error": "Scheduler module not loaded"})
 
+        elif path == "/api/factor-health":
+            # Round-11 visibility: exposes the state of the new factor
+            # modules so the dashboard can render a "Factor Health"
+            # panel. Reads cache files + live yfinance_budget stats.
+            # Safe to call frequently — all state reads, no mutation.
+            result = {"computed_at": now_et().isoformat()}
+            # Market breadth
+            try:
+                import market_breadth as _mb
+                breadth = _mb.get_breadth_pct(data_dir=DATA_DIR)
+                result["breadth"] = breadth
+            except Exception as e:
+                result["breadth"] = {"error": str(e), "breadth_pct": None}
+            # Sector rankings
+            try:
+                import factor_enrichment as _fe
+                rankings = _fe.rank_sectors_by_momentum(data_dir=DATA_DIR) or {}
+                # Shape as a ranked list for display
+                ranked = sorted(
+                    [{"etf": k, **v} for k, v in rankings.items()],
+                    key=lambda x: x.get("rank", 99)
+                )
+                result["sectors"] = ranked
+            except Exception as e:
+                result["sectors"] = {"error": str(e)}
+            # Cache ages (quality + iv_rank are per-symbol)
+            try:
+                import json as _json
+                qpath = os.path.join(DATA_DIR, "quality_cache.json")
+                if os.path.exists(qpath):
+                    with open(qpath) as f:
+                        qdata = _json.load(f) or {}
+                    result["quality_cache_size"] = len(qdata)
+                else:
+                    result["quality_cache_size"] = 0
+            except Exception:
+                result["quality_cache_size"] = 0
+            try:
+                iv_path = os.path.join(DATA_DIR, "iv_rank_cache.json")
+                if os.path.exists(iv_path):
+                    with open(iv_path) as f:
+                        iv_data = json.load(f) or {}
+                    result["iv_rank_cache_size"] = len(iv_data)
+                else:
+                    result["iv_rank_cache_size"] = 0
+            except Exception:
+                result["iv_rank_cache_size"] = 0
+            # yfinance budget stats (live, not cached)
+            try:
+                import yfinance_budget as _yb
+                result["yfinance_budget"] = _yb.stats()
+            except Exception as e:
+                result["yfinance_budget"] = {"error": str(e)}
+            # Factor bypass flag (BATCH 3 — read from guardrails)
+            try:
+                guardrails = load_json(self._user_file("guardrails.json")) or {}
+                result["factor_bypass"] = bool(guardrails.get("factor_bypass"))
+            except Exception:
+                result["factor_bypass"] = False
+            self.send_json(result)
+
         elif path == "/api/readme":
             readme_path = os.path.join(BASE_DIR, "README.md")
             try:

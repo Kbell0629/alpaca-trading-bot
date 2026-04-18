@@ -324,6 +324,100 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
     50% { opacity: 0.4; }
 }
 
+/* Round-11 Factor Health panel — grid of cards showing breadth,
+   sector rotation, cache counts, yfinance budget. Each card is
+   self-contained so adding a new factor only needs one new card. */
+.factor-health-section {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin-bottom: 24px;
+}
+.factor-health-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+}
+.factor-card {
+    background: rgba(59, 130, 246, 0.04);
+    border: 1px solid rgba(59, 130, 246, 0.15);
+    border-radius: 10px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.factor-card-title {
+    font-size: var(--fs-xs);
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 700;
+}
+.factor-card-value {
+    font-size: var(--fs-lg);
+    font-weight: 700;
+    color: var(--text);
+    margin-top: 2px;
+}
+.factor-card-sub {
+    font-size: var(--fs-xs);
+    color: var(--text-dim);
+    line-height: 1.5;
+}
+.factor-card-age { margin-top: auto; }
+.sector-chip {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 5px;
+    font-size: 11px;
+    font-weight: 600;
+    margin-right: 4px;
+}
+.sector-chip.top {
+    background: rgba(16, 185, 129, 0.15);
+    color: var(--green);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+.sector-chip.bot {
+    background: rgba(239, 68, 68, 0.1);
+    color: var(--red);
+    border: 1px solid rgba(239, 68, 68, 0.25);
+}
+
+/* Per-pick factor chips — appear next to symbol in screener rows so
+   user can see WHY a pick scored well without clicking through. */
+.pick-factor-chips {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-left: 6px;
+    vertical-align: middle;
+}
+.pick-chip {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+    line-height: 1.4;
+}
+.pick-chip.q-a { background: rgba(16, 185, 129, 0.15); color: var(--green); }
+.pick-chip.q-b { background: rgba(94, 169, 245, 0.15); color: #93c5fd; }
+.pick-chip.q-c { background: rgba(245, 158, 11, 0.15); color: var(--orange); }
+.pick-chip.q-d { background: rgba(239, 68, 68, 0.15); color: var(--red); }
+.pick-chip.rs-pos { background: rgba(16, 185, 129, 0.12); color: var(--green); }
+.pick-chip.rs-neg { background: rgba(239, 68, 68, 0.1); color: var(--red); }
+.pick-chip.iv-hi { background: rgba(139, 92, 246, 0.15); color: var(--purple); }
+.pick-chip.iv-lo { background: rgba(148, 163, 184, 0.12); color: var(--text-dim); }
+.pick-chip.sector-1 { background: rgba(16, 185, 129, 0.15); color: var(--green); font-weight: 700; }
+.pick-chip.sector-mid { background: rgba(148, 163, 184, 0.1); color: var(--text-dim); }
+.pick-chip.sector-bot { background: rgba(239, 68, 68, 0.1); color: var(--red); }
+.pick-chip.bullish { background: rgba(16, 185, 129, 0.2); color: var(--green); border: 1px solid rgba(16, 185, 129, 0.4); }
+
 /* Positions / Orders summary strip (round-11) — compact stat chips
    that render above each table so risk/exposure is visible at a
    glance without adding up rows. Uses CSS grid so the chips wrap
@@ -2605,6 +2699,118 @@ function freshnessChip(updatedAt, label) {
         esc(updatedAt) + '"><span class="dot"></span>' + prefix + ageStr + '</span>';
 }
 
+// Round-11: Factor Health panel — renders market breadth, top/bottom
+// sectors, cache counts, and yfinance budget state so Kevin can
+// verify all new factor modules are actually working before the
+// Monday 9:45 AM deploy. Safe to poll freely — the endpoint just
+// reads cache files.
+async function refreshFactorHealth() {
+    var panel = document.getElementById('factorHealthPanel');
+    if (!panel) return;
+    try {
+        var resp = await fetch(API_BASE + '/api/factor-health', {credentials: 'same-origin'});
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        var d = await resp.json();
+        renderFactorHealth(d);
+    } catch (e) {
+        panel.innerHTML = '<div class="empty-state error"><div class="icon">\u26A0</div>' +
+            '<div class="title">Factor health unavailable</div>' +
+            '<div class="subtitle">' + esc(e.message) + '</div></div>';
+    }
+}
+
+function renderFactorHealth(d) {
+    var panel = document.getElementById('factorHealthPanel');
+    if (!panel) return;
+    var html = '<div class="factor-health-grid">';
+
+    // --- Market Breadth ---
+    var b = d.breadth || {};
+    var bpct = b.breadth_pct;
+    var bregime = (b.regime || 'unknown');
+    var bDot = '\ud83d\udfe2'; // green
+    if (bregime === 'weak') bDot = '\ud83d\udd34';
+    else if (bregime === 'healthy') bDot = '\ud83d\udfe0';
+    html += '<div class="factor-card">' +
+        '<div class="factor-card-title">Market Breadth</div>' +
+        '<div class="factor-card-value">' +
+            (bpct !== null && bpct !== undefined ? bpct.toFixed(0) + '%' : '\u2014') +
+            ' ' + bDot +
+        '</div>' +
+        '<div class="factor-card-sub">' +
+            (b.above_50dma || 0) + '/' + (b.total || 0) +
+            ' S&P 500 names above 50dma \u00b7 regime: <strong>' + esc(bregime) + '</strong>' +
+            (bregime === 'weak' ? '<br><span style="color:var(--orange)">Breakouts + PEAD paused</span>' : '') +
+        '</div>' +
+        '<div class="factor-card-age">' + freshnessChip(b.computed_at) + '</div>' +
+    '</div>';
+
+    // --- Top 3 Sectors + Bottom 2 ---
+    var sectors = Array.isArray(d.sectors) ? d.sectors : [];
+    var topSectors = sectors.slice(0, 3);
+    var bottomSectors = sectors.slice(-2);
+    var topStr = topSectors.length
+        ? topSectors.map(function(s) {
+            return '<span class="sector-chip top">' + esc(s.etf) + ' ' +
+                ((s.return_1m || 0) * 100).toFixed(1) + '%</span>';
+        }).join(' ')
+        : '<span style="color:var(--text-dim)">no data</span>';
+    var botStr = bottomSectors.length
+        ? bottomSectors.map(function(s) {
+            return '<span class="sector-chip bot">' + esc(s.etf) + ' ' +
+                ((s.return_1m || 0) * 100).toFixed(1) + '%</span>';
+        }).join(' ')
+        : '<span style="color:var(--text-dim)">no data</span>';
+    html += '<div class="factor-card">' +
+        '<div class="factor-card-title">Sector Rotation</div>' +
+        '<div style="display:flex;flex-direction:column;gap:6px;margin-top:6px">' +
+            '<div><span class="factor-card-sub" style="display:inline-block;min-width:80px">Strongest:</span>' + topStr + '</div>' +
+            '<div><span class="factor-card-sub" style="display:inline-block;min-width:80px">Weakest:</span>' + botStr + '</div>' +
+        '</div>' +
+        '<div class="factor-card-sub" style="margin-top:8px">Picks in top 2 sectors get \u00d71.20; bottom 2 get \u00d70.85</div>' +
+    '</div>';
+
+    // --- Cache State ---
+    var qcount = d.quality_cache_size || 0;
+    var ivcount = d.iv_rank_cache_size || 0;
+    html += '<div class="factor-card">' +
+        '<div class="factor-card-title">Factor Caches</div>' +
+        '<div style="display:flex;flex-direction:column;gap:4px;margin-top:6px">' +
+            '<div>Quality (ROE/D-E/FCF): <strong>' + qcount + '</strong> symbols</div>' +
+            '<div>IV Rank (HV-based): <strong>' + ivcount + '</strong> symbols</div>' +
+        '</div>' +
+        '<div class="factor-card-sub" style="margin-top:8px">Caches refresh lazily as the screener enriches picks (24h TTL).</div>' +
+    '</div>';
+
+    // --- yfinance budget ---
+    var yb = d.yfinance_budget || {};
+    var cbOpen = yb.circuit_open;
+    var cbBadge = cbOpen
+        ? '<span style="color:var(--red);font-weight:700">CIRCUIT OPEN</span>'
+        : '<span style="color:var(--green);font-weight:700">healthy</span>';
+    html += '<div class="factor-card">' +
+        '<div class="factor-card-title">yfinance Budget</div>' +
+        '<div class="factor-card-value">' + cbBadge + '</div>' +
+        '<div class="factor-card-sub" style="margin-top:6px">' +
+            'Requests in last 60s: <strong>' + (yb.requests_in_window || 0) + '/' + (yb.window_limit || 30) + '</strong><br>' +
+            (cbOpen
+                ? 'Circuit tripped \u2014 yfinance calls paused 5 min after 6 consecutive failures.'
+                : 'Rate limiter healthy. Consecutive failures: ' + (yb.consecutive_failures || 0) + '.') +
+        '</div>' +
+    '</div>';
+
+    // --- Factor bypass flag (BATCH 3) ---
+    if (d.factor_bypass) {
+        html += '<div class="factor-card" style="border-color:rgba(239,68,68,0.4)">' +
+            '<div class="factor-card-title" style="color:var(--red)">\u26A0 Factor Bypass Active</div>' +
+            '<div class="factor-card-sub">All factor filters (breadth, quality, IV rank, RS, sector) are BYPASSED. Deploys use raw screener scores only. Disable in Settings when ready.</div>' +
+        '</div>';
+    }
+
+    html += '</div>';
+    panel.innerHTML = html;
+}
+
 async function refreshSchedulerStatus() {
     try {
         var resp = await fetch(API_BASE + '/api/scheduler-status', {credentials: 'same-origin'});
@@ -3839,9 +4045,38 @@ function renderDashboard() {
         const riskTitle = 'If stop triggers at ' + (stopPct*100).toFixed(0) + '% loss: -$' +
             maxLoss.toFixed(0) + ' (' + maxLossPct.toFixed(2) + '% of portfolio)' +
             (isWheel ? '. Wheel risk is put-assignment + stock drop; 20% used as a reasonable proxy.' : '');
+        // Round-11: per-pick factor chips — surface WHY this stock
+        // scored well. Quality tier + RS vs SPY + sector rank + IV rank
+        // (wheels) + bullish news flag. Rendered as small inline badges
+        // next to the symbol so the user doesn't have to click through
+        // to understand the pick's credentials.
+        let chipsHtml = '';
+        if (p.quality_tier && p.quality_tier !== '?') {
+            chipsHtml += '<span class="pick-chip q-' + p.quality_tier.toLowerCase() + '" title="Fundamental quality tier (ROE/D-E/FCF). A=high, D=avoid.">Q:' + p.quality_tier + '</span>';
+        }
+        if (typeof p.rs_composite === 'number' && p.rs_composite !== 0) {
+            const rsCls = p.rs_composite >= 0 ? 'rs-pos' : 'rs-neg';
+            const rsVal = (p.rs_composite >= 0 ? '+' : '') + (p.rs_composite * 100).toFixed(0) + '%';
+            chipsHtml += '<span class="pick-chip ' + rsCls + '" title="Relative strength vs SPY (3m/6m blend). Higher = outperforming SPY.">RS:' + rsVal + '</span>';
+        }
+        if (p.sector_rank) {
+            let sectorCls = 'sector-mid';
+            if (p.sector_rank <= 2) sectorCls = 'sector-1';
+            else if (p.sector_rank >= 10) sectorCls = 'sector-bot';
+            chipsHtml += '<span class="pick-chip ' + sectorCls + '" title="Sector ETF rank (1=strongest of 11). Top 2 sectors get x1.20 score boost.">' + esc(p.sector_etf || '') + ' #' + p.sector_rank + '</span>';
+        }
+        if (typeof p.hv_rank === 'number' && p.hv_rank !== 50) {
+            const ivCls = p.hv_rank >= 50 ? 'iv-hi' : 'iv-lo';
+            chipsHtml += '<span class="pick-chip ' + ivCls + '" title="Historical Volatility rank 0-100 (IV rank proxy). Wheels only deploy if >= 30 — premium rich enough.">IV:' + p.hv_rank.toFixed(0) + '</span>';
+        }
+        if (p.has_bullish_catalyst) {
+            chipsHtml += '<span class="pick-chip bullish" title="Bullish news catalyst detected: ' + esc((p.bullish_keywords || []).join(', ')) + '">\u{1F4C8} BULL</span>';
+        }
+        const symCell = '<strong>' + esc(p.symbol) + '</strong>' +
+            (chipsHtml ? '<div class="pick-factor-chips">' + chipsHtml + '</div>' : '');
         scrHtml += '<tr' + hl + '>' +
             '<td>' + (i+1) + '</td>' +
-            '<td><strong>' + esc(p.symbol) + '</strong></td>' +
+            '<td>' + symCell + '</td>' +
             '<td>' + fmtMoney(p.price) + '</td>' +
             '<td class="' + chgCls + '">' + fmtPct(p.daily_change) + '</td>' +
             '<td>' + (p.volatility||0).toFixed(1) + '%</td>' +
@@ -4289,6 +4524,18 @@ function renderDashboard() {
             '<h3 style="display:flex;justify-content:space-between;align-items:center">Cloud Scheduler <button class="btn-ghost btn-sm" onclick="refreshSchedulerStatus()" aria-label="Refresh scheduler status">Refresh</button></h3>' +
             '<div id="schedulerPanel" role="region" aria-live="polite"><div class="empty-state loading"><div class="icon">\u{23F3}</div><div class="title">Loading scheduler status</div><div class="subtitle">Fetching last-run times and task states\u2026</div></div></div>' +
         '</section>' +
+        '<section id="section-factor-health" class="factor-health-section" aria-label="Factor health">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">' +
+                '<div>' +
+                    '<h3 style="margin:0">Factor Health</h3>' +
+                    '<div style="font-size:12px;color:var(--text-dim);margin-top:4px">Market breadth, sector rotation, and factor-cache status. All feeds should be healthy before Monday 9:45 AM ET deploy.</div>' +
+                '</div>' +
+                '<button class="btn-ghost btn-sm" onclick="refreshFactorHealth()" aria-label="Refresh factor health">Refresh</button>' +
+            '</div>' +
+            '<div id="factorHealthPanel" role="region" aria-live="polite">' +
+                '<div class="empty-state loading"><div class="icon">\u{23F3}</div><div class="title">Loading factor health</div><div class="subtitle">Fetching breadth, sector ranks, and cache state\u2026</div></div>' +
+            '</div>' +
+        '</section>' +
         '<section id="section-heatmap" class="heatmap-section" aria-label="Trade heatmap">' +
             '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:12px">' +
                 '<div>' +
@@ -4314,6 +4561,7 @@ function renderDashboard() {
 
     renderLog();
     refreshSchedulerStatus();
+    refreshFactorHealth();  // Round-11: load the Factor Health panel
     // Every renderDashboard() rebuilds the #heatmapContent div back to
     // the "Loading heatmap data..." placeholder. Without this call the
     // heatmap stayed stuck on "Loading..." after every 60s auto-refresh
