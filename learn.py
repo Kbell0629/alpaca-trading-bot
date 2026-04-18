@@ -103,10 +103,70 @@ def load_json(path):
         return None
 
 
-def get_closed_trades(journal):
-    """Extract closed trades from the journal."""
+def get_closed_trades(journal, lookback_days=None):
+    """Extract closed trades from the journal.
+
+    Round-11 Tier 3: optional `lookback_days` filter enables walk-
+    forward learning — only trades closed within the last N days are
+    counted. Passing None preserves legacy behaviour (all trades).
+    """
     trades = journal.get("trades", [])
-    return [t for t in trades if t.get("status") == "closed"]
+    closed = [t for t in trades if t.get("status") == "closed"]
+    if not lookback_days:
+        return closed
+    try:
+        from et_time import now_et as _now_et
+        cutoff = _now_et().replace(tzinfo=None)
+    except ImportError:
+        from datetime import datetime as _dt
+        cutoff = _dt.now()
+    # Filter to trades closed within lookback_days
+    from datetime import timedelta, datetime as _dt
+    cutoff_date = cutoff - timedelta(days=lookback_days)
+    kept = []
+    for t in closed:
+        ed = t.get("exit_date") or t.get("closed_at") or t.get("timestamp") or ""
+        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S%z",
+                     "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f",
+                     "%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%d"):
+            try:
+                parsed = _dt.strptime(ed[:19], fmt[:19] if "%z" not in fmt else fmt[:19])
+                parsed = parsed.replace(tzinfo=None)
+                if parsed >= cutoff_date:
+                    kept.append(t)
+                break
+            except (ValueError, TypeError):
+                continue
+    return kept
+
+
+def compute_sharpe_like_score(trades):
+    """Round-11 Tier 3: Sharpe-weighted strategy score.
+
+    Rewards consistency over occasional lucky wins. Raw P&L alone
+    can make a strategy with one +$5000 trade and ten -$200 trades
+    look great; Sharpe-like math penalizes that variance.
+
+    Formula: (mean_pnl / stdev_pnl) * sqrt(N).
+      - Divide mean by stdev: risk-adjusted return per trade.
+      - Multiply by sqrt(N): confidence scaling — 20 trades weigh
+        more than 5.
+      - No trades or stdev=0 returns 0 (neutral).
+    """
+    import math
+    if not trades:
+        return 0.0
+    pnls = [get_pnl(t) for t in trades]
+    pnls = [p for p in pnls if isinstance(p, (int, float))]
+    if len(pnls) < 2:
+        return 0.0
+    mean = sum(pnls) / len(pnls)
+    var = sum((p - mean) ** 2 for p in pnls) / (len(pnls) - 1)
+    if var <= 0:
+        return 0.0
+    stdev = math.sqrt(var)
+    sharpe_like = (mean / stdev) * math.sqrt(len(pnls))
+    return round(sharpe_like, 4)
 
 
 def get_price_range(price):
@@ -219,17 +279,28 @@ SIGNAL_NAMES = [
 # ---------------------------------------------------------------------------
 
 def analyze_strategy_performance(closed_trades, existing):
-    """Analyze win rate and P&L per strategy, return multipliers."""
+    """Analyze win rate, Sharpe-weighted P&L per strategy, return multipliers.
+
+    Round-11 Tier 3: Sharpe-weighted scoring. 70% weight on win-rate
+    multiplier (preserved from legacy), 30% weight on Sharpe-like score
+    so high-variance strategies (few big wins, many small losses) get
+    penalized vs consistent strategies. Doubles the signal-to-noise on
+    weight updates.
+    """
     stats = {}
+    strategy_trades = {}  # keep per-strategy trade list for Sharpe calc
     for strat in STRATEGIES:
         stats[strat] = {"wins": 0, "losses": 0, "total_pnl": 0.0, "count": 0}
+        strategy_trades[strat] = []
 
     for trade in closed_trades:
         strat = get_strategy(trade)
         if strat not in stats:
             stats[strat] = {"wins": 0, "losses": 0, "total_pnl": 0.0, "count": 0}
+            strategy_trades[strat] = []
         stats[strat]["count"] += 1
         stats[strat]["total_pnl"] += get_pnl(trade)
+        strategy_trades[strat].append(trade)
         if is_win(trade):
             stats[strat]["wins"] += 1
         else:
@@ -243,10 +314,22 @@ def analyze_strategy_performance(closed_trades, existing):
         win_rate = (s["wins"] / count * 100) if count > 0 else 0
         avg_pnl = (s["total_pnl"] / count) if count > 0 else 0
 
-        # Use continuous multiplier function for strategies with 5+ trades
+        # Sharpe-weighted component (0.7 * win-rate mult + 0.3 * sharpe mult)
+        sharpe = compute_sharpe_like_score(strategy_trades.get(strat, []))
+        # Convert sharpe to a 0.5..1.5 multiplier. sharpe > 3 = very good
+        # (tight wins, few losses). sharpe < -1 = very bad.
+        if sharpe >= 3.0:
+            sharpe_mult = 1.5
+        elif sharpe >= 0:
+            sharpe_mult = 1.0 + (sharpe / 3.0) * 0.5  # 0..3 -> 1.0..1.5
+        else:
+            sharpe_mult = max(0.5, 1.0 + sharpe * 0.25)  # -2..0 -> 0.5..1.0
+
+        # Use blended multiplier for strategies with 5+ trades
         if count >= 5:
-            mult = 0.5 + (win_rate / 100)  # 50% win = 1.0x, 70% win = 1.2x, 30% win = 0.8x
-            mult = max(0.5, min(1.5, mult))  # clamp
+            wr_mult = 0.5 + (win_rate / 100)  # 50% win = 1.0x, 70% win = 1.2x
+            mult = 0.7 * wr_mult + 0.3 * sharpe_mult  # blend
+            mult = max(0.5, min(1.5, mult))
         else:
             mult = 1.0
 
@@ -280,6 +363,8 @@ def analyze_strategy_performance(closed_trades, existing):
             "multiplier": multipliers[strat],
             "confidence": strat_confidence,
             "weight_frozen": count < 5,  # explicit flag — clearer than deriving from mult==1.0
+            "sharpe_score": sharpe,       # Round-11: risk-adjusted consistency
+            "sharpe_mult": round(sharpe_mult, 3),
         }
 
     return multipliers, details
@@ -516,9 +601,22 @@ def run_learning_engine():
         print("Manual override flag set in learned_weights.json -- skipping auto-adjustment")
         return existing
 
-    closed_trades = get_closed_trades(journal)
+    # Round-11 Tier 3: walk-forward 90-day lookback. Uses the last
+    # 90 days of closed trades only — more responsive to recent regime
+    # shifts than using all-time data. Falls back to all-time when
+    # we have fewer than 10 recent trades (cold-start: use everything).
+    recent_trades = get_closed_trades(journal, lookback_days=90)
+    all_trades = get_closed_trades(journal)
+    if len(recent_trades) >= 10:
+        closed_trades = recent_trades
+        print(f"Walk-forward window: {len(recent_trades)} closed trades in last 90 days "
+              f"(all-time: {len(all_trades)})")
+    else:
+        closed_trades = all_trades
+        print(f"Walk-forward window has only {len(recent_trades)} trades — "
+              f"falling back to all-time ({len(all_trades)}) for cold start")
     total_closed = len(closed_trades)
-    print(f"Trade journal loaded: {len(journal.get('trades', []))} total trades, {total_closed} closed")
+    print(f"Trade journal loaded: {len(journal.get('trades', []))} total trades, {total_closed} used for learning")
 
     # Determine confidence level
     if total_closed >= 50:

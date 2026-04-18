@@ -1325,6 +1325,7 @@ def fetch_all_data():
         # pick's sector-ETF multiplier (0.85 for weak sectors, 1.20
         # for leading sectors). Both factors mutate pick dicts in place;
         # downstream ranking then picks the best strategy organically.
+        factor_bars = {}  # declared outside try so Kelly sizing can read it
         try:
             from factor_enrichment import apply_factor_scores
             # Fetch SPY 6-month bars once for RS baseline
@@ -1690,11 +1691,58 @@ def fetch_all_data():
         print(f"Calculating position sizes (REDUCED 50% due to {econ_risk_level} economic risk)...")
     else:
         print("Calculating position sizes...")
+
+    # Round-11 Tier 3: Kelly-lite volatility-parity sizing. Scales
+    # position size inversely to ATR% so each position risks roughly
+    # the same DOLLARS at the stop. Also boosts strong-signal picks
+    # (high best_score) and caps everything at 10% of portfolio.
+    try:
+        from risk_sizing import volatility_position_multiplier
+        _vol_parity_available = True
+    except ImportError:
+        _vol_parity_available = False
+
+    # Rank picks by score to compute the signal-strength multiplier
+    _scores_for_rank = sorted(
+        (p.get("best_score", 0) or 0 for p in top_candidates),
+        reverse=True
+    )
+    _top_score = max(_scores_for_rank) if _scores_for_rank else 1
     for pick in top_candidates:
         base_shares = calc_position_size(
             pick["price"], pick["volatility"], portfolio_value
         )
-        pick["recommended_shares"] = max(1, int(base_shares * econ_size_multiplier))
+        size_shares = base_shares * econ_size_multiplier
+
+        # Volatility-parity: shrink size on high-ATR names
+        if _vol_parity_available:
+            # Build bars dict for this symbol from the factor_bars or
+            # bars_map computed earlier.
+            _bars = (factor_bars or {}).get(pick["symbol"]) or bars_map.get(pick["symbol"], [])
+            try:
+                vol_mult = volatility_position_multiplier(_bars, base_atr_pct=0.02)
+            except Exception:
+                vol_mult = 1.0
+            size_shares *= vol_mult
+            pick["vol_parity_mult"] = round(vol_mult, 3)
+        else:
+            pick["vol_parity_mult"] = 1.0
+
+        # Signal-strength boost: top-score pick gets +20%, bottom -20%
+        score = pick.get("best_score", 0) or 0
+        if _top_score > 0:
+            rel_score = score / _top_score
+            # Clamp signal multiplier to [0.8, 1.2]
+            signal_mult = 0.8 + min(0.4, max(0.0, rel_score * 0.4))
+        else:
+            signal_mult = 1.0
+        size_shares *= signal_mult
+        pick["signal_size_mult"] = round(signal_mult, 3)
+
+        # Hard cap: no single position > 10% of portfolio
+        max_shares_by_cap = int((portfolio_value * 0.10) / max(pick["price"], 0.01))
+        size_shares = min(size_shares, max_shares_by_cap)
+        pick["recommended_shares"] = max(1, int(size_shares))
 
     # Improvement 6: Add profit ladder to all top candidates
     for pick in top_candidates:

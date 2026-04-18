@@ -350,9 +350,16 @@ def get_option_quote(user, contract_symbol):
     return {"bid": bid, "ask": ask, "mid": mid}
 
 
-def score_contract(contract, quote, target_strike, current_price, opt_type):
-    """Composite score: favor near-target strike, target-DTE, premium yield, liquidity.
+def score_contract(contract, quote, target_strike, current_price, opt_type,
+                    underlying_iv=None):
+    """Composite score: favor target delta (0.20-0.30 for puts, 0.15-0.25
+    for calls), target-DTE, premium yield, liquidity.
     Higher is better. Returns None if contract should be rejected outright.
+
+    Round-11 Tier 3: delta-targeting replaces pure strike-distance as the
+    primary ranking factor. Industry standard for option selling —
+    targets specific assignment-probability buckets rather than an
+    arbitrary % OTM.
     """
     try:
         strike = float(contract["strike_price"])
@@ -380,7 +387,7 @@ def score_contract(contract, quote, target_strike, current_price, opt_type):
     if premium_pct < MIN_PREMIUM_PCT:
         return None
 
-    # Distance from target strike (closer = better)
+    # Distance from target strike (closer = better) — kept as secondary signal
     dist_pct = abs(strike - target_strike) / current_price if current_price else 1.0
     dist_score = max(0.0, 10.0 - dist_pct * 100)
 
@@ -393,12 +400,45 @@ def score_contract(contract, quote, target_strike, current_price, opt_type):
     # Liquidity bonus
     liq_score = min(5.0, oi / 200.0)
 
-    return round(dist_score + dte_score + yield_score + liq_score, 2)
+    # Round-11: Black-Scholes delta score. Target 0.25 for puts
+    # (25% assignment probability is the sweet spot — rich premium
+    # without excessive put-buyer edge). 0.20 for calls (slightly
+    # safer, prevents premature called-away on rising names).
+    delta_score = 0.0
+    computed_delta = None
+    try:
+        from options_greeks import put_delta, call_delta, delta_score_bonus
+        T = max(1, dte) / 365.0
+        # Pull contract's implied_volatility if present; fall back to
+        # underlying's 20-day HV as a proxy (computed by caller).
+        iv_raw = contract.get("implied_volatility")
+        try:
+            sigma = float(iv_raw) if iv_raw else None
+        except (ValueError, TypeError):
+            sigma = None
+        if not sigma or sigma <= 0:
+            sigma = float(underlying_iv) if underlying_iv else 0.30
+        if opt_type == "put":
+            computed_delta = put_delta(current_price, strike, T, sigma)
+            delta_score = delta_score_bonus(computed_delta, target=0.25, tolerance=0.10)
+        else:
+            computed_delta = call_delta(current_price, strike, T, sigma)
+            delta_score = delta_score_bonus(computed_delta, target=0.20, tolerance=0.10)
+    except Exception:
+        delta_score = 0.0
+
+    total = dist_score + dte_score + yield_score + liq_score + delta_score
+    return round(total, 2)
 
 
-def find_best_contract(user, symbol, opt_type, target_strike, current_price):
+def find_best_contract(user, symbol, opt_type, target_strike, current_price,
+                         underlying_iv=None):
     """Pick the highest-scoring contract for the sell-to-open.
     Returns {contract, quote, score} or None if nothing viable.
+
+    Round-11 Tier 3: `underlying_iv` (decimal HV) is passed through to
+    score_contract() so the delta calculation has a sigma estimate
+    even when the contract payload doesn't carry implied_volatility.
     """
     contracts = fetch_option_contracts(user, symbol, opt_type)
     best = None
@@ -412,14 +452,17 @@ def find_best_contract(user, symbol, opt_type, target_strike, current_price):
             continue  # Want OTM puts (strike < price)
         if opt_type == "call" and strike <= current_price:
             continue  # Want OTM calls (strike > price)
-        # Only look at strikes within ~20% of target to limit quote calls
-        if abs(strike - target_strike) / current_price > 0.10:
+        # Round-11: widen the strike-search window from ±10% to ±15%
+        # of current price so the delta-targeting has enough strikes
+        # to find the 0.20-0.30 sweet spot even on low-vol names.
+        if abs(strike - target_strike) / current_price > 0.15:
             continue
 
         quote = get_option_quote(user, c["symbol"])
         if not quote:
             continue
-        score = score_contract(c, quote, target_strike, current_price, opt_type)
+        score = score_contract(c, quote, target_strike, current_price, opt_type,
+                                underlying_iv=underlying_iv)
         if score is None:
             continue
         if best is None or score > best["score"]:
@@ -525,9 +568,19 @@ def open_short_put(user, pick):
     if count_active_wheels(user) >= MAX_CONCURRENT_WHEELS:
         return False, f"Already at max {MAX_CONCURRENT_WHEELS} concurrent wheels", None
 
-    # Find best put contract
+    # Find best put contract. Round-11 Tier 3: pass underlying HV as
+    # IV proxy so the delta-targeting in score_contract has a sigma
+    # when the contract payload doesn't include implied_volatility.
     target_strike = current_price * (1 - PUT_STRIKE_PCT_BELOW)
-    best = find_best_contract(user, symbol, "put", target_strike, current_price)
+    _uly_iv = None
+    try:
+        _hv = pick.get("current_hv")
+        if _hv and float(_hv) > 0:
+            _uly_iv = float(_hv)
+    except (TypeError, ValueError):
+        _uly_iv = None
+    best = find_best_contract(user, symbol, "put", target_strike, current_price,
+                                underlying_iv=_uly_iv)
     if not best:
         return False, f"No viable put contracts for {symbol} near ${target_strike:.2f}", None
 
