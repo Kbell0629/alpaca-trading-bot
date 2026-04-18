@@ -17,6 +17,14 @@
     --text: #e2e8f0; --text-dim: #94a3b8; --accent: #3b82f6; --blue: #3b82f6;
     --green: #10b981; --red: #ef4444; --orange: #f59e0b; --purple: #8b5cf6;
     --radius: 12px;
+    /* Round-11 UX polish: type scale. Previously font sizes were ad-hoc
+       between 10-18px with no system. These tokens give a 4-step scale
+       used consistently across labels, body, and stat values. */
+    --fs-xs: 11px;   /* tiny labels, badges, hint text */
+    --fs-sm: 13px;   /* small body text, table rows, explanations */
+    --fs-md: 14px;   /* default body, buttons, primary text */
+    --fs-lg: 16px;   /* stat values, section subheads */
+    --fs-xl: 20px;   /* large stats, hero numbers */
 }
 * { margin:0; padding:0; box-sizing:border-box; }
 body {
@@ -260,6 +268,61 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
 .side-buy { color: var(--green); font-weight: 600; }
 .side-sell { color: var(--red); font-weight: 600; }
 .empty { text-align: center; color: var(--text-dim); padding: 20px; }
+
+/* Round-11 UX polish: unified empty + loading states. Standardized
+   component so every "no data" / "loading" banner reads the same
+   visual language across the dashboard. Previously each section
+   had ad-hoc styling, which made it hard to tell loading from
+   empty from broken. */
+.empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 20px;
+    text-align: center;
+    color: var(--text-dim);
+    background: rgba(30, 41, 59, 0.3);
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    margin: 8px 0;
+}
+.empty-state .icon { font-size: 24px; margin-bottom: 8px; opacity: 0.7; }
+.empty-state .title { font-size: var(--fs-md); font-weight: 600; color: var(--text); margin-bottom: 4px; }
+.empty-state .subtitle { font-size: var(--fs-sm); line-height: 1.5; max-width: 400px; }
+.empty-state.loading { border-style: solid; opacity: 0.7; }
+.empty-state.error { border-color: var(--red); color: var(--red); }
+
+/* Data freshness chip — tiny timestamp that sits next to section
+   headers so users know if the data is 30 seconds or 30 minutes old.
+   Dims and turns orange when > 2 min, red when > 5 min. */
+.data-freshness {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: var(--fs-xs);
+    color: var(--text-dim);
+    font-weight: 500;
+    margin-left: 8px;
+    padding: 2px 8px;
+    background: rgba(16, 185, 129, 0.08);
+    border: 1px solid rgba(16, 185, 129, 0.2);
+    border-radius: 6px;
+    white-space: nowrap;
+}
+.data-freshness.stale { background: rgba(245, 158, 11, 0.08); border-color: rgba(245, 158, 11, 0.3); color: var(--orange); }
+.data-freshness.very-stale { background: rgba(239, 68, 68, 0.08); border-color: rgba(239, 68, 68, 0.3); color: var(--red); }
+.data-freshness .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--green);
+    animation: pulse-dot 2s ease-in-out infinite;
+}
+.data-freshness.stale .dot { background: var(--orange); animation: none; }
+.data-freshness.very-stale .dot { background: var(--red); animation: none; }
+@keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
 
 /* Positions / Orders summary strip (round-11) — compact stat chips
    that render above each table so risk/exposure is visible at a
@@ -1290,6 +1353,24 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
        columns don't squash together. */
     .table-card { padding: 12px; }
     .table-card table { min-width: 420px; font-size: 11px; }
+
+    /* Round-11 UX: hide lower-priority columns on narrow screens.
+       Positions table has 10 cols; the .hide-narrow class removes
+       % Portf and P&L % which are derivable from Value and P&L.
+       Same pattern for Open Orders (hides Status). User can still
+       see the full table by side-scrolling; the hidden columns
+       just don't take up critical viewport real estate. */
+    .hide-narrow { display: none; }
+
+    /* Empty-state (round-11) — less vertical padding on mobile so
+       it doesn't dominate the screen when a table is empty. */
+    .empty-state { padding: 20px 12px; }
+    .empty-state .icon { font-size: 20px; }
+    .empty-state .title { font-size: 13px; }
+    .empty-state .subtitle { font-size: 11px; line-height: 1.4; }
+
+    /* Data freshness chip — smaller on mobile */
+    .data-freshness { font-size: 10px; padding: 1px 6px; margin-left: 6px; }
 
     /* Short Selling + Tax-Loss Harvesting sections — raw 8/6-column
        tables inside a card with no overflow handling. On phones the
@@ -2490,6 +2571,40 @@ function fmtSchedLast(v, taskKey) {
     return Math.floor(hrs / 24) + 'd ago';
 }
 
+// Round-11 UX polish: data freshness chip. Pass the `updated_at`
+// timestamp and get back a styled HTML chip with a pulsing green dot,
+// amber when >2min stale, red when >5min stale. Use alongside section
+// headers so users know at a glance whether the data they're looking
+// at is current.
+function freshnessChip(updatedAt, label) {
+    if (!updatedAt) return '';
+    var ms = null;
+    try {
+        // Handles ISO strings, "2026-04-18 10:45:00 AM ET"-style, numbers
+        if (typeof updatedAt === 'number') {
+            ms = updatedAt * 1000;
+        } else if (typeof updatedAt === 'string') {
+            // "YYYY-MM-DD HH:MM:SS PP ET" — strip " ET" if present
+            var cleaned = updatedAt.replace(/\s+ET$/i, '').trim();
+            var parsed = new Date(cleaned);
+            if (!isNaN(parsed.getTime())) ms = parsed.getTime();
+        }
+    } catch(_e) { ms = null; }
+    if (ms === null) return '';
+    var diffSec = Math.floor((Date.now() - ms) / 1000);
+    if (diffSec < 0) diffSec = 0;
+    var ageStr;
+    if (diffSec < 60) ageStr = diffSec + 's ago';
+    else if (diffSec < 3600) ageStr = Math.floor(diffSec / 60) + 'm ago';
+    else ageStr = Math.floor(diffSec / 3600) + 'h ago';
+    var cls = '';
+    if (diffSec > 300) cls = 'very-stale';
+    else if (diffSec > 120) cls = 'stale';
+    var prefix = label ? esc(label) + ' ' : '';
+    return '<span class="data-freshness ' + cls + '" title="Last updated: ' +
+        esc(updatedAt) + '"><span class="dot"></span>' + prefix + ageStr + '</span>';
+}
+
 async function refreshSchedulerStatus() {
     try {
         var resp = await fetch(API_BASE + '/api/scheduler-status', {credentials: 'same-origin'});
@@ -3317,11 +3432,19 @@ function renderDashboard() {
         // nothing above threshold" so users don't see "market may be
         // closed" during active trading hours.
         const ts = (d.trading_session || '').toLowerCase();
-        const inMarket = ts === 'regular' || ts === 'pre_market' || ts === 'after_hours';
-        const emptyMsg = inMarket
+        const inMarket = ts === 'regular' || ts === 'pre_market' || ts === 'after_hours' || ts === 'market';
+        const emptyIcon = inMarket ? '\u{1F50D}' : '\u{1F319}';
+        const emptyTitle = inMarket
+            ? 'No picks crossed the score threshold'
+            : 'Market closed';
+        const emptySub = inMarket
             ? 'Screener returned 0 passable candidates — filters may be too tight or breadth is very weak today.'
-            : 'Market closed — picks will refresh at 9:35 AM ET on the next trading day.';
-        picksHtml = '<div class="empty" style="grid-column:1/-1">' + emptyMsg + '</div>';
+            : 'Top picks refresh automatically at 9:45 AM ET on the next trading day. The screener runs every 30 min during market hours.';
+        picksHtml = '<div class="empty-state" style="grid-column:1/-1">' +
+            '<div class="icon">' + emptyIcon + '</div>' +
+            '<div class="title">' + emptyTitle + '</div>' +
+            '<div class="subtitle">' + emptySub + '</div>' +
+            '</div>';
     }
 
     // Positions table
@@ -3540,7 +3663,11 @@ function renderDashboard() {
             '<button class="btn-warning btn-sm" onclick="openSellHalfModal(\'' + sym + '\',' + qty + ',' + avgEntry + ',' + curPrice + ',' + upl + ',' + uplPct + ')">Sell Half</button>' +
             '</td></tr>';
     });
-    if (!posHtml) posHtml = '<tr><td colspan="10" class="empty">No open positions</td></tr>';
+    if (!posHtml) posHtml = '<tr><td colspan="10"><div class="empty-state">' +
+        '<div class="icon">\u{1F4CA}</div>' +
+        '<div class="title">No open positions</div>' +
+        '<div class="subtitle">When the auto-deployer opens a trade or you deploy one manually, it\'ll show up here with live P&L.</div>' +
+        '</div></td></tr>';
 
     // Positions summary strip — compact stat chips rendered above the table
     let posSummaryHtml = '';
@@ -3634,7 +3761,11 @@ function renderDashboard() {
             '<td>' + esc(o.status||'') + '</td>' +
             '<td><button class="btn-danger btn-sm" onclick="openCancelOrderModal(\'' + esc(o.id||'') + '\',\'' + esc(o.symbol||'') + '\',\'' + esc(o.side||'') + '\',\'' + esc(o.type||'') + '\',\'' + esc(o.qty||'') + '\',\'' + esc(price) + '\')">Cancel</button></td></tr>';
     });
-    if (!ordHtml) ordHtml = '<tr><td colspan="7" class="empty">No open orders</td></tr>';
+    if (!ordHtml) ordHtml = '<tr><td colspan="7"><div class="empty-state">' +
+        '<div class="icon">\u{1F4DD}</div>' +
+        '<div class="title">No open orders</div>' +
+        '<div class="subtitle">Pending buys, stops, and covered-call orders appear here. Cancel actions inline without leaving the page.</div>' +
+        '</div></td></tr>';
 
     // Open Orders summary strip
     let ordSummaryHtml = '';
@@ -3723,7 +3854,20 @@ function renderDashboard() {
             '<td title="' + riskTitle + '" class="negative" style="white-space:nowrap">-' + fmtMoney(maxLoss) + '</td>' +
             '<td><button class="btn-primary btn-sm" onclick="openDeployModal(\'' + jsStr(p.symbol) + '\',\'' + jsStr(p.best_strategy) + '\',' + Number(recShares||0) + ',' + Number(p.price||0) + ')">Deploy</button></td></tr>';
     });
-    if (!scrHtml) scrHtml = '<tr><td colspan="13" class="empty">No screener data - market may be closed</td></tr>';
+    if (!scrHtml) {
+        const ts = (d.trading_session || '').toLowerCase();
+        const inMarket = ts === 'regular' || ts === 'pre_market' || ts === 'after_hours' || ts === 'market';
+        const emptyIcon = inMarket ? '\u{1F50D}' : '\u{1F319}';
+        const emptyTitle = inMarket ? 'No candidates passed filters' : 'Market closed';
+        const emptySub = inMarket
+            ? 'The screener ran but 0 stocks cleared volume, volatility, or news filters. Filters may be too tight, or broad-market breadth is weak today.'
+            : 'Picks refresh automatically at 9:45 AM ET on the next trading day. After-hours and pre-market deploys are handled by extended-hours scanners.';
+        scrHtml = '<tr><td colspan="13"><div class="empty-state">' +
+            '<div class="icon">' + emptyIcon + '</div>' +
+            '<div class="title">' + emptyTitle + '</div>' +
+            '<div class="subtitle">' + emptySub + '</div>' +
+            '</div></td></tr>';
+    }
 
     // Trading session badge
     // Backend (extended_hours.py) emits: 'market' | 'pre_market' | 'after_hours' | 'closed' | 'unknown'.
@@ -4060,10 +4204,10 @@ function renderDashboard() {
         '</div>' +
         '</div>' +
         readinessHtml +
-        '<div id="section-positions">' +
+        '<section id="section-positions" aria-label="Positions and open orders">' +
         '<div class="tables">' +
-            '<div class="table-card">' +
-                '<h3>Positions</h3>' +
+            '<div class="table-card" aria-label="Open positions">' +
+                '<h3>Positions' + freshnessChip(d.updated_at, 'live') + '</h3>' +
                 posSummaryHtml +
                 '<table><thead><tr>' +
                     '<th>Symbol</th>' +
@@ -4071,27 +4215,27 @@ function renderDashboard() {
                     '<th>Avg Entry</th>' +
                     '<th>Current</th>' +
                     '<th title="Market value = |qty| × current price">Value</th>' +
-                    '<th title="Percent of portfolio this position represents">% Portf</th>' +
+                    '<th class="hide-narrow" title="Percent of portfolio this position represents">% Portf</th>' +
                     '<th title="Stock\'s change since yesterday\'s close × qty">Day Chg</th>' +
                     '<th>P&L</th>' +
-                    '<th>P&L %</th>' +
+                    '<th class="hide-narrow">P&L %</th>' +
                     '<th>Actions</th>' +
                 '</tr></thead>' +
                 '<tbody>' + posHtml + '</tbody></table>' +
             '</div>' +
-            '<div class="table-card">' +
-                '<h3>Open Orders</h3>' +
+            '<div class="table-card" aria-label="Open orders">' +
+                '<h3>Open Orders' + freshnessChip(d.updated_at, 'live') + '</h3>' +
                 ordSummaryHtml +
-                '<table><thead><tr><th>Symbol</th><th>Side</th><th>Type</th><th>Qty</th><th>Price</th><th>Status</th><th>Actions</th></tr></thead>' +
+                '<table><thead><tr><th>Symbol</th><th>Side</th><th>Type</th><th>Qty</th><th>Price</th><th class="hide-narrow">Status</th><th>Actions</th></tr></thead>' +
                 '<tbody>' + ordHtml + '</tbody></table>' +
             '</div>' +
         '</div>' +
         corrHtml +
         taxHtml +
-        '</div>' +
-        '<div id="section-screener">' +
+        '</section>' +
+        '<section id="section-screener" aria-label="Full stock screener">' +
         '<div class="screener">' +
-            '<h3>Full Stock Screener - Top 50</h3>' +
+            '<h3>Full Stock Screener - Top 50' + freshnessChip(d.updated_at) + '</h3>' +
             '<div class="screener-stats">' +
                 'Screened: <strong>' + (d.total_screened||0).toLocaleString() + '</strong> stocks &nbsp;|&nbsp; ' +
                 'Passed filters: <strong>' + (d.total_passed||0).toLocaleString() + '</strong> &nbsp;|&nbsp; ' +
@@ -4112,9 +4256,9 @@ function renderDashboard() {
                 '<th>Action</th>' +
             '</tr></thead><tbody>' + scrHtml + '</tbody></table>' +
         '</div>' +
-        '</div>' +
+        '</section>' +
         shortHtml +
-        '<div id="section-backtest">' +
+        '<section id="section-backtest" aria-label="Visual backtest">' +
         '<div class="backtest-section">' +
             '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:12px">' +
                 '<div style="flex:1;min-width:240px">' +
@@ -4140,32 +4284,32 @@ function renderDashboard() {
             '<div style="position:relative;height:320px;width:100%"><canvas id="backtestChart"></canvas></div>' +
             '<div id="backtestExplanation" style="margin-top:16px;padding:12px;background:rgba(59,130,246,0.05);border:1px solid rgba(59,130,246,0.2);border-radius:8px;font-size:13px;color:var(--text-dim);line-height:1.6"></div>' +
         '</div>' +
-        '</div>' +
-        '<div id="section-scheduler" class="scheduler-section">' +
-            '<h3 style="display:flex;justify-content:space-between;align-items:center">Cloud Scheduler <button class="btn-ghost btn-sm" onclick="refreshSchedulerStatus()">Refresh</button></h3>' +
-            '<div id="schedulerPanel"><div class="empty" style="padding:20px">Loading scheduler status...</div></div>' +
-        '</div>' +
-        '<div id="section-heatmap" class="heatmap-section">' +
+        '</section>' +
+        '<section id="section-scheduler" class="scheduler-section" aria-label="Cloud scheduler status">' +
+            '<h3 style="display:flex;justify-content:space-between;align-items:center">Cloud Scheduler <button class="btn-ghost btn-sm" onclick="refreshSchedulerStatus()" aria-label="Refresh scheduler status">Refresh</button></h3>' +
+            '<div id="schedulerPanel" role="region" aria-live="polite"><div class="empty-state loading"><div class="icon">\u{23F3}</div><div class="title">Loading scheduler status</div><div class="subtitle">Fetching last-run times and task states\u2026</div></div></div>' +
+        '</section>' +
+        '<section id="section-heatmap" class="heatmap-section" aria-label="Trade heatmap">' +
             '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:12px">' +
                 '<div>' +
                     '<h3 style="margin:0">Trade Heatmap</h3>' +
                     '<div style="font-size:12px;color:var(--text-dim);margin-top:4px">Daily P&L over time — spot patterns to improve your trading</div>' +
                 '</div>' +
-                '<button class="btn-ghost btn-sm" onclick="loadHeatmap()">Refresh</button>' +
+                '<button class="btn-ghost btn-sm" onclick="loadHeatmap()" aria-label="Refresh heatmap data">Refresh</button>' +
             '</div>' +
-            '<div id="heatmapContent"><div class="empty" style="padding:20px">Loading heatmap data...</div></div>' +
-        '</div>' +
-        '<div id="section-comparison" class="comparison-section">' +
+            '<div id="heatmapContent" role="region" aria-live="polite"><div class="empty-state loading"><div class="icon">\u{23F3}</div><div class="title">Loading heatmap</div><div class="subtitle">Computing daily P&L history from trade journal\u2026</div></div></div>' +
+        '</section>' +
+        '<section id="section-comparison" class="comparison-section" aria-label="Paper vs live comparison">' +
             '<h3>Paper vs Live Comparison</h3>' +
             '<div id="comparisonContent">' + buildComparisonPanel(d) + '</div>' +
-        '</div>' +
-        '<div class="activity-log">' +
-            '<h3>Activity Log <button class="btn-ghost btn-sm" style="margin-left:12px" onclick="activityLog=[];renderLog();">Clear</button></h3>' +
-            '<div class="log-entries" id="logEntries"></div>' +
-        '</div>' +
-        '<div id="section-settings">' +
+        '</section>' +
+        '<section class="activity-log" aria-label="Activity log">' +
+            '<h3>Activity Log <button class="btn-ghost btn-sm" style="margin-left:12px" onclick="activityLog=[];renderLog();" aria-label="Clear activity log">Clear</button></h3>' +
+            '<div class="log-entries" id="logEntries" role="log" aria-live="polite"></div>' +
+        '</section>' +
+        '<section id="section-settings" aria-label="Strategy settings and presets">' +
             buildStrategyTemplates(d) +
-        '</div>' +
+        '</section>' +
         '<div class="footer">Stock Trading Bot - Strategies: Trailing Stop (exit) | Wheel | Mean Reversion | Breakout | PEAD | Short Selling - Full market screener across NYSE, NASDAQ, ARCA</div>';
 
     renderLog();
