@@ -4,6 +4,49 @@
 
 ---
 
+## 🆕 What's New (2026-04-19 Round-11 Expansion)
+
+This weekend shipped **20 major upgrades** across factor intelligence, risk management, UX, and observability. Quick tour of where each one lives:
+
+| # | Feature | Where to find it |
+|---|---|---|
+| 1 | **Performance attribution** — which strategy made $ this month | Dashboard → "Performance Attribution" panel |
+| 2 | **Tax-lot tracking + Form 8949 CSV** | Dashboard → "Tax Report" panel → Download 8949 CSV |
+| 3 | **Smart limit orders** — saves 0.1-0.5% slippage on entries | Auto-active; `SMART_ORDERS=0` to disable |
+| 4 | **Off-Railway backup** — S3 / Backblaze / GitHub destinations | Set S3/B2/GitHub env vars; see `docs/MONITORING_SETUP.md` |
+| 5 | **Pre-trade impact preview** | Deploy modal → "Portfolio Impact" card |
+| 6 | **Pre-market scanner** — top-100 gap scan at 8:30 AM ET | Auto-active; saves `premarket_picks.json` |
+| 7 | **SEC EDGAR insider buys** — cluster buying detection | Auto-active; adds `insider_bonus` to picks |
+| 8 | **LLM news sentiment** (Gemini 1.5 Flash / GPT-4o-mini) | Set `GEMINI_API_KEY` (already set!) |
+| 9 | **Multi-timeframe confirmation** — daily + weekly agreement | Auto-active for breakout + PEAD picks |
+| 10 | **Real-time Alpaca news websocket** | Optional: needs `pip install websocket-client` |
+| 11 | **Beta-adjusted exposure** — caps leveraged-ETF concentration | Auto-active; Factor Health panel shows regime |
+| 12 | **Drawdown-adaptive sizing** — smaller size after losses | Auto-active; 0.25-1.0x multiplier |
+| 13 | **Correlation gate** — blocks trades that co-move >75% | Auto-active in deployer |
+| 14 | **Visual chart annotations** on backtest | Entry/exit/stop markers on the price chart |
+| 15 | **Strategy explainer cards** in deploy modal | Every Deploy click shows per-strategy rules |
+| 16 | **Mobile PWA install** — add to home screen on iOS/Android | Safari: Share → Add to Home Screen |
+| 17 | **Custom dashboard layout** — show/hide sections | User menu → "Show / Hide Sections" |
+| 18 | **Sentry error tracking** (free tier) | Set `SENTRY_DSN`; see `docs/MONITORING_SETUP.md` |
+| 19 | **Critical-event alerting** — Sentry + ntfy + email | Auto-active for kill-switch trips |
+| 20 | **UptimeRobot external monitoring** — free 5-min polls | Monitor created; `docs/MONITORING_SETUP.md` |
+
+**Earlier round-11 factor batches** (also live): ATR-based stops, market breadth gate, Relative Strength ranking, sector rotation, fundamental quality filter, IV Rank gate for wheels, delta-based strike targeting, Kelly-lite position sizing, walk-forward + Sharpe weighting.
+
+**New dashboard sections:**
+- **Factor Health** — market breadth, top sectors, cache state, yfinance budget
+- **Performance Attribution** — $ per strategy with visual bars
+- **Tax Report** — lots + short/long-term + wash-sale warnings
+
+**Per-pick factor chips** in the Top-50 screener:
+`Q:A RS:+12% XLK #1 IV:72 📈 BULL` — decodes the bot's reasoning at a glance.
+
+**Emergency override:** If factor filters block every deploy, use the **Factor Bypass** toggle in the Factor Health panel to temporarily fall back to raw screener scores.
+
+**For monitoring setup** (Sentry + UptimeRobot), read [`docs/MONITORING_SETUP.md`](docs/MONITORING_SETUP.md) — 2-minute copy-paste guide.
+
+---
+
 ## 👋 Welcome
 
 This is your personal stock trading bot. It picks stocks, places trades, manages positions, and protects your money — all while you sleep. You don't need to know how to trade. You don't need to watch the market. The bot does that for you.

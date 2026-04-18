@@ -38,6 +38,18 @@ All secrets in `.env` (gitignored) and Railway variables. No hardcoded defaults.
 | `ENABLE_BASIC_AUTH` | Set to `1` to re-enable Basic Auth fallback (disabled by default). |
 | `ENABLE_CLOUD_SCHEDULER` | Default `true`. Set to `false` to disable background scheduler (debugging only). |
 | `PORT` | `8888` (Railway sets automatically) |
+| **Round-11 factor modules** | |
+| `GEMINI_API_KEY` | Google Gemini 1.5 Flash for LLM news sentiment (set). Fallback order: Gemini → Groq → OpenAI → Anthropic. |
+| `OPENAI_API_KEY` / `GROQ_API_KEY` / `ANTHROPIC_API_KEY` | Alternative LLM providers; set to switch from Gemini. |
+| `EDGAR_USER_AGENT` | SEC EDGAR User-Agent header for insider-signal polling (recommended: `alpaca-bot/1.0 yourname@example.com`) |
+| `SMART_ORDERS` | `1` (default) enables limit-at-mid with market fallback. Set `0` to use plain market orders. |
+| `SMART_ORDER_TIMEOUT` / `SMART_MAX_SPREAD` | Tunable: 90s and 0.5% defaults. |
+| **Round-11 monitoring** | |
+| `SENTRY_DSN` | Sentry error tracking DSN. No-op if unset. See `docs/MONITORING_SETUP.md`. |
+| **Round-11 off-site backup** | |
+| `S3_BACKUP_BUCKET` + `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` | Push daily backup to S3. |
+| `B2_BUCKET` + `B2_KEY_ID` + `B2_APPLICATION_KEY` | Push to Backblaze B2 (cheapest option). |
+| `GITHUB_BACKUP_TOKEN` + `GITHUB_BACKUP_REPO` | Push to GitHub release assets (free, no signup beyond GitHub). |
 
 **Account:** PA3N3JCNBP02 ($100k paper, 2x margin)
 **Paper trading start:** 2026-04-15
@@ -70,6 +82,27 @@ These sit between screener and auto-deployer. Each is self-contained with 24h ca
 - `iv_rank.py` — Historical volatility rank as free IV rank proxy. `wheel_strategy.open_short_put` hard-blocks if `hv_rank < 30`. Cached in `iv_rank_cache.json`.
 - `options_greeks.py` — Black-Scholes put/call delta (stdlib math.erf). `wheel_strategy.score_contract` targets 0.25-delta puts instead of arbitrary % OTM.
 - `yfinance_budget.py` — Shared 30req/60s rate limiter + exp-backoff retry + circuit breaker across all factor modules. `yf_download`, `yf_ticker_info`, `yf_history` wrappers.
+
+### Round-11 Expansion Modules (added 2026-04-19, items 1-20)
+Six additional modules + integrations layered on top of the factor batches:
+- `tax_lots.py` — FIFO cost-basis tax lot accounting + Form 8949 CSV export + wash-sale detection. `/api/tax-report` + `/api/tax-report.csv` endpoints render "Tax Report" panel.
+- `smart_orders.py` — `place_smart_buy` / `place_smart_sell` — limit-at-mid with 90s timeout + market fallback. Saves 0.1-0.5% slippage per round-trip. Wired into `cloud_scheduler.run_auto_deployer`. Disable with `SMART_ORDERS=0`.
+- `offsite_backup.py` — Push daily backup archive to S3 / Backblaze / GitHub. Auto-detects destination from env vars; no-op if none set. Called from `backup.create_backup` after local archive lands.
+- `premarket_scanner.py` — 8:30 AM ET scan of top-100 liquidity names for >2% gaps + >50K premarket volume. Saves `premarket_picks.json` which the 9:45 AM deployer prioritizes.
+- `insider_signals.py` — SEC EDGAR Form 4 polite RSS poller (1 req/sec, 24h cache). Cluster buys (3+ filers in 30d) get +10..+15 bonus.
+- `llm_sentiment.py` — Multi-provider LLM news scoring (Gemini 1.5 Flash → GPT-4o-mini → Groq → Claude Haiku). Detected from env var; 1h cache. ~$0.01/day at current volume.
+- `multi_timeframe.py` — Daily + weekly trend confirmation for breakouts/PEAD. `confirm_breakout()` adds +10/-10/+5 score bonus.
+- `news_websocket.py` — Alpaca real-time news stream (optional, needs `websocket-client`). Background thread; LLM-scores headlines and alerts on |score| >= 6.
+- `portfolio_risk.py` — Beta-adjusted exposure regimes, drawdown-adaptive sizing, correlation gates.
+- `observability.py` — Sentry SDK init + `critical_alert()` multi-channel helper (Sentry + ntfy + email). Auto-init via `SENTRY_DSN`.
+
+### Static assets (`static/`)
+- `manifest.json` — PWA manifest (installs dashboard as a standalone app on phones)
+- `service-worker.js` — Offline cache + push-notification handler
+- `icon.svg` — Vector app icon
+
+### Docs (`docs/`)
+- `MONITORING_SETUP.md` — 2-minute setup guide for Sentry (DSN pre-provisioned), UptimeRobot, and ntfy critical alerts
 
 ### Management Modules
 - `capital_check.py` — Capital sustainability
