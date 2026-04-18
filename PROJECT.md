@@ -61,14 +61,24 @@ All secrets in `.env` (gitignored) and Railway variables. No hardcoded defaults.
 - `extended_hours.py` — Pre-market / after-hours trading logic
 - `short_strategy.py` — Short selling candidate identification
 
+### Round-11 Factor Modules (added 2026-04-18 weekend expansion)
+These sit between screener and auto-deployer. Each is self-contained with 24h caches and fails-soft on yfinance errors. See `project_status.md` for full details.
+- `risk_sizing.py` — ATR(14) + volatility-aware stop sizing + vol-parity position multiplier. Screener attaches `atr_pct` to each pick; `cloud_scheduler` computes ATR-based stops in place of fixed 10%.
+- `market_breadth.py` — % of S&P 500 top-100 above their 50dma. `run_auto_deployer` blocks breakout + PEAD deploys when breadth < 40%. Cached in `DATA_DIR/market_breadth.json`.
+- `factor_enrichment.py` — Relative Strength (3m/6m vs SPY) + SPDR sector-ETF rotation ranking. `apply_factor_scores()` mutates pick dicts with `rs_composite`, `sector_multiplier`, etc.
+- `quality_filter.py` — yfinance fundamentals (ROE / D-E / FCF) → quality tier A-D. Plus bullish-news keyword scanner (upgrade, beats, FDA, etc). Cached per-symbol in `quality_cache.json`.
+- `iv_rank.py` — Historical volatility rank as free IV rank proxy. `wheel_strategy.open_short_put` hard-blocks if `hv_rank < 30`. Cached in `iv_rank_cache.json`.
+- `options_greeks.py` — Black-Scholes put/call delta (stdlib math.erf). `wheel_strategy.score_contract` targets 0.25-delta puts instead of arbitrary % OTM.
+- `yfinance_budget.py` — Shared 30req/60s rate limiter + exp-backoff retry + circuit breaker across all factor modules. `yf_download`, `yf_ticker_info`, `yf_history` wrappers.
+
 ### Management Modules
 - `capital_check.py` — Capital sustainability
-- `tax_harvesting.py` — Tax-loss harvesting scanner
 - `error_recovery.py` — Orphan position detection + auto-fix
 - `notify.py` — Push notifications (ntfy.sh) + email queue
-- `learn.py` — Self-learning engine (weekly weight adjustment)
+- `learn.py` — Self-learning engine (weekly weight adjustment). Round-11: 90-day walk-forward + Sharpe-weighted multipliers (was all-time + win-rate only).
 - `update_scorecard.py` — Performance metrics (Sharpe/Sortino)
-- `realtime.py` — Fast price poller (10s, for local use)
+- `notification_templates.py` — Rich email templates (position opened, target hit, kill switch, etc.)
+- `email_sender.py` — Gmail SMTP queue drainer, runs every 60s via scheduler
 
 ### Config Files
 - `.env` — Local secrets (gitignored)
