@@ -3303,6 +3303,31 @@ function renderDashboard() {
         const hl = i < 3 ? ' style="background:rgba(59,130,246,0.04)"' : '';
         const safePriceScr = (p.price && p.price > 0) ? p.price : 1;
         const recShares = Math.max(1, Math.floor(portfolioValue * 0.05 / safePriceScr) || 1);
+        // Round-11: per-row risk visibility. Cost = what the auto-deployer
+        // would spend on a default 5%-of-portfolio position. For Wheel
+        // picks the "deploy" is actually a cash-secured put, so cost ≈
+        // strike × 100 (one contract at strike ~= current price) — closest
+        // proxy since the screener doesn't know the chosen strike yet.
+        // Max-loss is the nominal hit if the strategy's stop triggers:
+        //   breakout / mean_reversion: 10%  ·  pead: 8%  ·  wheel: 100% (if stock → 0)
+        //   short_selling: 10%  ·  trailing_stop: 10% default
+        const strat = (p.best_strategy || '').toLowerCase();
+        const isWheel = strat === 'wheel' || strat === 'wheel strategy' || strat === 'wheel_strategy';
+        const estCost = isWheel ? ((Number(p.price)||0) * 100) : (recShares * (Number(p.price)||0));
+        const acctPct = (portfolioValue > 0) ? (estCost / portfolioValue * 100) : 0;
+        const stopPct = (strat === 'pead') ? 0.08 : (isWheel ? 0.20 : 0.10);
+        const maxLoss = estCost * stopPct;
+        const maxLossPct = (portfolioValue > 0) ? (maxLoss / portfolioValue * 100) : 0;
+        // Color the account-% column: green <5%, yellow 5-10%, red >10%
+        let acctColor = 'var(--green)';
+        if (acctPct > 10) acctColor = 'var(--red)';
+        else if (acctPct > 5) acctColor = 'var(--orange)';
+        const costTitle = isWheel
+            ? 'Cash reserved if assigned at strike ~$' + (Number(p.price)||0).toFixed(2) + ' × 100 shares'
+            : recShares + ' shares × $' + (Number(p.price)||0).toFixed(2) + ' (5% of portfolio default)';
+        const riskTitle = 'If stop triggers at ' + (stopPct*100).toFixed(0) + '% loss: -$' +
+            maxLoss.toFixed(0) + ' (' + maxLossPct.toFixed(2) + '% of portfolio)' +
+            (isWheel ? '. Wheel risk is put-assignment + stock drop; 20% used as a reasonable proxy.' : '');
         scrHtml += '<tr' + hl + '>' +
             '<td>' + (i+1) + '</td>' +
             '<td><strong>' + esc(p.symbol) + '</strong></td>' +
@@ -3313,9 +3338,12 @@ function renderDashboard() {
             '<td class="' + vsCls + '">' + fmtPct(p.volume_surge||0).replace('.0','') + '</td>' +
             '<td style="color:' + color + ';font-weight:600">' + esc(p.best_strategy) + '</td>' +
             '<td style="font-weight:700">' + Math.round(p.best_score||0) + '</td>' +
+            '<td title="' + costTitle + '" style="white-space:nowrap">' + fmtMoney(estCost) + '</td>' +
+            '<td title="' + costTitle + '" style="color:' + acctColor + ';font-weight:600;white-space:nowrap">' + acctPct.toFixed(1) + '%</td>' +
+            '<td title="' + riskTitle + '" class="negative" style="white-space:nowrap">-' + fmtMoney(maxLoss) + '</td>' +
             '<td><button class="btn-primary btn-sm" onclick="openDeployModal(\'' + jsStr(p.symbol) + '\',\'' + jsStr(p.best_strategy) + '\',' + Number(recShares||0) + ',' + Number(p.price||0) + ')">Deploy</button></td></tr>';
     });
-    if (!scrHtml) scrHtml = '<tr><td colspan="10" class="empty">No screener data - market may be closed</td></tr>';
+    if (!scrHtml) scrHtml = '<tr><td colspan="13" class="empty">No screener data - market may be closed</td></tr>';
 
     // Trading session badge
     // Backend (extended_hours.py) emits: 'market' | 'pre_market' | 'after_hours' | 'closed' | 'unknown'.
@@ -3685,6 +3713,9 @@ function renderDashboard() {
                 '<th class="sortable" onclick="sortScreener(\'volume_surge\')">Vol Surge' + sortArrow('volume_surge') + '</th>' +
                 '<th class="sortable" onclick="sortScreener(\'best_strategy\')">Strategy' + sortArrow('best_strategy') + '</th>' +
                 '<th class="sortable" onclick="sortScreener(\'best_score\')">Score' + sortArrow('best_score') + '</th>' +
+                '<th title="Total position cost at 5%-of-portfolio default sizing (Wheel: cash reserved for 1 put contract = strike × 100)">Cost</th>' +
+                '<th title="Position cost as a percent of your portfolio value. Color: green <5%, yellow 5-10%, red >10%">% Acct</th>' +
+                '<th title="Maximum loss if the strategy\'s stop triggers (breakout/MR/shorts/trailing: 10%, PEAD: 8%, Wheel: 20% proxy for put assignment + stock drop)">Max Loss</th>' +
                 '<th>Action</th>' +
             '</tr></thead><tbody>' + scrHtml + '</tbody></table>' +
         '</div>' +
