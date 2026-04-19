@@ -16,7 +16,44 @@ import time
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone, timedelta
+from decimal import Decimal, ROUND_HALF_EVEN
 from et_time import now_et
+
+
+# Phase 2 of the float->Decimal migration (see docs/DECIMAL_MIGRATION_PLAN.md).
+# Money aggregates (profit factor sums, strategy breakdown totals, peak/current
+# portfolio value, largest win/loss) now run in Decimal. Ratios and percentages
+# (sharpe, sortino, return%, win_rate%) stay as float — they're proportional,
+# not money, and Decimal's lack of native exp/sqrt makes it a poor fit for
+# statistical formulas. Return-dict types are unchanged: every consumer still
+# sees float values on the JSON boundary.
+_CENT = Decimal("0.01")
+
+
+def _dec(v, default=Decimal("0")):
+    """Coerce to Decimal WITHOUT going through float.
+
+    Decimal(float_x) preserves IEEE 754 imprecision into the Decimal
+    value; Decimal(str(x)) gets the human-readable form. Always use str.
+    """
+    if v is None or v == "":
+        return default
+    if isinstance(v, Decimal):
+        return v
+    try:
+        return Decimal(str(v))
+    except Exception:
+        return default
+
+
+def _to_cents_float(v):
+    """Quantize a Decimal to cents (banker's rounding) and emit a float
+    for JSON serialisation. The rounded float representation carries at
+    most 2 dp of meaningful precision so the IEEE 754 boundary crossing
+    is bounded well below $0.01."""
+    if not isinstance(v, Decimal):
+        v = _dec(v)
+    return float(v.quantize(_CENT, rounding=ROUND_HALF_EVEN))
 
 
 def load_dotenv():
@@ -130,14 +167,21 @@ def is_market_open():
 
 
 def calculate_metrics(journal, scorecard, account, positions):
-    """Calculate all performance metrics from trade journal and account data."""
+    """Calculate all performance metrics from trade journal and account data.
+
+    Phase-2 migration note: money aggregates run in Decimal internally, ratios
+    stay as float. Return-dict types unchanged — every caller still sees
+    rounded float values on the JSON boundary.
+    """
     trades = journal.get("trades", [])
     snapshots = journal.get("daily_snapshots", [])
 
-    # Current account values
-    portfolio_value = float(account.get("portfolio_value", 0)) or scorecard.get("starting_capital", 100000)
-    cash = float(account.get("cash", 0))
-    starting_capital = scorecard.get("starting_capital", 100000)
+    # Current account values — Decimal-internal; serialised at output.
+    _pv_raw = _dec(account.get("portfolio_value", 0))
+    starting_capital_d = _dec(scorecard.get("starting_capital", 100000))
+    portfolio_value_d = _pv_raw if _pv_raw != Decimal("0") else starting_capital_d
+    cash_d = _dec(account.get("cash", 0))
+    starting_capital = _to_cents_float(starting_capital_d)  # kept as float for downstream
 
     # Count trades
     total_trades = len(trades)
@@ -151,21 +195,27 @@ def calculate_metrics(journal, scorecard, account, positions):
 
     win_rate = (winning_trades / closed_trades * 100) if closed_trades > 0 else 0
 
-    # Average win/loss percentages
+    # Average win/loss percentages (percentages are proportional, stay float).
     wins = [t for t in closed if t["pnl"] > 0]
     losses = [t for t in closed if t["pnl"] <= 0]
 
     avg_win_pct = (sum(t.get("pnl_pct", 0) for t in wins) / len(wins)) if wins else 0
     avg_loss_pct = (sum(t.get("pnl_pct", 0) for t in losses) / len(losses)) if losses else 0
 
-    # Profit factor
-    total_wins = sum(t["pnl"] for t in wins) if wins else 0
-    total_losses = abs(sum(t["pnl"] for t in losses)) if losses else 0
-    profit_factor = (total_wins / total_losses) if total_losses > 0 else (total_wins if total_wins > 0 else 0)
+    # Profit factor — Decimal sum avoids compounding float drift across many
+    # closed trades. The ratio itself is dimensionless so stays float.
+    total_wins_d = sum((_dec(t["pnl"]) for t in wins), Decimal("0"))
+    total_losses_d = abs(sum((_dec(t["pnl"]) for t in losses), Decimal("0")))
+    if total_losses_d > 0:
+        profit_factor = float(total_wins_d / total_losses_d)
+    elif total_wins_d > 0:
+        profit_factor = float(total_wins_d)
+    else:
+        profit_factor = 0
 
-    # Largest win/loss
-    largest_win = max((t["pnl"] for t in wins), default=0)
-    largest_loss = min((t["pnl"] for t in losses), default=0)
+    # Largest win/loss — pick the max Decimal, serialise to cents on output.
+    largest_win_d = max((_dec(t["pnl"]) for t in wins), default=Decimal("0"))
+    largest_loss_d = min((_dec(t["pnl"]) for t in losses), default=Decimal("0"))
 
     # Average holding days
     holding_days = []
@@ -179,21 +229,25 @@ def calculate_metrics(journal, scorecard, account, positions):
                 pass
     avg_holding = (sum(holding_days) / len(holding_days)) if holding_days else 0
 
-    # Max drawdown from daily snapshots
-    peak = starting_capital
-    max_dd = 0
+    # Max drawdown from daily snapshots — peak tracked as Decimal so the
+    # compared values stay exact; drawdown % itself is float (proportional).
+    peak_d = starting_capital_d
+    max_dd = 0.0
     for snap in snapshots:
-        val = snap.get("portfolio_value", 0)
-        if val > peak:
-            peak = val
-        dd = (peak - val) / peak * 100 if peak > 0 else 0
-        if dd > max_dd:
-            max_dd = dd
+        val_d = _dec(snap.get("portfolio_value", 0))
+        if val_d > peak_d:
+            peak_d = val_d
+        if peak_d > 0:
+            dd = float((peak_d - val_d) / peak_d) * 100
+            if dd > max_dd:
+                max_dd = dd
 
     # Also check current value against peak
-    peak_value = max(peak, portfolio_value, scorecard.get("peak_value", starting_capital))
-    current_dd = (peak_value - portfolio_value) / peak_value * 100 if peak_value > 0 else 0
-    max_dd = max(max_dd, current_dd)
+    peak_value_d = max(peak_d, portfolio_value_d,
+                        _dec(scorecard.get("peak_value", starting_capital)))
+    if peak_value_d > 0:
+        current_dd = float((peak_value_d - portfolio_value_d) / peak_value_d) * 100
+        max_dd = max(max_dd, current_dd)
 
     # Sharpe and Sortino ratios from daily returns
     daily_returns = []
@@ -224,22 +278,30 @@ def calculate_metrics(journal, scorecard, account, positions):
             if neg_std > 0:
                 sortino = ((mean_ret - rf_daily) / neg_std) * math.sqrt(252)
 
-    # Total return
-    total_return_pct = ((portfolio_value - starting_capital) / starting_capital * 100) if starting_capital > 0 else 0
+    # Total return — Decimal math eliminates the compounding drift seen
+    # on long-running accounts; percentage serialised as float.
+    if starting_capital_d > 0:
+        total_return_pct = float(
+            (portfolio_value_d - starting_capital_d) / starting_capital_d
+        ) * 100
+    else:
+        total_return_pct = 0
 
-    # Strategy breakdown
+    # Strategy breakdown — per-strategy PnL accumulates across many trades,
+    # so this is one of the places float drift shows up most visibly.
+    # Internal pnl field stays as Decimal until final serialisation.
     strategy_breakdown = {
-        "trailing_stop": {"trades": 0, "wins": 0, "pnl": 0},
-        "copy_trading": {"trades": 0, "wins": 0, "pnl": 0},
-        "wheel": {"trades": 0, "wins": 0, "pnl": 0},
-        "mean_reversion": {"trades": 0, "wins": 0, "pnl": 0},
-        "breakout": {"trades": 0, "wins": 0, "pnl": 0},
+        "trailing_stop": {"trades": 0, "wins": 0, "pnl": Decimal("0")},
+        "copy_trading": {"trades": 0, "wins": 0, "pnl": Decimal("0")},
+        "wheel": {"trades": 0, "wins": 0, "pnl": Decimal("0")},
+        "mean_reversion": {"trades": 0, "wins": 0, "pnl": Decimal("0")},
+        "breakout": {"trades": 0, "wins": 0, "pnl": Decimal("0")},
         # Round-10: PEAD (Post-Earnings Drift) — without this bucket,
         # every PEAD trade routes through record_trade_close with
         # strategy="pead" and the `if strat in strategy_breakdown`
         # filter silently drops it, skewing win-rate math and making
         # PEAD invisible in the scorecard CLI summary.
-        "pead": {"trades": 0, "wins": 0, "pnl": 0},
+        "pead": {"trades": 0, "wins": 0, "pnl": Decimal("0")},
     }
     # Normalize strategy name to match the canonical lowercase-underscore
     # form used as keys above. Without this, a journal entry with
@@ -257,9 +319,15 @@ def calculate_metrics(journal, scorecard, account, positions):
         if strat in strategy_breakdown:
             strategy_breakdown[strat]["trades"] += 1
             if t.get("status") == "closed" and t.get("pnl") is not None:
-                strategy_breakdown[strat]["pnl"] += t["pnl"]
+                strategy_breakdown[strat]["pnl"] += _dec(t["pnl"])
                 if t["pnl"] > 0:
                     strategy_breakdown[strat]["wins"] += 1
+
+    # Normalise strategy_breakdown pnl to cents-rounded float for the
+    # consumer (dashboard JS, scorecard CSV, Sentry tag). This is the
+    # phase-2 JSON-boundary contract.
+    for _name, _row in strategy_breakdown.items():
+        _row["pnl"] = _to_cents_float(_row["pnl"])
 
     # A/B Testing: compare strategy pairs with 5+ trades each
     ab_testing = {}
@@ -327,12 +395,13 @@ def calculate_metrics(journal, scorecard, account, positions):
 
     ready_for_live = readiness_score >= 80
 
-    # Build updated scorecard
+    # Build updated scorecard — emit money fields through _to_cents_float
+    # so the JSON boundary stays stable (float with 2dp).
     now_str = now_et().isoformat()
     updated = {
         "start_date": scorecard.get("start_date", "2026-04-15"),
         "starting_capital": starting_capital,
-        "current_value": round(portfolio_value, 2),
+        "current_value": _to_cents_float(portfolio_value_d),
         "total_return_pct": round(total_return_pct, 2),
         "total_trades": total_trades,
         "open_trades": open_trades,
@@ -343,10 +412,10 @@ def calculate_metrics(journal, scorecard, account, positions):
         "avg_win_pct": round(avg_win_pct, 2),
         "avg_loss_pct": round(avg_loss_pct, 2),
         "profit_factor": round(profit_factor, 2),
-        "largest_win": round(largest_win, 2),
-        "largest_loss": round(largest_loss, 2),
+        "largest_win": _to_cents_float(largest_win_d),
+        "largest_loss": _to_cents_float(largest_loss_d),
         "max_drawdown_pct": round(max_dd, 2),
-        "peak_value": round(peak_value, 2),
+        "peak_value": _to_cents_float(peak_value_d),
         "sharpe_ratio": round(sharpe, 2),
         "sortino_ratio": round(sortino, 2),
         "avg_holding_days": round(avg_holding, 1),
