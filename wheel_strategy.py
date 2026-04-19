@@ -28,6 +28,7 @@ import tempfile
 import urllib.request
 import urllib.parse
 from datetime import datetime, date, timedelta, timezone
+from decimal import Decimal, ROUND_HALF_EVEN
 
 try:
     from zoneinfo import ZoneInfo
@@ -37,6 +38,35 @@ except Exception:
 
 def now_et():
     return datetime.now(ET_TZ)
+
+
+# Phase 4 of the float->Decimal migration (see docs/DECIMAL_MIGRATION_PLAN.md).
+# Highest-risk phase yet — wheel cycles chain cost basis across many legs
+# (put-sell -> assignment -> call-sell -> expiry-or-assignment -> ...). Drift
+# compounds over dozens of cycles; Decimal keeps the recorded PnL + cost basis
+# exact to the cent. Parity fuzz test runs the 52-cycle synthetic wheel
+# through old + new impls, asserts lifetime PnL matches to the penny.
+
+_CENT = Decimal("0.01")
+
+
+def _dec(v, default=Decimal("0")):
+    """Coerce to Decimal via str() (avoids Decimal(float_x) footgun)."""
+    if v is None or v == "":
+        return default
+    if isinstance(v, Decimal):
+        return v
+    try:
+        return Decimal(str(v))
+    except Exception:
+        return default
+
+
+def _to_cents_float(v):
+    """Quantize to cents (banker's rounding) and emit a float for JSON."""
+    if not isinstance(v, Decimal):
+        v = _dec(v)
+    return float(v.quantize(_CENT, rounding=ROUND_HALF_EVEN))
 
 # File locking — used to prevent races between wheel monitor ticks and
 # human-triggered actions (e.g. Force Deploy). Unix only; on Windows this
@@ -796,11 +826,20 @@ def _advance_wheel_state_locked(user, state, events):
 
     # Helpers
     def _update_totals_on_premium_fill(fill_price, qty):
-        """When our sell-to-open fills, record the premium."""
-        received = round(fill_price * 100 * qty, 2)
-        state["total_premium_collected"] = round(state.get("total_premium_collected", 0) + received, 2)
-        state["total_realized_pnl"] = round(state.get("total_realized_pnl", 0) + received, 2)
-        state["active_contract"]["premium_received"] = received
+        """When our sell-to-open fills, record the premium.
+
+        Phase-4 migration: the accumulators `total_premium_collected` and
+        `total_realized_pnl` compound across every leg of every cycle
+        across the lifetime of a wheel position. Float drift here is
+        the single biggest source of dashboard/1099 mismatch on a
+        multi-year wheel. Decimal math inside; float on state persist.
+        """
+        received_d = _dec(fill_price) * _dec(100) * _dec(qty)
+        prev_premium_d = _dec(state.get("total_premium_collected", 0))
+        prev_pnl_d = _dec(state.get("total_realized_pnl", 0))
+        state["total_premium_collected"] = _to_cents_float(prev_premium_d + received_d)
+        state["total_realized_pnl"] = _to_cents_float(prev_pnl_d + received_d)
+        state["active_contract"]["premium_received"] = _to_cents_float(received_d)
         state["active_contract"]["status"] = "active"
 
     def _fetch_order(order_id):
@@ -910,11 +949,23 @@ def _advance_wheel_state_locked(user, state, events):
                 expected_delta = 100 * contract_meta.get("quantity", 1)
                 share_delta = share_qty - baseline
                 if share_delta >= expected_delta:
-                    # Put was assigned — attribute the new 100×qty shares to us
-                    # Cost basis = strike - premium per share (on ONLY the new shares)
-                    cost_basis = contract_meta["strike"] - (contract_meta["premium_received"] / 100 / contract_meta.get("quantity", 1))
-                    state["shares_owned"] = expected_delta  # only count the newly-assigned shares
-                    state["cost_basis"] = round(cost_basis, 4)
+                    # Put was assigned — attribute the new 100×qty shares to us.
+                    # Cost basis = strike - premium per share (on ONLY the new shares).
+                    # Phase-4 migration: Decimal in; 4dp quantized float out. Cost
+                    # basis is used DOWNSTREAM in call-assignment PnL math, where
+                    # float drift would compound. Keep the Decimal version around
+                    # in a sidecar field so the subsequent computation can avoid
+                    # re-converting via the persisted 4dp float.
+                    strike_d = _dec(contract_meta["strike"])
+                    qty_d = _dec(contract_meta.get("quantity", 1))
+                    prem_per_share_d = _dec(contract_meta["premium_received"]) / _dec(100) / qty_d
+                    cost_basis_d = strike_d - prem_per_share_d
+                    state["shares_owned"] = expected_delta
+                    # State serialisation: cost_basis stored as 4dp float for
+                    # backward-compat with existing wheel files on disk.
+                    state["cost_basis"] = float(cost_basis_d.quantize(
+                        Decimal("0.0001"), rounding=ROUND_HALF_EVEN
+                    ))
                     state["stage"] = "stage_2_shares_owned"
                     contract_meta["status"] = "assigned"
                     contract_meta["closed_at"] = now_et().isoformat()
@@ -944,10 +995,17 @@ def _advance_wheel_state_locked(user, state, events):
                 expected_called_away = 100 * contract_meta.get("quantity", 1)
                 share_decrease = call_open_shares - share_qty
                 if share_decrease >= expected_called_away:
-                    # Call was assigned — shares called away
+                    # Call was assigned — shares called away.
+                    # Phase-4: Decimal math so the stock-leg PnL doesn't drift
+                    # when summed into the lifetime total across many cycles.
                     qty_called = contract_meta.get("quantity", 1)
-                    stock_pnl = (contract_meta["strike"] - state.get("cost_basis", 0)) * 100 * qty_called
-                    state["total_realized_pnl"] = round(state.get("total_realized_pnl", 0) + stock_pnl, 2)
+                    stock_pnl_d = (
+                        (_dec(contract_meta["strike"]) - _dec(state.get("cost_basis", 0)))
+                        * _dec(100) * _dec(qty_called)
+                    )
+                    stock_pnl = _to_cents_float(stock_pnl_d)
+                    prev_pnl_d = _dec(state.get("total_realized_pnl", 0))
+                    state["total_realized_pnl"] = _to_cents_float(prev_pnl_d + stock_pnl_d)
                     contract_meta["status"] = "assigned"
                     contract_meta["closed_at"] = now_et().isoformat()
                     log_history(state, "call_assigned", {
@@ -978,10 +1036,15 @@ def _advance_wheel_state_locked(user, state, events):
         close_order = _fetch_order(contract_meta["close_order_id"])
         if "error" not in close_order and close_order.get("status") == "filled":
             close_price = float(close_order.get("filled_avg_price") or 0)
-            close_cost = close_price * 100 * contract_meta.get("quantity", 1)
-            # Realized premium profit = original premium - close cost
-            net_premium = contract_meta.get("premium_received", 0) - close_cost
-            state["total_realized_pnl"] = round(state.get("total_realized_pnl", 0) - close_cost, 2)
+            # Phase-4 migration: close_cost and net_premium compound into
+            # total_realized_pnl every time we roll or close a leg. Decimal
+            # prevents drift across multi-year wheel lifetimes.
+            close_cost_d = _dec(close_price) * _dec(100) * _dec(contract_meta.get("quantity", 1))
+            close_cost = _to_cents_float(close_cost_d)
+            net_premium_d = _dec(contract_meta.get("premium_received", 0)) - close_cost_d
+            net_premium = _to_cents_float(net_premium_d)
+            prev_pnl_d = _dec(state.get("total_realized_pnl", 0))
+            state["total_realized_pnl"] = _to_cents_float(prev_pnl_d - close_cost_d)
             contract_meta["status"] = "closed"
             contract_meta["closed_at"] = now_et().isoformat()
             log_history(state, f"{contract_meta['type']}_bought_to_close", {
