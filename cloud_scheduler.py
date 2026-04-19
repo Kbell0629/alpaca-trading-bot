@@ -3625,6 +3625,30 @@ def scheduler_loop():
                         log(f"daily_backup_all failed: {_e} — retrying next tick", "scheduler")
                         _clear_daily_stamp("daily_backup_all")
 
+            # Trade-journal trim — runs ONCE/day per user at 3:15 AM ET, right
+            # after the daily backup so the archive move has a clean snapshot
+            # to recover from if anything goes sideways.
+            if now_et.hour == 3 and now_et.minute >= 15:
+                if should_run_daily_at("trade_journal_trim_all", 3, 15):
+                    try:
+                        import trade_journal as _tj
+                        for _user in (users or []):
+                            _uid = _user.get("id")
+                            if _uid is None:
+                                continue
+                            _jpath = user_file(_user, "trade_journal.json")
+                            _res = _tj.trim_journal(_jpath)
+                            if _res.get("moved"):
+                                log(
+                                    f"[{_user.get('username','?')}] journal trimmed: "
+                                    f"moved {_res['moved']} → archive "
+                                    f"(live={_res['live_count']}, archive={_res['archive_count']})",
+                                    "scheduler",
+                                )
+                    except Exception as _e:
+                        log(f"trade_journal_trim_all failed: {_e} — retrying next tick", "scheduler")
+                        _clear_daily_stamp("trade_journal_trim_all")
+
             # Capitol Trades refresh DISABLED — no working free data
             # provider as of 2026. The nightly task below is preserved
             # for re-enable when a source returns (see

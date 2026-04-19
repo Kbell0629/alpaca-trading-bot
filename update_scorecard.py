@@ -466,6 +466,31 @@ def main():
     journal = load_json(JOURNAL_PATH) or {"trades": [], "daily_snapshots": []}
     scorecard = load_json(SCORECARD_PATH) or {}
 
+    # Lifetime stats (strategy_breakdown, total_pnl, win rate) must include
+    # archived closed trades too — otherwise trimming in trade_journal.py
+    # would silently erase history from the scorecard. Snapshots (the
+    # daily equity curve) stay on the live journal only; they're already
+    # capped at 800 rows inside take_snapshot().
+    try:
+        import trade_journal as _tj
+        _arch_trades = []
+        _arch_path = _tj.archive_path_for(JOURNAL_PATH)
+        if os.path.exists(_arch_path):
+            _arch_doc = load_json(_arch_path) or {}
+            _arch_trades = list(_arch_doc.get("trades") or [])
+        if _arch_trades:
+            # Pre-pend archive trades onto the in-memory journal so every
+            # downstream reader in calculate_metrics sees full history.
+            # We don't rewrite the on-disk live file — this merge is
+            # read-only, scoped to this calculation.
+            journal = {**journal,
+                       "trades": _arch_trades + list(journal.get("trades") or [])}
+    except Exception as _e:
+        # Scorecard can tolerate a failed archive read — just omit archived
+        # trades and compute lifetime stats on the live window.
+        print(f"  WARN: archived-trades load failed ({_e}); lifetime stats "
+              f"will be live-window only.", flush=True)
+
     # Fetch live data from Alpaca
     print("\nFetching account data from Alpaca...")
     account = api_get_with_retry(f"{API_ENDPOINT}/account")
