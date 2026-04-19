@@ -68,6 +68,43 @@ def _to_cents_float(v):
         v = _dec(v)
     return float(v.quantize(_CENT, rounding=ROUND_HALF_EVEN))
 
+
+def _detect_split_since(symbol: str, since_iso: str) -> float:
+    """Return the cumulative split ratio for `symbol` between `since_iso`
+    and now, or 1.0 if no split (or the lookup failed).
+
+    Used by the put-assignment anomaly guard in _advance_wheel_state_
+    locked. If a 2:1 split happened while our put was active, shares
+    double unexpectedly and we would mis-attribute assignment. With this
+    helper, we detect the split and normalise baseline + expected_delta
+    before deciding whether the put was actually assigned.
+
+    Returns 1.0 (no-op multiplier) on any failure so the caller falls
+    through to the existing FREEZE-state-for-manual-reconcile path.
+    """
+    if not since_iso:
+        return 1.0
+    try:
+        opened = datetime.fromisoformat(since_iso)
+        if opened.tzinfo is None:
+            opened = opened.replace(tzinfo=ET_TZ)
+    except (ValueError, TypeError):
+        return 1.0
+    try:
+        from yfinance_budget import yf_splits
+        splits = yf_splits(symbol)
+    except Exception:
+        return 1.0
+    if not splits:
+        return 1.0
+    cumulative = 1.0
+    for split_dt, ratio in splits:
+        # yfinance returns tz-naive UTC; compare against opened in UTC
+        s_dt = split_dt.replace(tzinfo=timezone.utc) if split_dt.tzinfo is None else split_dt
+        if s_dt >= opened and ratio > 0:
+            cumulative *= float(ratio)
+    return cumulative
+
 # File locking — used to prevent races between wheel monitor ticks and
 # human-triggered actions (e.g. Force Deploy). Unix only; on Windows this
 # falls through to a no-op lock.
@@ -953,27 +990,67 @@ def _advance_wheel_state_locked(user, state, events):
                 # (e.g., 2:1 split during the put window would show delta
                 # ~200 on a qty=1 put — expected_delta=100 but double that),
                 # do NOT auto-advance state with a potentially-wrong cost
-                # basis. Log a critical warning + pin the state so the
-                # user can reconcile manually. Silent misattribution here
-                # produces wrong 1099 + wrong PnL going forward.
+                # basis.
+                #
+                # Round-13: auto-resolve if yfinance confirms a split
+                # happened between put-open and now. If split ratio R
+                # found, normalise baseline + expected_delta by R and
+                # retry the assignment check. If no split found, FREEZE
+                # state for manual reconciliation (existing behaviour).
                 if share_delta >= expected_delta * 2:
-                    log_history(state, "anomalous_share_delta_no_auto_advance", {
-                        "shares_owned_now": share_qty,
-                        "shares_at_open_baseline": baseline,
-                        "expected_delta": expected_delta,
-                        "actual_delta": share_delta,
-                        "hint": "possible stock split, manual trade, or DRIP — reconcile "
-                                "cost_basis + cycles_completed by hand then clear this state.",
-                    })
-                    events.append(
-                        f"{symbol}: WARN anomalous share delta ({share_delta} vs "
-                        f"expected {expected_delta}). Wheel state FROZEN — check manually."
+                    split_ratio = _detect_split_since(
+                        symbol, contract_meta.get("opened_at")
                     )
-                    # Leave state on stage_1_put_active with contract_meta
-                    # in place; monitor will keep re-evaluating until the
-                    # user clears the state or the share count normalises.
-                    save_wheel_state(user, state)
-                    return events
+                    if split_ratio and split_ratio > 1.0:
+                        # Auto-resolve: the split multiplied shares by
+                        # ratio R, so baseline should now be baseline*R.
+                        # The new expected_delta becomes expected_delta*R
+                        # (our put covers contract_qty*100 pre-split
+                        # shares, which are contract_qty*100*R post-split).
+                        adj_baseline = int(round(baseline * split_ratio))
+                        adj_expected = int(round(expected_delta * split_ratio))
+                        adj_share_delta = share_qty - adj_baseline
+                        log_history(state, "split_auto_resolved", {
+                            "split_ratio": split_ratio,
+                            "pre_split_baseline": baseline,
+                            "post_split_baseline": adj_baseline,
+                            "pre_split_expected_delta": expected_delta,
+                            "post_split_expected_delta": adj_expected,
+                            "observed_share_qty": share_qty,
+                        })
+                        events.append(
+                            f"{symbol}: stock split detected (ratio {split_ratio:g}x) "
+                            f"— auto-adjusting baseline {baseline}→{adj_baseline} "
+                            f"and expected_delta {expected_delta}→{adj_expected}"
+                        )
+                        # Adjust state + contract fields so downstream
+                        # code treats the post-split numbers as canonical.
+                        state["shares_at_open"] = adj_baseline
+                        contract_meta["quantity"] = int(round(
+                            contract_meta.get("quantity", 1) * split_ratio
+                        ))
+                        baseline = adj_baseline
+                        expected_delta = adj_expected
+                        share_delta = adj_share_delta
+                        # Fall through to the normal assignment-detection
+                        # branches below using the adjusted numbers.
+                    else:
+                        log_history(state, "anomalous_share_delta_no_auto_advance", {
+                            "shares_owned_now": share_qty,
+                            "shares_at_open_baseline": baseline,
+                            "expected_delta": expected_delta,
+                            "actual_delta": share_delta,
+                            "hint": "possible stock split, manual trade, or DRIP — "
+                                    "yfinance saw NO recent split. Reconcile cost_basis "
+                                    "+ cycles_completed by hand then clear this state.",
+                        })
+                        events.append(
+                            f"{symbol}: WARN anomalous share delta ({share_delta} vs "
+                            f"expected {expected_delta}). No split detected via "
+                            f"yfinance. Wheel state FROZEN — check manually."
+                        )
+                        save_wheel_state(user, state)
+                        return events
                 if share_delta >= expected_delta:
                     # Put was assigned — attribute the new 100×qty shares to us.
                     # Cost basis = strike - premium per share (on ONLY the new shares).
