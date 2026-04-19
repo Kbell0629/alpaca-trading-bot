@@ -1807,38 +1807,15 @@ def run_auto_deployer(user):
             return
 
     # Round-11 expansion items 11-12: Beta-adjusted exposure +
-    # drawdown sizing. Computed once per deployer run, applied as
-    # gates + multipliers below. Also skipped when factor_bypass on.
+    # drawdown sizing. Initialised to open-gate defaults; the actual
+    # computation happens AFTER positions + account + factor_bypass
+    # are populated below (round-12 audit: this block was previously
+    # placed here and referenced those vars before they existed,
+    # causing every run_auto_deployer call to hit a NameError that
+    # the outer `except Exception` swallowed — so the risk gate was
+    # silently disabled in production for months).
     beta_exposure = {"regime": "unknown", "block_high_beta": False, "block_all": False}
     drawdown_mult = 1.0
-    if not factor_bypass:
-        try:
-            from portfolio_risk import (
-                beta_adjusted_exposure, drawdown_size_multiplier,
-                is_high_beta_candidate
-            )
-            existing_positions_list = existing_positions if isinstance(existing_positions, list) else []
-            beta_exposure = beta_adjusted_exposure(existing_positions_list,
-                                                    portfolio_value)
-            log(f"[{user['username']}] Beta exposure: {beta_exposure['beta_weighted_pct']}% "
-                f"beta-weighted (β={beta_exposure['portfolio_beta']}, regime={beta_exposure['regime']})",
-                "deployer")
-            if beta_exposure["block_all"]:
-                log(f"[{user['username']}] EXTREME beta exposure — pausing all new entries", "deployer")
-                # Don't return — let existing skip-reasons handle it; we'll
-                # block per-pick below.
-            # Drawdown sizing
-            try:
-                journal = load_json(user_file(user, "trade_journal.json")) or {}
-                snapshots = journal.get("daily_snapshots", [])
-                drawdown_mult = drawdown_size_multiplier(snapshots)
-                if drawdown_mult < 1.0:
-                    log(f"[{user['username']}] Drawdown sizing active: {drawdown_mult:.2f}x "
-                        "(reducing position sizes after recent losses)", "deployer")
-            except Exception:
-                pass
-        except Exception as _re:
-            log(f"[{user['username']}] portfolio_risk failed: {_re}. Continuing.", "deployer")
 
     # Round-11 Tier 1: Market breadth gate. If fewer than 40% of S&P 500
     # components are above their 50dma, breakouts fail ~80% of the time.
@@ -1946,6 +1923,39 @@ def run_auto_deployer(user):
         existing_positions = positions
         existing_syms = {p.get("symbol") for p in positions}
 
+    # Round-12 audit fix: beta-exposure + drawdown-sizing gate, moved
+    # here from earlier in the function where it was dead code (referenced
+    # factor_bypass/existing_positions/portfolio_value before they were
+    # defined). This is the FIRST place all three are available.
+    if not factor_bypass:
+        try:
+            from portfolio_risk import (
+                beta_adjusted_exposure, drawdown_size_multiplier,
+            )
+            account_d = user_api_get(user, "/account") or {}
+            portfolio_value_live = float(account_d.get("portfolio_value", 0) or 0)
+            beta_exposure = beta_adjusted_exposure(
+                existing_positions, portfolio_value_live
+            )
+            log(f"[{user['username']}] Beta exposure: {beta_exposure['beta_weighted_pct']}% "
+                f"beta-weighted (β={beta_exposure['portfolio_beta']}, regime={beta_exposure['regime']})",
+                "deployer")
+            if beta_exposure["block_all"]:
+                log(f"[{user['username']}] EXTREME beta exposure — pausing all new entries", "deployer")
+                # Don't return — per-pick block below enforces it.
+            # Drawdown sizing
+            try:
+                journal = load_json(user_file(user, "trade_journal.json")) or {}
+                snapshots = journal.get("daily_snapshots", [])
+                drawdown_mult = drawdown_size_multiplier(snapshots)
+                if drawdown_mult < 1.0:
+                    log(f"[{user['username']}] Drawdown sizing active: {drawdown_mult:.2f}x "
+                        "(reducing position sizes after recent losses)", "deployer")
+            except Exception:
+                pass
+        except Exception as _re:
+            log(f"[{user['username']}] portfolio_risk failed: {_re}. Continuing.", "deployer")
+
     sdir = user_strategies_dir(user)
 
     # BURN_DOWN #1: news signals integration. Build a {symbol: signal_dir}
@@ -1979,7 +1989,7 @@ def run_auto_deployer(user):
     if not factor_bypass:
         try:
             from premarket_scanner import load_premarket_picks
-            udir = user_data_dir(user)
+            udir = user["_data_dir"]
             pm_picks = load_premarket_picks(udir)
             pm_symbols = {p["symbol"] for p in pm_picks if p.get("symbol")}
             if pm_symbols:
@@ -2899,7 +2909,7 @@ def run_scorecard_digest(user):
 
     log(f"[{user['username']}] Building scorecard digest...", "digest")
     # Load scorecard + journal
-    udir = user_data_dir(user)
+    udir = user["_data_dir"]
     scorecard = load_json(os.path.join(udir, "scorecard.json")) or {}
     journal = load_json(os.path.join(udir, "trade_journal.json")) or {}
     # Today's trades (filter by today's ET date)
@@ -3516,7 +3526,7 @@ def scheduler_loop():
                                 from premarket_scanner import (
                                     scan_premarket, save_premarket_picks
                                 )
-                                udir = user_data_dir(user)
+                                udir = user["_data_dir"]
                                 # Use the user's existing top-100 universe
                                 # from dashboard_data.json (cached top-50
                                 # by liquidity from yesterday).
@@ -3525,7 +3535,11 @@ def scheduler_loop():
                                 _top_syms = [p.get("symbol") for p in (_ddata.get("picks") or [])
                                              if p.get("symbol")][:100]
                                 if _top_syms:
-                                    _ag = lambda u, **kw: user_api_get(user, u)
+                                    # Bind user to default-arg so the lambda
+                                    # doesn't capture the mutable loop variable
+                                    # (ruff B023 — defensive even though
+                                    # scan_premarket is called synchronously).
+                                    _ag = lambda u, _user=user, **kw: user_api_get(_user, u)
                                     pm_picks = scan_premarket(
                                         _ag,
                                         user.get("_api_endpoint") or API_ENDPOINT,

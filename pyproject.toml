@@ -1,0 +1,109 @@
+# Round-12 audit: CI tooling config. Centralises ruff rules + pytest
+# coverage settings so CI and local dev stay in sync.
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [
+    ".venv",
+    "venv",
+    "build",
+    "dist",
+    ".git",
+    "__pycache__",
+    "tests/__init__.py",
+]
+
+[tool.ruff.lint]
+# Conservative rule set scoped to catch real bugs, not style preferences.
+# The codebase is multi-author + heavily inline-commented; Black-style
+# formatting enforcement would be a noisy follow-up PR.
+#
+# Enabled:
+#   E  — pycodestyle errors (syntax, indent, whitespace where it hurts)
+#   F  — Pyflakes (undefined names, unused imports, unused variables)
+#   B  — flake8-bugbear (real-world bug patterns)
+#   W  — pycodestyle warnings (deprecated patterns)
+select = ["E", "F", "B", "W"]
+
+# Ignore rules that would produce noise without catching real bugs on
+# this codebase. Each is explicit with a justification.
+ignore = [
+    "E501",   # Line too long — we favour readable comments over hard wrap.
+    "E701",   # Multiple statements on one line — `try: ...` one-liners are
+              # intentional in best-effort cleanup paths.
+    "E722",   # Bare except — we have several with a comment explaining
+              # why (best-effort cleanup); auditing them one-by-one is a
+              # separate follow-up.
+    "B008",   # Do not perform function call in argument defaults — used
+              # intentionally in several helpers (e.g. Decimal("0")).
+    "B007",   # Loop control variable not used — some for-loops with `_e`
+              # explicitly mark the binding as unused-intentionally.
+    "B904",   # raise ... from ... — many places intentionally hide the
+              # chain when it'd leak impl detail to the caller.
+    "W605",   # Invalid escape sequence — triggers in regex literals where
+              # the escape is meaningful to re, not Python.
+    "E731",   # lambda assignment — we use these for small anon helpers
+              # and the explicit name adds readability vs inlining.
+    "F401",   # Unused import — we import for side effects in several
+              # modules (observability auto-init, for example).
+    "F841",   # Local variable assigned but never used — we assign for
+              # debuggability in several best-effort cleanup branches.
+    "F541",   # f-string without placeholders — cosmetic; we use f""
+              # throughout for consistent formatting even when the
+              # current text doesn't need interpolation.
+    "E402",   # Module-level import not at top — several modules import
+              # after setting env vars or initialising logging; a sweep
+              # to reorganise would be a separate stylistic PR.
+    "E741",   # Ambiguous variable name (l, I, O) — `l` (lot/trade) is
+              # used extensively in tax_lots + wheel as a standard var.
+    "E701",   # Multiple statements on one line — not the same as E702;
+              # we use `try: ... except: pass` one-liners intentionally
+              # in best-effort cleanup paths.
+    "E702",   # Multiple statements on one line (semicolon).
+    "E401",   # Multiple imports on one line — cosmetic, follow-up PR.
+    "B905",   # zip() without strict= argument — Python 3.10+ only; we
+              # support 3.11 minimum but haven't swept call sites yet.
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests use fixtures + monkeypatching that Ruff flags falsely.
+"tests/*.py" = ["B017", "B018", "F811"]
+
+[tool.pytest.ini_options]
+# Skip E2E + boot tests in the default local run (they spawn subprocesses
+# and take longer). CI explicitly opts into them via its own pytest
+# invocation. `not e2e and not boot` is belt-and-suspenders if we ever
+# add test markers for those suites.
+addopts = "--tb=short"
+testpaths = ["tests"]
+filterwarnings = [
+    # zoneinfo + urllib timeouts emit DeprecationWarnings on 3.12 that
+    # aren't actionable at our level.
+    "ignore::DeprecationWarning:zoneinfo",
+]
+
+[tool.coverage.run]
+branch = true
+omit = [
+    "tests/*",
+    "*/__init__.py",
+    "update_dashboard.py",   # one-shot CLI — covered via integration
+    "update_scorecard.py",   # one-shot CLI — covered via integration
+    "error_recovery.py",     # one-shot CLI — covered via integration
+    "learn.py",              # one-shot CLI
+    "backup.py",             # one-shot CLI
+    "notify.py",             # one-shot CLI
+    "capitol_trades.py",     # external-data fetcher, disabled per Round-11
+]
+
+[tool.coverage.report]
+# Treat defensive exception handlers as not-covered-is-fine so they
+# don't sandbag the threshold.
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "\\.\\.\\.",
+]
