@@ -93,7 +93,14 @@ def analyze_wheel_candidates(symbol, current_price, strategy="put"):
     target_strike = current_price * target_strike_pct
 
     for contract in contracts:
-        strike = float(contract.get("strike_price", 0))
+        # Round-19: Alpaca's contracts endpoint occasionally returns
+        # empty-string strike_price on new listings / halt-pending
+        # contracts. float("") raises ValueError and crashes the loop.
+        # Defensive parse, skip the row.
+        try:
+            strike = float(contract.get("strike_price") or 0)
+        except (TypeError, ValueError):
+            strike = 0.0
         expiry = contract.get("expiration_date", "")
         contract_sym = contract.get("symbol", "")
 

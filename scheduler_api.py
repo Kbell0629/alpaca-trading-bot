@@ -213,7 +213,6 @@ def user_api_get(user, url_path, timeout=10, retries=2):
             url = user["_data_endpoint"] + url_path
         else:
             url = user["_api_endpoint"] + url_path
-    last_err = None
     for attempt in range(retries + 1):
         req = urllib.request.Request(url, headers=_user_headers(user))
         try:
@@ -227,19 +226,16 @@ def user_api_get(user, url_path, timeout=10, retries=2):
                 except (TypeError, ValueError):
                     ra = 0
                 time.sleep(max(ra, 0.5 * (2 ** attempt)))
-                last_err = e
                 continue
             if 500 <= e.code < 600 and attempt < retries:
                 time.sleep(0.5 * (2 ** attempt))
-                last_err = e
                 continue
             if 500 <= e.code < 600:
                 _cb_record_failure(user)
             return {"error": f"HTTP {e.code}"}
-        except Exception as e:
+        except Exception:
             if attempt < retries:
                 time.sleep(0.5 * (2 ** attempt))
-                last_err = e
                 continue
             _cb_record_failure(user)
             return {"error": "Request failed"}
@@ -286,6 +282,11 @@ def user_api_delete(user, url_path, timeout=10):
         url = user["_api_endpoint"] + url_path
     if _cb_blocked(user):
         return {"error": "circuit_breaker_open"}
+    # Round-19: DELETE counts against Alpaca's 200/min budget too.
+    # Previously skipped the rate-limit gate, so a surge of
+    # kill-switch cancels could blow past the budget and 429-spam.
+    if not _rl_acquire(user, wait_max=2.0):
+        return {"error": "rate_limited_local"}
     req = urllib.request.Request(url, headers=_user_headers(user), method="DELETE")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -294,6 +295,10 @@ def user_api_delete(user, url_path, timeout=10):
             return json.loads(body.decode()) if body else {}
     except urllib.error.HTTPError as he:
         if 400 <= he.code < 500:
+            # Round-19: 401/403 on DELETE means creds are bad. Same
+            # dedup as POST so we don't spam on a cancel storm.
+            if he.code in (401, 403):
+                _alert_alpaca_auth_failure(user, he.code, he.reason)
             return {"error": f"HTTP {he.code}: {he.reason}"}
         _cb_record_failure(user)
         return {"error": f"HTTP {he.code}: {he.reason}"}
@@ -311,6 +316,11 @@ def user_api_patch(user, url_path, data, timeout=10):
         url = user["_api_endpoint"] + url_path
     if _cb_blocked(user):
         return {"error": "circuit_breaker_open"}
+    # Round-19: PATCH counts against Alpaca's 200/min budget. A trailing-
+    # stop raise pass touches every open position's stop order, so
+    # without this gate a busy account can 429-spam during market opens.
+    if not _rl_acquire(user, wait_max=2.0):
+        return {"error": "rate_limited_local"}
     req = urllib.request.Request(
         url,
         data=json.dumps(data).encode(),
@@ -324,6 +334,10 @@ def user_api_patch(user, url_path, data, timeout=10):
             return body
     except urllib.error.HTTPError as he:
         if 400 <= he.code < 500:
+            # Round-19: 401/403 on PATCH means creds are bad — alert
+            # once per ET-day just like POST does.
+            if he.code in (401, 403):
+                _alert_alpaca_auth_failure(user, he.code, he.reason)
             return {"error": f"HTTP {he.code}: {he.reason}"}
         _cb_record_failure(user)
         return {"error": f"HTTP {he.code}: {he.reason}"}
