@@ -2480,6 +2480,45 @@ def main():
     print(f"Portfolio P&L: ${pnl['total_portfolio_pnl']:,.2f} ({pnl['daily_pnl_pct']:+.1f}%)")
     if pnl["alert_triggered"]:
         print("*** ALERT: Daily loss exceeds -3% threshold! ***")
+        # Round-15: actually notify the operator. Previously this was a
+        # print + dashboard flag with no push / email wiring, so a real
+        # -3% intraday drawdown wouldn't notify anyone off-dashboard.
+        # critical_alert routes through ntfy.sh + email + Sentry.
+        # Dedupe by ET-day stamp so the 30-min-refresh screener doesn't
+        # re-fire the alert every cycle.
+        try:
+            from observability import critical_alert
+            from et_time import now_et
+            today = now_et().strftime("%Y-%m-%d")
+            stamp_path = os.path.join(DATA_DIR, "daily_loss_alert_stamp.txt")
+            last = ""
+            try:
+                with open(stamp_path) as _f:
+                    last = _f.read().strip()
+            except Exception:
+                pass
+            if last != today:
+                # The scheduler passes ntfy_topic + notification_email via
+                # env vars when invoking this subprocess (cloud_scheduler
+                # lines 797/871). Build a minimal user dict so critical_
+                # alert's per-user ntfy + email paths work.
+                _alert_user = {
+                    "ntfy_topic": os.environ.get("NTFY_TOPIC") or None,
+                    "notification_email": os.environ.get("NOTIFICATION_EMAIL") or None,
+                }
+                critical_alert(
+                    f"Daily loss alert: {pnl['daily_pnl_pct']:+.1f}%",
+                    f"Portfolio P&L ${pnl['total_portfolio_pnl']:,.2f} "
+                    f"({pnl['daily_pnl_pct']:+.1f}%) — exceeds the -3% "
+                    f"daily-loss threshold. Review positions. Kill switch "
+                    f"is available in Settings if the downtrend continues.",
+                    tags={"daily_pnl_pct": round(pnl["daily_pnl_pct"], 2)},
+                    user=_alert_user,
+                )
+                with open(stamp_path, "w") as _f:
+                    _f.write(today)
+        except Exception as _e:
+            print(f"[daily-loss alert] failed to notify: {type(_e).__name__}")
 
     if data["diversified_top5"]:
         print(f"\nDiversified Top 5 Picks:")

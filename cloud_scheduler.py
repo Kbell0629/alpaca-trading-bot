@@ -502,12 +502,53 @@ def user_api_post(user, url_path, data, timeout=10):
     except urllib.error.HTTPError as he:
         # 4xx is a user/client error, not an infra outage — don't trip CB.
         if 400 <= he.code < 500:
+            # Round-15: 401/403 means Alpaca creds are bad — either
+            # rotated, revoked, or user typed them wrong. Silent failure
+            # would let every order attempt fail for hours before the
+            # operator noticed. Fire a critical_alert (ntfy + email +
+            # Sentry) exactly once per user per day.
+            if he.code in (401, 403):
+                _alert_alpaca_auth_failure(user, he.code, he.reason)
             return {"error": f"HTTP {he.code}: {he.reason}"}
         _cb_record_failure(user)
         return {"error": f"HTTP {he.code}: {he.reason}"}
     except Exception as e:
         _cb_record_failure(user)
         return {"error": str(e)}
+
+
+# Round-15: rate-limit auth-failure alerts so a single bad-key run
+# doesn't spam the operator with one ntfy push per order. One alert per
+# user per calendar day ET is enough — the next order's failure will
+# still log, but no duplicate push.
+_auth_alert_dates: dict = {}
+_auth_alert_lock = threading.Lock()
+
+
+def _alert_alpaca_auth_failure(user, code, reason):
+    try:
+        today = get_et_time().strftime("%Y-%m-%d")
+        uid = user.get("id")
+        with _auth_alert_lock:
+            if _auth_alert_dates.get(uid) == today:
+                return  # already alerted today
+            _auth_alert_dates[uid] = today
+        try:
+            from observability import critical_alert
+            critical_alert(
+                f"Alpaca {code} — credentials rejected",
+                f"User {user.get('username','?')}: Alpaca returned "
+                f"HTTP {code} ({reason}). All trades blocked until "
+                f"creds are refreshed. Settings → Alpaca API → re-enter "
+                f"keys. This alert fires once per day to avoid spam.",
+                tags={"code": code, "user": user.get("username", "?")},
+                user=user,
+            )
+        except Exception:
+            pass
+    except Exception:
+        pass
+
 
 def user_api_delete(user, url_path, timeout=10):
     if url_path.startswith("http"):
@@ -935,8 +976,21 @@ def run_screener(user, max_age_seconds=0):
                 _heartbeat_tick()
             time.sleep(3)
         else:
+            # Round-15: terminate() sends SIGTERM but a wedged child (e.g.,
+            # stuck in a C-extension network call) may ignore it. Wait
+            # briefly, then SIGKILL as a guaranteed backstop so we don't
+            # leave zombies when Railway redeploys or when the scheduler
+            # loop cycles.
             try:
                 p.terminate()
+                try:
+                    p.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+                    try:
+                        p.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass  # kernel will reap; we did our part
             except Exception:
                 pass
             log(f"[{user['username']}] Screener timed out (>{SCREENER_TIMEOUT}s)", "screener")
@@ -3864,11 +3918,22 @@ def stop_scheduler():
     except Exception as _e:
         log(f"stop_scheduler _save_last_runs failed: {_e}", "scheduler")
     # Reap any tracked subprocess children.
+    # Round-15: terminate() alone doesn't guarantee the child dies.
+    # Issue SIGTERM, wait briefly, then SIGKILL if still alive. Keeps
+    # Railway's SIGTERM-to-exit window clean of zombies.
     try:
         for p in list(_tracked_children):
             try:
                 if p.poll() is None:  # still running
                     p.terminate()
+                    try:
+                        p.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        p.kill()
+                        try:
+                            p.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            pass
             except Exception:
                 pass
     except Exception:

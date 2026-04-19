@@ -18,8 +18,8 @@ both chambers, official-source-derived. Set `QUIVER_API_KEY` in env
 Alternatives kept in for flexibility:
   - Finnhub `/stock/congressional-trading` — requires `FINNHUB_API_KEY`
     AND a paid plan ($99/mo tier). Free tier returns 403.
-  - Stock Watcher — decommissioned (domain no longer resolves).
-    Kept as a provider stub so old env configs don't break.
+  (Stock Watcher S3 buckets were removed in round-15 — the hosts no
+  longer resolve and the dataset hadn't updated in years.)
 
 Without any key set, every query returns zero — copy_trading silently
 drops out of the screener competition. That graceful degrade means
@@ -233,124 +233,11 @@ _DEFAULT_UNIVERSE = [
 ]
 
 
-# ===== Provider: Stock Watcher (free, S3-hosted, both chambers) =====
-_STOCK_WATCHER_HOUSE = (
-    "https://house-stock-watcher-data.s3-us-west-2.amazonaws.com/"
-    "data/all_transactions.json"
-)
-_STOCK_WATCHER_SENATE = (
-    "https://senate-stock-watcher-data.s3-us-west-2.amazonaws.com/"
-    "aggregate/all_transactions.json"
-)
-
-
-def _fetch_stock_watcher(symbols: list[str] | None = None,
-                         days: int = 60) -> list[dict]:
-    """Pull both House and Senate disclosure datasets from the free
-    Stock Watcher S3 buckets, filter to recent BUYs, and normalize the
-    shape to match the rest of the module.
-
-    `symbols` is respected if provided — we filter in-memory. If None,
-    we keep every row within `days`. The source files are tens of MB
-    but a single HTTP GET over S3 is fast and cheap; we re-fetch once
-    a day.
-    """
-    cutoff = date.today() - timedelta(days=days)
-    out: list[dict] = []
-
-    def _download(url: str) -> list[dict]:
-        try:
-            req = urllib.request.Request(url, headers={
-                "User-Agent": "AlpacaBot/1.0 (+https://github.com/Kbell0629/alpaca-trading-bot)"
-            })
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                return json.loads(resp.read().decode())
-        except Exception as e:
-            _log(f"stock-watcher fetch failed for {url}: {type(e).__name__}: {e}")
-            return []
-
-    filter_set = {s.upper() for s in symbols} if symbols else None
-
-    # ----- House -----
-    house_rows = _download(_STOCK_WATCHER_HOUSE)
-    for r in house_rows:
-        try:
-            tx_type = (r.get("type") or "").lower()
-            if not any(b in tx_type for b in ("purchase", "buy")):
-                continue
-            sym = (r.get("ticker") or "").upper().strip()
-            if not sym or sym == "--":
-                continue
-            if filter_set and sym not in filter_set:
-                continue
-            tx_date_str = r.get("transaction_date") or ""
-            try:
-                tx_date = datetime.fromisoformat(tx_date_str).date()
-            except (TypeError, ValueError):
-                continue
-            if tx_date < cutoff:
-                continue
-            amount = r.get("amount") or ""
-            out.append({
-                "symbol": sym,
-                "politician": r.get("representative") or "Unknown",
-                "chamber": "house",
-                "position": "U.S. Representative",
-                "transaction_date": tx_date.isoformat(),
-                "filing_date": r.get("disclosure_date") or "",
-                "amount_from": None,
-                "amount_to": None,
-                "amount_label": _normalize_amount_label(amount),
-                "asset_type": (r.get("asset_description") or "stock").lower(),
-            })
-        except Exception:
-            continue
-
-    # ----- Senate -----
-    senate_rows = _download(_STOCK_WATCHER_SENATE)
-    for r in senate_rows:
-        try:
-            tx_type = (r.get("type") or "").lower()
-            if not any(b in tx_type for b in ("purchase", "buy")):
-                continue
-            sym = (r.get("ticker") or "").upper().strip()
-            if not sym or sym == "--":
-                continue
-            if filter_set and sym not in filter_set:
-                continue
-            tx_date_str = r.get("transaction_date") or ""
-            try:
-                # Senate dataset uses MM/DD/YYYY rather than ISO.
-                try:
-                    tx_date = datetime.strptime(tx_date_str, "%m/%d/%Y").date()
-                except ValueError:
-                    tx_date = datetime.fromisoformat(tx_date_str).date()
-            except (TypeError, ValueError):
-                continue
-            if tx_date < cutoff:
-                continue
-            amount = r.get("amount") or ""
-            out.append({
-                "symbol": sym,
-                "politician": r.get("senator") or "Unknown",
-                "chamber": "senate",
-                "position": "U.S. Senator",
-                "transaction_date": tx_date.isoformat(),
-                "filing_date": r.get("disclosure_date") or "",
-                "amount_from": None,
-                "amount_to": None,
-                "amount_label": _normalize_amount_label(amount),
-                "asset_type": (r.get("asset_type") or "stock").lower(),
-            })
-        except Exception:
-            continue
-
-    return out
-
-
-# Stock Watcher uses slightly different label strings than the canonical
-# disclosure-form buckets. Normalize to our internal labels so the
-# AMOUNT_BUCKETS scorer doesn't need per-source branches.
+# Round-15: Stock Watcher provider removed. The S3 buckets stopped
+# updating and the hosts no longer resolve. Quiver / FMP / Finnhub cover
+# the signal. Keeping _normalize_amount_label since Quiver + FMP both
+# still use it to normalise per-source amount strings into canonical
+# disclosure-form buckets.
 def _normalize_amount_label(raw: str) -> str:
     if not raw:
         return ""
@@ -564,7 +451,6 @@ def _fetch_fmp(symbols: list[str] | None = None,
 _providers = {
     "fmp": _fetch_fmp,
     "quiver": _fetch_quiver,
-    "stock_watcher": _fetch_stock_watcher,
     "finnhub": _fetch_finnhub,
 }
 
@@ -573,7 +459,7 @@ def refresh_cache(symbols: list[str] | None = None, days: int = 60,
                   provider: str | None = None) -> dict:
     """Auto-select the best available provider unless one is explicitly
     named. Preference order: FMP (free tier, both chambers) > Quiver
-    (paid) > Finnhub (paid) > Stock Watcher (deprecated).
+    (paid) > Finnhub (paid).
 
     Returns an error dict (no cache write) when copy-trading is disabled
     OR no provider key is available. Previously this silently wrote an

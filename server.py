@@ -347,32 +347,19 @@ def _fetch_live_alpaca_state(api_endpoint, api_headers):
 
 
 def _load_with_shared_fallback(user_path, shared_path, user_id):
-    """Load a JSON overlay file from the per-user path.
+    """Delegates to per_user_isolation.load_with_shared_fallback, which
+    was extracted in round-15 so the CRITICAL MIGRATION RULE (only
+    user_id==1 may fall back to shared DATA_DIR) can be unit-tested
+    without dragging in sqlite / auth / observability init.
 
-    CRITICAL MIGRATION RULE: only user_id==1 (bootstrap admin) may fall
-    back to the shared DATA_DIR copy. OTHER users must never inherit
-    shared files, or they'd get Kevin's active strategies / guardrails /
-    auto-deployer config and start auto-trading on their own Alpaca
-    account the instant they sign up. This was a round-3 audit find
-    and any regression here is a real financial-harm bug.
+    Kept as a thin wrapper so the long-standing call sites across the
+    handlers continue to work unchanged.
     """
-    val = load_json(user_path)
-    if val:
-        return val
-    if user_id == 1:
-        val = load_json(shared_path)
-        if val:
-            try:
-                import shutil
-                os.makedirs(os.path.dirname(user_path) or ".", exist_ok=True)
-                shutil.copy2(shared_path, user_path)
-            except Exception as e:
-                observability.capture_exception(
-                    e, source="_load_with_shared_fallback.copy",
-                    user_path=user_path,
-                )
-        return val
-    return None
+    from per_user_isolation import load_with_shared_fallback
+    return load_with_shared_fallback(
+        user_path, shared_path, user_id,
+        capture_exc=observability.capture_exception,
+    )
 
 
 def _mark_auto_deployed(positions, strats_dir):

@@ -70,6 +70,64 @@ def api_get_with_retry(url, max_retries=3, timeout=15):
             return {"error": str(e)}
 
 
+# Round-15: extracted pure helper so the fallback ladder (live quote →
+# position avg cost → $1000/share conservative floor) can be unit-tested
+# without needing network or module-level Alpaca endpoints. Security-
+# critical: this is the code that prevents silent over-leverage when a
+# live-quote fetch fails.
+_LAST_RESORT_PRICE_PER_SHARE = 1000.0
+
+
+def _compute_reserved_by_orders(orders, position_avg_cost_by_sym, fetch_last):
+    """Return the total dollar-amount reserved by pending BUY orders.
+    Arguments are decoupled from Alpaca so tests can inject fakes.
+
+    `orders`: list of Alpaca order dicts.
+    `position_avg_cost_by_sym`: {SYMBOL: avg_entry_price} for open positions.
+    `fetch_last`: callable(symbol) -> float, returns the latest trade
+        price or 0.0 on failure.
+
+    Pricing ladder for orders that don't have an explicit limit/stop/notional:
+      1. live last-trade quote via fetch_last(symbol)
+      2. our own avg entry price for any open position in the same symbol
+      3. conservative $1000/share floor — we'd rather refuse an order
+         than under-reserve capital and authorise an overleveraged trade.
+    """
+    reserved = 0.0
+    for o in (orders or []):
+        if o.get("side") != "buy":
+            continue
+        try:
+            price = float(o.get("limit_price") or o.get("stop_price") or 0)
+            qty = float(o.get("qty", 0))
+        except (TypeError, ValueError):
+            continue
+        if price > 0:
+            reserved += price * qty
+            continue
+        try:
+            notional = float(o.get("notional") or 0)
+        except (TypeError, ValueError):
+            notional = 0
+        if notional > 0:
+            reserved += notional
+            continue
+        sym = (o.get("symbol") or "").upper()
+        last = 0.0
+        try:
+            last = float(fetch_last(sym) or 0)
+        except Exception:
+            last = 0.0
+        if last > 0:
+            px = last
+        elif position_avg_cost_by_sym.get(sym, 0) > 0:
+            px = position_avg_cost_by_sym[sym]
+        else:
+            px = _LAST_RESORT_PRICE_PER_SHARE
+        reserved += px * qty
+    return reserved
+
+
 def check_capital():
     account = api_get_with_retry(f"{API_ENDPOINT}/account")
     positions = api_get_with_retry(f"{API_ENDPOINT}/positions")
@@ -97,44 +155,27 @@ def check_capital():
     # Round-12 audit fix: the old fallback was `last or 100` — if the
     # last-trade GET failed, we'd assume $100/share. On a $200+ name
     # (GOOG/META/NVDA/AMZN) that under-reserved capital by 50-80% and
-    # could theoretically authorize an overleveraged deploy. New fallback
+    # could theoretically authorize an overleveraged deploy. Fallback
     # uses the position's average cost for the same symbol (if held), or
     # falls back to CONSERVATIVE over-reservation ($1000/share) rather
     # than under-reservation. Better to refuse a trade than over-borrow.
-    _LAST_RESORT_PRICE_PER_SHARE = 1000.0
     _position_avg_cost_by_sym = {
         (p.get("symbol") or "").upper(): float(p.get("avg_entry_price") or 0)
         for p in positions
     }
-    reserved_by_orders = 0
-    for o in orders:
-        if o.get("side") == "buy":
-            price = float(o.get("limit_price") or o.get("stop_price") or 0)
-            qty = float(o.get("qty", 0))
-            if price == 0:
-                notional = float(o.get("notional") or 0)
-                if notional:
-                    reserved_by_orders += notional
-                else:
-                    sym = (o.get("symbol") or "").upper()
-                    last = 0.0
-                    if sym:
-                        trade = api_get_with_retry(f"{DATA_ENDPOINT}/stocks/{sym}/trades/latest?feed=iex")
-                        try:
-                            last = float((trade or {}).get("trade", {}).get("p") or 0)
-                        except Exception:
-                            last = 0.0
-                    # Fallback ladder: live quote -> position avg cost ->
-                    # conservative $1000/share. Never silently under-reserve.
-                    if last > 0:
-                        px = last
-                    elif _position_avg_cost_by_sym.get(sym, 0) > 0:
-                        px = _position_avg_cost_by_sym[sym]
-                    else:
-                        px = _LAST_RESORT_PRICE_PER_SHARE
-                    reserved_by_orders += px * qty
-            else:
-                reserved_by_orders += price * qty
+    def _fetch_last(sym):
+        if not sym:
+            return 0.0
+        trade = api_get_with_retry(
+            f"{DATA_ENDPOINT}/stocks/{sym}/trades/latest?feed=iex"
+        )
+        try:
+            return float((trade or {}).get("trade", {}).get("p") or 0)
+        except Exception:
+            return 0.0
+    reserved_by_orders = _compute_reserved_by_orders(
+        orders, _position_avg_cost_by_sym, _fetch_last
+    )
 
     # Key metrics
     pct_invested = (total_position_value / portfolio_value * 100) if portfolio_value > 0 else 0

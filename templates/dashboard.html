@@ -2191,9 +2191,9 @@ const STRATEGY_INFO = {
     }
 };
 
-function toast(msg, type='info', correlationId='') {
+function toast(msg, type='info', correlationId='', retryFn=null) {
     const c = document.getElementById('toastContainer');
-    const icons = {success: '\u2713', error: '\u2717', info: '\u2139'};
+    const icons = {success: '\u2713', error: '\u2717', info: '\u2139', warning: '\u26A0'};
     const t = document.createElement('div');
     t.className = 'toast ' + type;
     let idSuffix = '';
@@ -2201,8 +2201,24 @@ function toast(msg, type='info', correlationId='') {
         idSuffix = ' <span style="opacity:.6;font-size:11px">(ref: ' + esc(correlationId) + ')</span>';
     }
     t.innerHTML = '<span class="toast-icon">' + (icons[type]||'') + '</span><span>' + esc(msg) + idSuffix + '</span>';
+    // Round-15: optional retry action for network errors so the user
+    // doesn't have to wait the full 60s countdown + doesn't have to
+    // tap the refresh icon manually.
+    if (typeof retryFn === 'function') {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = 'Retry';
+        btn.style.cssText = 'margin-left:10px;padding:4px 10px;font-size:12px;' +
+            'background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);' +
+            'color:inherit;border-radius:6px;cursor:pointer;';
+        btn.onclick = () => { try { retryFn(); } catch(_){} t.remove(); };
+        t.appendChild(btn);
+        // Hold the toast longer when it has an action so users can reach it
+        setTimeout(() => t.remove(), 10000);
+    } else {
+        setTimeout(() => t.remove(), 4000);
+    }
     c.appendChild(t);
-    setTimeout(() => t.remove(), 4000);
 }
 
 /* Helper: convert a fetch response + parsed JSON into a clean toast.
@@ -3583,7 +3599,10 @@ async function refreshData() {
         if (!window._fetchFailCount) window._fetchFailCount = 0;
         window._fetchFailCount++;
         if (window._fetchFailCount % 5 === 1) {
-            toast('Failed to load data: ' + e.message, 'error');
+            // Round-15: include a Retry action so the user can re-try
+            // immediately rather than wait the 60s auto-countdown.
+            toast('Failed to load data: ' + e.message, 'error', '',
+                  function() { refresh(); });
         }
         countdown = 60;  // Reset even on failure so we don't spam
     } finally {
@@ -3600,6 +3619,38 @@ async function forceRefresh() {
     if (icon) icon.classList.add('spinning');
     toast('Refreshing dashboard data (running screener)...', 'info');
     addLog('Manual refresh triggered', 'info');
+    // Round-15: the screener run can take 5s to ~2min. Without a progress
+    // indicator the user doesn't know if it's stuck. Show an elapsed-
+    // time + stage-hint banner that updates every second. Stages are
+    // time-gated guesses (we don't have real backend progress events
+    // yet — that'd require SSE + update_dashboard writing a progress
+    // file) but the user sees SOMETHING moving.
+    var progressEl = document.createElement('div');
+    progressEl.id = 'screenerProgress';
+    progressEl.style.cssText = 'position:fixed;top:16px;left:50%;' +
+        'transform:translateX(-50%);z-index:9500;padding:10px 16px;' +
+        'background:var(--card);border:1px solid var(--border);' +
+        'border-radius:10px;color:var(--text);font-size:13px;' +
+        'box-shadow:0 10px 30px rgba(0,0,0,0.5);min-width:260px;';
+    progressEl.setAttribute('role', 'status');
+    progressEl.setAttribute('aria-live', 'polite');
+    document.body.appendChild(progressEl);
+    var started = Date.now();
+    var progressTimer = setInterval(function() {
+        var elapsed = Math.round((Date.now() - started) / 1000);
+        var stage = 'Fetching market bars...';
+        if (elapsed > 8) stage = 'Scoring candidates...';
+        if (elapsed > 20) stage = 'Computing factor signals...';
+        if (elapsed > 40) stage = 'Finalizing portfolio snapshot...';
+        if (elapsed > 90) stage = 'Still running (this may take up to 2 min)...';
+        progressEl.innerHTML = '<div style="display:flex;align-items:center;' +
+            'gap:10px"><span style="width:12px;height:12px;' +
+            'border:2px solid var(--accent);border-top-color:transparent;' +
+            'border-radius:50%;animation:spin 0.8s linear infinite;' +
+            'display:inline-block"></span>' +
+            '<div><div style="font-weight:600">Screener — ' + elapsed + 's</div>' +
+            '<div style="opacity:0.7;font-size:11px">' + stage + '</div></div></div>';
+    }, 1000);
     try {
         const resp = await fetch(API_BASE + '/api/refresh', {method:'POST'});
         dashboardData = await resp.json();
@@ -3611,6 +3662,8 @@ async function forceRefresh() {
     } catch(e) {
         toast('Refresh failed: ' + esc(e.message), 'error');
     } finally {
+        clearInterval(progressTimer);
+        if (progressEl && progressEl.parentNode) progressEl.parentNode.removeChild(progressEl);
         if (btn) { btn.disabled = false; btn.removeAttribute('aria-busy'); }
         if (icon) icon.classList.remove('spinning');
     }
@@ -3620,6 +3673,14 @@ function sortScreener(col) {
     if (screenerSortCol === col) screenerSortDir *= -1;
     else { screenerSortCol = col; screenerSortDir = -1; }
     renderDashboard();
+}
+
+// aria-sort value for a given column — screen readers announce the
+// current sort direction on sortable columns. Without this, blind users
+// can't tell a column is sortable or which direction it's currently on.
+function ariaSort(col) {
+    if (screenerSortCol !== col) return 'none';
+    return screenerSortDir === -1 ? 'descending' : 'ascending';
 }
 
 function getMarketRegime(data) {
@@ -5180,15 +5241,15 @@ function renderDashboard() {
                 'Passed filters: <strong>' + (d.total_passed||0).toLocaleString() + '</strong> &nbsp;|&nbsp; ' +
                 'Showing: <strong>Top 50</strong></div>' +
             '<table><thead><tr>' +
-                '<th class="sortable" onclick="sortScreener(\'rank\')">#' + sortArrow('rank') + '</th>' +
-                '<th class="sortable" onclick="sortScreener(\'symbol\')">Symbol' + sortArrow('symbol') + '</th>' +
-                '<th class="sortable" onclick="sortScreener(\'price\')">Price' + sortArrow('price') + '</th>' +
-                '<th class="sortable" onclick="sortScreener(\'daily_change\')">Daily Chg' + sortArrow('daily_change') + '</th>' +
-                '<th class="sortable" onclick="sortScreener(\'volatility\')">Volatility' + sortArrow('volatility') + '</th>' +
-                '<th class="sortable" onclick="sortScreener(\'daily_volume\')">Volume' + sortArrow('daily_volume') + '</th>' +
-                '<th class="sortable" onclick="sortScreener(\'volume_surge\')">Vol Surge' + sortArrow('volume_surge') + '</th>' +
-                '<th class="sortable" onclick="sortScreener(\'best_strategy\')">Strategy' + sortArrow('best_strategy') + '</th>' +
-                '<th class="sortable" onclick="sortScreener(\'best_score\')">Score' + sortArrow('best_score') + '</th>' +
+                '<th class="sortable" aria-sort="' + ariaSort('rank') + '" onclick="sortScreener(\'rank\')">#' + sortArrow('rank') + '</th>' +
+                '<th class="sortable" aria-sort="' + ariaSort('symbol') + '" onclick="sortScreener(\'symbol\')">Symbol' + sortArrow('symbol') + '</th>' +
+                '<th class="sortable" aria-sort="' + ariaSort('price') + '" onclick="sortScreener(\'price\')">Price' + sortArrow('price') + '</th>' +
+                '<th class="sortable" aria-sort="' + ariaSort('daily_change') + '" onclick="sortScreener(\'daily_change\')">Daily Chg' + sortArrow('daily_change') + '</th>' +
+                '<th class="sortable" aria-sort="' + ariaSort('volatility') + '" onclick="sortScreener(\'volatility\')">Volatility' + sortArrow('volatility') + '</th>' +
+                '<th class="sortable" aria-sort="' + ariaSort('daily_volume') + '" onclick="sortScreener(\'daily_volume\')">Volume' + sortArrow('daily_volume') + '</th>' +
+                '<th class="sortable" aria-sort="' + ariaSort('volume_surge') + '" onclick="sortScreener(\'volume_surge\')">Vol Surge' + sortArrow('volume_surge') + '</th>' +
+                '<th class="sortable" aria-sort="' + ariaSort('best_strategy') + '" onclick="sortScreener(\'best_strategy\')">Strategy' + sortArrow('best_strategy') + '</th>' +
+                '<th class="sortable" aria-sort="' + ariaSort('best_score') + '" onclick="sortScreener(\'best_score\')">Score' + sortArrow('best_score') + '</th>' +
                 '<th title="Total position cost at 5%-of-portfolio default sizing (Wheel: cash reserved for 1 put contract = strike × 100)">Cost</th>' +
                 '<th title="Position cost as a percent of your portfolio value. Color: green <5%, yellow 5-10%, red >10%">% Acct</th>' +
                 '<th title="Maximum loss if the strategy\'s stop triggers (breakout/MR/shorts/trailing: 10%, PEAD: 8%, Wheel: 20% proxy for put assignment + stock drop)">Max Loss</th>' +

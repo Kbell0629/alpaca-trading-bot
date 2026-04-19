@@ -83,7 +83,11 @@ def send_notification(message, notify_type="info", push_only=False):
             print(f"Push notification sent: [{notify_type}] {message}")
             push_ok = True
     except Exception as e:
-        print(f"Failed to send push notification: {e}")
+        # Round-15: don't log str(e) — for urllib errors, the exception
+        # string can include the full URL (with topic embedded). Anyone
+        # who can read the Railway log could then subscribe to the topic
+        # and see every alert. Log only the exception class.
+        print(f"Failed to send push notification: {type(e).__name__}")
 
     # Queue email for important notification types — UNLESS the caller
     # asked for push-only. The daily-close path uses --push-only so the

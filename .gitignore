@@ -49,3 +49,8 @@ data/
 .coverage
 htmlcov/
 *.lock
+
+# Round-15: additional runtime state files that shouldn't be committed
+email_queue_dlq.json
+daily_loss_alert_stamp.txt
+_counter.json
