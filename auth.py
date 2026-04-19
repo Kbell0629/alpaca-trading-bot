@@ -765,16 +765,22 @@ def set_live_mode(user_id, enabled, max_position_dollars=None):
 
 # ===== Sessions =====
 def create_session(user_id, ip_address=None):
-    """Create a new session. Returns session token."""
+    """Create a new session. Returns session token.
+
+    Normalises ip_address to 'unknown' if the caller didn't supply one —
+    the sessions table column is nominally nullable for legacy reasons
+    but every audit/logging path downstream assumes a string. Passing
+    NULL would break log correlation for that session."""
     token = secrets.token_urlsafe(48)
     now = now_et()
     expires = now + timedelta(days=SESSION_DAYS)
+    ip_str = (ip_address or "unknown").strip() or "unknown"
     conn = _get_db()
     cur = conn.cursor()
     cur.execute("""
         INSERT INTO sessions (token, user_id, created_at, expires_at, ip_address)
         VALUES (?, ?, ?, ?, ?)
-    """, (token, user_id, now.isoformat(), expires.isoformat(), ip_address))
+    """, (token, user_id, now.isoformat(), expires.isoformat(), ip_str))
     conn.commit()
     conn.close()
     return token
@@ -872,23 +878,57 @@ def validate_reset_token(token):
 
 def consume_reset_token(token, new_password):
     """Use a reset token to set a new password.
-    Returns (True, None) on success, (False, err_msg) otherwise."""
-    user_id = validate_reset_token(token)
-    if not user_id:
-        return False, "Invalid or expired reset link"
-    ok, err = change_password(user_id, new_password)
-    if not ok:
-        return False, err
+    Returns (True, None) on success, (False, err_msg) otherwise.
+
+    Atomic mark-used: we UPDATE ... SET used=1 WHERE used=0 FIRST, and
+    only proceed with the password change if rowcount=1. This closes a
+    TOCTOU window where two concurrent reset requests for the same token
+    could both validate (read used=0) before either marked it used —
+    letting an attacker with the plaintext token re-use it in a burst.
+    Under the new ordering, exactly one request wins the UPDATE race;
+    the others see rowcount=0 and bail without changing the password.
+    """
+    if not new_password:
+        return False, "Password required"
     token_hash = _hash_reset_token(token)
+    now_iso = now_et().isoformat()
+
     conn = _get_db()
     cur = conn.cursor()
-    # Mark both the hashed row and any legacy plaintext row as used.
-    cur.execute("UPDATE password_resets SET used = 1 WHERE token IN (?, ?)",
-                (token_hash, token))
-    # Also invalidate all existing sessions for security
+    # Atomically mark the token used IF it's still valid + unused. This
+    # is the race-free gate; returns rowcount=1 only for the winning
+    # caller, rowcount=0 for every subsequent re-use attempt.
+    cur.execute(
+        "UPDATE password_resets SET used = 1 "
+        "WHERE token IN (?, ?) AND used = 0 AND expires_at > ?",
+        (token_hash, token, now_iso),
+    )
+    if cur.rowcount == 0:
+        conn.close()
+        return False, "Invalid or expired reset link"
+    # Fetch the user_id now that we've claimed the token.
+    cur.execute(
+        "SELECT user_id FROM password_resets WHERE token IN (?, ?)",
+        (token_hash, token),
+    )
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return False, "Invalid or expired reset link"
+    user_id = row[0]
+    # Invalidate all existing sessions FIRST — ensures a reset-in-progress
+    # attacker with a stolen session cookie gets booted before the new
+    # password takes effect.
     cur.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
+    # Change the password in a separate connection. If this fails (e.g.,
+    # password-strength rejection) the token is already consumed — the
+    # user has to request a fresh reset, which is the correct UX (token
+    # claimed = token spent, regardless of outcome).
+    ok, err = change_password(user_id, new_password)
+    if not ok:
+        return False, err
     return True, None
 
 # ===== Legacy cipher diagnostics =====

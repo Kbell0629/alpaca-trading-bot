@@ -541,7 +541,13 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
 .modal-overlay.active { opacity: 1; pointer-events: all; }
 .modal {
     background: var(--card); border: 1px solid var(--border); border-radius: 16px;
-    padding: 28px; min-width: 420px; max-width: 500px;
+    padding: 28px;
+    /* Round-12 audit fix: previous `min-width: 420px` forced horizontal
+       overflow on iPhone SE (375px viewport). Use a responsive width
+       ceiling so the modal fits on every phone size without the
+       `100vw !important` override war with the 600px media query. */
+    width: min(420px, calc(100vw - 24px));
+    max-width: 500px;
     transform: scale(0.95); transition: transform 0.25s;
     box-shadow: 0 20px 60px rgba(0,0,0,0.5);
 }
@@ -3409,7 +3415,11 @@ async function refreshData() {
         // forever, generating log spam and failed fetches.
         if (resp.status === 401) {
             if (countdownInterval) clearInterval(countdownInterval);
-            window.location.href = '/login';
+            // Round-12 audit fix: flash a toast + 1-sec delay so the
+            // user sees WHY they're being redirected instead of a
+            // mystery jump to /login.
+            try { showToast('Session expired — redirecting to login…', 'warning'); } catch(_) {}
+            setTimeout(function() { window.location.href = '/login'; }, 1000);
             return;
         }
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -4829,13 +4839,13 @@ function renderDashboard() {
                     '<span class="paper-badge">PAPER</span>' +
                 '</div>' +
                 '<div class="header-actions">' +
-                    '<button class="header-icon-btn force-deploy-btn" onclick="forceAutoDeploy()" title="Force auto-deployer to run now">\u26A1</button>' +
-                    '<button class="header-icon-btn voice-btn-v2" id="voiceBtn" onclick="toggleVoice()" title="Voice commands">\ud83c\udfa4</button>' +
-                    '<button class="header-icon-btn help-btn-v2" onclick="openReadme()" title="User guide">\ud83d\udcd6</button>' +
-                    '<button class="header-icon-btn refresh-btn-v2" onclick="forceRefresh()" title="Refresh dashboard"><span id="refreshIcon">\u21BB</span></button>' +
+                    '<button class="header-icon-btn force-deploy-btn" onclick="forceAutoDeploy()" title="Force auto-deployer to run now" aria-label="Force auto-deployer to run now">\u26A1</button>' +
+                    '<button class="header-icon-btn voice-btn-v2" id="voiceBtn" onclick="toggleVoice()" title="Voice commands" aria-label="Toggle voice commands">\ud83c\udfa4</button>' +
+                    '<button class="header-icon-btn help-btn-v2" onclick="openReadme()" title="User guide" aria-label="Open user guide">\ud83d\udcd6</button>' +
+                    '<button class="header-icon-btn refresh-btn-v2" onclick="forceRefresh()" title="Refresh dashboard" aria-label="Refresh dashboard"><span id="refreshIcon" aria-hidden="true">\u21BB</span></button>' +
                     (killSwitchActive
-                        ? '<span class="kill-switch-indicator-v2">\ud83d\udea8 HALTED</span>'
-                        : '<button class="kill-switch-btn-v2" onclick="openKillSwitchModal()" title="Emergency stop — closes all positions"><span class="kill-dot"></span>KILL</button>') +
+                        ? '<span class="kill-switch-indicator-v2" role="status" aria-live="polite">\ud83d\udea8 HALTED</span>'
+                        : '<button class="kill-switch-btn-v2" onclick="openKillSwitchModal()" title="Emergency stop — closes all positions" aria-label="Emergency kill switch — closes all positions"><span class="kill-dot" aria-hidden="true"></span>KILL</button>') +
                     '<div class="user-menu">' +
                         '<button class="user-btn-v2" onclick="toggleUserMenu(event)">' + esc(window.currentUsername || 'Account') + ' \u25BE</button>' +
                         '<div class="user-dropdown" id="userDropdown" style="display:none">' +

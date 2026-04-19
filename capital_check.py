@@ -94,6 +94,18 @@ def check_capital():
     # Round-11: for market orders without notional, fall back to
     # Alpaca's last-trade price for the symbol (cheap GET) rather
     # than qty * 100 (which over-reserved by 9x for stocks like NVDA).
+    # Round-12 audit fix: the old fallback was `last or 100` — if the
+    # last-trade GET failed, we'd assume $100/share. On a $200+ name
+    # (GOOG/META/NVDA/AMZN) that under-reserved capital by 50-80% and
+    # could theoretically authorize an overleveraged deploy. New fallback
+    # uses the position's average cost for the same symbol (if held), or
+    # falls back to CONSERVATIVE over-reservation ($1000/share) rather
+    # than under-reservation. Better to refuse a trade than over-borrow.
+    _LAST_RESORT_PRICE_PER_SHARE = 1000.0
+    _position_avg_cost_by_sym = {
+        (p.get("symbol") or "").upper(): float(p.get("avg_entry_price") or 0)
+        for p in positions
+    }
     reserved_by_orders = 0
     for o in orders:
         if o.get("side") == "buy":
@@ -104,7 +116,7 @@ def check_capital():
                 if notional:
                     reserved_by_orders += notional
                 else:
-                    sym = o.get("symbol", "")
+                    sym = (o.get("symbol") or "").upper()
                     last = 0.0
                     if sym:
                         trade = api_get_with_retry(f"{DATA_ENDPOINT}/stocks/{sym}/trades/latest?feed=iex")
@@ -112,7 +124,15 @@ def check_capital():
                             last = float((trade or {}).get("trade", {}).get("p") or 0)
                         except Exception:
                             last = 0.0
-                    reserved_by_orders += (last or 100) * qty
+                    # Fallback ladder: live quote -> position avg cost ->
+                    # conservative $1000/share. Never silently under-reserve.
+                    if last > 0:
+                        px = last
+                    elif _position_avg_cost_by_sym.get(sym, 0) > 0:
+                        px = _position_avg_cost_by_sym[sym]
+                    else:
+                        px = _LAST_RESORT_PRICE_PER_SHARE
+                    reserved_by_orders += px * qty
             else:
                 reserved_by_orders += price * qty
 

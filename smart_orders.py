@@ -178,7 +178,7 @@ def place_smart_buy(api_get, api_post, api_delete,
     """
     if qty <= 0:
         raise ValueError(f"qty must be > 0, got {qty}")
-    coid = client_order_id or f"smart-buy-{symbol}-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+    coid = client_order_id or f"smart-buy-{symbol}-{int(time.time())}-{uuid.uuid4().hex[:12]}"
 
     # 1. Quote check
     quote = _get_quote(api_get, data_endpoint, symbol, headers)
@@ -262,7 +262,7 @@ def place_smart_sell(api_get, api_post, api_delete,
     fallback to market on timeout."""
     if qty <= 0:
         raise ValueError(f"qty must be > 0, got {qty}")
-    coid = client_order_id or f"smart-sell-{symbol}-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+    coid = client_order_id or f"smart-sell-{symbol}-{int(time.time())}-{uuid.uuid4().hex[:12]}"
 
     quote = _get_quote(api_get, data_endpoint, symbol, headers)
     if not quote:
