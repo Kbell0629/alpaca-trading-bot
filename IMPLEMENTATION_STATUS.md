@@ -2,6 +2,36 @@
 
 Tracker for the 20 profit-enhancement features proposed after the initial build. Updated 2026-04-19.
 
+## Rounds 14-17 audit + closeout (2026-04-19, second-half session)
+
+PRs #28-31. Closes out every deferred item from rounds 12-13 plus the
+new findings from a fresh top-to-bottom audit.
+
+* **#28 — Round-14 audit fixes**: 8 parallel Explore agents found 7
+  real bugs. Biggest: `observability.critical_alert` email path
+  silently broken since round-11 (kill-switch trip never emailed
+  operator). Plus CSRF cookie clearing on logout, Sentry quota guard,
+  notify queue safety, ET-timezone counter, `track_record` HTML escape.
+* **#29 — Round-15 closeout**: 11 deferred items including the
+  smart_orders partial-fill blended cost basis bug (PnL drift ~0.8%
+  per wheel cycle), Alpaca 401/403 auto-detect with per-day alert
+  dedup, daily-loss alert wired into `critical_alert`, per-user
+  isolation extracted to `per_user_isolation.py` with pinning tests,
+  capital_check fallback ladder testable, dead Stock Watcher removed.
+* **#30 — Round-16 architectural followup**: `state_recovery.py`
+  boot-time validator (wheel + journal vs Alpaca positions); 36 new
+  tests across previously-uncovered strategy modules.
+* **#31 — Round-17 architectural refactor**: cloud_scheduler.py
+  3800-LOC monolith split — Alpaca API plumbing extracted to
+  `scheduler_api.py` with full backwards-compat re-exports.
+
+**Test suite:** 229 → 410 passing (+181 over rounds 12-17).
+**Coverage:** floor 15%, measured ~21%, ratchet ready.
+
+See `GO_LIVE_CHECKLIST.md` for the pre-live gating list.
+
+---
+
 ## Round-13 audit + cleanup (2026-04-19)
 
 Follow-on to the round-12 sweep. 7 PRs: #17 (handler mixin tests),
