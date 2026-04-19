@@ -6,22 +6,23 @@ Round-11 expansion items 18-20. All three services have free tiers — you never
 
 ## 1. Sentry (free — 5K errors/month)
 
-**Already done for you.** I created the project while you were watching.
-
-**Organization:** `se2-events-inc`
-**Project:** `alpaca-trading-bot`
-**DSN:**
+Create a free Sentry account + project at https://sentry.io/signup/, then
+grab the DSN from Project Settings → Client Keys (DSN). Format looks like:
 
 ```
-https://8bef0d8c13c591a57349d31418e1f1c3@o4510925122699264.ingest.us.sentry.io/4511241820372992
+https://YOUR_PUBLIC_KEY@oYOUR_ORG_ID.ingest.us.sentry.io/YOUR_PROJECT_ID
 ```
+
+> **NOTE**: Do not commit real DSNs to source control. Earlier revisions of
+> this file embedded a live DSN; if you deployed against that DSN, rotate it
+> in Sentry (Project Settings → Client Keys → disable old key).
 
 ### What you need to do
 
 Add one env var on Railway:
 
 ```
-SENTRY_DSN=https://8bef0d8c13c591a57349d31418e1f1c3@o4510925122699264.ingest.us.sentry.io/4511241820372992
+SENTRY_DSN=https://YOUR_PUBLIC_KEY@oYOUR_ORG_ID.ingest.us.sentry.io/YOUR_PROJECT_ID
 ```
 
 1. Railway dashboard → your bot project → Variables

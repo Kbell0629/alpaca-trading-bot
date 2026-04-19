@@ -438,6 +438,15 @@ def take_daily_snapshot(journal, account, positions, scorecard):
     }
 
     snapshots.append(snapshot)
+    # Retention: daily_snapshots appends one row per run (minutes-scale
+    # cadence from the scheduler). Unbounded growth here has produced
+    # multi-MB journal files in long-running deployments, which slows the
+    # load+dump on every tick. Cap to the last ~2 years of dailies so the
+    # Performance tab still has enough history for charts without blowing
+    # up disk / CPU.
+    MAX_SNAPSHOTS = 800
+    if len(snapshots) > MAX_SNAPSHOTS:
+        snapshots = snapshots[-MAX_SNAPSHOTS:]
     journal["daily_snapshots"] = snapshots
     return snapshot
 

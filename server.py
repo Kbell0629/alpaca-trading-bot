@@ -1288,6 +1288,50 @@ class DashboardHandler(
                     healthy = True  # grace period — scheduler still starting
                 else:
                     healthy = thread_alive and last_log_count > 0 and not log_stale
+
+                # Deep-health probes: DB + Alpaca connectivity. Keep
+                # each probe very cheap + fast-fail so /healthz still
+                # returns in <2s when any backing service is flapping.
+                # Failures DEGRADE (not fail) the response so UptimeRobot
+                # doesn't page for transient Alpaca / DB hiccups —
+                # scheduler-alive + fresh logs is still the primary
+                # signal.
+                db_ok = None
+                try:
+                    import sqlite3 as _sq
+                    import auth as _a
+                    _c = _sq.connect(_a.DB_PATH, timeout=1.0)
+                    _c.execute("SELECT 1").fetchone()
+                    _c.close()
+                    db_ok = True
+                except Exception:
+                    db_ok = False
+
+                alpaca_ok = None
+                # Only probe Alpaca during market hours — midnight probes
+                # succeed fine but add no signal; skip to keep 429 budget
+                # for trade traffic.
+                try:
+                    from datetime import datetime as _dt
+                    from zoneinfo import ZoneInfo
+                    _now_et = _dt.now(ZoneInfo("America/New_York"))
+                    _mkt_window = (
+                        _now_et.weekday() < 5
+                        and 9 <= _now_et.hour < 16
+                    )
+                    if _mkt_window and API_KEY and API_SECRET:
+                        _req = urllib.request.Request(
+                            (API_ENDPOINT or "https://paper-api.alpaca.markets/v2") + "/clock",
+                            headers={
+                                "APCA-API-KEY-ID": API_KEY,
+                                "APCA-API-SECRET-KEY": API_SECRET,
+                            },
+                        )
+                        with urllib.request.urlopen(_req, timeout=2.0) as _r:
+                            alpaca_ok = _r.status == 200
+                except Exception:
+                    alpaca_ok = False
+
                 status = 200 if healthy else 503
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
@@ -1301,6 +1345,8 @@ class DashboardHandler(
                     "stale": log_stale,
                     "uptime_sec": uptime_sec,
                     "warming_up": warming_up,
+                    "db_ok": db_ok,
+                    "alpaca_ok": alpaca_ok,
                 }).encode())
             except Exception as e:
                 self.send_response(503)

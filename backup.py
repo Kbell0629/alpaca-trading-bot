@@ -171,13 +171,24 @@ def _create_backup_inner():
                 # encrypted bytes (plain UPDATE doesn't overwrite in place).
                 try:
                     cur = dst_conn.cursor()
-                    cur.execute("UPDATE users SET "
-                                "alpaca_key_encrypted = NULL, "
-                                "alpaca_secret_encrypted = NULL, "
-                                "password_hash = NULL, "
-                                "password_salt = NULL, "
-                                "ntfy_topic = NULL, "
-                                "notification_email = NULL")
+                    # Live-trading creds (Round-11) stored in separate cols.
+                    # Defense: probe column existence so backups don't crash
+                    # on older DBs that don't have the live-cred columns.
+                    cols = {row[1] for row in cur.execute("PRAGMA table_info(users)").fetchall()}
+                    scrub_cols = [
+                        "alpaca_key_encrypted",
+                        "alpaca_secret_encrypted",
+                        "alpaca_live_key_encrypted",
+                        "alpaca_live_secret_encrypted",
+                        "password_hash",
+                        "password_salt",
+                        "ntfy_topic",
+                        "notification_email",
+                    ]
+                    present = [c for c in scrub_cols if c in cols]
+                    if present:
+                        set_clause = ", ".join(f"{c} = NULL" for c in present)
+                        cur.execute(f"UPDATE users SET {set_clause}")
                     dst_conn.commit()
                     # Rewrite the file so freed pages don't still carry
                     # the old ciphertext / hash bytes.

@@ -536,8 +536,11 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
 .form-group label { display: block; font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
 .form-group select, .form-group input {
     width: 100%; padding: 10px 14px; background: var(--bg); color: var(--text);
-    border: 1px solid var(--border); border-radius: 8px; font-size: 14px;
+    border: 1px solid var(--border); border-radius: 8px; font-size: 16px;
     font-family: inherit; outline: none; transition: border-color 0.2s;
+}
+@media (min-width: 601px) {
+    .form-group select, .form-group input { font-size: 14px; }
 }
 .form-group select:focus, .form-group input:focus { border-color: var(--accent); }
 .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 24px; }
@@ -1555,7 +1558,7 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
 </head>
 <body>
 
-<div class="toast-container" id="toastContainer"></div>
+<div class="toast-container" id="toastContainer" role="status" aria-live="polite" aria-atomic="true"></div>
 
 <!-- Deploy Modal (Enhanced with P&L estimates) -->
 <div class="modal-overlay" id="deployModal">
@@ -1781,7 +1784,7 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
 
       <h3 style="margin:20px 0 8px;font-size:14px;color:var(--red)">💰 Live Trading Keys</h3>
       <div class="modal-info-box" style="margin-bottom:12px;background:rgba(239,68,68,0.05);border-color:rgba(239,68,68,0.3)">
-        <strong>⚠️ Real money.</strong> Get these at <a href="https://app.alpaca.markets/paper/dashboard/overview" target="_blank" style="color:var(--accent)">app.alpaca.markets</a> → your Live account → API Keys. Save them here first, then enable live mode on the <strong>Live Trading</strong> tab.
+        <strong>⚠️ Real money.</strong> Get these at <a href="https://app.alpaca.markets/paper/dashboard/overview" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">app.alpaca.markets</a> → your Live account → API Keys. Save them here first, then enable live mode on the <strong>Live Trading</strong> tab.
       </div>
       <div class="settings-row">
         <label>Live API Key</label>
@@ -1881,7 +1884,7 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
         <div class="settings-row" style="margin-top:10px">
           <label>ntfy.sh Topic</label>
           <input type="text" id="setNtfyTopic" placeholder="alpaca-bot-yourname">
-          <div class="settings-hint">Install the free <a href="https://ntfy.sh" target="_blank" style="color:var(--accent)">ntfy</a> app and subscribe to this topic for instant push alerts on your phone. Most users can skip this — email covers everything.</div>
+          <div class="settings-hint">Install the free <a href="https://ntfy.sh" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">ntfy</a> app and subscribe to this topic for instant push alerts on your phone. Most users can skip this — email covers everything.</div>
         </div>
       </details>
     </div>
@@ -5509,7 +5512,7 @@ async function loadSettingsData() {
         var urlEl = document.getElementById('trackRecordUrl');
         if (urlEl && d.track_record_public) {
             var url = '/track-record/' + (d.user_id || '');
-            urlEl.innerHTML = '<strong>Public URL:</strong> <a href="' + url + '" target="_blank" style="color:var(--accent)">' + window.location.origin + url + '</a>';
+            urlEl.innerHTML = '<strong>Public URL:</strong> <a href="' + url + '" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">' + window.location.origin + url + '</a>';
         } else if (urlEl) {
             urlEl.innerHTML = '';
         }
@@ -5742,7 +5745,7 @@ async function toggleTrackRecord(enable) {
         var urlEl = document.getElementById('trackRecordUrl');
         if (urlEl) {
             urlEl.innerHTML = d.url
-                ? '<strong>Public URL:</strong> <a href="' + d.url + '" target="_blank" style="color:var(--accent)">' + window.location.origin + d.url + '</a>'
+                ? '<strong>Public URL:</strong> <a href="' + d.url + '" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">' + window.location.origin + d.url + '</a>'
                 : '';
         }
         toast(enable ? 'Track record is now public' : 'Track record is now private', 'success');

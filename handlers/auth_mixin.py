@@ -52,7 +52,13 @@ class AuthHandlerMixin:
         max_age = 30 * 86400
         secure = ""
         xfp = self.headers.get("X-Forwarded-Proto", "").lower()
-        if xfp == "https" or os.environ.get("FORCE_SECURE_COOKIE") == "1":
+        # Production default: require Secure. Trusting only X-Forwarded-Proto
+        # is fragile — a misconfigured edge or a spoofed header strips the
+        # flag and the session cookie rides the next plaintext request.
+        # Set DEV_MODE=1 locally for http://localhost testing; leave unset
+        # (or FORCE_SECURE_COOKIE=1) for any deployed env.
+        dev_mode = os.environ.get("DEV_MODE") == "1"
+        if xfp == "https" or os.environ.get("FORCE_SECURE_COOKIE") == "1" or not dev_mode:
             secure = "; Secure"
         self.send_header(
             "Set-Cookie",
@@ -151,8 +157,14 @@ class AuthHandlerMixin:
                 "error": "Invalid ntfy topic. Allowed: letters, digits, _, - (4-64 chars)."
             }, 400)
         # Notification email: default to login email, but allow the user to
-        # route bot emails to a different inbox. Reject malformed addresses.
-        if notification_email_raw and "@" not in notification_email_raw:
+        # route bot emails to a different inbox. Reject malformed addresses
+        # with a lenient RFC5322-ish regex — the SMTP sender is the final
+        # authority, this just rejects obvious garbage ("asdf", "a@b",
+        # addresses with spaces) before it hits the queue.
+        if notification_email_raw and not re.match(
+            r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$",
+            notification_email_raw,
+        ):
             return self.send_json({"error": "Notification email looks invalid"}, 400)
 
         # Gate: SIGNUP_DISABLED env var blocks all signups; SIGNUP_INVITE_CODE
