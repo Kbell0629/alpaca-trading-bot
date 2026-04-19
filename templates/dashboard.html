@@ -26,14 +26,14 @@ if ('serviceWorker' in navigator) {
     });
 }
 </script>
-<!-- External libs are pinned to fixed versions. `crossorigin="anonymous"`
-     is the prereq for SRI (Subresource Integrity). Add integrity="sha384-..."
-     attributes by running `scripts/compute_sri.sh` locally (the sandbox
-     can't fetch from CDNs, so hashes get populated from a dev machine). -->
+<!-- External libs pinned to fixed versions + SRI-guarded. If you bump any
+     version, re-run `bash scripts/compute_sri.sh` to regenerate the hashes. -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"
+        integrity="sha384-e6nUZLBkQ86NJ6TVVKAeSaK8jWa3NhkYWZFomE39AvDbQWeie9PlQqM3pmYW5d1g"
         crossorigin="anonymous"
         referrerpolicy="no-referrer"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"
+        integrity="sha384-zbcZAIxlvJtNE3Dp5nxLXdXtXyxwOdnILY1TDPVmKFhl4r4nSUG1r8bcFXGVa4Te"
         crossorigin="anonymous"
         referrerpolicy="no-referrer"></script>
 <style>

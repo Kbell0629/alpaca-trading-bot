@@ -66,8 +66,9 @@ button:disabled { opacity:0.5; cursor:not-allowed; }
   </form>
   <div class="auth-links">Already have an account? <a href="/login">Sign in</a></div>
 </div>
-<!-- SRI: integrity="sha384-..." added by scripts/compute_sri.sh locally. -->
+<!-- SRI-guarded. Re-run `bash scripts/compute_sri.sh` if you bump the version. -->
 <script src="https://cdn.jsdelivr.net/npm/zxcvbn@4.4.2/dist/zxcvbn.js"
+        integrity="sha384-LXuP8lknSGBOLVn4fwVOl+rWR+zOEtZx6CF9ZLaN6gKBgLByU4D79VWWjV4/gefq"
         crossorigin="anonymous"
         referrerpolicy="no-referrer"></script>
 <script>
