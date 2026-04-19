@@ -114,9 +114,9 @@ button:active { transform: translateY(0); }
     padding: 6px 16px; border-radius: 20px; font-size: 12px; font-weight: 700;
     letter-spacing: 0.5px; text-transform: uppercase;
 }
-.regime-bull { background: rgba(16,185,129,0.15); color: var(--green); }
-.regime-neutral { background: rgba(245,158,11,0.15); color: var(--orange); }
-.regime-bear { background: rgba(239,68,68,0.15); color: var(--red); }
+.regime-bull { background: rgba(16,185,129,0.15); color: var(--green-text); }
+.regime-neutral { background: rgba(245,158,11,0.15); color: #fcd34d; }
+.regime-bear { background: rgba(239,68,68,0.15); color: var(--red-text); }
 
 /* Account Bar */
 .account-bar { display: grid; grid-template-columns: repeat(5,1fr); gap: 16px; margin-bottom: 24px; }
@@ -1850,7 +1850,7 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
       <h3 style="margin:16px 0 8px;font-size:14px;color:var(--green)">📝 Paper Trading Keys</h3>
       <div class="settings-row">
         <label>Paper API Key</label>
-        <input type="text" id="setPaperKey" placeholder="PKxxxxxxxxxxxxxxxx" autocomplete="off">
+        <input type="password" id="setPaperKey" placeholder="PKxxxxxxxxxxxxxxxx" autocomplete="off" spellcheck="false">
       </div>
       <div class="settings-row">
         <label>Paper API Secret</label>
@@ -1868,7 +1868,7 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
       </div>
       <div class="settings-row">
         <label>Live API Key</label>
-        <input type="text" id="setLiveKey" placeholder="AKxxxxxxxxxxxxxxxx" autocomplete="off">
+        <input type="password" id="setLiveKey" placeholder="AKxxxxxxxxxxxxxxxx" autocomplete="off" spellcheck="false">
       </div>
       <div class="settings-row">
         <label>Live API Secret</label>
@@ -3544,6 +3544,17 @@ async function refreshData() {
             try { showToast('Session expired — redirecting to login…', 'warning'); } catch(_) {}
             setTimeout(function() { window.location.href = '/login'; }, 1000);
             return;
+        }
+        // Service-worker offline fallback returns 503 with {offline: true}.
+        // Surface a friendly banner instead of the generic fetch-failed path.
+        if (resp.status === 503) {
+            try {
+                var body = await resp.clone().json();
+                if (body && body.offline) {
+                    try { showToast('Offline — showing last cached data. Will reconnect automatically.', 'warning'); } catch(_) {}
+                    return;
+                }
+            } catch(_) { /* not JSON — fall through to generic error */ }
         }
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         dashboardData = await resp.json();
@@ -6234,21 +6245,81 @@ async function loadReadme() {
         _readmeLoaded = true;
     } catch(e) {
         var content = document.getElementById('readmeContent');
-        if (content) content.innerHTML = '<div style="color:var(--red);padding:20px">Error loading README: ' + e.message + '</div>';
+        if (content) content.innerHTML = '<div style="color:var(--red);padding:20px">Error loading README: ' + esc(e.message) + '</div>';
     }
+}
+
+// Allowlist of tags/attributes we permit in rendered README HTML. Anything
+// else (script, iframe, on*-handlers, javascript:/data: URIs, style) gets
+// stripped. Defense-in-depth — we trust the README source but the markdown
+// renderer (marked) has had XSS CVEs historically and we pull content over
+// HTTP, so sanitising the rendered output costs little.
+var _README_ALLOWED_TAGS = new Set([
+    'A','B','BLOCKQUOTE','BR','CODE','DEL','DIV','EM','H1','H2','H3',
+    'H4','H5','H6','HR','I','IMG','LI','OL','P','PRE','SPAN','STRONG',
+    'SUB','SUP','TABLE','TBODY','TD','TH','THEAD','TR','UL',
+]);
+var _README_ALLOWED_ATTRS = {
+    'A': new Set(['href','title','id']),
+    'IMG': new Set(['src','alt','title','width','height']),
+    '*': new Set(['id','class']),
+};
+function _sanitizeReadmeHtml(html) {
+    var doc = new DOMParser().parseFromString('<div>' + html + '</div>', 'text/html');
+    var root = doc.body.firstChild;
+    function walk(node) {
+        // Iterate a snapshot — we may remove children during traversal
+        var kids = Array.prototype.slice.call(node.childNodes);
+        kids.forEach(function(child) {
+            if (child.nodeType !== 1) { return; }  // non-element: keep
+            var tag = child.tagName;
+            if (!_README_ALLOWED_TAGS.has(tag)) {
+                // Unwrap — replace the disallowed element with its text
+                var txt = document.createTextNode(child.textContent || '');
+                child.parentNode.replaceChild(txt, child);
+                return;
+            }
+            // Strip disallowed attributes + defang URI schemes
+            var allowed = _README_ALLOWED_ATTRS[tag] || _README_ALLOWED_ATTRS['*'];
+            var globalAllowed = _README_ALLOWED_ATTRS['*'];
+            Array.prototype.slice.call(child.attributes).forEach(function(attr) {
+                var name = attr.name.toLowerCase();
+                if (!allowed.has(name) && !globalAllowed.has(name)) {
+                    child.removeAttribute(attr.name);
+                    return;
+                }
+                if (name === 'href' || name === 'src') {
+                    var v = (attr.value || '').trim().toLowerCase();
+                    if (v.indexOf('javascript:') === 0 || v.indexOf('data:') === 0 || v.indexOf('vbscript:') === 0) {
+                        child.removeAttribute(attr.name);
+                    }
+                }
+            });
+            walk(child);
+        });
+    }
+    walk(root);
+    return root.innerHTML;
 }
 
 function renderReadme(markdown) {
     var content = document.getElementById('readmeContent');
     var toc = document.getElementById('readmeToc');
     if (!content || typeof marked === 'undefined') {
-        if (content) content.innerHTML = '<pre style="white-space:pre-wrap">' + markdown + '</pre>';
+        if (content) {
+            // textContent-safe fallback when marked didn't load
+            var pre = document.createElement('pre');
+            pre.style.whiteSpace = 'pre-wrap';
+            pre.textContent = markdown;
+            content.innerHTML = '';
+            content.appendChild(pre);
+        }
         return;
     }
 
-    // Render markdown to HTML
-    var html = marked.parse(markdown);
-    content.innerHTML = html;
+    // Render markdown to HTML, then scrub with the allowlist.
+    var rawHtml = marked.parse(markdown);
+    content.innerHTML = _sanitizeReadmeHtml(rawHtml);
 
     // Add IDs to headers for TOC anchoring
     var headers = content.querySelectorAll('h1, h2, h3, h4');
