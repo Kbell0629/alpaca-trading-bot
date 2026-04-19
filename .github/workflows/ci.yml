@@ -22,16 +22,29 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest
+          pip install pytest pytest-cov ruff
 
       - name: Compile all Python files
         run: python -m py_compile $(git ls-files '*.py')
 
-      - name: Run pytest
-        # One test (test_trading_session_is_computed_live_not_from_stale_json)
-        # tries to hit /account without mocking — known pre-existing failure,
-        # deselected so CI stays green. Remove the --deselect once it's fixed.
+      # Round-12 audit: ruff catches syntax / common-bug patterns before
+      # CI exercises the tests. Config lives in pyproject.toml. Fails the
+      # job on any rule match.
+      - name: Lint with ruff
+        run: ruff check .
+
+      - name: Run pytest with coverage
+        # Coverage floor is intentionally low (~50%) because large modules
+        # (cloud_scheduler, handlers/*.py) don't have unit tests yet; the
+        # round-12 audit identifies them as a follow-up gap. The floor is
+        # a ratchet — nudge it up as gaps close.
+        # test_trading_session_is_computed_live_not_from_stale_json is
+        # still deselected (needs an Alpaca mock); same for sandbox tests
+        # that don't apply in CI.
         run: |
           python -m pytest tests/ \
             --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json \
+            --cov=. \
+            --cov-report=term-missing \
+            --cov-fail-under=50 \
             --tb=short
