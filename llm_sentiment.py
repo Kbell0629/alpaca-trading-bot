@@ -100,10 +100,18 @@ def _write_cache(path, data):
 
 
 def _bump_call_counter():
-    """Track today's call count for the cost-estimate display."""
+    """Track today's call count for the cost-estimate display.
+
+    Uses ET to match the rest of the bot's timeline — otherwise the
+    "today" boundary jumps when the system clock crosses midnight UTC,
+    making the dashboard cost estimate look noisy across midnight ET."""
     try:
         path = os.path.join(_cache_dir(), "_counter.json")
-        today = datetime.now().strftime("%Y-%m-%d")
+        try:
+            from et_time import now_et
+            today = now_et().strftime("%Y-%m-%d")
+        except Exception:
+            today = datetime.now().strftime("%Y-%m-%d")
         data = {}
         if os.path.exists(path):
             with open(path) as f:

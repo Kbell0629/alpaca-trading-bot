@@ -131,10 +131,20 @@ def init_sentry():
             integrations=[LoggingIntegration(level=None, event_level=None)],
             before_send=_scrub_pii,
             ignore_errors=[
-                # Ignore client disconnects / broken pipes — noise
+                # Client disconnects / broken pipes — noise from healthchecks
                 "BrokenPipeError",
                 "ConnectionResetError",
                 "ConnectionAbortedError",
+                # Transient network errors from yfinance / Alpaca / ntfy.
+                # We retry these in-app and surface FINAL failures via
+                # capture_exception with explicit context. Letting every
+                # transient one through to Sentry burns the 5K/month free
+                # quota on noise that doesn't need ops attention.
+                "URLError",
+                "TimeoutError",
+                "socket.timeout",
+                "ReadTimeoutError",
+                "RemoteDisconnected",
             ],
         )
         _SENTRY_AVAILABLE = True
@@ -232,11 +242,18 @@ def critical_alert(title, body, tags=None, user=None):
     # 3. Email (queue via existing module if available)
     try:
         if user and user.get("notification_email"):
-            from email_sender import queue_email
+            # queue_email lives in notify.py and signs as
+            # (subject, body, notify_type) — not (user, type, subject=, body=).
+            # Prior to round-13 we were importing from email_sender (wrong
+            # module) AND calling with the wrong signature, so every
+            # critical-alert email failed with ImportError + TypeError, both
+            # swallowed by the outer except. Kill-switch trips never emailed.
+            from notify import queue_email
+            from et_time import now_et
             queue_email(
-                user, "trading-bot-alert",
-                subject=f"⚠ {title}",
-                body=f"{title}\n\n{body}\n\nTimestamp: {datetime.utcnow().isoformat()}Z",
+                f"⚠ {title}",
+                f"{title}\n\n{body}\n\nTimestamp: {now_et().isoformat()}",
+                notify_type="alert",
             )
             result["email"] = True
     except Exception as e:

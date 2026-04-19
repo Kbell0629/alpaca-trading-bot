@@ -157,6 +157,18 @@ def queue_email(subject, body, notify_type="info"):
             # Only trim the main queue when DLQ succeeded.
             if dlq_ok:
                 queue = queue[-50:]
+            else:
+                # Round-14: DLQ failed but we're not silently losing data.
+                # Hard cap the main queue at 200 entries as a memory-safety
+                # net so a permanently-wedged DLQ writer can't grow the
+                # queue file unboundedly. 200 = 4× the soft cap, gives the
+                # DLQ writer plenty of retries to recover before any drop.
+                if len(queue) > 200:
+                    dropped = len(queue) - 200
+                    queue = queue[-200:]
+                    print(f"[notify] WARN: queue exceeded 200 entries with "
+                          f"DLQ stuck — dropping {dropped} oldest. Investigate "
+                          f"DLQ writer immediately.", flush=True)
 
         # Atomic write
         safe_save_json(queue_file, queue)
@@ -169,25 +181,38 @@ def queue_email(subject, body, notify_type="info"):
 
 # Also keep the queue file for backup/logging
 def log_notification(message, notify_type="info"):
+    """Append to notification_log.json under a fcntl lock so concurrent
+    callers (HTTP handler + scheduler thread) don't lose entries via the
+    classic read-modify-write race."""
     log_file = os.path.join(DATA_DIR, "notification_log.json")
-    log = []
-    if os.path.exists(log_file):
-        try:
-            with open(log_file) as f:
-                log = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            log = []
+    lock_file = log_file + ".lock"
+    lock_fd = None
+    try:
+        lock_fd = open(lock_file, "w")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
 
-    log.append({
-        "timestamp": now_et().isoformat(),
-        "type": notify_type,
-        "message": message
-    })
+        log = []
+        if os.path.exists(log_file):
+            try:
+                with open(log_file) as f:
+                    log = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                log = []
 
-    # Keep last 100 notifications
-    log = log[-100:]
+        log.append({
+            "timestamp": now_et().isoformat(),
+            "type": notify_type,
+            "message": message,
+        })
 
-    safe_save_json(log_file, log)
+        # Keep last 100 notifications
+        log = log[-100:]
+
+        safe_save_json(log_file, log)
+    finally:
+        if lock_fd:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
 
 if __name__ == "__main__":
     notify_type = "info"
