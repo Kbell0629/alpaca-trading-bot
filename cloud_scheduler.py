@@ -3904,6 +3904,44 @@ def start_scheduler():
     _scheduler_thread = threading.Thread(target=scheduler_loop, daemon=True, name="CloudScheduler")
     _scheduler_thread.start()
     log("Scheduler thread started", "scheduler")
+    # Round-16: boot-time state-recovery sweep. Reads wheel JSON state
+    # + journal vs Alpaca positions for every user; surfaces any
+    # discrepancy via Sentry capture_message. Doesn't auto-fix — purely
+    # diagnostic. Wrapped in try/except so a reconcile bug never blocks
+    # the scheduler from starting.
+    try:
+        threading.Thread(target=_run_state_reconcile_safely,
+                         daemon=True,
+                         name="StateReconcile").start()
+    except Exception as _e:
+        log(f"state-reconcile thread failed to start: {_e}", "scheduler")
+
+
+def _run_state_reconcile_safely():
+    """Run state_recovery.reconcile_user for every active user. Logs
+    warnings via observability; never raises."""
+    try:
+        import state_recovery
+        for u in get_all_users_for_scheduling():
+            try:
+                udir = u.get("_data_dir") or ""
+                wheel_dir = os.path.join(udir, "strategies")
+                journal_path = os.path.join(udir, "trade_journal.json")
+
+                def _fetch_positions(_user=u):
+                    res = user_api_get(_user, "/positions")
+                    return res if isinstance(res, list) else []
+
+                result = state_recovery.reconcile_user(
+                    u, wheel_dir, journal_path,
+                    fetch_positions=_fetch_positions,
+                )
+                state_recovery.report_to_observability(u, result)
+            except Exception as _e:
+                log(f"state-reconcile {u.get('username','?')} failed: "
+                    f"{type(_e).__name__}", "scheduler")
+    except Exception as _e:
+        log(f"state-reconcile sweep failed: {type(_e).__name__}", "scheduler")
 
 def stop_scheduler():
     """Flip the running flag AND force-flush _last_runs + reap any
