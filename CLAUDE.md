@@ -116,16 +116,18 @@ run. Fixed in PR #15 (`ruff check` F821 surfaced it).
 
 ## Outstanding items (user-flagged or deferred)
 
-### Flagged for user input
+### Flagged for user input — all cleared (2026-04-19)
 
-- **PWA icons**: manifest + service-worker reference the single SVG.
-  Chrome / Edge push notifications render SVG fine; iOS Safari needs
-  192x192 + 512x512 PNGs. Out-of-sandbox — user must run
-  ImageMagick / online tool locally and commit.
-- **Sentry DSN rotation**: the DSN that appeared in early docs is in
-  git history forever. User should rotate via Sentry dashboard →
-  Project Settings → Client Keys → Deactivate old → Create new →
-  update Railway `SENTRY_DSN`. See `docs/MONITORING_SETUP.md`.
+- ~~**PWA icons**: manifest needed iOS PNG fallbacks~~ — DONE in PR #25.
+- ~~**Sentry DSN rotation**: the leaked DSN in early docs~~ — DONE,
+  user rotated + set new `SENTRY_DSN` on Railway.
+- ~~**MASTER_ENCRYPTION_KEY** set on Railway~~ — DONE, user confirmed
+  variable is set. DO NOT rotate (invalidates stored creds).
+- ~~**Notifications wiring** (ntfy + email + Sentry alerts)~~ — DONE.
+
+Only remaining pre-live prereqs live in `GO_LIVE_CHECKLIST.md`:
+finish 30-day paper validation window + generate dedicated live
+Alpaca keys. Both are user-only operational steps.
 
 ### Known gaps — safe to defer, no active bugs
 
@@ -319,10 +321,21 @@ end of round-12 plus a focused production-readiness pass.
 
 ---
 
-## Last session state (2026-04-19 afternoon)
+## Last session state (2026-04-19 evening)
 
-24 PRs total now merged (or pending merge). Paper-trading 30-day
-validation window ongoing — started 2026-04-15, ends ~2026-05-15.
+26 PRs total merged. Paper-trading 30-day validation window ongoing —
+started 2026-04-15, ends ~2026-05-15.
+
+**All code-side + operational-prereq work is complete.** User has:
+  * Rotated Sentry DSN and set `SENTRY_DSN` on Railway
+  * Set `MASTER_ENCRYPTION_KEY` on Railway (locked, do not rotate)
+  * Wired notifications (ntfy.sh + Gmail + Sentry alerts)
+  * PWA PNG icons live (#25)
+
+Only remaining pre-live items are timeboxed user actions:
+  1. Finish the 30-day paper validation window
+  2. Generate dedicated live Alpaca keys + flip via Settings
+
 Tests: **328 passing** locally (two sandbox-only failures in
 `test_auth::test_password_strength_rejects_weak` and
 `test_dashboard_data::...trading_session...` as documented).
