@@ -108,8 +108,13 @@ try:
         else:
             print(f"[auth] {_need_upgrade} user rows will be upgraded to ENCv3 on next login",
                   flush=True)
-except Exception:
-    pass
+except Exception as _diag_err:
+    # Diagnostic only — don't block boot, but surface to Sentry so we notice
+    # if the count function ever starts throwing silently.
+    try:
+        observability.capture_exception(_diag_err, source="auth.cipher_distribution")
+    except Exception:
+        pass
 
 # Basic auth credentials (set via env vars on Railway, or .env for local dev)
 # Kept only for backward-compat bootstrap; actual auth now goes through auth.py
@@ -185,6 +190,7 @@ def alpaca_request(method, url, body=None, timeout=15):
         err_body = e.read().decode() if e.fp else ""
         return {"error": f"HTTP {e.code}: {err_body}"}
     except Exception as e:
+        observability.capture_exception(e, source="alpaca_request", method=method)
         return {"error": str(e)}
 
 
@@ -268,6 +274,7 @@ def alpaca_get_cached(url, timeout=15, headers=None):
             err_body = e.read().decode() if e.fp else ""
             data = {"error": f"HTTP {e.code}: {err_body}"}
         except Exception as e:
+            observability.capture_exception(e, source="alpaca_get_cached")
             data = {"error": str(e)}
     else:
         data = alpaca_get(url, timeout=timeout)
@@ -348,8 +355,11 @@ def _load_with_shared_fallback(user_path, shared_path, user_id):
                 import shutil
                 os.makedirs(os.path.dirname(user_path) or ".", exist_ok=True)
                 shutil.copy2(shared_path, user_path)
-            except Exception:
-                pass
+            except Exception as e:
+                observability.capture_exception(
+                    e, source="_load_with_shared_fallback.copy",
+                    user_path=user_path,
+                )
         return val
     return None
 
@@ -416,7 +426,11 @@ def _mark_auto_deployed(positions, strats_dir):
             strat = symbol_to_strategy.get(lookup, "")
             p["_auto_deployed"] = bool(strat)
             p["_strategy"] = strat
-        except Exception:
+        except Exception as e:
+            observability.capture_exception(
+                e, source="_mark_auto_deployed",
+                symbol=(p.get("symbol") if isinstance(p, dict) else ""),
+            )
             p["_auto_deployed"] = False
             p["_strategy"] = ""
     return positions
@@ -627,6 +641,7 @@ def _login_attempt_record(ip, username, success):
                     _gc()
             except Exception as _e:
                 print(f"[auth] GC {_fn} failed: {_e}", flush=True)
+                observability.capture_exception(_e, source="auth.gc", gc_fn=_fn)
 
 # Signup invite code gate. Set SIGNUP_INVITE_CODE env var on Railway to require
 # the code for new signups. Set SIGNUP_DISABLED=1 to block all new signups.
@@ -782,6 +797,7 @@ class DashboardHandler(
                     print(f"[migration] Seeded strategies dir for bootstrap admin", flush=True)
             except Exception as e:
                 print(f"[migration] WARN strategies seed failed: {e}", flush=True)
+                observability.capture_exception(e, source="_user_strategies_dir.seed")
         return d
 
     def _user_file(self, filename):
@@ -806,6 +822,9 @@ class DashboardHandler(
                     print(f"[migration] Copied {filename} to bootstrap admin user dir", flush=True)
                 except Exception as e:
                     print(f"[migration] WARN failed to migrate {filename}: {e}", flush=True)
+                    observability.capture_exception(
+                        e, source="_user_file.migrate", filename=filename,
+                    )
         return user_path
 
     def _send_error_safe(self, exc, status=500, context=""):
@@ -813,12 +832,21 @@ class DashboardHandler(
         response to the client. Prevents leaking stack traces, DB paths,
         or secret fragments through API error messages.
         Returns a short correlation ID the user can share to help debug.
+
+        Also forwards to Sentry via observability.capture_exception so the
+        error shows up in the error tracker alongside the stdout log.
         """
         import uuid
         correlation_id = uuid.uuid4().hex[:12]
         label = context or "internal"
         try:
             print(f"[ERROR {correlation_id}] ({label}) {type(exc).__name__}: {exc}", flush=True)
+        except Exception:
+            pass
+        try:
+            observability.capture_exception(
+                exc, context=label, correlation_id=correlation_id,
+            )
         except Exception:
             pass
         self.send_json({
@@ -868,6 +896,7 @@ class DashboardHandler(
             return self._sanitize_alpaca_error(e.code, err_body)
         except Exception as e:
             print(f"[user_api_get] {type(e).__name__}: {e}", flush=True)
+            observability.capture_exception(e, source="user_api_get")
             return {"error": "Request failed"}
 
     def user_api_post(self, url, body=None, timeout=15):
@@ -887,6 +916,7 @@ class DashboardHandler(
             return self._sanitize_alpaca_error(e.code, err_body)
         except Exception as e:
             print(f"[user_api_post] {type(e).__name__}: {e}", flush=True)
+            observability.capture_exception(e, source="user_api_post")
             return {"error": "Request failed"}
 
     def user_api_delete(self, url, timeout=15):
@@ -901,6 +931,7 @@ class DashboardHandler(
             return self._sanitize_alpaca_error(e.code, err_body)
         except Exception as e:
             print(f"[user_api_delete] {type(e).__name__}: {e}", flush=True)
+            observability.capture_exception(e, source="user_api_delete")
             return {"error": "Request failed"}
 
     def _cors_origin(self):
@@ -1031,6 +1062,7 @@ class DashboardHandler(
                             lot.get("strategy", ""),
                         ])
                 except Exception as e:
+                    observability.capture_exception(e, source="csv-export.tax-lots")
                     w.writerow(["error", str(e)])
         except Exception as e:
             self._send_error_safe(e, 500, "csv-export")
@@ -1056,6 +1088,7 @@ class DashboardHandler(
             with open(tpl_path) as f:
                 tpl = f.read()
         except Exception as e:
+            observability.capture_exception(e, source="track_record.template")
             self.send_response(500)
             self.send_header("Content-Type", "text/plain")
             self.end_headers()
@@ -1141,7 +1174,8 @@ class DashboardHandler(
         started = user.get("created_at", "")[:10] if user.get("created_at") else "—"
         try:
             pnl_cls = "positive" if total_pnl > 0 else "negative" if total_pnl < 0 else "neutral"
-        except Exception:
+        except Exception as e:
+            observability.capture_exception(e, source="track_record.pnl_cls")
             pnl_cls = "neutral"
         ret_cls = "positive" if total_return_pct > 0 else "negative" if total_return_pct < 0 else "neutral"
         rendered = (tpl
@@ -1349,6 +1383,7 @@ class DashboardHandler(
                     "alpaca_ok": alpaca_ok,
                 }).encode())
             except Exception as e:
+                observability.capture_exception(e, source="healthz")
                 self.send_response(503)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
@@ -1610,6 +1645,7 @@ class DashboardHandler(
                 breadth = _mb.get_breadth_pct(data_dir=DATA_DIR)
                 result["breadth"] = breadth
             except Exception as e:
+                observability.capture_exception(e, source="factor-health.breadth")
                 result["breadth"] = {"error": str(e), "breadth_pct": None}
             # Sector rankings
             try:
@@ -1622,6 +1658,7 @@ class DashboardHandler(
                 )
                 result["sectors"] = ranked
             except Exception as e:
+                observability.capture_exception(e, source="factor-health.sectors")
                 result["sectors"] = {"error": str(e)}
             # Cache ages (quality + iv_rank are per-symbol)
             try:
@@ -1650,6 +1687,7 @@ class DashboardHandler(
                 import yfinance_budget as _yb
                 result["yfinance_budget"] = _yb.stats()
             except Exception as e:
+                observability.capture_exception(e, source="factor-health.yfinance")
                 result["yfinance_budget"] = {"error": str(e)}
             # Factor bypass flag (BATCH 3 — read from guardrails)
             try:
@@ -1690,6 +1728,7 @@ class DashboardHandler(
                 self.end_headers()
                 self.wfile.write(body)
             except Exception as e:
+                observability.capture_exception(e, source="static", path=fname)
                 self.send_json({"error": f"read failed: {e}"}, 500)
             return
 
@@ -1704,6 +1743,7 @@ class DashboardHandler(
                 self.end_headers()
                 self.wfile.write(content.encode("utf-8"))
             except Exception as e:
+                observability.capture_exception(e, source="readme")
                 self.send_json({"error": f"Could not read README: {e}"}, 500)
 
         elif path == "/api/compute-backtest":
@@ -1867,6 +1907,7 @@ class DashboardHandler(
                 # Live overlay is a nice-to-have — fall back to snapshot
                 # if the Alpaca call fails.
                 print(f"[heatmap] live-today overlay failed: {_e}", flush=True)
+                observability.capture_exception(_e, source="heatmap.live_overlay")
 
             # Analyze patterns
             by_weekday = {}
@@ -2203,6 +2244,7 @@ def _graceful_shutdown(httpd, reason="signal"):
             stop_scheduler()
     except Exception as e:
         print(f"[shutdown] scheduler stop error: {e}", flush=True)
+        observability.capture_exception(e, source="shutdown.scheduler_stop")
     try:
         httpd.shutdown()
     except Exception:
@@ -2241,6 +2283,7 @@ def main():
         print("[init] SQLite WAL + busy_timeout enabled", flush=True)
     except Exception as e:
         print(f"[init] WAL setup failed: {e}", flush=True)
+        observability.capture_exception(e, source="init.wal_setup")
 
     server = ThreadingHTTPServer(("0.0.0.0", port), DashboardHandler)
     print(f"Dashboard running at http://localhost:{port}")
@@ -2259,6 +2302,7 @@ def main():
             print("[INFO] Cloud scheduler started — bot running autonomously", flush=True)
         except Exception as e:
             print(f"[FATAL] Could not start cloud scheduler: {e}. Exiting for restart.", flush=True)
+            observability.capture_exception(e, source="main.start_scheduler")
             import sys as _sys_exit
             _sys_exit.exit(1)
 
