@@ -3,8 +3,11 @@
 Use this before flipping the Settings → 🔴 Live Trading toggle.
 Paper-trading mode has forgiving edges that real money does not.
 
-Last updated: 2026-04-19 (end of round-17 architectural cleanup).
+Last updated: 2026-04-19 (end of round-19 final polish).
 **Code-side work is complete. Only timeboxed user actions remain.**
+
+**Current `main` HEAD**: `648339d` (round-19).
+**Tests**: 423 passing. **Coverage**: floor 20%, measured 25.4%.
 
 ---
 

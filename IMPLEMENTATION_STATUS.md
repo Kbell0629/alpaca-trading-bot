@@ -25,8 +25,15 @@ new findings from a fresh top-to-bottom audit.
   3800-LOC monolith split — Alpaca API plumbing extracted to
   `scheduler_api.py` with full backwards-compat re-exports.
 
-**Test suite:** 229 → 410 passing (+181 over rounds 12-17).
-**Coverage:** floor 15%, measured ~21%, ratchet ready.
+* **#33 — Round-19 final self-audit polish**: audited the code I
+  wrote in rounds 14-17 since nobody else had reviewed it; found
+  `scheduler_api` DELETE+PATCH missing the rate-limit gate, and
+  `options_analysis.analyze_wheel_candidates` crashing on empty-string
+  strike_price. Both fixed + 13 new options tests. CI coverage floor
+  bumped 15% → 20% (measured 25.4%).
+
+**Test suite:** 229 → 423 passing (+194 over rounds 12-19).
+**Coverage:** floor 20%, measured 25.4%.
 
 See `GO_LIVE_CHECKLIST.md` for the pre-live gating list.
 

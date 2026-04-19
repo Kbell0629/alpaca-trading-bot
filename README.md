@@ -47,8 +47,22 @@ Continued audit + cleanup pass after round-13. Four more rounds, 4 PRs,
   stage hints.
 - Removed dead Stock Watcher provider from `capitol_trades`.
 
-**Test count:** 229 → **410 passing** (+181 across rounds 12-17).
-Ruff clean. CI coverage floor 15% (measured ~21%).
+**Test count:** 229 → **423 passing** (+194 across rounds 12-19).
+Ruff clean. **CI coverage floor 20% (measured 25.4%)** — bumped in
+round-19 once tests crossed the threshold.
+
+### Round-19 final polish (PR #33)
+
+Fresh self-audit on the code written in rounds 14-17 surfaced two
+real bugs:
+- `scheduler_api` DELETE + PATCH were skipping the rate-limit gate
+  (could 429-spam during kill-switch cancel storms). Fixed.
+- `options_analysis.analyze_wheel_candidates` crashed on empty-string
+  `strike_price` from Alpaca (newly-listed / halt-pending contracts).
+  Fixed with defensive parse.
+
+Also: 13 new options tests; 401/403 alerts now symmetric across
+POST/DELETE/PATCH; coverage ratchet bumped.
 
 See `GO_LIVE_CHECKLIST.md` for what's left before flipping to live
 (only user-side operational items remain).

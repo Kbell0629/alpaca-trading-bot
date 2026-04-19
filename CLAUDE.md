@@ -406,11 +406,34 @@ State-recovery validator + strategy module test coverage:
 * 7 contract tests in `test_scheduler_api_extraction.py` pin the
   re-export surface (callable presence + same-object identity).
 
+### Round-19 (PR #33) — final self-audit polish
+
+After round-17 shipped, I did a fresh audit on the code I wrote this
+session since nobody else had reviewed it. Found two real bugs:
+
+* **`scheduler_api.user_api_delete` + `user_api_patch` skipped the
+  rate-limit gate.** Inherited from the pre-extract cloud_scheduler
+  code. A kill-switch cancel storm or trailing-stop raise pass could
+  exceed Alpaca's 200/min budget and get 429-throttled. Both now
+  acquire from the token bucket with 2s wait_max.
+* **`options_analysis.analyze_wheel_candidates` crashed on empty-
+  string `strike_price`.** Alpaca's contracts endpoint occasionally
+  returns this on newly-listed or halt-pending contracts. `float("")`
+  raised ValueError and killed the loop. Now defensive parse → skip
+  row via the existing `if not strike` guard.
+
+Also polished:
+* `user_api_delete` + `user_api_patch` now fire `_alert_alpaca_auth_
+  failure` on 401/403 — previously only POST did.
+* `user_api_get` dead `last_err` local removed (F841).
+* 13 new options_flow + options_analysis tests.
+* CI coverage floor bumped 15% → 20% (measured 25.4%).
+
 ---
 
-## Last session state (2026-04-19 night)
+## Last session state (2026-04-19 night — END OF SESSION)
 
-**31 PRs total merged across rounds 11-17.** Paper-trading 30-day
+**33 PRs total merged across rounds 11-19.** Paper-trading 30-day
 validation window ongoing — started 2026-04-15, ends ~2026-05-15.
 
 **All code-side + operational-prereq work is complete.** User has:
@@ -423,9 +446,20 @@ Only remaining pre-live items are timeboxed user actions:
   1. Finish the 30-day paper validation window
   2. Generate dedicated live Alpaca keys + flip via Settings
 
-Tests: **410 passing** locally (two sandbox-only failures in
+Tests: **423 passing** locally (two sandbox-only failures in
 `test_auth::test_password_strength_rejects_weak` and
 `test_dashboard_data::...trading_session...` as documented).
-Ruff clean. Coverage floor held at 15% (~21% measured).
+Ruff clean. **Coverage floor 20% (measured 25.4%)** — bumped from 15%
+in round-19 once tests crossed the threshold.
+
+**Current `main` HEAD:** `648339d` (round-19 final polish).
+
+### Picking this up from a new session
+
+1. `git pull --ff-only` on `main`.
+2. `MASTER_ENCRYPTION_KEY=<64hex> python3 -m pytest tests/ --ignore=tests/test_auth.py --ignore=tests/test_dashboard_data.py` — expect 423 passing. The two ignored suites fail locally due to sandbox limits (no zxcvbn, no outbound network) but pass on CI.
+3. `ruff check .` — must be clean.
+4. Read this file + `README.md` + `GO_LIVE_CHECKLIST.md` if the user asks "what's left?".
+5. If the user says "audit again", follow the playbook above (8 parallel Explore agents, triage into fix/deferred/false-positive).
 
 See `GO_LIVE_CHECKLIST.md` for the pre-flip-to-live gating list.
