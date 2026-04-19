@@ -238,7 +238,11 @@ def critical_alert(title, body, tags=None, user=None):
             urllib.request.urlopen(req, timeout=5)
             result["ntfy"] = True
     except Exception as e:
-        log.warning("ntfy critical alert failed", extra={"error": str(e)})
+        # Round-15: log exception class only. str(e) on a urllib error
+        # includes the full URL (with ntfy topic), which would leak the
+        # topic to anyone reading the Railway log and let them subscribe.
+        log.warning("ntfy critical alert failed",
+                    extra={"error": type(e).__name__})
     # 3. Email (queue via existing module if available)
     try:
         if user and user.get("notification_email"):

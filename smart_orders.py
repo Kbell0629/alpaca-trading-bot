@@ -249,6 +249,35 @@ def place_smart_buy(api_get, api_post, api_delete,
     print(f"[smart_orders] {symbol}: timeout after {timeout_sec}s, market for {remaining} shares")
     market_result = _market_order(api_post, api_endpoint, symbol, remaining,
                                     "buy", coid + "-mkt")
+    # Round-15: on partial fill, the downstream journal needs the
+    # BLENDED avg price, not just the market leg. Previously we only
+    # attached the partial qty; the caller read filled_avg_price off
+    # the market_result and booked the entire position at market price.
+    # Compute (partial_qty*limit_px + market_qty*market_px) / total_qty
+    # and overwrite filled_avg_price + filled_qty so downstream math is
+    # correct without needing to know there was a split fill.
+    try:
+        limit_avg = float(settled.get("filled_avg_price") or 0)
+    except (TypeError, ValueError):
+        limit_avg = 0.0
+    try:
+        market_avg = float(market_result.get("filled_avg_price") or 0)
+    except (TypeError, ValueError):
+        market_avg = 0.0
+    try:
+        market_qty = int(float(market_result.get("filled_qty") or 0))
+    except (TypeError, ValueError):
+        market_qty = 0
+    if filled_so_far > 0 and market_qty > 0 and limit_avg > 0 and market_avg > 0:
+        total_qty = filled_so_far + market_qty
+        blended_d = (
+            (_dec(limit_avg) * _dec(filled_so_far))
+            + (_dec(market_avg) * _dec(market_qty))
+        ) / _dec(total_qty)
+        market_result["filled_avg_price"] = _round_cent_float(blended_d)
+        market_result["filled_qty"] = str(total_qty)
+        market_result["_smart_limit_fill_price"] = limit_avg
+        market_result["_smart_market_fill_price"] = market_avg
     market_result["_smart_partial_limit"] = filled_so_far
     return market_result
 
@@ -301,6 +330,32 @@ def place_smart_sell(api_get, api_post, api_delete,
         return settled
     market_result = _market_order(api_post, api_endpoint, symbol, remaining,
                                     "sell", coid + "-mkt")
+    # Round-15: blend limit partial fill avg + market fill avg into a
+    # single filled_avg_price so the trade-journal / tax-lot path books
+    # the true realized price, not just the market leg. Mirror of the
+    # buy path — same bug, same fix, same math.
+    try:
+        limit_avg = float(settled.get("filled_avg_price") or 0)
+    except (TypeError, ValueError):
+        limit_avg = 0.0
+    try:
+        market_avg = float(market_result.get("filled_avg_price") or 0)
+    except (TypeError, ValueError):
+        market_avg = 0.0
+    try:
+        market_qty = int(float(market_result.get("filled_qty") or 0))
+    except (TypeError, ValueError):
+        market_qty = 0
+    if filled_so_far > 0 and market_qty > 0 and limit_avg > 0 and market_avg > 0:
+        total_qty = filled_so_far + market_qty
+        blended_d = (
+            (_dec(limit_avg) * _dec(filled_so_far))
+            + (_dec(market_avg) * _dec(market_qty))
+        ) / _dec(total_qty)
+        market_result["filled_avg_price"] = _round_cent_float(blended_d)
+        market_result["filled_qty"] = str(total_qty)
+        market_result["_smart_limit_fill_price"] = limit_avg
+        market_result["_smart_market_fill_price"] = market_avg
     market_result["_smart_partial_limit"] = filled_so_far
     return market_result
 
