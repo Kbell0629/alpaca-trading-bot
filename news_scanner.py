@@ -85,6 +85,11 @@ def score_news_article(article):
             signals.append({"type": direction, "signal": pattern, "weight": weight})
             # Replace with spaces to preserve positions
             working = working.replace(pattern, " " * len(pattern))
+    # Cap per-article score to ±15 so a single news item densely packed
+    # with bullish/bearish language can't dominate the symbol total and
+    # push us into an action purely from one source. Aggregated symbol
+    # scoring in scan_post_market_news still sums across articles.
+    score = max(-15, min(15, score))
     return score, signals
 
 def scan_post_market_news(hours_back=12, min_score=8):

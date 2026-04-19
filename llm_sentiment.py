@@ -39,12 +39,15 @@ Falls back gracefully:
 from __future__ import annotations
 import hashlib
 import json
+import logging
 import os
 import tempfile
 import time
 import urllib.request
 import urllib.error
 from datetime import datetime, timedelta
+
+log = logging.getLogger(__name__)
 
 
 # Provider preference: Gemini Flash (cheapest paid), then Groq (free),
@@ -252,10 +255,16 @@ _PROVIDERS = {
 
 
 def _parse_response(text):
-    """Extract {score, reason} from the LLM response. Tolerates markdown
-    code fences and extra prose around the JSON object."""
+    """Extract {score, reason, malformed} from the LLM response. Tolerates
+    markdown code fences and extra prose around the JSON object.
+
+    When the response can't be parsed as expected JSON, we set
+    malformed=True so callers can distinguish "LLM said score=0 because
+    news was neutral" from "LLM replied gibberish and we coerced to 0".
+    Malformed responses are also logged for telemetry."""
     if not text:
-        return {"score": 0, "reason": "empty response"}
+        log.warning("llm_sentiment empty response")
+        return {"score": 0, "reason": "empty response", "malformed": True}
     # Strip markdown code fences if present
     s = text.strip().lstrip("`").rstrip("`")
     s = s.replace("json\n", "").replace("JSON\n", "")
@@ -263,14 +272,21 @@ def _parse_response(text):
     start = s.find("{")
     end = s.rfind("}")
     if start < 0 or end < 0:
-        return {"score": 0, "reason": f"unparseable: {text[:80]}"}
+        log.warning("llm_sentiment no JSON block",
+                    extra={"text_head": text[:120]})
+        return {"score": 0, "reason": f"unparseable: {text[:80]}",
+                "malformed": True}
     try:
         obj = json.loads(s[start:end + 1])
         score = int(obj.get("score", 0))
         score = max(-10, min(10, score))
-        return {"score": score, "reason": str(obj.get("reason", ""))[:200]}
-    except (ValueError, json.JSONDecodeError):
-        return {"score": 0, "reason": f"bad JSON: {text[:80]}"}
+        return {"score": score, "reason": str(obj.get("reason", ""))[:200],
+                "malformed": False}
+    except (ValueError, json.JSONDecodeError, TypeError) as e:
+        log.warning("llm_sentiment JSON parse failed",
+                    extra={"error": str(e), "text_head": text[:120]})
+        return {"score": 0, "reason": f"bad JSON: {text[:80]}",
+                "malformed": True}
 
 
 def score_news(headline, summary=None, symbol=None):
@@ -297,6 +313,7 @@ def score_news(headline, summary=None, symbol=None):
         "reasoning": parsed["reason"],
         "provider": provider,
         "cached": False,
+        "malformed": parsed.get("malformed", False),
     }
     _write_cache(cache_path, result)
     _bump_call_counter()
