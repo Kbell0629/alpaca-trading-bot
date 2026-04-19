@@ -53,6 +53,67 @@ Tracker for the 20 profit-enhancement features proposed after the initial build.
 - **Settings modal + Admin panel 2026-04-16** — Replaced "coming soon" alert with full 5-tab settings modal (Profile / Alpaca API / Notifications / Password / Danger Zone). Includes Test Connection button against `/api/account`, live endpoint confirmation warning, empty-field = keep-existing semantics. Admin-only Manage Users dropdown shows all users, deactivate/reactivate/force-reset-password with last-admin lockout prevention. New endpoints: `/api/delete-account`, `/api/admin/users`, `/api/admin/set-active`, `/api/admin/reset-password`.
 - **Wheel strategy full autonomy 2026-04-16** ⭐ — `wheel_strategy.py` (~900 lines) implements complete state machine: sell cash-secured puts → handle assignment → sell covered calls → handle called-away → repeat. Cloud scheduler runs `run_wheel_auto_deploy` at 9:40 AM weekdays + `run_wheel_monitor` every 15 min. Safety rails, per-symbol file locking, `_wheel_deploy_in_flight` dedup, assignment detection via share-delta vs baseline (not presence check), HISTORY_MAX=500 cap.
 
+## Round-12 Audit Sweep (2026-04-18 / 2026-04-19, 15 PRs)
+
+Comprehensive forensic sweep across security, DB/concurrency, trading
+logic, UI/UX/mobile, and test coverage (5 parallel Explore agents).
+15 PRs merged; 110+ new regression tests; full details in `CLAUDE.md`.
+
+**Headline find**: `portfolio_risk` beta-exposure safety rail had been
+silently disabled in production since round-11. `run_auto_deployer`
+referenced `factor_bypass` / `existing_positions` / `portfolio_value`
+before they were defined; every call hit `NameError`, swallowed by the
+outer try/except. Ruff F821 surfaced it in PR #15. Now live.
+
+### PR-by-PR summary
+
+| PR | Subject | Notable artifacts |
+|---|---|---|
+| #2 | Sentry exception wiring + `MASTER_ENCRYPTION_KEY` mandatory | `observability.capture_exception` routed from every catch-all; PLAIN-fallback retired in auth.py |
+| #3 | Structured logging (JSON) + `/api/version` dynamic + a11y contrast + SRI prereqs | `logging_setup.py` new module, `__version__="0.11.0"`, `--green-text` / `--red-text` WCAG-AA tokens |
+| #4 | SRI hashes pinned on CDN scripts | integrity="sha384-..." on Chart.js / marked / zxcvbn |
+| #5 | Trade journal trim + structured-print shim + test cleanup | `trade_journal.py` new; 3:15 AM daily trim; `builtins.print` monkey-patch → logger |
+| #6 | Decimal migration phase 1 (`tax_lots.py`) | `_dec()` + `_to_cents_float()` helpers, 24 new tests |
+| #7 | Login token-bucket rate limit (BURST=10, REFILL=0.2/s) | `auth._login_bucket_consume`, 13 new tests |
+| #8 | Decimal phase 2 (`update_scorecard.py`) | profit_factor + strategy_breakdown accumulators Decimal-internal, 21 tests |
+| #9 | Decimal phase 3 (`portfolio_risk.py`) | portfolio_beta + beta_adjusted_exposure Decimal-weighted, 15 tests |
+| #10 | Decimal phase 4 (`wheel_strategy.py`) | premium + cost-basis + stock-PnL accumulators Decimal; 52-cycle + 250-random-cycle fuzz (39 tests) |
+| #11 | Decimal phase 5 (`smart_orders` + `calc_position_size`) — FINAL | 30k fuzz inputs; ≤1-share divergence; 10 tests |
+| #12 | Password-reset TOCTOU + session IP norm + `capital_check` fallback ladder + coid entropy 6→12 + modal responsive + SW JSON + session-expiry toast + aria-label critical buttons | 9 regression tests (incl. 2-thread TOCTOU race) |
+| #13 | XSS hardening on error paths + modal focus trap + forgot-password constant-time + Chart.js cleanup review + PWA icon refs | focus-visible CSS, prefers-reduced-motion, scroll-hint fade |
+| #14 | Kill-switch `threading.Event` atomic abort + trim `fcntl.flock` + wheel anomalous-share-delta guard (stock-split safety) | 7 tests incl. cross-thread abort + 2:1 split scenario |
+| #15 | CI tooling (`ruff check .`, `--cov-fail-under=15`) + **4 latent bugs** (beta-exposure gate dead code, 3× bare `user_data_dir(user)` NameErrors, loop-capture lambda) | `pyproject.toml` new; 4 regression tests incl. AST-walk guard |
+
+### Money-math migration — complete
+
+All five phases of `docs/DECIMAL_MIGRATION_PLAN.md` merged:
+`tax_lots.py` → `update_scorecard.py` → `portfolio_risk.py` →
+`wheel_strategy.py` → `smart_orders.py + calc_position_size`. Every
+money accumulator is now Decimal-internal; JSON boundary unchanged.
+
+### Operational follow-ups (user TODOs)
+
+- Rotate Sentry DSN (old one in git history; see `docs/MONITORING_SETUP.md`)
+- Generate PNG icons for PWA (sandbox can't; `manifest.json` currently
+  references single SVG which works on Chrome / Edge but not iOS)
+- Run `bash scripts/compute_sri.sh` locally → paste the three
+  integrity hashes into the 5 `<script>` tags
+
+### Test coverage — known gaps
+
+- `cloud_scheduler.py` (3800 LOC, 4 tests) — rate limiter, full tick,
+  webhook paths
+- `handlers/*.py` (2000 LOC, 0 unit tests) — only E2E boot smoke
+- `smart_orders.place_smart_buy` full flow (timeout → cancel → settle
+  → market fallback) — only the pure `_compute_limit_price` is
+  parity-tested
+- Strategy modules with zero tests: `pead_strategy`, `short_strategy`,
+  `earnings_play`, `insider_signals`, `options_flow`, `options_analysis`
+
+CI coverage floor is **15%** (measured ~19%). Ratchet up as gaps close.
+
+---
+
 ## Forensic Audits (4 rounds, 2026-04-16 PM)
 
 ### Round 1 — Auth + API + multi-user isolation
