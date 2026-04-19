@@ -350,8 +350,19 @@ def _cb_blocked(user):
             return False
         if st.get("open_until", 0) > time.time():
             return True
-        # Cool-off elapsed — reset and allow a probe
-        _cb_state.pop(key, None)
+        # Round-12 audit fix: only POP state when we're coming off a
+        # COOL-OFF period (open_until > 0 and now past it). Previously
+        # this popped whenever open_until <= now — including the
+        # initial {fails: N, open_until: 0} state that every failing
+        # call creates. The side effect: `_cb_record_failure` never
+        # accumulated past fails=1 because each call's preceding
+        # `_cb_blocked` reset it. The breaker would only trip if 5+
+        # failures happened truly simultaneously (which ~never does in
+        # serial Alpaca calls), so it was effectively dead code.
+        # Now: fails accumulates across calls; only reset after the
+        # 5-minute cool-off actually elapses.
+        if st.get("open_until", 0) > 0:
+            _cb_state.pop(key, None)
         return False
 
 
