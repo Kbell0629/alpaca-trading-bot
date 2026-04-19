@@ -164,6 +164,32 @@ def yf_history(symbol, **kwargs):
     return result
 
 
+def yf_splits(symbol):
+    """Rate-limited yfinance split history. Returns a list of
+    (datetime, ratio) tuples in chronological order, or [] on failure.
+
+    Used by wheel_strategy to detect and auto-resolve stock splits that
+    would otherwise be mis-attributed as assignment anomalies. Each
+    ratio is the multiplier applied at that split (2.0 for a 2:1 split
+    where shareholders end up with 2x the shares; 0.5 for a 1:2 reverse
+    split)."""
+    try:
+        import yfinance as yf
+    except ImportError:
+        return []
+    def _fetch():
+        t = yf.Ticker(symbol)
+        s = t.splits   # pandas Series indexed by Timestamp
+        if s is None or (hasattr(s, "empty") and s.empty):
+            return []
+        return [(ts.to_pydatetime(), float(r)) for ts, r in s.items()]
+    result, err = _call_with_retry(_fetch)
+    if err:
+        print(f"[yfinance_budget] {symbol} splits failed: {err}")
+        return []
+    return result or []
+
+
 def stats():
     """Current budget state — useful for observability / health checks."""
     with _lock:
