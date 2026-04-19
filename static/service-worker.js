@@ -43,7 +43,51 @@ self.addEventListener('fetch', event => {
     // (they're per-user authenticated).
     event.respondWith(
         fetch(event.request).catch(() =>
-            caches.match(event.request).then(c => c || new Response('Offline', {status: 503}))
+            caches.match(event.request).then(c => {
+                if (c) return c;
+                // Round-12 audit fix: previous fallback returned plain-text
+                // "Offline" with status 503 for EVERY uncached request. The
+                // dashboard's JSON-consuming fetch() calls then tripped on
+                // `response.json()` parse errors rather than getting a clean
+                // "I'm offline" signal. Return a structured JSON envelope
+                // for /api/* requests (the dashboard JS detects offline=true
+                // on any response) and plain HTML for navigation requests
+                // so the browser's own offline UI takes over cleanly.
+                const isApi = url.pathname.startsWith('/api/');
+                if (isApi) {
+                    return new Response(
+                        JSON.stringify({
+                            error: 'offline',
+                            offline: true,
+                            message: 'No network connection. Reconnect to refresh.'
+                        }),
+                        {
+                            status: 503,
+                            headers: {'Content-Type': 'application/json'}
+                        }
+                    );
+                }
+                // Navigation / HTML request offline — render a minimal page
+                // the user can read (vs. a broken-looking 503 error page).
+                return new Response(
+                    '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Offline</title>'
+                    + '<meta name="viewport" content="width=device-width,initial-scale=1">'
+                    + '<style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;'
+                    + 'background:#0a0e17;color:#e2e8f0;padding:40px;text-align:center;'
+                    + 'line-height:1.5}h1{font-size:22px}button{margin-top:16px;padding:10px 24px;'
+                    + 'background:#3b82f6;color:#fff;border:0;border-radius:6px;font-size:14px;'
+                    + 'cursor:pointer}</style></head><body>'
+                    + '<h1>📡 Offline</h1>'
+                    + '<p>The trading bot dashboard needs a network connection.</p>'
+                    + '<p>Your bot is still running on Railway — this is just the UI.</p>'
+                    + '<button onclick="location.reload()">Retry</button>'
+                    + '</body></html>',
+                    {
+                        status: 503,
+                        headers: {'Content-Type': 'text/html; charset=utf-8'}
+                    }
+                );
+            })
         )
     );
 });

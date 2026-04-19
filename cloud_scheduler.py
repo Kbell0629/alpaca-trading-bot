@@ -3649,6 +3649,30 @@ def scheduler_loop():
                         log(f"trade_journal_trim_all failed: {_e} — retrying next tick", "scheduler")
                         _clear_daily_stamp("trade_journal_trim_all")
 
+            # DB housekeeping — runs daily at 3:30 AM ET, right after backup
+            # + journal trim. The probabilistic (~1.2%) GC trigger from
+            # record_login_attempt() is unreliable on quiet deployments
+            # (would skip cleanup for months on low-traffic accounts); this
+            # deterministic daily run keeps the sessions + password_resets
+            # tables bounded.
+            if now_et.hour == 3 and now_et.minute >= 30:
+                if should_run_daily_at("db_housekeeping_all", 3, 30):
+                    try:
+                        if AUTH_AVAILABLE:
+                            purged_sess = auth.cleanup_expired_sessions() or 0
+                            purged_reset = auth.gc_password_resets() or 0
+                            purged_attempts = auth.gc_login_attempts() or 0
+                            purged_audit = auth.gc_audit_log() or 0
+                            log(
+                                f"db housekeeping: sessions={purged_sess} "
+                                f"resets={purged_reset} login_attempts={purged_attempts} "
+                                f"audit={purged_audit}",
+                                "scheduler",
+                            )
+                    except Exception as _e:
+                        log(f"db_housekeeping_all failed: {_e} — retrying next tick", "scheduler")
+                        _clear_daily_stamp("db_housekeeping_all")
+
             # Capitol Trades refresh DISABLED — no working free data
             # provider as of 2026. The nightly task below is preserved
             # for re-enable when a source returns (see
