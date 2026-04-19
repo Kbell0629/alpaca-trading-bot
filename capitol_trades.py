@@ -574,7 +574,31 @@ def refresh_cache(symbols: list[str] | None = None, days: int = 60,
     """Auto-select the best available provider unless one is explicitly
     named. Preference order: FMP (free tier, both chambers) > Quiver
     (paid) > Finnhub (paid) > Stock Watcher (deprecated).
+
+    Returns an error dict (no cache write) when copy-trading is disabled
+    OR no provider key is available. Previously this silently wrote an
+    empty cache which made it look like "congress traded nothing today"
+    rather than "we didn't ask". A hard-fail here forces the scheduler
+    log to show why we have no disclosures, rather than hiding it.
     """
+    # Respect the master feature flag. If the scheduler calls us while
+    # copy-trading is off, we don't want to hit the free-tier API budget.
+    try:
+        from update_dashboard import COPY_TRADING_ENABLED
+        if not COPY_TRADING_ENABLED:
+            return {"error": "COPY_TRADING_ENABLED=False — refresh skipped",
+                    "disabled": True, "count": 0}
+    except Exception:
+        # update_dashboard may fail to import in minimal test contexts.
+        # Fall through to the provider check below.
+        pass
+    has_key = (os.environ.get("FMP_API_KEY") or
+               os.environ.get("QUIVER_API_KEY") or
+               os.environ.get("FINNHUB_API_KEY"))
+    if provider is None and not has_key:
+        return {"error": "no provider key set (FMP_API_KEY / QUIVER_API_KEY "
+                         "/ FINNHUB_API_KEY) — refresh aborted",
+                "disabled": True, "count": 0}
     if provider is None:
         if os.environ.get("FMP_API_KEY"):
             provider = "fmp"
@@ -582,8 +606,6 @@ def refresh_cache(symbols: list[str] | None = None, days: int = 60,
             provider = "quiver"
         elif os.environ.get("FINNHUB_API_KEY"):
             provider = "finnhub"
-        else:
-            provider = "fmp"  # still call it so _log prints the missing-key message
     """Pull fresh disclosures and atomically rewrite the cache file."""
     fn = _providers.get(provider)
     if not fn:

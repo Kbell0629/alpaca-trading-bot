@@ -158,7 +158,21 @@ def get_hv_rank_for_symbol(symbol, data_dir=None, max_age_hours=24):
             return {"hv_rank": 50.0, "current_hv": 0, "error": "yfinance missing"}
 
     if hist is None:
-        return {"hv_rank": 50.0, "current_hv": 0, "error": "yfinance returned None (rate-limited?)"}
+        # yfinance rate-limited or circuit-open. Previously returned a
+        # neutral hv_rank=50, which callers can't distinguish from a real
+        # neutral reading — they might open a put thinking IV is average
+        # when actually we have zero data. Keep the neutral value (so the
+        # dashboard card still renders) but mark rate_limited=True so
+        # decision paths can skip, and ping telemetry so we see it.
+        try:
+            from observability import capture_message
+            capture_message(f"iv_rank yfinance rate-limited for {symbol}",
+                            level="warning", component="iv_rank")
+        except Exception:
+            pass
+        return {"hv_rank": 50.0, "current_hv": 0,
+                "rate_limited": True,
+                "error": "yfinance returned None (rate-limited?)"}
     try:
         closes = hist["Close"].dropna().tolist()
         if len(closes) < 50:

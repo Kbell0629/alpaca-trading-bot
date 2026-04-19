@@ -21,6 +21,39 @@ def get_stocktwits_sentiment(symbol):
         if not messages:
             return {"source": "stocktwits", "sentiment": "neutral", "score": 0, "volume": 0, "error": None}
 
+        # Recency filter: drop messages older than STALE_THRESHOLD. For a
+        # low-chatter symbol, StockTwits' 30 most recent may still stretch
+        # back days — treating those as "current sentiment" is misleading.
+        # If the freshest message is >30min old OR fewer than 5 messages
+        # are within window, mark the reading stale and return neutral.
+        STALE_MINUTES = 30
+        MIN_FRESH_MSGS = 5
+        try:
+            now = datetime.now(timezone.utc)
+            fresh = []
+            for msg in messages:
+                ts = msg.get("created_at")
+                if not ts:
+                    continue
+                try:
+                    # StockTwits format: "2026-04-19T12:34:56Z"
+                    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                except (ValueError, TypeError):
+                    continue
+                if (now - dt).total_seconds() <= STALE_MINUTES * 60:
+                    fresh.append(msg)
+            if len(fresh) < MIN_FRESH_MSGS:
+                return {"source": "stocktwits", "sentiment": "neutral",
+                        "score": 0, "volume": len(messages),
+                        "stale": True,
+                        "error": f"stale: only {len(fresh)} fresh msgs (<{MIN_FRESH_MSGS})"}
+            messages = fresh
+        except Exception:
+            # Recency filter failed (shape drift) — fall back to raw list
+            # rather than blocking sentiment entirely. The existing path
+            # handled the last 12 months of StockTwits fine.
+            pass
+
         bullish = 0
         bearish = 0
         total = len(messages)
