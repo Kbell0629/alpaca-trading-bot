@@ -27,10 +27,10 @@ Last updated: 2026-04-19 (end of round-13 audit + cleanup).
 ## 2. Operational prerequisites (user-only, out of bot scope)
 
 ### MASTER_ENCRYPTION_KEY
-- [ ] Set on Railway (mandatory — auth.py refuses to boot without it)
-- [ ] Length ≥ 32 hex chars (64 recommended: `python3 -c "import secrets; print(secrets.token_hex(32))"`)
-- [ ] **DO NOT rotate** after users have saved Alpaca creds — a change
-      invalidates every stored credential and every user has to re-enter
+- [x] Set on Railway Variables tab — confirmed by user.
+- [x] **Locked in** — DO NOT rotate. A change invalidates every
+      stored credential; every user would have to re-enter their
+      Alpaca keys from Settings.
 
 ### Sentry DSN rotation
 - [x] DSN rotated. Old key deactivated in Sentry; new `SENTRY_DSN`
