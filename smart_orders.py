@@ -35,11 +35,45 @@ Public API:
 from __future__ import annotations
 import time
 import uuid
+from decimal import Decimal, ROUND_HALF_EVEN
+
+# Phase 5 of the float->Decimal migration (plan: docs/DECIMAL_MIGRATION_PLAN.md).
+# HIGHEST-risk phase: this module is the order-placement path. The limit price
+# computed by _compute_limit_price flows straight to Alpaca's matching engine.
+# On a $100 share this is usually sub-cent drift (invisible after round(,2)),
+# but on a multi-cycle wheel that fires thousands of limit orders per year the
+# rounding-direction of each individual fill could tip 1-2 cents cumulatively.
+# Move the spread / mid / limit-price math to Decimal; the output is still a
+# cent-rounded float (Alpaca's API takes a string anyway, so precision beyond
+# 2dp is irrelevant).
+
+_CENT = Decimal("0.01")
+
+
+def _dec(v, default=Decimal("0")):
+    if v is None or v == "":
+        return default
+    if isinstance(v, Decimal):
+        return v
+    try:
+        return Decimal(str(v))
+    except Exception:
+        return default
+
+
+def _round_cent_float(v):
+    if not isinstance(v, Decimal):
+        v = _dec(v)
+    return float(v.quantize(_CENT, rounding=ROUND_HALF_EVEN))
 
 
 def _get_quote(api_get, data_endpoint, symbol, headers=None):
     """Fetch latest bid/ask from Alpaca data endpoint. Returns
-    {bid, ask, mid, spread_pct} or None on error."""
+    {bid, ask, mid, spread_pct} or None on error.
+
+    Phase-5: bid/ask stored as float (consumed by downstream display /
+    logging as-is), but mid and spread_pct are computed via Decimal
+    to avoid drift that might shift the spread-gate decision."""
     try:
         url = f"{data_endpoint}/stocks/{symbol}/quotes/latest?feed=iex"
         resp = api_get(url, headers=headers) if headers else api_get(url)
@@ -48,9 +82,18 @@ def _get_quote(api_get, data_endpoint, symbol, headers=None):
         ask = float(q.get("ap") or 0)
         if bid <= 0 or ask <= 0 or ask < bid:
             return None
-        mid = (bid + ask) / 2
-        spread_pct = (ask - bid) / mid if mid > 0 else 1.0
-        return {"bid": bid, "ask": ask, "mid": mid, "spread_pct": spread_pct}
+        bid_d = _dec(bid)
+        ask_d = _dec(ask)
+        mid_d = (bid_d + ask_d) / Decimal("2")
+        spread_pct_d = ((ask_d - bid_d) / mid_d) if mid_d > 0 else Decimal("1")
+        return {
+            "bid": bid,
+            "ask": ask,
+            # The float versions are what downstream consumers use; keep
+            # parity with the pre-migration shape.
+            "mid": float(mid_d),
+            "spread_pct": float(spread_pct_d),
+        }
     except Exception:
         return None
 
@@ -59,13 +102,19 @@ def _compute_limit_price(quote, side, aggression=0.4):
     """Where to place the limit. aggression 0..1: 0=passive (at bid for
     buy, at ask for sell), 1=aggressive (at ask for buy, at bid for
     sell). 0.4 = slightly aggressive — captures most fills without
-    overpaying."""
-    bid, ask = quote["bid"], quote["ask"]
-    spread = ask - bid
+    overpaying.
+
+    Phase-5: Decimal internal. Input quote fields are floats from the
+    API; convert via str() to avoid contamination. Output is a cent-
+    rounded float (Alpaca API takes a stringified 2dp value)."""
+    bid_d = _dec(quote["bid"])
+    ask_d = _dec(quote["ask"])
+    spread_d = ask_d - bid_d
+    aggr_d = _dec(aggression)
     if side == "buy":
-        return round(bid + aggression * spread, 2)
+        return _round_cent_float(bid_d + aggr_d * spread_d)
     else:
-        return round(ask - aggression * spread, 2)
+        return _round_cent_float(ask_d - aggr_d * spread_d)
 
 
 def _poll_order_filled(api_get, api_endpoint, order_id, timeout_sec, poll_interval=3):
