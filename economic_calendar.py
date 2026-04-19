@@ -26,12 +26,20 @@ API_KEY = os.environ.get("ALPACA_API_KEY", "")
 API_SECRET = os.environ.get("ALPACA_API_SECRET", "")
 HEADERS = {"APCA-API-KEY-ID": API_KEY, "APCA-API-SECRET-KEY": API_SECRET}
 
-# 2026 FOMC Meeting Dates (Federal Reserve interest rate decisions)
-# These are the most market-moving events of the year
+# FOMC Meeting Dates (Federal Reserve interest rate decisions) — the most
+# market-moving events of the year. 2027 dates are provisional per the
+# Fed's tentative release; confirm in Jan 2027 and patch if dates shift.
+# Add the next year's list here before Q4 of the current year so the
+# guard doesn't silently stop flagging meetings.
 FOMC_DATES_2026 = [
     "2026-01-28", "2026-03-18", "2026-04-29", "2026-06-10",
     "2026-07-29", "2026-09-16", "2026-10-28", "2026-12-09",
 ]
+FOMC_DATES_2027 = [
+    "2027-01-27", "2027-03-17", "2027-04-28", "2027-06-16",
+    "2027-07-28", "2027-09-22", "2027-11-03", "2027-12-15",
+]
+FOMC_DATES_ALL = FOMC_DATES_2026 + FOMC_DATES_2027
 
 # Monthly options expiration (3rd Friday of each month)
 def get_monthly_opex(year, month):
@@ -73,7 +81,7 @@ def check_upcoming_events(days_ahead=3):
     events = []
 
     # Pre-calculate opex dates for the months we'll check (avoids recalculating per day)
-    fomc_set = set(FOMC_DATES_2026)
+    fomc_set = set(FOMC_DATES_ALL)
     opex_cache = {}
     for i in range(days_ahead + 1):
         check_date = today + timedelta(days=i)

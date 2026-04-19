@@ -128,8 +128,8 @@ def queue_email(subject, body, notify_type="info"):
         # can diff the DLQ to recover lost trade notifications.
         if len(queue) > 50:
             overflow = queue[:-50]
-            queue = queue[-50:]
             dlq_file = os.path.join(DATA_DIR, "email_queue_dlq.json")
+            dlq_ok = False
             try:
                 dlq = []
                 if os.path.exists(dlq_file):
@@ -143,13 +143,20 @@ def queue_email(subject, body, notify_type="info"):
                 if len(dlq) > 500:
                     dlq = dlq[-500:]
                 safe_save_json(dlq_file, dlq)
+                dlq_ok = True
                 print(f"[notify] WARN: email queue overflow — moved {len(overflow)} "
                       f"entries to email_queue_dlq.json. Check the email sender.",
                       flush=True)
             except Exception as _dlq_e:
-                # DLQ write failed — log but DON'T block the queue write.
-                print(f"[notify] WARN: email queue overflow — dropping {len(overflow)} "
-                      f"oldest entries (DLQ write failed: {_dlq_e}).", flush=True)
+                # DLQ write failed — DON'T drop the overflow. Keep it in the
+                # main queue (may grow beyond 50) so we don't lose trade
+                # notifications. Next iteration will retry the DLQ move.
+                print(f"[notify] WARN: email queue overflow — DLQ write failed "
+                      f"({_dlq_e}); keeping {len(overflow)} overflow entries "
+                      f"in main queue to avoid data loss.", flush=True)
+            # Only trim the main queue when DLQ succeeded.
+            if dlq_ok:
+                queue = queue[-50:]
 
         # Atomic write
         safe_save_json(queue_file, queue)
