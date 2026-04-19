@@ -81,8 +81,9 @@ def server_subprocess():
     env["DATA_DIR"] = data_dir
     env["MASTER_ENCRYPTION_KEY"] = "a" * 64
     env["PORT"] = str(port)
-    # Don't let Railway-specific env vars from the dev's shell poison the test
-    env.pop("REQUIRE_MASTER_KEY", None)
+    # Don't let Railway-specific env vars from the dev's shell poison the test.
+    # (REQUIRE_MASTER_KEY was removed from auth.py in the cryptography-mandatory
+    # PR; nothing reads it any more.)
     env.pop("ENABLE_CLOUD_SCHEDULER", None)
 
     # Suppress the email queue from actually firing
