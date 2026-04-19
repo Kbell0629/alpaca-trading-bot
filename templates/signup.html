@@ -66,7 +66,10 @@ button:disabled { opacity:0.5; cursor:not-allowed; }
   </form>
   <div class="auth-links">Already have an account? <a href="/login">Sign in</a></div>
 </div>
-<script src="https://cdn.jsdelivr.net/npm/zxcvbn@4.4.2/dist/zxcvbn.js"></script>
+<!-- SRI: integrity="sha384-..." added by scripts/compute_sri.sh locally. -->
+<script src="https://cdn.jsdelivr.net/npm/zxcvbn@4.4.2/dist/zxcvbn.js"
+        crossorigin="anonymous"
+        referrerpolicy="no-referrer"></script>
 <script>
 // Client-side password-strength meter. Server enforces the same policy
 // (score >= 3, length >= 10) via python-zxcvbn in auth.check_password_strength.

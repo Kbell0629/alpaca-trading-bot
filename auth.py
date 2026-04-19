@@ -3,6 +3,7 @@
 Multi-user authentication module for the Alpaca trading bot.
 SQLite-backed, stdlib only. Encrypts Alpaca credentials at rest.
 """
+import logging
 import os
 import sqlite3
 import hashlib
@@ -11,6 +12,8 @@ import base64
 import hmac
 import json
 from datetime import datetime, timezone, timedelta
+
+log = logging.getLogger(__name__)
 
 # ET is the canonical timezone — market hours and user locale are both ET,
 # so there is no reason for UTC to appear in any string this app emits.
@@ -156,7 +159,8 @@ def init_db():
             try:
                 cur.execute(ddl)
             except Exception as _e:
-                print(f"[auth] migration {col} failed: {_e}")
+                log.warning("auth: DDL migration failed",
+                            extra={"column": col, "error": str(_e)})
     conn.commit()
     conn.close()
     os.makedirs(USERS_DIR, exist_ok=True)
@@ -647,7 +651,8 @@ def authenticate(username_or_email, password):
     except Exception as e:
         # Rehash is best-effort, never fail login over it — but DO surface
         # the error so a persistent rehash failure doesn't hide silently.
-        print(f"[auth] PBKDF2 rehash failed for user {user.get('id')}: {e}", flush=True)
+        log.warning("PBKDF2 rehash failed",
+                    extra={"user_id": user.get('id'), "error": str(e)})
 
     # Upgrade Alpaca credentials to AES-GCM (ENCv2) if they're still on
     # the legacy cipher. Transparent — user doesn't notice, next scheduler
@@ -670,7 +675,8 @@ def authenticate(username_or_email, password):
             conn.commit()
             conn.close()
     except Exception as e:
-        print(f"[auth] cipher upgrade failed for user {user.get('id')}: {e}", flush=True)
+        log.warning("cipher upgrade failed",
+                    extra={"user_id": user.get('id'), "error": str(e)})
     # Update last login
     conn = _get_db()
     cur = conn.cursor()
@@ -1013,7 +1019,7 @@ def record_login_attempt(ip, username, success):
         conn.close()
     except Exception as e:
         # Audit-style helpers must never break the calling flow
-        print(f"[auth] record_login_attempt failed: {e}", flush=True)
+        log.warning("record_login_attempt failed", extra={"error": str(e)})
 
 
 def is_login_locked(ip, username):
@@ -1034,7 +1040,7 @@ def is_login_locked(ip, username):
         conn.close()
         return count >= LOGIN_MAX_FAILURES
     except Exception as e:
-        print(f"[auth] is_login_locked check failed: {e}", flush=True)
+        log.warning("is_login_locked check failed", extra={"error": str(e)})
         return False  # fail open on DB error so legitimate users aren't locked out
 
 
@@ -1153,7 +1159,8 @@ def log_admin_action(action, actor=None, target_user_id=None, ip_address=None, d
         conn.close()
     except Exception as e:
         # Audit log failure must NEVER break the action itself.
-        print(f"[audit] WARN failed to record '{action}': {e}", flush=True)
+        log.warning("audit log write failed",
+                    extra={"action": action, "error": str(e)})
 
 
 def list_audit_log(limit=200, action_filter=None, user_id_filter=None):

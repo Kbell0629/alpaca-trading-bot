@@ -26,8 +26,8 @@ Public API:
         Idempotent — safe to call multiple times.
 
     capture_exception(exc, **context) -> None
-        Send an exception with extra tags. Falls back to print() if
-        Sentry not initialized.
+        Send an exception with extra tags. Falls back to the structured
+        logger (ERROR level, with traceback) if Sentry not initialized.
 
     critical_alert(title, body, tags=None, user=None) -> dict
         Multi-channel: Sentry (as message) + ntfy (push) + email.
@@ -38,11 +38,13 @@ Public API:
         captured. Call once at process startup.
 """
 from __future__ import annotations
+import logging
 import os
 import sys
 import traceback
 from datetime import datetime
 
+log = logging.getLogger(__name__)
 
 _SENTRY_INITIALIZED = False
 _SENTRY_AVAILABLE = False
@@ -77,25 +79,26 @@ def init_sentry():
         )
         _SENTRY_AVAILABLE = True
         _SENTRY_INITIALIZED = True
-        print("[observability] Sentry initialized", flush=True)
+        log.info("Sentry initialized")
         return True
     except ImportError:
-        print("[observability] sentry-sdk not installed (pip install sentry-sdk)", flush=True)
+        log.warning("sentry-sdk not installed (pip install sentry-sdk)")
         return False
     except Exception as e:
-        print(f"[observability] Sentry init failed: {e}", flush=True)
+        log.warning("Sentry init failed", extra={"error": str(e)})
         return False
 
 
 def capture_exception(exc=None, **context):
     """Send an exception to Sentry with optional context tags.
-    Falls back to print() if Sentry isn't initialized."""
+    Falls back to the structured logger (ERROR + traceback) if Sentry
+    isn't initialized."""
     if not _SENTRY_AVAILABLE:
-        # Plain stderr fallback
-        print(f"[observability] EXCEPTION: {exc!r}", file=sys.stderr, flush=True)
-        if context:
-            print(f"  context: {context}", file=sys.stderr, flush=True)
-        traceback.print_exc()
+        # No Sentry configured — still get the traceback into the log stream
+        # so the JSON envelope (and any downstream aggregator) has it.
+        log.error("exception captured (no Sentry)",
+                  extra={"context": context} if context else None,
+                  exc_info=exc if isinstance(exc, BaseException) else None)
         return
     try:
         import sentry_sdk
@@ -104,7 +107,7 @@ def capture_exception(exc=None, **context):
                 scope.set_tag(k, str(v)[:200])
             sentry_sdk.capture_exception(exc)
     except Exception as e:
-        print(f"[observability] capture_exception failed: {e}", file=sys.stderr)
+        log.warning("capture_exception failed", extra={"error": str(e)})
 
 
 def capture_message(message, level="info", **context):
@@ -112,7 +115,16 @@ def capture_message(message, level="info", **context):
     (kill switch trip, large gain/loss, etc.) we want visible in the
     Sentry feed alongside errors."""
     if not _SENTRY_AVAILABLE:
-        print(f"[observability] {level.upper()}: {message}", flush=True)
+        # Route through the same logger level so the message still shows
+        # up in the JSON stream / aggregator even without Sentry.
+        lvl_map = {
+            "debug": log.debug,
+            "info": log.info,
+            "warning": log.warning,
+            "error": log.error,
+            "fatal": log.critical,
+        }
+        lvl_map.get(level.lower(), log.info)(message, extra=context or None)
         return
     try:
         import sentry_sdk
@@ -121,7 +133,7 @@ def capture_message(message, level="info", **context):
                 scope.set_tag(k, str(v)[:200])
             sentry_sdk.capture_message(message, level=level)
     except Exception as e:
-        print(f"[observability] capture_message failed: {e}", file=sys.stderr)
+        log.warning("capture_message failed", extra={"error": str(e)})
 
 
 def critical_alert(title, body, tags=None, user=None):
@@ -156,7 +168,7 @@ def critical_alert(title, body, tags=None, user=None):
             urllib.request.urlopen(req, timeout=5)
             result["ntfy"] = True
     except Exception as e:
-        print(f"[observability] ntfy critical alert failed: {e}", flush=True)
+        log.warning("ntfy critical alert failed", extra={"error": str(e)})
     # 3. Email (queue via existing module if available)
     try:
         if user and user.get("notification_email"):
@@ -168,7 +180,7 @@ def critical_alert(title, body, tags=None, user=None):
             )
             result["email"] = True
     except Exception as e:
-        print(f"[observability] critical email failed: {e}", flush=True)
+        log.warning("critical email failed", extra={"error": str(e)})
     return result
 
 

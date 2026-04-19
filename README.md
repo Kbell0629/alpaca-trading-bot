@@ -846,6 +846,25 @@ Credentials are case-sensitive. If you've forgotten them or they've changed, che
 | `NOTIFICATION_EMAIL` | Email for critical alerts (per-user override in Settings modal). |
 | `PORT` | Server port (Railway sets automatically) |
 | `ENABLE_CLOUD_SCHEDULER` | `true` (default) to run scheduler on Railway. Set `false` to disable (debug only). |
+| `LOG_LEVEL` | Structured logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`). Defaults to `INFO`. |
+| `SENTRY_DSN` | Sentry ingest URL. Optional — the app runs fine without it. See [`docs/MONITORING_SETUP.md`](docs/MONITORING_SETUP.md) for setup + rotation guidance. |
+
+### Subresource Integrity (SRI) hashes
+
+The dashboard loads three JS libraries from `cdn.jsdelivr.net`: Chart.js,
+marked, and zxcvbn. All three are pinned to fixed versions, and the
+`<script>` tags carry `crossorigin="anonymous"` so browsers can enforce
+SRI. To fill in the `integrity="sha384-..."` attributes (defense-in-depth
+against a compromised CDN serving different bytes than what was audited):
+
+```bash
+bash scripts/compute_sri.sh
+```
+
+The script fetches each file, computes SHA-384, and prints the integrity
+string ready to paste into the matching `<script>` tag in
+`templates/dashboard.html`, `templates/signup.html`, `templates/reset.html`,
+and `templates/track_record.html`. Re-run whenever you bump a version.
 
 ### Voice Commands (Click 🎤 button)
 

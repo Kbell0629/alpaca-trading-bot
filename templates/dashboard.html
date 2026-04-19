@@ -26,13 +26,29 @@ if ('serviceWorker' in navigator) {
     });
 }
 </script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
+<!-- External libs are pinned to fixed versions. `crossorigin="anonymous"`
+     is the prereq for SRI (Subresource Integrity). Add integrity="sha384-..."
+     attributes by running `scripts/compute_sri.sh` locally (the sandbox
+     can't fetch from CDNs, so hashes get populated from a dev machine). -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"
+        crossorigin="anonymous"
+        referrerpolicy="no-referrer"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"
+        crossorigin="anonymous"
+        referrerpolicy="no-referrer"></script>
 <style>
 :root {
     --bg: #0a0e17; --card: #111827; --card-hover: #1a2332; --border: #1e293b;
     --text: #e2e8f0; --text-dim: #94a3b8; --accent: #3b82f6; --blue: #3b82f6;
     --green: #10b981; --red: #ef4444; --orange: #f59e0b; --purple: #8b5cf6;
+    /* --green-text is a WCAG-AA-compliant brighter green for text on the
+       dark bg. --green (#10b981) on --bg (#0a0e17) is only 3.8:1; #6ee7b7
+       gives ~10:1. Used by .positive, .side-buy and friends where the text
+       sits directly on the dark background. UI elements with translucent
+       rgba green backgrounds still use --green since the bg carries enough
+       luminance of its own. */
+    --green-text: #6ee7b7;
+    --red-text: #fca5a5;    /* 4.5:1 over --bg (#ef4444 is only 4.2:1) */
     --radius: 12px;
     /* Round-11 UX polish: type scale. Previously font sizes were ad-hoc
        between 10-18px with no system. These tokens give a 4-step scale
@@ -276,14 +292,14 @@ th.sortable { cursor: pointer; }
 th.sortable:hover { color: var(--accent); }
 th .sort-arrow { margin-left: 4px; font-size: 8px; }
 td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
-.positive { color: var(--green); }
-.negative { color: var(--red); }
+.positive { color: var(--green-text); }
+.negative { color: var(--red-text); }
 /* Break-even P&L — neither win nor loss. Muted so it reads as "no
    change" rather than being mistaken for a small gain (it was
    rendering green via the >= 0 comparison in pnlClass before). */
 .neutral { color: var(--text-dim); }
-.side-buy { color: var(--green); font-weight: 600; }
-.side-sell { color: var(--red); font-weight: 600; }
+.side-buy { color: var(--green-text); font-weight: 600; }
+.side-sell { color: var(--red-text); font-weight: 600; }
 .empty { text-align: center; color: var(--text-dim); padding: 20px; }
 
 /* Round-11 UX polish: unified empty + loading states. Standardized
@@ -1554,9 +1570,21 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
     font-size: 14px; margin-bottom: 12px; color: var(--text-dim);
     text-transform: uppercase; letter-spacing: 0.5px;
 }
+
+/* Skip-to-content link — visually hidden until keyboard-focused. Lets
+   screen-reader / keyboard users jump past the toast container and any
+   chrome at the top of the page straight into the dashboard content. */
+.skip-link {
+    position: absolute; left: -9999px; top: 8px;
+    background: var(--accent); color: #fff; padding: 8px 16px;
+    border-radius: 6px; font-weight: 600; z-index: 10000;
+    text-decoration: none;
+}
+.skip-link:focus { left: 8px; outline: 2px solid #fff; outline-offset: 2px; }
 </style>
 </head>
 <body>
+<a href="#main-content" class="skip-link">Skip to main content</a>
 
 <div class="toast-container" id="toastContainer" role="status" aria-live="polite" aria-atomic="true"></div>
 
@@ -1980,7 +2008,9 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
   </div>
 </div>
 
+<main id="main-content" tabindex="-1">
 <div id="app">Loading dashboard...</div>
+</main>
 
 <script>
 /* XSS escaping helper for user/API data inserted into innerHTML */

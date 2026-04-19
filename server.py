@@ -8,6 +8,18 @@ NOTE: HTTPS termination is handled by Railway's edge proxy. All traffic between
 the client and Railway is encrypted via TLS. The app itself listens on plain HTTP.
 """
 
+# Semantic version fallback. /api/version prefers `git describe --tags` at
+# request time; this constant is only used when neither git nor the Railway
+# env var RAILWAY_GIT_COMMIT_SHA is available. Bump when cutting a release.
+__version__ = "0.11.0"
+
+# Structured logging — configure before any other import that might
+# emit via the logging module, so all records get the JSON envelope.
+import logging  # noqa: E402
+import logging_setup  # noqa: E402
+logging_setup.init()
+log = logging.getLogger(__name__)
+
 # Round-11 expansion item 18: Sentry observability — initialized as
 # early as possible so subsequent imports' exceptions get captured.
 # No-op if SENTRY_DSN env var isn't set (paper users don't need it).
@@ -15,7 +27,7 @@ try:
     import observability  # noqa: F401  side-effect init
     observability.install_exception_hook()
 except Exception as _obs_err:
-    print(f"[startup] observability init skipped: {_obs_err}")
+    log.warning("observability init skipped", extra={"error": str(_obs_err)})
 
 import base64
 import glob
@@ -98,16 +110,15 @@ auth.bootstrap_from_env()
 try:
     _fmt_counts = auth.count_legacy_encrypted_rows()
     if isinstance(_fmt_counts, dict) and "error" not in _fmt_counts:
-        print(f"[auth] credential cipher distribution: {_fmt_counts}", flush=True)
+        log.info("credential cipher distribution", extra={"counts": _fmt_counts})
         _need_upgrade = (_fmt_counts.get("PLAIN", 0)
                          + _fmt_counts.get("ENC", 0)
                          + _fmt_counts.get("ENCv2", 0))
         if _need_upgrade == 0:
-            print("[auth] all users on ENCv3 (HKDF). Older decrypt paths are safe to retire.",
-                  flush=True)
+            log.info("all users on ENCv3 (HKDF); older decrypt paths safe to retire")
         else:
-            print(f"[auth] {_need_upgrade} user rows will be upgraded to ENCv3 on next login",
-                  flush=True)
+            log.info("users pending ENCv3 upgrade on next login",
+                     extra={"pending": _need_upgrade})
 except Exception as _diag_err:
     # Diagnostic only — don't block boot, but surface to Sentry so we notice
     # if the count function ever starts throwing silently.
@@ -139,8 +150,8 @@ os.makedirs(DATA_DIR, exist_ok=True)
 # crash hard and let Railway restart than zombify.
 if not os.access(DATA_DIR, os.W_OK):
     import sys as _sys_boot
-    print(f"[FATAL] DATA_DIR ({DATA_DIR!r}) not writable — check volume mount.",
-          flush=True)
+    log.critical("DATA_DIR not writable — check volume mount",
+                 extra={"data_dir": DATA_DIR})
     _sys_boot.exit(1)
 
 # Templates directory — dashboard/login/signup/forgot/reset HTML live here
@@ -640,7 +651,7 @@ def _login_attempt_record(ip, username, success):
                 if _gc:
                     _gc()
             except Exception as _e:
-                print(f"[auth] GC {_fn} failed: {_e}", flush=True)
+                log.warning("auth GC failed", extra={"gc_fn": _fn, "error": str(_e)})
                 observability.capture_exception(_e, source="auth.gc", gc_fn=_fn)
 
 # Signup invite code gate. Set SIGNUP_INVITE_CODE env var on Railway to require
@@ -665,8 +676,9 @@ class DashboardHandler(
     """HTTP request handler for the dashboard server."""
 
     def log_message(self, format, *args):
-        """Override to add timestamp prefix."""
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] {args[0]}")
+        """Route HTTP access logs through the structured logger. BaseHTTPRequestHandler's
+        default goes to stderr with no timestamp; ours lands in the JSON stream."""
+        log.info("http", extra={"access": args[0] if args else ""})
 
     # Instance defaults populated by check_auth()
     current_user = None
@@ -794,9 +806,9 @@ class DashboardHandler(
                             dst = os.path.join(d, f)
                             if os.path.isfile(src) and not os.path.exists(dst):
                                 shutil.copy2(src, dst)
-                    print(f"[migration] Seeded strategies dir for bootstrap admin", flush=True)
+                    log.info("migration: seeded strategies dir for bootstrap admin")
             except Exception as e:
-                print(f"[migration] WARN strategies seed failed: {e}", flush=True)
+                log.warning("migration: strategies seed failed", extra={"error": str(e)})
                 observability.capture_exception(e, source="_user_strategies_dir.seed")
         return d
 
@@ -819,9 +831,11 @@ class DashboardHandler(
                     import shutil
                     os.makedirs(os.path.dirname(user_path) or ".", exist_ok=True)
                     shutil.copy2(shared_path, user_path)
-                    print(f"[migration] Copied {filename} to bootstrap admin user dir", flush=True)
+                    log.info("migration: copied file to bootstrap admin user dir",
+                             extra={"filename": filename})
                 except Exception as e:
-                    print(f"[migration] WARN failed to migrate {filename}: {e}", flush=True)
+                    log.warning("migration: file copy failed",
+                                extra={"filename": filename, "error": str(e)})
                     observability.capture_exception(
                         e, source="_user_file.migrate", filename=filename,
                     )
@@ -840,7 +854,15 @@ class DashboardHandler(
         correlation_id = uuid.uuid4().hex[:12]
         label = context or "internal"
         try:
-            print(f"[ERROR {correlation_id}] ({label}) {type(exc).__name__}: {exc}", flush=True)
+            log.error(
+                "handler error",
+                extra={
+                    "correlation_id": correlation_id,
+                    "context": label,
+                    "exc_type": type(exc).__name__,
+                    "exc_msg": str(exc),
+                },
+            )
         except Exception:
             pass
         try:
@@ -881,7 +903,8 @@ class DashboardHandler(
         else:
             safe = msg or f"Request failed ({http_code})"
         # Log the full detail server-side for debugging
-        print(f"[alpaca-error] HTTP {http_code}: {body}", flush=True)
+        log.warning("alpaca upstream error",
+                    extra={"http_code": http_code, "body": body})
         return {"error": safe}
 
     def user_api_get(self, url, timeout=15):
@@ -895,7 +918,8 @@ class DashboardHandler(
             err_body = e.read().decode() if e.fp else ""
             return self._sanitize_alpaca_error(e.code, err_body)
         except Exception as e:
-            print(f"[user_api_get] {type(e).__name__}: {e}", flush=True)
+            log.warning("user_api_get failed",
+                        extra={"exc_type": type(e).__name__, "exc_msg": str(e)})
             observability.capture_exception(e, source="user_api_get")
             return {"error": "Request failed"}
 
@@ -915,7 +939,8 @@ class DashboardHandler(
             err_body = e.read().decode() if e.fp else ""
             return self._sanitize_alpaca_error(e.code, err_body)
         except Exception as e:
-            print(f"[user_api_post] {type(e).__name__}: {e}", flush=True)
+            log.warning("user_api_post failed",
+                        extra={"exc_type": type(e).__name__, "exc_msg": str(e)})
             observability.capture_exception(e, source="user_api_post")
             return {"error": "Request failed"}
 
@@ -930,7 +955,8 @@ class DashboardHandler(
             err_body = e.read().decode() if e.fp else ""
             return self._sanitize_alpaca_error(e.code, err_body)
         except Exception as e:
-            print(f"[user_api_delete] {type(e).__name__}: {e}", flush=True)
+            log.warning("user_api_delete failed",
+                        extra={"exc_type": type(e).__name__, "exc_msg": str(e)})
             observability.capture_exception(e, source="user_api_delete")
             return {"error": "Request failed"}
 
@@ -1396,17 +1422,35 @@ class DashboardHandler(
         # leaves the old container running, and there was previously no way
         # to tell from outside).
         if path == "/api/version":
-            info = {"bot_version": "round-11"}
+            # Version sources, in priority order:
+            #   1. `git describe --tags --always` — readable "v1.2.3-N-gSHA" if
+            #      tags exist, otherwise the short SHA.
+            #   2. RAILWAY_GIT_COMMIT_SHA — env var Railway injects during
+            #      build. Used when the container doesn't ship the .git dir.
+            #   3. __version__ constant — final fallback when neither git nor
+            #      Railway env vars are available (e.g. packaged build).
+            info = {"bot_version": __version__}
             try:
                 import subprocess as _sp
                 r = _sp.run(
+                    ["git", "describe", "--tags", "--always", "--dirty"],
+                    cwd=BASE_DIR, capture_output=True, text=True, timeout=2,
+                )
+                if r.returncode == 0 and r.stdout.strip():
+                    info["bot_version"] = r.stdout.strip()
+                r2 = _sp.run(
                     ["git", "rev-parse", "HEAD"],
                     cwd=BASE_DIR, capture_output=True, text=True, timeout=2,
                 )
-                if r.returncode == 0:
-                    info["commit"] = r.stdout.strip()[:12]
+                if r2.returncode == 0:
+                    info["commit"] = r2.stdout.strip()[:12]
             except Exception:
                 pass
+            # Railway env-var fallback when .git isn't in the container
+            if "commit" not in info:
+                rw_sha = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "").strip()
+                if rw_sha:
+                    info["commit"] = rw_sha[:12]
             info["python"] = sys.version.split()[0]
             try:
                 import cloud_scheduler as _cs
@@ -1906,7 +1950,7 @@ class DashboardHandler(
             except Exception as _e:
                 # Live overlay is a nice-to-have — fall back to snapshot
                 # if the Alpaca call fails.
-                print(f"[heatmap] live-today overlay failed: {_e}", flush=True)
+                log.warning("heatmap live-today overlay failed", extra={"error": str(_e)})
                 observability.capture_exception(_e, source="heatmap.live_overlay")
 
             # Analyze patterns
@@ -2238,12 +2282,13 @@ def _graceful_shutdown(httpd, reason="signal"):
     """Called on SIGTERM (Railway redeploy) or Ctrl+C. Tries to drain in-flight
     work before the Python process exits, so orders aren't abandoned mid-POST.
     """
-    print(f"\n[shutdown] {reason} received — stopping scheduler + server...", flush=True)
+    log.info("shutdown signal received; stopping scheduler + server",
+             extra={"reason": reason})
     try:
         if SCHEDULER_AVAILABLE:
             stop_scheduler()
     except Exception as e:
-        print(f"[shutdown] scheduler stop error: {e}", flush=True)
+        log.error("scheduler stop error during shutdown", extra={"error": str(e)})
         observability.capture_exception(e, source="shutdown.scheduler_stop")
     try:
         httpd.shutdown()
@@ -2253,7 +2298,7 @@ def _graceful_shutdown(httpd, reason="signal"):
         httpd.server_close()
     except Exception:
         pass
-    print("[shutdown] clean exit", flush=True)
+    log.info("shutdown: clean exit")
 
 
 def main():
@@ -2280,14 +2325,14 @@ def main():
         _c.execute("PRAGMA synchronous=NORMAL;")
         _c.commit()
         _c.close()
-        print("[init] SQLite WAL + busy_timeout enabled", flush=True)
+        log.info("SQLite WAL + busy_timeout enabled")
     except Exception as e:
-        print(f"[init] WAL setup failed: {e}", flush=True)
+        log.error("WAL setup failed", extra={"error": str(e)})
         observability.capture_exception(e, source="init.wal_setup")
 
     server = ThreadingHTTPServer(("0.0.0.0", port), DashboardHandler)
-    print(f"Dashboard running at http://localhost:{port}")
-    print("Press Ctrl+C to stop")
+    log.info("dashboard listening", extra={"port": port})
+    log.info("ready; SIGINT/SIGTERM triggers graceful shutdown")
 
     # Start cloud scheduler (makes bot autonomous 24/7 on Railway).
     # Round-10 audit: on a scheduler-start failure we USED to just log
@@ -2299,9 +2344,10 @@ def main():
     if SCHEDULER_AVAILABLE and os.environ.get("ENABLE_CLOUD_SCHEDULER", "true").lower() == "true":
         try:
             start_scheduler()
-            print("[INFO] Cloud scheduler started — bot running autonomously", flush=True)
+            log.info("cloud scheduler started; bot running autonomously")
         except Exception as e:
-            print(f"[FATAL] Could not start cloud scheduler: {e}. Exiting for restart.", flush=True)
+            log.critical("could not start cloud scheduler; exiting for restart",
+                         extra={"error": str(e)})
             observability.capture_exception(e, source="main.start_scheduler")
             import sys as _sys_exit
             _sys_exit.exit(1)

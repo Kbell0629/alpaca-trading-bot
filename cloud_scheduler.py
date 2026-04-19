@@ -171,13 +171,19 @@ def now_et():
     return datetime.now(ET_TZ)
 
 
+import logging as _stdlib_logging
+_scheduler_logger = _stdlib_logging.getLogger(__name__)
+
+
 def log(msg, task="scheduler"):
     # ET-only. Railway log cross-reference still works because Railway's
     # own log timestamps are independent of the string we emit.
+    # Routes through the structured logger — the JSON envelope carries
+    # its own timestamp, but we keep the ET wall-clock string for the
+    # in-memory ring buffer so /healthz staleness checks still work.
     now = now_et()
     et_ts = now.strftime("%-I:%M:%S %p ") + (now.tzname() or "ET")
-    line = f"[{et_ts}] [{task}] {msg}"
-    print(line, flush=True)
+    _scheduler_logger.info(msg, extra={"task": task, "et_ts": et_ts})
     with _logs_lock:
         _recent_logs.append({"ts": et_ts, "ts_iso": now.isoformat(), "task": task, "msg": msg})
         if len(_recent_logs) > 100:

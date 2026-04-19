@@ -7,12 +7,15 @@ Pulled out of server.py in Round 6.5 — code movement only, no semantic
 changes. Tests in tests/ verify the decomposition is behavior-preserving.
 """
 import json
+import logging
 import os
 import re
 import secrets
 import urllib.request
 import urllib.parse
 from datetime import datetime
+
+log = logging.getLogger(__name__)
 
 import auth
 import hmac
@@ -130,7 +133,8 @@ class AuthHandlerMixin:
             _conn.commit()
             _conn.close()
         except Exception as _e:
-            print(f"[auth] pre-login session invalidate failed: {_e}", flush=True)
+            log.warning("pre-login session invalidate failed",
+                        extra={"error": str(_e)})
         token = auth.create_session(user["id"], ip)
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -299,7 +303,7 @@ class AuthHandlerMixin:
                 # Non-local without PUBLIC_BASE_URL → refuse to echo the
                 # Host header back. Return generic OK so we don't tell
                 # the attacker which emails exist.
-                print("[auth] forgot-password refused: PUBLIC_BASE_URL not set", flush=True)
+                log.warning("forgot-password refused: PUBLIC_BASE_URL not set")
                 return self.send_json(generic_ok)
             scheme = "http"
             base_url = f"{scheme}://{host}"
@@ -323,7 +327,7 @@ class AuthHandlerMixin:
             except Exception:
                 pass
         except Exception as e:
-            print(f"[auth] notify.py launch failed: {e}")
+            log.warning("notify.py launch failed", extra={"error": str(e)})
 
         # Also queue a direct email for the notification_email if one is set.
         # Round-10 audit: route through notify.queue_email which applies
@@ -374,7 +378,7 @@ class AuthHandlerMixin:
                     _fcntl.flock(lock_fd, _fcntl.LOCK_UN)
                     lock_fd.close()
         except Exception as e:
-            print(f"[auth] Failed to queue reset email: {e}")
+            log.warning("failed to queue reset email", extra={"error": str(e)})
 
         self.send_json(generic_ok)
     def handle_reset_password(self, body):

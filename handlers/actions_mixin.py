@@ -4,6 +4,7 @@ switch, auto-deployer toggle, force deploy). Mixed into DashboardHandler
 via MRO.
 """
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -15,6 +16,8 @@ from et_time import now_et
 import re
 import threading
 import auth
+
+log = logging.getLogger(__name__)
 # Lazy server-module proxy: resolves `server.X` references at first
 # *call* time, not import time. Required because server.py is launched
 # as `python3 server.py` which makes it __main__, so `import server`
@@ -77,7 +80,7 @@ class ActionsHandlerMixin:
                 env["CAPITAL_STATUS_PATH"] = os.path.join(udir, "capital_status.json")
                 env["DASHBOARD_HTML_PATH"] = os.path.join(udir, "dashboard.html")
             except Exception as e:
-                print(f"user env setup failed: {e}")
+                log.warning("user env setup failed", extra={"error": str(e)})
         try:
             result = subprocess.run(
                 ["python3", script_path],
@@ -88,9 +91,10 @@ class ActionsHandlerMixin:
                 env=env,
             )
             if result.returncode != 0:
-                print(f"update_dashboard.py stderr: {result.stderr[:500]}")
+                log.warning("update_dashboard.py nonzero exit",
+                            extra={"stderr": result.stderr[:500]})
         except Exception as e:
-            print(f"Error running update_dashboard.py: {e}")
+            log.error("update_dashboard.py launch failed", extra={"error": str(e)})
 
         # Return fresh data regardless
         data = server.get_dashboard_data(
@@ -187,7 +191,7 @@ class ActionsHandlerMixin:
                 ip_address=ip,
             )
         except Exception as _e:
-            print(f"[audit] kill_switch log failed: {_e}", flush=True)
+            log.warning("audit: kill_switch log failed", extra={"error": str(_e)})
         timestamp = now_et().strftime("%Y-%m-%d %I:%M:%S %p ET")
         guardrails_path = self._user_file("guardrails.json")
         guardrails = server.load_json(guardrails_path) or {}
@@ -267,9 +271,13 @@ class ActionsHandlerMixin:
                         wstate["active_contract"] = None
                         ws.save_wheel_state(user_shim, wstate)
             except Exception as e:
-                print(f"[KILL SWITCH] Wheel close error (non-fatal): {e}")
+                log.warning("kill-switch: wheel close error (non-fatal)",
+                            extra={"error": str(e)})
 
-            print(f"[KILL SWITCH] Activated at {timestamp}: {orders_cancelled} orders cancelled, {positions_closed} positions closed")
+            log.warning("kill-switch ACTIVATED",
+                        extra={"timestamp": timestamp,
+                               "orders_cancelled": orders_cancelled,
+                               "positions_closed": positions_closed})
 
             # Send push notification via ntfy.sh (fire-and-forget, don't block HTTP response)
             subprocess.Popen([sys.executable, os.path.join(server.BASE_DIR, "notify.py"), "--type", "kill", f"Cancelled {orders_cancelled} orders, closed {positions_closed} positions. All trading halted."], cwd=server.BASE_DIR)
@@ -288,7 +296,7 @@ class ActionsHandlerMixin:
             guardrails["kill_switch_reason"] = None
             server.save_json(guardrails_path, guardrails)
 
-            print(f"[KILL SWITCH] Deactivated at {timestamp}")
+            log.warning("kill-switch DEACTIVATED", extra={"timestamp": timestamp})
 
             self.send_json({
                 "success": True,
@@ -320,7 +328,7 @@ class ActionsHandlerMixin:
                 ip_address=ip,
             )
         except Exception as _e:
-            print(f"[audit] factor_bypass log failed: {_e}", flush=True)
+            log.warning("audit: factor_bypass log failed", extra={"error": str(_e)})
         guardrails_path = self._user_file("guardrails.json")
         guardrails = server.load_json(guardrails_path) or {}
         guardrails["factor_bypass"] = enable
