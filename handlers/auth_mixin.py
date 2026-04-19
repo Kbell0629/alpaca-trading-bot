@@ -256,38 +256,54 @@ class AuthHandlerMixin:
             json.dumps({"success": True, "user_id": user_id, "username": username}).encode("utf-8")
         )
     def handle_forgot_password(self, body):
+        # Round-12 audit fix: constant-time response regardless of whether
+        # the email exists. Previously the "not-found" path slept 80ms while
+        # the "found" path did real work (queue email + subprocess). Even
+        # with the compensating sleep, there's jitter an attacker can measure
+        # by spacing probes around the rate-limit window (resetting the
+        # bucket between attempts). New approach: record the start time, do
+        # the work, then pad sleep until we've taken a fixed ~500ms total.
+        # 500ms is long enough to swamp the real work (~30-50ms existing,
+        # ~5ms non-existing) and the OS scheduling jitter, but short enough
+        # that legitimate users don't notice the "Send" button delay.
+        import time as _time_f
+        _t_start = _time_f.monotonic()
+        _CONSTANT_TIME_SEC = 0.50
+        generic_ok = {"success": True, "message": "If that email exists, a reset link has been sent."}
+
+        def _constant_time_send(resp):
+            """Pad to the fixed ceiling then send."""
+            elapsed = _time_f.monotonic() - _t_start
+            to_sleep = _CONSTANT_TIME_SEC - elapsed
+            if to_sleep > 0:
+                _time_f.sleep(to_sleep)
+            self.send_json(resp)
+
         email = (body.get("email") or "").strip().lower()
         if not email:
             return self.send_json({"error": "Email required"}, 400)
-        # Round-11 audit: rate limit. Without this a trivial
-        # denial-of-reset: the attacker POSTs /api/forgot every second
-        # for a victim's email and create_password_reset invalidates
-        # any pending token each call, so the legitimate user can
-        # never complete a reset. Also fills email_queue.json past
-        # its 50-entry cap and evicts real trade notifications.
+        # Rate limit. Without this a trivial denial-of-reset: the attacker
+        # POSTs /api/forgot every second for a victim's email, and
+        # create_password_reset invalidates any pending token each call, so
+        # the legitimate user can never complete a reset. Also fills
+        # email_queue.json past its 50-entry cap and evicts real trade
+        # notifications.
         ip = self.client_address[0] if self.client_address else None
         try:
             # Reuse login_attempts bucket with a "forgot:" prefix so we
             # don't need a new table; is_login_locked enforces 5 per
             # 15-min already.
             if server.auth.is_login_locked(ip, f"forgot:{email}"):
-                # Do NOT reveal lockout to attacker — same generic OK.
-                return self.send_json({"success": True,
-                                        "message": "If that email exists, a reset link has been sent."})
+                # Do NOT reveal lockout to attacker — same generic OK, same
+                # constant-time response envelope.
+                return _constant_time_send(generic_ok)
             server.auth.record_login_attempt(ip, f"forgot:{email}", success=False)
         except Exception:
             pass  # rate-limit best-effort; don't block resets on DB hiccup
         token, user = auth.create_password_reset(email)
         # Do not reveal whether the email exists (security)
-        generic_ok = {"success": True, "message": "If that email exists, a reset link has been sent."}
         if not token:
-            # Round-11: uniform delay so the existence check isn't
-            # wall-clock-leaking via timing (existing-email path runs
-            # subprocess.Popen + fcntl.flock write which is ~30-50ms
-            # longer than the not-found path's single SELECT).
-            import time as _time_f
-            _time_f.sleep(0.08)
-            return self.send_json(generic_ok)
+            return _constant_time_send(generic_ok)
 
         # Build reset URL — prefer configured base, fall back to request Host.
         # Round-10 audit: host-header spoofing — a malicious actor can
@@ -304,7 +320,7 @@ class AuthHandlerMixin:
                 # Host header back. Return generic OK so we don't tell
                 # the attacker which emails exist.
                 log.warning("forgot-password refused: PUBLIC_BASE_URL not set")
-                return self.send_json(generic_ok)
+                return _constant_time_send(generic_ok)
             scheme = "http"
             base_url = f"{scheme}://{host}"
         reset_url = f"{base_url}/reset?token={token}"
@@ -380,7 +396,7 @@ class AuthHandlerMixin:
         except Exception as e:
             log.warning("failed to queue reset email", extra={"error": str(e)})
 
-        self.send_json(generic_ok)
+        _constant_time_send(generic_ok)
     def handle_reset_password(self, body):
         token = (body.get("token") or "").strip()
         new_password = body.get("password") or ""
