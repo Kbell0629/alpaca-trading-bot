@@ -219,8 +219,19 @@ class AuthHandlerMixin:
                 )
             return self.send_json({"error": f"Alpaca API error: {e.code}"}, 400)
         except Exception as e:
+            # Never echo exception text to the browser — it can include
+            # stack paths, SDK internals, or partial request headers that
+            # leak credential fragments. Log server-side + return a
+            # generic message.
+            try:
+                from observability import capture_exception
+                capture_exception(e, component="auth_mixin",
+                                  fn="handle_signup_verify_keys")
+            except Exception:
+                pass
             return self.send_json(
-                {"error": f"Could not verify Alpaca credentials: {str(e)[:100]}"}, 400
+                {"error": "Could not verify Alpaca credentials. "
+                          "Check your key and secret and try again."}, 400
             )
 
         # Derive data endpoint from trading endpoint (paper vs live share the same data host)
@@ -553,7 +564,14 @@ class AuthHandlerMixin:
             )
             urllib.request.urlopen(req, timeout=10).close()
         except Exception as e:
-            return self.send_json({"error": f"Keys failed verification: {str(e)[:120]}"}, 400)
+            try:
+                from observability import capture_exception
+                capture_exception(e, component="auth_mixin",
+                                  fn="handle_save_settings_verify_keys")
+            except Exception:
+                pass
+            return self.send_json({"error": "Keys failed verification. "
+                                            "Check your key and secret and try again."}, 400)
         auth.save_user_alpaca_creds(uid, **updates)
         try:
             ip = self.client_address[0] if self.client_address else None

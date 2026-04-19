@@ -40,6 +40,7 @@ Public API:
 from __future__ import annotations
 import logging
 import os
+import re
 import sys
 import traceback
 from datetime import datetime
@@ -48,6 +49,64 @@ log = logging.getLogger(__name__)
 
 _SENTRY_INITIALIZED = False
 _SENTRY_AVAILABLE = False
+
+# Patterns that look like credentials — we scrub these from any string sent
+# to Sentry. Conservative: prefer false positives (scrubbing) over leaking.
+_SCRUB_KEY_RE = re.compile(r"\b(PK|AK)[A-Z0-9]{14,}\b")     # Alpaca API keys
+_SCRUB_SECRET_RE = re.compile(r"\b[A-Za-z0-9/+]{40,}\b")    # long base64-ish
+_SCRUB_EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w.-]+\.\w+\b")
+_SCRUB_HEADER_KEYS = {"apca-api-key-id", "apca-api-secret-key",
+                      "authorization", "cookie", "set-cookie",
+                      "x-csrf-token", "x-api-key"}
+
+
+def _scrub_text(s):
+    """Remove credentials / emails from a free-form string."""
+    if not isinstance(s, str):
+        return s
+    s = _SCRUB_KEY_RE.sub("[REDACTED_KEY]", s)
+    s = _SCRUB_EMAIL_RE.sub("[REDACTED_EMAIL]", s)
+    # Only scrub long base64 tokens — short ones are likely file paths or
+    # normal identifiers.
+    if len(s) < 10000:  # avoid O(n^2) on huge payloads
+        s = _SCRUB_SECRET_RE.sub("[REDACTED_SECRET]", s)
+    return s
+
+
+def _scrub_pii(event, hint=None):
+    """Sentry `before_send` hook. Recursively scrubs sensitive substrings
+    out of event messages, exception values, and request headers before
+    the SDK transmits them."""
+    try:
+        # Exception chain values
+        exc_info = event.get("exception") or {}
+        for val in (exc_info.get("values") or []):
+            if "value" in val:
+                val["value"] = _scrub_text(val["value"])
+        # Top-level message
+        if "message" in event:
+            event["message"] = _scrub_text(event.get("message"))
+        # Request headers / cookies
+        req = event.get("request") or {}
+        hdrs = req.get("headers") or {}
+        if isinstance(hdrs, dict):
+            for k in list(hdrs.keys()):
+                if k.lower() in _SCRUB_HEADER_KEYS:
+                    hdrs[k] = "[REDACTED]"
+        if "cookies" in req:
+            req["cookies"] = "[REDACTED]"
+        if "query_string" in req and isinstance(req["query_string"], str):
+            req["query_string"] = _scrub_text(req["query_string"])
+        # Breadcrumbs — often carry log lines with request bodies
+        crumbs = (event.get("breadcrumbs") or {}).get("values") or []
+        for c in crumbs:
+            if "message" in c:
+                c["message"] = _scrub_text(c.get("message"))
+    except Exception:
+        # Never break the Sentry pipeline on a scrub error — drop the
+        # event instead so we don't accidentally send unscrubbed data.
+        return None
+    return event
 
 
 def init_sentry():
@@ -70,6 +129,7 @@ def init_sentry():
             release=os.environ.get("RAILWAY_GIT_COMMIT_SHA", "unknown")[:8],
             send_default_pii=False,  # never send user data
             integrations=[LoggingIntegration(level=None, event_level=None)],
+            before_send=_scrub_pii,
             ignore_errors=[
                 # Ignore client disconnects / broken pipes — noise
                 "BrokenPipeError",
