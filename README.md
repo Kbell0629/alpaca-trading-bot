@@ -4,7 +4,51 @@
 
 ---
 
-## 🆕 What's New (2026-04-18/19 — Round-12 Audit Sweep, 15 PRs shipped)
+## 🆕 What's New (2026-04-19 — Round-13 Cleanup + Production Readiness)
+
+Follow-on to the round-12 sweep. 7 more PRs landed covering the test-
+coverage gaps, a previously-undetected circuit-breaker bug, wheel
+stock-split auto-resolve, and a defense-in-depth security bundle.
+
+### Things you'll notice
+- **API-key fields are now masked** (dots instead of visible text) on
+  Settings, with spellcheck off. Reduces shoulder-surfing / screen-share risk.
+- **Regime badges** (bull / neutral / bear) have brighter text colours
+  for WCAG AA contrast on the dark theme.
+- **Auth pages** (login / signup / forgot / reset) no longer auto-zoom
+  on iPhone when you tap into an input.
+- **Offline banner** — if the service worker serves a cached page and
+  you try to refresh data, you'll see a soft "Offline — cached data"
+  toast instead of a cryptic "HTTP 503" error.
+- **README modal** is safer — markdown rendering runs through an HTML
+  sanitizer before display.
+
+### Things working better behind the scenes
+- **yfinance rate-limit failures** route through Sentry so we see them
+  aggregated rather than buried in stdout. Permanent errors (shape
+  drift in Yahoo's response) stop retrying after the first attempt
+  instead of burning the budget.
+- **Sentry events are PII-scrubbed** before transmit: Alpaca PK/AK
+  keys, emails, base64 tokens, and auth headers get redacted.
+- **Circuit breaker actually works.** Before this round the reset bug
+  silently ate the failure counter on every non-tripped check.
+- **Wheel auto-resolves stock splits** — if Alpaca reports 200 shares
+  after a 2:1 split during your put-active window, we no longer freeze
+  the cycle; we normalise baseline + expected_delta by the split ratio
+  and proceed.
+- **Social sentiment drops stale chatter** — StockTwits messages older
+  than 30 minutes don't count towards the current sentiment reading.
+- **News scores capped at ±15 per article** so one densely-worded
+  headline can't dominate the aggregate.
+- **FOMC dates extended to 2027** so the event guard doesn't silently
+  stop flagging Fed meetings on Jan 1 2027.
+
+See `GO_LIVE_CHECKLIST.md` for the pre-flip-to-live gating list and
+`CLAUDE.md` for developer-facing notes.
+
+---
+
+## 2026-04-18/19 — Round-12 Audit Sweep (15 PRs shipped)
 
 Full-stack audit + fix cycle run on the 30-day paper validation window.
 Five parallel audits (security, database, trading logic, UI/UX/mobile,

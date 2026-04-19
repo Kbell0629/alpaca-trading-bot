@@ -1,6 +1,29 @@
 # Implementation Status — 20 Profit Features
 
-Tracker for the 20 profit-enhancement features proposed after the initial build. Updated 2026-04-16.
+Tracker for the 20 profit-enhancement features proposed after the initial build. Updated 2026-04-19.
+
+## Round-13 audit + cleanup (2026-04-19)
+
+Follow-on to the round-12 sweep. 7 PRs: #17 (handler mixin tests),
+#18 (scheduler cb-reset bug + 23 tests), #19 (smart_orders full-flow
+tests), #20 (wheel stock-split auto-resolve), #21 (yfinance retry +
+`_detect_split_since` exception scope), #22 (frontend/security bundle:
+README XSS, API-key mask, WCAG contrast, iOS zoom, HSTS, Sentry PII
+scrub, auth_mixin sanitization), #23 (math + peripheral: `iv_rank`
+telemetry, news score cap, social recency, LLM malformed flag,
+FOMC 2027, capitol hard-fail, notify DLQ keep-in-queue).
+
+**Most consequential find:** `_cb_blocked()` was popping the initial
+`{fails:N, open_until:0}` state on every non-open check, silently
+resetting the circuit-breaker counter. Before PR #18 the breaker had
+never tripped in production despite yfinance failures.
+
+**Test suite:** 229 → 328 passing (+99 tests across round-12 + round-13).
+
+See `GO_LIVE_CHECKLIST.md` for the pre-live gating list.
+
+---
+
 
 ## ✅ Implemented (13 features)
 
