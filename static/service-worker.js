@@ -96,10 +96,13 @@ self.addEventListener('fetch', event => {
 self.addEventListener('push', event => {
     const data = event.data ? event.data.json() : {};
     const title = data.title || 'Trading Bot Alert';
+    // Use the single SVG shipped in manifest.json; the previous hardcoded
+    // icon-192.png never existed on disk (404 → browser falls back to a
+    // generic app icon). SVG works in Chrome/Edge/Safari push notifs.
     const options = {
         body: data.body || '',
-        icon: '/static/icon-192.png',
-        badge: '/static/icon-192.png',
+        icon: '/static/icon.svg',
+        badge: '/static/icon.svg',
         tag: data.tag || 'trading-bot',
         data: { url: data.url || '/' },
     };

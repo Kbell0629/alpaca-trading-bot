@@ -1587,6 +1587,52 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
     text-decoration: none;
 }
 .skip-link:focus { left: 8px; outline: 2px solid #fff; outline-offset: 2px; }
+
+/* Round-12 a11y: visible focus ring on every interactive element. The
+   default browser outline is often invisible on dark backgrounds; this
+   fallback gives keyboard users a clear indicator. */
+button:focus-visible, a:focus-visible, input:focus-visible,
+select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+/* Spinner used by force-refresh + deploy buttons during long operations. */
+@keyframes _spin { to { transform: rotate(360deg); } }
+.spinning { display: inline-block; animation: _spin 0.8s linear infinite; }
+button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
+
+/* Round-12 mobile UX: visual hint that wide tables scroll horizontally.
+   A soft fade on the right edge cues users that there's more off-screen;
+   this is purely decorative (WCAG-friendly — semantic <table> unchanged). */
+.table-card, .overflow-x-scroll {
+    position: relative;
+}
+.table-card::after, .overflow-x-scroll::after {
+    content: '';
+    position: absolute; top: 0; right: 0; bottom: 0;
+    width: 24px;
+    background: linear-gradient(to right, transparent, var(--card));
+    pointer-events: none;
+    opacity: 0.9;
+}
+/* Don't show the fade hint once the user has scrolled to the end, or on
+   narrow tables that fit entirely. Browsers without :has() fall through
+   to always-showing the hint which is harmless. */
+@supports selector(:has(*)) {
+    .table-card:has(table:not([data-overflow="true"]))::after,
+    .overflow-x-scroll:not([data-has-overflow="true"])::after {
+        display: none;
+    }
+}
+
+/* Round-12 a11y: honour prefers-reduced-motion — disable the non-essential
+   animations (spinner keeps so users can tell work is happening, but
+   modal transform + transition are shortened). */
+@media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+    .spinning { animation-duration: 0.8s !important; }   /* keep the spinner */
+}
 </style>
 </head>
 <body>
@@ -2212,8 +2258,85 @@ function scrollToSection(id) {
     }
 }
 
-function openModal(id) { document.getElementById(id).classList.add('active'); }
-function closeModal(id) { document.getElementById(id).classList.remove('active'); }
+// Round-12 audit a11y fix: focus trap + focus restoration on modals.
+// Previously openModal()/closeModal() only toggled the `.active` class,
+// leaving keyboard users trapped tabbing into the background page
+// (or nowhere at all on close). Now we:
+//   1. Remember which element had focus before opening.
+//   2. On open, focus the first focusable child of the modal.
+//   3. While open, Tab cycles through modal focusables only.
+//   4. Esc closes the modal.
+//   5. On close, restore focus to the original trigger.
+var _modalStack = [];
+var _modalFocusListener = null;
+var _modalKeyListener = null;
+
+function _focusablesIn(root) {
+    return Array.prototype.slice.call(root.querySelectorAll(
+        'button:not([disabled]), [href], input:not([disabled]):not([type="hidden"]), '
+        + 'select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    ));
+}
+
+function _installModalKeyHandler(modalEl) {
+    _modalKeyListener = function(e) {
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            closeModal(modalEl.id);
+            return;
+        }
+        if (e.key !== 'Tab') return;
+        var focusables = _focusablesIn(modalEl);
+        if (focusables.length === 0) { e.preventDefault(); return; }
+        var first = focusables[0];
+        var last = focusables[focusables.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault(); last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault(); first.focus();
+        }
+    };
+    document.addEventListener('keydown', _modalKeyListener);
+}
+
+function _removeModalKeyHandler() {
+    if (_modalKeyListener) {
+        document.removeEventListener('keydown', _modalKeyListener);
+        _modalKeyListener = null;
+    }
+}
+
+function openModal(id) {
+    var m = document.getElementById(id);
+    if (!m) return;
+    // Remember focused element BEFORE showing the modal so we can restore.
+    _modalStack.push({id: id, prev: document.activeElement});
+    m.classList.add('active');
+    // Semantics for screen readers.
+    m.setAttribute('role', 'dialog');
+    m.setAttribute('aria-modal', 'true');
+    // Focus first focusable (defer a tick — modal transitions transform on open).
+    setTimeout(function() {
+        var focusables = _focusablesIn(m);
+        if (focusables.length) focusables[0].focus();
+    }, 30);
+    _installModalKeyHandler(m);
+}
+
+function closeModal(id) {
+    var m = document.getElementById(id);
+    if (!m) return;
+    m.classList.remove('active');
+    _removeModalKeyHandler();
+    // Restore focus to whoever opened this modal.
+    var entry = null;
+    for (var i = _modalStack.length - 1; i >= 0; i--) {
+        if (_modalStack[i].id === id) { entry = _modalStack.splice(i, 1)[0]; break; }
+    }
+    if (entry && entry.prev && typeof entry.prev.focus === 'function') {
+        try { entry.prev.focus(); } catch (_) { /* element detached — ignore */ }
+    }
+}
 
 function fmtMoney(n) {
     // Guard against undefined/null/NaN → would render "$NaN" otherwise
@@ -2295,9 +2418,9 @@ function updateDeployDetails() {
     document.getElementById('deployModalTitle').textContent = 'Deploy ' + strat.name + ' on ' + symbol;
     document.getElementById('deployModalSubtitle').textContent = strat.desc;
     document.getElementById('deployActionText').innerHTML =
-        'Action: <strong>BUY ' + qty + ' share' + (qty>1?'s':'') + ' of ' + symbol + ' at ~' + fmtMoney(price) + '</strong>';
+        'Action: <strong>BUY ' + qty + ' share' + (qty>1?'s':'') + ' of ' + esc(symbol) + ' at ~' + esc(fmtMoney(price)) + '</strong>';
 
-    let infoHtml = 'You\'re buying <strong>' + fmtMoney(cost) + '</strong> worth of ' + symbol + '<br><br>' +
+    let infoHtml = 'You\'re buying <strong>' + esc(fmtMoney(cost)) + '</strong> worth of ' + esc(symbol) + '<br><br>' +
         'If it goes UP ' + (strat.profitPct*100).toFixed(0) + '%: You make ~<span class="positive">' + fmtMoney(profitTarget) + ' profit</span><br>' +
         'If it goes DOWN ' + (strat.stopPct*100).toFixed(0) + '%: You lose ~<span class="negative">' + fmtMoney(maxLoss) + ' (stop)</span><br><br>' +
         'Stop-loss will automatically sell at <strong>' + fmtMoney(stopPrice) + '</strong> to limit your maximum loss.';
@@ -3308,7 +3431,7 @@ async function refreshSchedulerStatus() {
         renderSchedulerPanel(s);
     } catch(e) {
         var panel = document.getElementById('schedulerPanel');
-        if (panel) panel.innerHTML = '<div class="empty" style="padding:20px;color:var(--red)">Scheduler status unavailable: ' + e.message + '</div>';
+        if (panel) panel.innerHTML = '<div class="empty" style="padding:20px;color:var(--red)">Scheduler status unavailable: ' + esc(e.message) + '</div>';
     }
 }
 
@@ -3316,7 +3439,7 @@ function renderSchedulerPanel(s) {
     var panel = document.getElementById('schedulerPanel');
     if (!panel) return;
     if (!s.running) {
-        panel.innerHTML = '<div class="empty" style="padding:20px;color:var(--red)">Scheduler NOT RUNNING. ' + (s.error||'') + '</div>';
+        panel.innerHTML = '<div class="empty" style="padding:20px;color:var(--red)">Scheduler NOT RUNNING. ' + esc(s.error||'') + '</div>';
         return;
     }
     var lastRuns = s.last_runs || {};
@@ -3455,6 +3578,12 @@ async function refreshData() {
 }
 
 async function forceRefresh() {
+    // Round-12 a11y fix: visible spinner + disabled state so users don't
+    // tap the button 3 times waiting for the screener to finish (~5-30s).
+    var btn = document.querySelector('.refresh-btn-v2');
+    var icon = document.getElementById('refreshIcon');
+    if (btn) { btn.disabled = true; btn.setAttribute('aria-busy', 'true'); }
+    if (icon) icon.classList.add('spinning');
     toast('Refreshing dashboard data (running screener)...', 'info');
     addLog('Manual refresh triggered', 'info');
     try {
@@ -3466,7 +3595,10 @@ async function forceRefresh() {
         toast('Data refreshed!', 'success');
         addLog('Dashboard data refreshed', 'success');
     } catch(e) {
-        toast('Refresh failed: ' + e.message, 'error');
+        toast('Refresh failed: ' + esc(e.message), 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.removeAttribute('aria-busy'); }
+        if (icon) icon.classList.remove('spinning');
     }
 }
 
