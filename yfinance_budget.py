@@ -90,18 +90,43 @@ def _record_failure():
             _cb_failures = 0  # reset for next cycle
 
 
+# Permanent errors — programming bugs or bad inputs. Retrying won't help
+# and can mask the underlying issue. Everything else (network, HTTPError,
+# JSONDecodeError, pandas parse errors) is treated as transient.
+_PERMANENT_ERRORS = (ValueError, TypeError, AttributeError, KeyError)
+
+
+def _report_failure(exc, fn_name):
+    """Best-effort Sentry capture so systematic failures surface beyond
+    stdout. Never raises — observability import can be missing in tests."""
+    try:
+        from observability import capture_exception
+        capture_exception(exc, component="yfinance_budget", fn=fn_name)
+    except Exception:
+        pass
+
+
 def _call_with_retry(fn, *args, **kwargs):
     """Execute fn with retry + backoff. Returns (result, None) on success
-    or (None, error_msg) on exhausted retries / open circuit."""
+    or (None, error_msg) on exhausted retries / open circuit.
+
+    Permanent errors (ValueError/TypeError/AttributeError/KeyError) bypass
+    the retry loop — they indicate bad input or shape drift, not a
+    transient upstream hiccup."""
     if _circuit_open():
         return None, "yfinance circuit breaker open (too many recent failures)"
     last_err = None
+    fn_name = getattr(fn, "__name__", "unknown")
     for attempt in range(MAX_RETRIES + 1):
         _wait_for_slot()
         try:
             result = fn(*args, **kwargs)
             _record_success()
             return result, None
+        except _PERMANENT_ERRORS as e:
+            _record_failure()
+            _report_failure(e, fn_name)
+            return None, f"{type(e).__name__}: {e}"
         except Exception as e:
             last_err = str(e)
             if attempt < MAX_RETRIES:
@@ -109,6 +134,7 @@ def _call_with_retry(fn, *args, **kwargs):
                 time.sleep(backoff)
                 continue
             _record_failure()
+            _report_failure(e, fn_name)
             return None, last_err
     _record_failure()
     return None, last_err or "unknown yfinance error"

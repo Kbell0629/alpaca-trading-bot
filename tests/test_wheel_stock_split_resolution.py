@@ -61,6 +61,36 @@ def test_detect_split_since_returns_one_when_yf_raises(monkeypatch):
     assert ws._detect_split_since("AAPL", "2024-01-01T10:00:00") == 1.0
 
 
+def test_detect_split_since_survives_malformed_split_rows(monkeypatch):
+    """yfinance returning an entry with non-numeric ratio (shape drift)
+    used to blow up on `ratio > 0` with TypeError — the original try/
+    except only wrapped the yf_splits CALL, not the iteration. Now
+    wrapped end-to-end, so we fall through to the 1.0 freeze path."""
+    import wheel_strategy as ws
+    split_dt = datetime(2024, 6, 15, tzinfo=timezone.utc)
+    monkeypatch.setattr("yfinance_budget.yf_splits",
+                        lambda _sym: [(split_dt, None)])  # bad ratio
+    assert ws._detect_split_since("AAPL", "2024-06-01T10:00:00") == 1.0
+
+
+def test_detect_split_since_reports_failure_to_observability(monkeypatch):
+    """Runtime errors from yfinance must surface to Sentry so we notice
+    systematic API drift rather than silently freezing every wheel."""
+    import sys, types
+    import wheel_strategy as ws
+    captured = []
+    fake = types.ModuleType("observability")
+    fake.capture_exception = lambda exc, **ctx: captured.append((exc, ctx))
+    monkeypatch.setitem(sys.modules, "observability", fake)
+    def _raise(_sym):
+        raise RuntimeError("yfinance down")
+    monkeypatch.setattr("yfinance_budget.yf_splits", _raise)
+    assert ws._detect_split_since("AAPL", "2024-06-01T10:00:00") == 1.0
+    assert len(captured) == 1
+    assert captured[0][1].get("fn") == "_detect_split_since"
+    assert captured[0][1].get("symbol") == "AAPL"
+
+
 def test_detect_split_since_returns_ratio_when_split_found(monkeypatch):
     """yfinance reports a 2:1 split that post-dates opened_at → ratio 2.0."""
     import wheel_strategy as ws

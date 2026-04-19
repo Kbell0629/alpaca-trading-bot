@@ -93,17 +93,26 @@ def _detect_split_since(symbol: str, since_iso: str) -> float:
     try:
         from yfinance_budget import yf_splits
         splits = yf_splits(symbol)
-    except Exception:
+        if not splits:
+            return 1.0
+        cumulative = 1.0
+        for split_dt, ratio in splits:
+            # yfinance returns tz-naive UTC; compare against opened in UTC
+            s_dt = split_dt.replace(tzinfo=timezone.utc) if split_dt.tzinfo is None else split_dt
+            if s_dt >= opened and ratio > 0:
+                cumulative *= float(ratio)
+        return cumulative
+    except Exception as e:
+        # Any failure (network, malformed split row, import error) falls
+        # through to the caller's FREEZE-state path. Surface to Sentry so
+        # we notice systematic yfinance shape changes.
+        try:
+            from observability import capture_exception
+            capture_exception(e, component="wheel_strategy",
+                              fn="_detect_split_since", symbol=symbol)
+        except Exception:
+            pass
         return 1.0
-    if not splits:
-        return 1.0
-    cumulative = 1.0
-    for split_dt, ratio in splits:
-        # yfinance returns tz-naive UTC; compare against opened in UTC
-        s_dt = split_dt.replace(tzinfo=timezone.utc) if split_dt.tzinfo is None else split_dt
-        if s_dt >= opened and ratio > 0:
-            cumulative *= float(ratio)
-    return cumulative
 
 # File locking — used to prevent races between wheel monitor ticks and
 # human-triggered actions (e.g. Force Deploy). Unix only; on Windows this
