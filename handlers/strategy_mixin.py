@@ -3,6 +3,7 @@ Strategy deployment and lifecycle handlers (deploy, pause, stop, preset).
 Mixed into DashboardHandler via MRO.
 """
 import json
+import logging
 import os
 import re
 import urllib.request
@@ -10,6 +11,8 @@ from datetime import timedelta
 
 from et_time import now_et
 import glob
+
+log = logging.getLogger(__name__)
 # Lazy server-module proxy: resolves `server.X` references at first
 # *call* time, not import time. Required because server.py is launched
 # as `python3 server.py` which makes it __main__, so `import server`
@@ -71,7 +74,7 @@ class StrategyHandlerMixin:
                 except Exception:
                     pass  # malformed timestamp; fail open rather than block
         except Exception as e:
-            print(f"[deploy] guardrails pre-check failed: {e}", flush=True)
+            log.warning("deploy: guardrails pre-check failed", extra={"error": str(e)})
 
         # Round-11: audit-log every manual deploy so we can trace
         # "when did I enter this position" in the admin audit log.

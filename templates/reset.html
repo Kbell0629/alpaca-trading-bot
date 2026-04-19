@@ -27,7 +27,10 @@ button { width:100%; padding:14px; background:var(--accent); color:white; border
 </form>
 <div id="message" class="message"></div>
 </div>
-<script src="https://cdn.jsdelivr.net/npm/zxcvbn@4.4.2/dist/zxcvbn.js"></script>
+<!-- SRI: integrity="sha384-..." added by scripts/compute_sri.sh locally. -->
+<script src="https://cdn.jsdelivr.net/npm/zxcvbn@4.4.2/dist/zxcvbn.js"
+        crossorigin="anonymous"
+        referrerpolicy="no-referrer"></script>
 <script>
 function updatePwStrength(pw) {
   var fill = document.getElementById('pwStrengthFill');

@@ -5,12 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{{USERNAME}} — Track Record</title>
 <meta name="theme-color" content="#3b82f6">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<!-- SRI: integrity="sha384-..." will be added by scripts/compute_sri.sh
+     when run locally (sandbox can't reach CDN to compute the hash). -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"
+        crossorigin="anonymous"
+        referrerpolicy="no-referrer"></script>
 <style>
 :root {
     --bg: #0a0e17; --card: #111827; --border: #1e293b;
     --text: #e2e8f0; --text-dim: #94a3b8; --accent: #3b82f6;
     --green: #10b981; --red: #ef4444; --orange: #f59e0b; --purple: #8b5cf6;
+    /* --green-text / --red-text: WCAG-AA-compliant brighter variants for
+       text on the dark bg. See dashboard.html for the rationale. */
+    --green-text: #6ee7b7; --red-text: #fca5a5;
     --radius: 12px;
 }
 * { margin:0; padding:0; box-sizing: border-box; }
@@ -55,8 +62,8 @@ body {
     margin-bottom: 6px;
 }
 .stat-value { font-size: 24px; font-weight: 700; }
-.stat-value.positive { color: var(--green); }
-.stat-value.negative { color: var(--red); }
+.stat-value.positive { color: var(--green-text); }
+.stat-value.negative { color: var(--red-text); }
 .stat-value.neutral { color: var(--text-dim); }
 .chart-card {
     background: var(--card);

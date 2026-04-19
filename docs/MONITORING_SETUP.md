@@ -13,9 +13,21 @@ grab the DSN from Project Settings → Client Keys (DSN). Format looks like:
 https://YOUR_PUBLIC_KEY@oYOUR_ORG_ID.ingest.us.sentry.io/YOUR_PROJECT_ID
 ```
 
-> **NOTE**: Do not commit real DSNs to source control. Earlier revisions of
-> this file embedded a live DSN; if you deployed against that DSN, rotate it
-> in Sentry (Project Settings → Client Keys → disable old key).
+> **SECURITY — rotate the old DSN**: earlier revisions of this file
+> embedded a live DSN. GitHub history cannot be safely rewritten, so that
+> DSN is permanently visible to anyone with read access to the repo.
+> **Rotate it now**:
+>
+> 1. Log into Sentry → Project Settings → Client Keys (DSN)
+> 2. Find the old key (it may be labeled "Default") and click **Deactivate**
+>    (or create a fresh key first, then deactivate the old one).
+> 3. Create a new DSN, set `SENTRY_DSN` in Railway → Variables to the new
+>    value, and save. Railway redeploys automatically.
+> 4. Confirm the next deploy logs `Sentry initialized` in Railway logs.
+>
+> Sentry DSNs are write-only ingestion endpoints — they can't read your
+> data — but a leaked DSN lets an attacker spam events at your 5K/month
+> free-tier quota, so rotation is still warranted.
 
 ### What you need to do
 
