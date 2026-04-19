@@ -991,6 +991,11 @@ class DashboardHandler(
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store")
+        # HSTS — tell the browser to only talk HTTPS to us. Harmless when
+        # we're behind Railway's TLS-terminating proxy; actively protects
+        # against SSL-stripping if users ever hit an http:// link.
+        self.send_header("Strict-Transport-Security",
+                         "max-age=31536000; includeSubDomains")
         cors = self._cors_origin()
         if cors:
             self.send_header("Access-Control-Allow-Origin", cors)
@@ -1008,6 +1013,8 @@ class DashboardHandler(
         self.send_header("X-Frame-Options", "DENY")  # prevent clickjacking
         self.send_header("Referrer-Policy", "same-origin")
         self.send_header("Permissions-Policy", "geolocation=(), microphone=(self), camera=()")
+        self.send_header("Strict-Transport-Security",
+                         "max-age=31536000; includeSubDomains")
         # CSP — locks down what can execute. `unsafe-inline` allowed because
         # dashboard uses many inline onclick handlers + inline <script>; Chart.js
         # comes from jsdelivr.
