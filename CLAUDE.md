@@ -268,8 +268,64 @@ admin). Regression here has caused cross-user auto-trading before.
 
 ---
 
-## Last session state (2026-04-18 / 2026-04-19 night)
+## The round-13 cleanup (follow-on to round-12, 2026-04-19)
 
-15 PRs merged. Full round-12 audit swept. Paper-trading 30-day
-validation window ongoing. No deploys blocked. Tests green. The
-bot is autonomous on Railway.
+Follow-up session that landed the test-coverage gaps flagged at the
+end of round-12 plus a focused production-readiness pass.
+
+### Shipped this round
+
+| PR | Commit | Subject |
+|---|---|---|
+| #17 | `4e06420` | Handler-mixin unit tests (21 cases on csrf / session cookie / input validation) |
+| #18 | `7853b2a` | **Latent cb-reset bug** + 23 scheduler helper tests. `_cb_blocked()` was popping initial `{fails:N, open_until:0}` state on every non-open check, silently resetting the counter. Circuit breaker never tripped. |
+| #19 | `db66769` | `smart_orders.place_smart_buy/sell` full-flow tests (14 cases: cancel-race, partial fill, coid format) |
+| #20 | `7e5b490` | Wheel stock-split auto-resolve (`_detect_split_since` + `yf_splits` helper). Anomaly guard now normalises share counts by split ratio instead of always freezing. |
+| #21 | `8fa2706` | Exception-handling hardening: `yfinance_budget._call_with_retry` fails fast on permanent errors + routes failures to Sentry; `wheel_strategy._detect_split_since` wraps full computation |
+| #22 | `b72f9f9` | Frontend/security bundle (8 fixes): README XSS scrub (DOMParser allowlist), API-key `type=password`, regime WCAG AA contrast, iOS zoom prevention, SW offline toast, HSTS header, Sentry `before_send` PII scrub, `auth_mixin` verify-keys generic error |
+| #23 | _pending_ | Math + peripheral bundle (7 fixes): `iv_rank` rate-limit flag + telemetry, `news_scanner` ±15 cap, `social_sentiment` 30-min recency filter, `llm_sentiment` `malformed` flag, `economic_calendar` FOMC 2027, `capitol_trades` hard-fail when disabled, `notify` DLQ overflow kept in main queue on write-fail |
+| #24 | _this PR_ | Docs refresh + go-live checklist |
+
+### Key behaviour changes round-13
+
+1. **yfinance retry loop** is now two-tier: ValueError / TypeError /
+   AttributeError / KeyError bypass the retry budget entirely — they
+   indicate shape drift, not a transient hiccup. Network/HTTPError
+   still get the 4-attempt exponential backoff. Final failure pings
+   `observability.capture_exception`, not just stdout.
+2. **Sentry PII scrub** wired via `before_send=_scrub_pii` in
+   `observability.init_sentry`. Strips PK/AK keys, emails, base64
+   tokens, and auth headers (`APCA-API-KEY-ID`, `Authorization`,
+   `Cookie`, `X-CSRF-Token`) from every event. Drops the event on
+   scrub-error rather than sending unscrubbed.
+3. **Circuit breaker finally works**. Before PR #18, every non-open
+   check was popping the initial state entry and silently resetting
+   the fail counter → the breaker never tripped in production.
+   Added `tests/test_cloud_scheduler_helpers.py` to pin the
+   fails-accumulate-until-threshold contract.
+4. **Wheel stock splits** auto-resolve via `yfinance_budget.yf_splits`
+   when the anomaly guard sees `share_delta >= 2 * expected_delta`.
+   Baseline + expected_delta normalise by the cumulative split ratio
+   and the assignment branch fires. Falls back to the freeze path if
+   yfinance returns empty / malformed data.
+5. **README sanitizer** in the dashboard: `marked.parse()` output
+   passes through a DOMParser allowlist (`_README_ALLOWED_TAGS` +
+   `_README_ALLOWED_ATTRS`) that strips `<script>`, on*-handlers,
+   and `javascript:`/`data:`/`vbscript:` URIs. Fallback path uses
+   textContent instead of raw-markdown innerHTML.
+6. **Input UX**: all auth templates (login/signup/forgot/reset) use
+   `font-size:16px` so iOS Safari doesn't auto-zoom. API-key fields
+   are `type=password` + `spellcheck=false`.
+
+---
+
+## Last session state (2026-04-19 afternoon)
+
+24 PRs total now merged (or pending merge). Paper-trading 30-day
+validation window ongoing — started 2026-04-15, ends ~2026-05-15.
+Tests: **328 passing** locally (two sandbox-only failures in
+`test_auth::test_password_strength_rejects_weak` and
+`test_dashboard_data::...trading_session...` as documented).
+Ruff clean. Coverage floor held at 15%.
+
+See `GO_LIVE_CHECKLIST.md` for the pre-flip-to-live gating list.
