@@ -1045,13 +1045,33 @@ def analyze_news(pick, news_items):
 # ---------------------------------------------------------------------------
 
 def calc_position_size(price, volatility, portfolio_value, max_risk_pct=0.02):
-    """Size position so max loss (1 ATR move) = max_risk_pct of portfolio."""
+    """Size position so max loss (1 ATR move) = max_risk_pct of portfolio.
+
+    Phase 5 of the float->Decimal migration (plan: docs/DECIMAL_MIGRATION_PLAN.md).
+    This is THE share-count computation — the value that flows to Alpaca's
+    order-placement endpoint. Float drift at the int() boundary can tip the
+    integer qty by ±1 share at the rounding edge. Paper-trading users don't
+    notice; live-trading users would (wrong qty = wrong capital deployed).
+
+    Compute the two caps in Decimal, int-truncate each independently (same
+    as the pre-migration impl — preserves behaviour where "1 more share
+    would exceed max_risk" rounds DOWN, not up). Output is plain int.
+    """
     if price <= 0 or volatility <= 0 or portfolio_value <= 0:
         return 1
-    risk_per_share = price * (volatility / 100)
-    max_risk_dollars = portfolio_value * max_risk_pct
-    shares = max(1, int(max_risk_dollars / risk_per_share))
-    max_by_value = max(1, int(portfolio_value * 0.10 / price))  # max 10% in one stock
+    from decimal import Decimal as _D
+    def _d(v):
+        return _D(str(v)) if not isinstance(v, _D) else v
+    price_d = _d(price)
+    vol_d = _d(volatility)
+    pv_d = _d(portfolio_value)
+    risk_pct_d = _d(max_risk_pct)
+    risk_per_share_d = price_d * (vol_d / _d(100))
+    max_risk_dollars_d = pv_d * risk_pct_d
+    # int() on Decimal does ToIntegralValue with TRUNC semantics, matching
+    # the old int(float) behaviour.
+    shares = max(1, int(max_risk_dollars_d / risk_per_share_d))
+    max_by_value = max(1, int(pv_d * _d("0.10") / price_d))  # max 10% in one stock
     return min(shares, max_by_value)
 
 
