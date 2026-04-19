@@ -118,6 +118,58 @@ def _is_closed(trade: dict) -> bool:
     return status == "closed" or trade.get("pnl") is not None
 
 
+# Round-12 audit fix: trim_journal races with update_scorecard's append
+# path. Scheduler runs trim at 3:15 AM ET and scorecard at 4:05 PM ET so
+# they don't overlap in practice, but a future refactor could change the
+# timing. Use an OS advisory lock (fcntl.flock) on a sibling .lock file
+# to serialize trim against any caller using the same file. update_
+# scorecard's append path doesn't currently take this lock (it uses its
+# own atomic-write pattern), so simultaneous trim + scorecard writes are
+# still theoretically possible — but fcntl.flock at least protects
+# concurrent trim calls from corrupting each other.
+try:
+    import fcntl as _fcntl
+    _HAS_FCNTL = True
+except ImportError:
+    _HAS_FCNTL = False
+
+
+class _TrimLock:
+    """Context manager wrapping flock() on `{journal_path}.trim.lock`.
+
+    No-op on Windows (fcntl unavailable). If flock fails for any reason,
+    we fall through to an unlocked trim rather than deadlocking — this
+    is belt-and-suspenders, not a hard correctness primitive (the
+    scheduler's time-of-day gating already prevents concurrent runs in
+    production)."""
+    def __init__(self, path: str):
+        self.path = path + ".trim.lock"
+        self.fh = None
+
+    def __enter__(self):
+        if not _HAS_FCNTL:
+            return self
+        try:
+            self.fh = open(self.path, "w")
+            _fcntl.flock(self.fh.fileno(), _fcntl.LOCK_EX)
+        except Exception as e:
+            log.warning("trim_journal: lock acquire failed, proceeding unlocked",
+                        extra={"path": self.path, "error": str(e)})
+            if self.fh:
+                try: self.fh.close()
+                except Exception: pass
+                self.fh = None
+        return self
+
+    def __exit__(self, *a):
+        if self.fh:
+            try: _fcntl.flock(self.fh.fileno(), _fcntl.LOCK_UN)
+            except Exception: pass
+            try: self.fh.close()
+            except Exception: pass
+            self.fh = None
+
+
 def trim_journal(
     journal_path: str,
     *,
@@ -127,6 +179,8 @@ def trim_journal(
 
     Does nothing if the live file doesn't exist. Open trades never move.
     Trades missing a parseable timestamp stay in live (conservative).
+    Serialized via fcntl.flock on a sibling .trim.lock so concurrent
+    trim calls can't corrupt each other.
 
     Returns: {"moved": N, "live_count": L, "archive_count": A,
               "cutoff_iso": "...", "journal_path": ...}
@@ -135,6 +189,15 @@ def trim_journal(
         return {"moved": 0, "live_count": 0, "archive_count": 0,
                 "cutoff_iso": None, "journal_path": journal_path}
 
+    with _TrimLock(journal_path):
+        return _trim_journal_locked(journal_path, keep_closed_years)
+
+
+def _trim_journal_locked(
+    journal_path: str, keep_closed_years: float
+) -> dict:
+    """Inner — runs with the trim lock held. Factored out to keep the
+    public trim_journal() signature clean."""
     try:
         with open(journal_path) as f:
             journal = json.load(f) or {}
