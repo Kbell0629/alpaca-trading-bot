@@ -33,12 +33,11 @@ Last updated: 2026-04-19 (end of round-13 audit + cleanup).
       invalidates every stored credential and every user has to re-enter
 
 ### Sentry DSN rotation
-- [ ] The DSN that appeared in early docs is in git history forever.
-      Rotate via Sentry → Project Settings → Client Keys →
-      Deactivate old → Create new → update Railway `SENTRY_DSN`
+- [x] DSN rotated. Old key deactivated in Sentry; new `SENTRY_DSN`
+      set in Railway env vars.
 - [ ] Confirm the PII scrub is live by triggering a test error and
       checking the Sentry UI shows `[REDACTED_KEY]` / `[REDACTED]`
-      in auth headers
+      in auth headers (optional — do once you've got a real event)
 
 ### Alpaca live credentials
 - [ ] Generate dedicated **live** API keys at
@@ -162,9 +161,12 @@ Called out so future you / future Claude doesn't re-open these:
 
 ## 7. Ongoing monitoring (after flip)
 
-- [ ] Subscribe to Sentry alerts (Project Settings → Alerts)
-- [ ] Verify ntfy.sh receives kill-switch + daily-summary pushes
-- [ ] Verify daily-close email lands in `notification_email`
+- [x] Notifications wired — ntfy.sh push + email via Gmail MCP
+      + Sentry alerts (Project Settings → Alerts) are all active.
+- [ ] Verify ntfy.sh receives the first live-mode kill-switch or
+      daily-summary push after the flip (one-time confirmation)
+- [ ] Verify daily-close email lands in `notification_email` after
+      the first live-mode close
 - [ ] Check `/api/admin/health` daily for the first week
 - [ ] Watch scheduler latency in the logs — flag if any tick takes
       > 60s (indicates rate-limit saturation or infinite loop)
