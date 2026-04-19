@@ -78,40 +78,78 @@ def _safe_float(v, default=0.0):
         return default
 
 
+# Phase 3 of the float->Decimal migration (see docs/DECIMAL_MIGRATION_PLAN.md).
+# Scope narrower than originally planned: only the money-weighted math in
+# portfolio_beta + beta_adjusted_exposure gets Decimal-internal treatment.
+# Ratios/statistics elsewhere in this module (correlation, drawdown %,
+# Sharpe-like calcs) stay as float — they're proportional, not money, so
+# Decimal would add complexity without precision benefit.
+from decimal import Decimal as _Decimal
+
+
+def _dec_mv(v, default=_Decimal("0")):
+    """Coerce a market-value field to Decimal via str() so the IEEE-754
+    imprecision of the input float doesn't contaminate the aggregate."""
+    if v is None or v == "":
+        return default
+    if isinstance(v, _Decimal):
+        return v
+    try:
+        return _Decimal(str(v))
+    except Exception:
+        return default
+
+
 # ============================================================================
 # Item 11: Beta-adjusted exposure
 # ============================================================================
 
 def portfolio_beta(positions, beta_map=None):
     """Weighted average beta across positions. Uses |market_value|
-    so shorts count their beta exposure correctly."""
+    so shorts count their beta exposure correctly.
+
+    Phase-3 migration: market-value weights and their sum run in Decimal
+    to prevent drift across N positions. Output is a float (beta is a
+    dimensionless statistic)."""
     if not positions:
         return 0.0
     bm = beta_map or DEFAULT_BETA_MAP
-    total_mv = 0.0
-    weighted_beta = 0.0
+    total_mv = _Decimal("0")
+    weighted_beta = _Decimal("0")
     for p in positions:
         sym = (p.get("symbol") or "").upper()
-        mv = abs(_safe_float(p.get("market_value", 0)))
+        mv = abs(_dec_mv(p.get("market_value", 0)))
         if mv <= 0:
             continue
-        beta = bm.get(sym, 1.0)  # unknown defaults to market-beta 1.0
+        beta = _dec_mv(bm.get(sym, 1.0))  # unknown defaults to market-beta 1.0
         total_mv += mv
         weighted_beta += mv * beta
-    return weighted_beta / total_mv if total_mv > 0 else 0.0
+    if total_mv <= 0:
+        return 0.0
+    return float(weighted_beta / total_mv)
 
 
 def beta_adjusted_exposure(positions, portfolio_value, beta_map=None):
     """Compute beta-weighted exposure as % of portfolio. The intuition:
-    100% in a 3× leveraged ETF = 300% beta-weighted exposure."""
-    if portfolio_value <= 0:
+    100% in a 3× leveraged ETF = 300% beta-weighted exposure.
+
+    Phase-3 migration: invested and portfolio_value held as Decimal for
+    the core aggregate; percentages emit as float (proportional)."""
+    pv_d = _dec_mv(portfolio_value)
+    if pv_d <= 0:
         return {"invested_pct": 0, "beta_weighted_pct": 0,
                 "portfolio_beta": 0, "regime": "unknown",
                 "block_high_beta": False}
-    invested = sum(abs(_safe_float(p.get("market_value", 0))) for p in positions)
-    pf_beta = portfolio_beta(positions, beta_map)
-    beta_pct = (invested * pf_beta / portfolio_value) * 100
-    invested_pct = invested / portfolio_value * 100
+    invested_d = sum(
+        (abs(_dec_mv(p.get("market_value", 0))) for p in positions),
+        _Decimal("0"),
+    )
+    pf_beta = portfolio_beta(positions, beta_map)   # float already
+    # beta_pct and invested_pct are percentages — compute as float for
+    # downstream display consistency but with Decimal invested/pv so the
+    # ratio is drift-free.
+    beta_pct = float((invested_d * _dec_mv(pf_beta) / pv_d)) * 100
+    invested_pct = float(invested_d / pv_d) * 100
     # Regime classification
     if beta_pct < 50:
         regime, block = "low", False
