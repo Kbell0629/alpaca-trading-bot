@@ -98,7 +98,6 @@ def live_server(fake_alpaca):
     env["PORT"] = str(port)
     env["ENABLE_CLOUD_SCHEDULER"] = "false"  # keep scheduler off during tests
     env["SIGNUP_INVITE_CODE"] = ""
-    env.pop("REQUIRE_MASTER_KEY", None)
 
     proc = subprocess.Popen(
         [sys.executable, "-u", "server.py"],

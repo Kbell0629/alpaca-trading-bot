@@ -42,6 +42,24 @@ except Exception:
 _INITIALIZED = False
 
 
+# Prefixes we consider "warning / error" when auto-classifying the level of
+# a routed print() call. The existing codebase uses these consistently —
+# `[ERROR ...]`, `[WARN ...]`, `[FATAL ...]` — so matching on the first
+# ~40 characters is a reliable proxy for the caller's intended severity.
+_WARN_PREFIXES = ("[WARN", "[WARNING", "WARN:", "WARNING:")
+_ERROR_PREFIXES = ("[ERROR", "[FATAL", "[CRITICAL", "ERROR:", "FATAL:")
+
+
+def _classify_level(msg: str):
+    """Pick WARNING/ERROR/INFO for a routed print based on common prefixes."""
+    head = msg.lstrip()[:40].upper()
+    if head.startswith(_ERROR_PREFIXES):
+        return logging.ERROR
+    if head.startswith(_WARN_PREFIXES):
+        return logging.WARNING
+    return logging.INFO
+
+
 class _JsonFormatter(logging.Formatter):
     """Single-line JSON log envelope.
 
@@ -121,4 +139,69 @@ def init(level: str | None = None) -> None:
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("asyncio").setLevel(logging.WARNING)
 
+    # Phase 2 of the logging migration: route every remaining `print(...)`
+    # call through the logger automatically. This avoids a 400-site manual
+    # sweep across strategies/one-shots (learn.py, update_dashboard.py,
+    # update_scorecard.py, wheel_strategy.py, smart_orders.py, and ~30
+    # others) by intercepting at the builtin level. Explicit `log.info()`
+    # calls in server.py / auth.py / observability.py / handlers/*.py
+    # remain unchanged (those went through proper migration in the
+    # previous PR).
+    _patch_builtin_print()
+
     _INITIALIZED = True
+
+
+def _patch_builtin_print():
+    """Replace builtins.print with one that routes through the logger.
+
+    Routing rules:
+      - If caller passed `file=<anything other than stdout/stderr>`, delegate
+        to the real print (e.g. writing to a file object for reports).
+      - Otherwise emit through `logging.getLogger(caller_module_name)`.
+      - Level inferred from `[ERROR ...]` / `[WARN ...]` prefixes, defaults
+        to INFO (matches 95%+ of current call sites).
+      - If caller passed `file=sys.stderr`, minimum level is WARNING even
+        if the message text doesn't indicate severity.
+
+    Idempotent — subsequent calls are no-ops so re-init is safe.
+    Exposes the original on `builtins._orig_print` for any caller that
+    needs to bypass the shim.
+    """
+    import builtins
+    import sys as _sys
+
+    if getattr(builtins, "_print_shim_installed", False):
+        return
+
+    _orig_print = builtins.print
+    # Cache logger lookups so repeated prints from the same module don't
+    # re-traverse logging's hierarchy each time.
+    _logger_cache: dict = {}
+
+    def _patched(*args, sep=" ", end="\n", file=None, flush=False, **kwargs):
+        # Escape hatch for writes to actual file objects.
+        if file is not None and file is not _sys.stdout and file is not _sys.stderr:
+            return _orig_print(*args, sep=sep, end=end, file=file, flush=flush, **kwargs)
+        try:
+            msg = sep.join(str(a) for a in args).rstrip("\n")
+        except Exception:
+            return _orig_print(*args, sep=sep, end=end, file=file, flush=flush, **kwargs)
+        # Caller frame → module name for logger hierarchy.
+        try:
+            frame = _sys._getframe(1)
+            mod_name = frame.f_globals.get("__name__", "root")
+        except Exception:
+            mod_name = "root"
+        logger = _logger_cache.get(mod_name)
+        if logger is None:
+            logger = logging.getLogger(mod_name)
+            _logger_cache[mod_name] = logger
+        level = _classify_level(msg)
+        if file is _sys.stderr and level < logging.WARNING:
+            level = logging.WARNING
+        logger.log(level, msg)
+
+    builtins._orig_print = _orig_print  # type: ignore[attr-defined]
+    builtins.print = _patched           # type: ignore[assignment]
+    builtins._print_shim_installed = True  # type: ignore[attr-defined]

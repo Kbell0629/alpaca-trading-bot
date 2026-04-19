@@ -876,6 +876,29 @@ class DashboardHandler(
             "correlation_id": correlation_id,
         }, status)
 
+    def _load_full_journal(self, filename="trade_journal.json"):
+        """Load the user's trade journal MERGED with its archive sibling.
+
+        Introduced with the round-12 trade-journal trimming PR. Callers that
+        need lifetime history (tax lots, /api/tax-report, trades.csv) must
+        use this helper so trimming can't silently erase old trades from
+        their view. Callers that only need recent activity (heatmap,
+        scheduler tick) can keep using plain `load_json` on the live file.
+
+        Returns a journal dict with `trades` = archive + live. Live-only keys
+        (daily_snapshots, custom metadata) are preserved from the live file.
+        """
+        live_path = self._user_file(filename)
+        live = load_json(live_path) or {}
+        try:
+            import trade_journal as _tj
+            all_trades = _tj.load_all_trades(live_path)
+            if all_trades:
+                live = {**live, "trades": all_trades}
+        except Exception as e:
+            observability.capture_exception(e, source="_load_full_journal")
+        return live
+
     def _sanitize_alpaca_error(self, http_code, err_body):
         """Return a dict the dashboard JS can safely render. Maps upstream
         errors to user-friendly categories instead of leaking raw Alpaca
@@ -1043,7 +1066,8 @@ class DashboardHandler(
                         o.get("status", ""), o.get("created_at", ""),
                     ])
             elif path == "/api/export/trades.csv":
-                journal = load_json(self._user_file("trade_journal.json")) or {}
+                # Lifetime export — include archived trades.
+                journal = self._load_full_journal("trade_journal.json")
                 trades = journal.get("trades", [])
                 w.writerow(["Timestamp", "Symbol", "Side", "Qty", "Price",
                             "Strategy", "Status", "PnL", "Reason"])
@@ -1075,7 +1099,9 @@ class DashboardHandler(
             elif path == "/api/export/tax-lots.csv":
                 try:
                     import tax_lots
-                    journal = load_json(self._user_file("trade_journal.json")) or {}
+                    # Tax lots must include archived trades — Form 8949 needs
+                    # every disposition since inception.
+                    journal = self._load_full_journal("trade_journal.json")
                     report = tax_lots.compute_tax_lots(journal)
                     w.writerow(["Symbol", "Qty", "AcquiredDate", "SoldDate",
                                 "HoldingDays", "Term", "CostBasis", "Proceeds",
@@ -1585,7 +1611,8 @@ class DashboardHandler(
             # the user's trade journal.
             try:
                 import tax_lots
-                journal = load_json(self._user_file("trade_journal.json")) or {"trades": []}
+                # Lifetime history required for accurate cost basis.
+                journal = self._load_full_journal("trade_journal.json")
                 qs = urllib.parse.urlparse(self.path).query
                 params = urllib.parse.parse_qs(qs)
                 method = (params.get("method") or ["FIFO"])[0].upper()
@@ -1601,7 +1628,8 @@ class DashboardHandler(
             # so the browser triggers a save dialog.
             try:
                 import tax_lots, io, csv
-                journal = load_json(self._user_file("trade_journal.json")) or {"trades": []}
+                # Lifetime history required for Form 8949.
+                journal = self._load_full_journal("trade_journal.json")
                 report = tax_lots.compute_tax_lots(journal, basis_method="FIFO")
                 buf = io.StringIO()
                 w = csv.writer(buf)
