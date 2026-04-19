@@ -50,13 +50,11 @@ Last updated: 2026-04-19 (end of round-13 audit + cleanup).
 - [ ] Funded with only what you're willing to lose in the first
       week (suggest: ≤ 10% of your intended deployment size)
 
-### PWA icons (non-blocking)
-- [ ] Current `manifest.json` + service-worker reference a single
-      SVG. Chrome / Edge push renders SVG fine. iOS Safari needs
-      PNG fallbacks (192×192 + 512×512).
-- [ ] Run locally: `magick static/icon.svg -resize 192x192
-      static/icon-192.png` and the 512 variant. Commit.
-- [ ] Not blocking — deferred per user decision.
+### PWA icons
+- [x] PNG icons generated and wired: `static/icon-192.png` (Android),
+      `static/icon-512.png` (splash/high-DPI), `static/apple-touch-
+      icon.png` (iOS 180×180). Listed in `manifest.json` alongside
+      the original SVG. Shipped in PR #25.
 
 ---
 
