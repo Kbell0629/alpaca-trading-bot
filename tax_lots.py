@@ -40,6 +40,51 @@ import csv
 import os
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
+from decimal import Decimal, ROUND_HALF_EVEN
+
+# Phase 1 of the float→Decimal migration (see docs/DECIMAL_MIGRATION_PLAN.md).
+# tax_lots is read-only w.r.t. trading: it computes cost basis / proceeds /
+# gain-loss but never places an order. Moving its internal math to Decimal
+# eliminates compounding drift in the numbers the IRS gets, while leaving
+# the function signatures and return-dict shape unchanged so downstream
+# consumers don't need changes. Serialisation back to float is explicit,
+# with banker's rounding at the cent.
+
+# Penny grid used for final quantize. ROUND_HALF_EVEN is IRS-acceptable
+# for rounding individual lots; matches Alpaca's own 1099 math.
+_CENT = Decimal("0.01")
+
+
+def _to_decimal(v, default: Decimal = Decimal("0")) -> Decimal:
+    """Coerce a trade-field value to Decimal WITHOUT going through float.
+
+    Using Decimal(float_x) is the classic footgun — it preserves the IEEE
+    754 imprecision into the Decimal value. Always route through str so
+    the human-readable form survives.
+    """
+    if v is None or v == "":
+        return default
+    if isinstance(v, Decimal):
+        return v
+    try:
+        return Decimal(str(v))
+    except Exception:
+        return default
+
+
+def _round_cent(v: Decimal) -> Decimal:
+    """Quantize to the nearest cent using banker's rounding."""
+    return v.quantize(_CENT, rounding=ROUND_HALF_EVEN)
+
+
+def _to_json_money(v: Decimal) -> float:
+    """Serialise a Decimal money value to float for the JSON response.
+
+    We round at the cent (Decimal), then cross the boundary to float at
+    the very last step. The float has at most 2dp of meaningful precision,
+    so the IEEE 754 representation error is bounded well below $0.01.
+    """
+    return float(_round_cent(v))
 
 
 def _parse_date(s):
@@ -56,6 +101,8 @@ def _parse_date(s):
 
 
 def _safe_float(v, default=0.0):
+    """Legacy helper. Kept for any external caller; internal compute paths
+    use _to_decimal exclusively after the phase-1 migration."""
     try:
         return float(v) if v is not None else default
     except (ValueError, TypeError):
@@ -69,36 +116,47 @@ def compute_tax_lots(journal, basis_method="FIFO"):
         journal: dict with "trades" list (from trade_journal.json)
         basis_method: "FIFO" or "LIFO" — defaults FIFO (Alpaca's default)
 
-    Returns dict described in module docstring."""
+    Returns dict described in module docstring.
+
+    Phase-1 migration note: internal math is Decimal. The return dict keeps
+    the same keys + float types for cost_basis / proceeds / gain_loss so
+    every caller (server.py handlers, CSV export, JSON responses) is
+    unaffected. The only behavioural change is fewer floating-point
+    rounding errors in the last 2-3 decimal places — which now won't
+    compound across long chains of partial fills.
+    """
     trades = sorted(
         journal.get("trades", []) if journal else [],
         key=lambda t: t.get("timestamp", t.get("entry_date", ""))
     )
 
     # Per-symbol queue of open buy lots.
-    # Each lot: {qty, cost_basis_per_share, entry_date, entry_trade_id}
-    open_lots = defaultdict(deque)
-    closed_lots = []  # list of dicts with all matching info
+    # Each lot: {qty_remaining: int, cost_basis_per_share: Decimal,
+    #            entry_date, entry_timestamp, strategy}
+    open_lots: dict[str, deque] = defaultdict(deque)
+    closed_lots: list = []
 
     for t in trades:
         symbol = t.get("symbol", "")
         if not symbol:
             continue
         side = (t.get("side") or "").lower()
+        # Share counts stay integer — Alpaca supports fractional shares but
+        # the tax-lot report rounds to whole-share lines for 8949 clarity.
         try:
             qty = int(_safe_float(t.get("qty", 0)))
         except (TypeError, ValueError):
             continue
         if qty <= 0:
             continue
-        price = _safe_float(t.get("price"))
+        price = _to_decimal(t.get("price"))
         ts = t.get("timestamp") or t.get("entry_date") or ""
         d = _parse_date(ts)
         if not d:
             continue
 
         if side == "buy":
-            # Open a new lot
+            # Open a new lot. cost_basis_per_share is Decimal from here on.
             open_lots[symbol].append({
                 "qty_remaining": qty,
                 "cost_basis_per_share": price,
@@ -107,7 +165,6 @@ def compute_tax_lots(journal, basis_method="FIFO"):
                 "strategy": t.get("strategy", ""),
             })
         elif side == "sell":
-            # Match against open lots using basis_method
             qty_to_sell = qty
             exit_price = price
             exit_date = d
@@ -117,9 +174,11 @@ def compute_tax_lots(journal, basis_method="FIFO"):
                 else:
                     lot = open_lots[symbol][0]
                 matched_qty = min(qty_to_sell, lot["qty_remaining"])
-                proceeds = matched_qty * exit_price
-                cost_basis = matched_qty * lot["cost_basis_per_share"]
-                gain_loss = proceeds - cost_basis
+                # Decimal arithmetic. matched_qty is int; mixing int with
+                # Decimal is exact (no float involved).
+                proceeds_d = matched_qty * exit_price
+                cost_basis_d = matched_qty * lot["cost_basis_per_share"]
+                gain_loss_d = proceeds_d - cost_basis_d
                 holding_days = (exit_date - lot["entry_date"]).days
                 term = "long" if holding_days >= 365 else "short"
                 closed_lots.append({
@@ -129,9 +188,11 @@ def compute_tax_lots(journal, basis_method="FIFO"):
                     "sold_date": exit_date.isoformat(),
                     "holding_days": holding_days,
                     "term": term,
-                    "cost_basis": round(cost_basis, 2),
-                    "proceeds": round(proceeds, 2),
-                    "gain_loss": round(gain_loss, 2),
+                    # Serialise at the boundary. Quantize first, then cross
+                    # to float for JSON compatibility.
+                    "cost_basis": _to_json_money(cost_basis_d),
+                    "proceeds": _to_json_money(proceeds_d),
+                    "gain_loss": _to_json_money(gain_loss_d),
                     "strategy": lot.get("strategy", ""),
                     "method": basis_method,
                 })
@@ -148,29 +209,51 @@ def compute_tax_lots(journal, basis_method="FIFO"):
     # Wash-sale detection (basic: same symbol + loss + repurchase within 30d)
     wash_sales = detect_wash_sales(closed_lots, all_trades=trades)
 
-    # Summary
-    short_term = sum(l["gain_loss"] for l in closed_lots if l["term"] == "short")
-    long_term = sum(l["gain_loss"] for l in closed_lots if l["term"] == "long")
-    total_proceeds = sum(l["proceeds"] for l in closed_lots)
-    total_basis = sum(l["cost_basis"] for l in closed_lots)
-    total_gl = sum(l["gain_loss"] for l in closed_lots)
+    # Summary math — sum Decimals directly to avoid accumulating float
+    # error across thousands of lots. Each closed_lots[i]["gain_loss"] is
+    # a rounded float for the caller; summing Decimal pre-round values
+    # would give a slightly more accurate total, but to stay consistent
+    # with what the dashboard sees lot-by-lot we sum the rounded forms.
+    short_term = sum(
+        (_to_decimal(l["gain_loss"]) for l in closed_lots if l["term"] == "short"),
+        Decimal("0"),
+    )
+    long_term = sum(
+        (_to_decimal(l["gain_loss"]) for l in closed_lots if l["term"] == "long"),
+        Decimal("0"),
+    )
+    total_proceeds = sum(
+        (_to_decimal(l["proceeds"]) for l in closed_lots),
+        Decimal("0"),
+    )
+    total_basis = sum(
+        (_to_decimal(l["cost_basis"]) for l in closed_lots),
+        Decimal("0"),
+    )
+    total_gl = sum(
+        (_to_decimal(l["gain_loss"]) for l in closed_lots),
+        Decimal("0"),
+    )
 
     return {
         "lots": closed_lots,
         "summary": {
             "lot_count": len(closed_lots),
-            "total_proceeds": round(total_proceeds, 2),
-            "total_cost_basis": round(total_basis, 2),
-            "total_gain_loss": round(total_gl, 2),
-            "short_term_gain": round(short_term, 2),
-            "long_term_gain": round(long_term, 2),
+            "total_proceeds": _to_json_money(total_proceeds),
+            "total_cost_basis": _to_json_money(total_basis),
+            "total_gain_loss": _to_json_money(total_gl),
+            "short_term_gain": _to_json_money(short_term),
+            "long_term_gain": _to_json_money(long_term),
             "wash_sale_warnings": wash_sales,
         },
         "open_lots_remaining": {
             sym: [
                 {
                     "qty": l["qty_remaining"],
-                    "cost_basis_per_share": l["cost_basis_per_share"],
+                    # Serialise the Decimal cost basis at the boundary
+                    # — preserve 2dp for display; the internal lot still
+                    # holds the full-precision Decimal.
+                    "cost_basis_per_share": _to_json_money(l["cost_basis_per_share"]),
                     "entry_date": l["entry_date"].isoformat(),
                     "strategy": l["strategy"],
                 }
