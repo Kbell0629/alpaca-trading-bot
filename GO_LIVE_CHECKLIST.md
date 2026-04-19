@@ -3,7 +3,8 @@
 Use this before flipping the Settings → 🔴 Live Trading toggle.
 Paper-trading mode has forgiving edges that real money does not.
 
-Last updated: 2026-04-19 (end of round-13 audit + cleanup).
+Last updated: 2026-04-19 (end of round-17 architectural cleanup).
+**Code-side work is complete. Only timeboxed user actions remain.**
 
 ---
 
@@ -109,12 +110,34 @@ All boxes below are satisfied as of 2026-04-19 unless noted.
 - [x] Handler mixins covered (round-13 PR #17)
 - [x] `smart_orders.place_smart_buy/sell` full-flow covered (PR #19)
 - [x] Scheduler cb-reset covered (PR #18)
+- [x] Strategy modules — pead, short, earnings, insider (round-16 PR #30)
+- [x] State-recovery validator (round-16 PR #30) — boot-time wheel +
+      journal vs Alpaca position consistency check
+- [x] capital_check fallback ladder pinning tests (round-15 PR #29)
+- [x] Per-user isolation invariant pinning tests (round-15 PR #29)
+- [x] Scheduler-API extraction contract tests (round-17 PR #31)
+
+### Notification + alert wiring (verified post round-15)
+- [x] Kill-switch trip → ntfy push + email + Sentry (round-14 PR #28
+      fixed the email path, was silently broken since round-11)
+- [x] Daily -3% loss → critical_alert wired (round-15 PR #29 — was
+      a dashboard-only flag with no notification path)
+- [x] Alpaca 401/403 (cred rot) → critical_alert with per-day dedup
+      (round-15 PR #29)
+- [x] yfinance circuit-breaker open → notify_user push (round-12)
+- [x] Scheduler down >5 min → /healthz returns 503 → Railway alert
 
 ### Deploy
 - [x] Procfile + railway.json + nixpacks.toml present
 - [x] `/api/version` returns git commit SHA dynamically
 - [x] JSON-structured logging via `logging_setup.init()`
 - [x] Railway auto-deploys on push to `main`
+
+### Architecture
+- [x] cloud_scheduler.py monolith split — Alpaca API plumbing in
+      `scheduler_api.py` (round-17 PR #31)
+- [x] State-recovery boot validator (`state_recovery.py`, round-16 PR #30)
+- [x] Per-user isolation extracted (`per_user_isolation.py`, round-15 PR #29)
 
 ---
 

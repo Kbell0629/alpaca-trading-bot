@@ -4,6 +4,57 @@
 
 ---
 
+## 🆕 What's New (2026-04-19 — Rounds 14-17, Production Hardening)
+
+Continued audit + cleanup pass after round-13. Four more rounds, 4 PRs,
+~50 fixes. The biggest things you'll notice:
+
+### Real-money / safety
+- **Kill-switch trip emails actually arrive now.** This was silently
+  broken since round-11 — wrong import + wrong signature in
+  `observability.critical_alert`. Every kill-switch / -3% loss event
+  failed to email the operator (ntfy push + Sentry still worked).
+- **Daily -3% loss alert now notifies you.** Was a dashboard-only flag
+  with no notification path. Now routes through `critical_alert` +
+  ntfy + email + Sentry, deduped per ET-day.
+- **Alpaca 401/403 (creds rotted) fires a critical alert** once per
+  user per ET-day. Previously these silently failed every order.
+- **Partial-fill cost basis is correct now.** When a limit order
+  partially fills + market falls back, the journal records the
+  blended price, not just the market leg. PnL no longer drifts ~0.8%
+  over wheel cycles.
+
+### Diagnostics & integrity
+- **Boot-time state-recovery validator** compares wheel state files +
+  trade journal vs Alpaca-reported positions on every Railway redeploy.
+  Surfaces drift via Sentry as warnings (doesn't auto-fix). Catches
+  manual sales / margin liquidations / orphan trades early.
+- **Per-user isolation invariant pinned by tests.** The "only user_id==1
+  may inherit shared DATA_DIR" rule is now in `per_user_isolation.py`
+  with multiple tests to prevent silent regression.
+
+### Code structure
+- **`cloud_scheduler.py` 3800-LOC monolith split.** Alpaca API plumbing
+  (HTTP helpers + circuit breaker + rate limiter) extracted into
+  `scheduler_api.py`. Backwards-compatible — every symbol still
+  re-exported from `cloud_scheduler` so existing imports work.
+
+### UI polish
+- Sortable table headers announce sort direction to screen readers
+  (`aria-sort`).
+- Network-error toasts now include a Retry button.
+- 30-min screener runs show an elapsed-time progress banner with
+  stage hints.
+- Removed dead Stock Watcher provider from `capitol_trades`.
+
+**Test count:** 229 → **410 passing** (+181 across rounds 12-17).
+Ruff clean. CI coverage floor 15% (measured ~21%).
+
+See `GO_LIVE_CHECKLIST.md` for what's left before flipping to live
+(only user-side operational items remain).
+
+---
+
 ## 🆕 What's New (2026-04-19 — Round-13 Cleanup + Production Readiness)
 
 Follow-on to the round-12 sweep. 7 more PRs landed covering the test-

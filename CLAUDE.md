@@ -129,30 +129,41 @@ Only remaining pre-live prereqs live in `GO_LIVE_CHECKLIST.md`:
 finish 30-day paper validation window + generate dedicated live
 Alpaca keys. Both are user-only operational steps.
 
-### Known gaps — safe to defer, no active bugs
+### Known gaps — closed out in rounds 13-17
 
+| Item | Status | Round |
+|---|---|---|
+| `cloud_scheduler.py` 3800 LOC monolith | **Split**: API helpers + CB + RL extracted to `scheduler_api.py` | #17 |
+| Handler mixin tests (auth/strategy/actions/admin) | **21 tests** in `test_handler_mixins.py` | #12 |
+| `smart_orders.place_smart_buy` full flow | **14 tests** in `test_smart_orders_full_flow.py` | #12 |
+| Strategy modules zero tests | **18 tests** added across pead/short/earnings/insider | #16 |
+| Wheel stock-split auto-resolve | **Done**: `_detect_split_since` + `yf_splits` | #13 |
+| 5-layer state without reconciliation | **Boot-time validator** in `state_recovery.py` | #16 |
+| Critical-alert email broken (silent since round-11) | **Fixed**: import + signature | #14 |
+| Daily -3% loss alert had no notification | **Wired** through `critical_alert` | #15 |
+| 401/403 silent credential rot | **Detect + per-day alert dedup** | #15 |
+| smart_orders partial-fill cost basis drift | **Blended avg** in buy + sell | #15 |
+| `_load_with_shared_fallback` untested invariant | **Pinning tests** in `per_user_isolation.py` | #15 |
+
+### Truly remaining gaps (defer + accept)
+
+- **Coverage ratchet**: CI floor is 15% (measured baseline ~21% after
+  rounds 13-17). Nudge up when you add test suites; pyproject.toml
+  omits one-shot CLIs from the measurement.
 - **Structured logging phase 2**: `logging_setup.init()` installs a
   `builtins.print` shim so all existing prints get auto-classified
   JSON envelopes. Explicit `log.info()` migration still pending for
-  ~400 prints in strategies / one-shots (`learn.py`,
-  `update_dashboard.py`, peripheral strategy modules). Not blocking.
-- **Test coverage**:
-  - `cloud_scheduler.py` is 3800 LOC / 4 tests. Rate limiter, full
-    tick, webhook paths all untested.
-  - Handler mixins (`auth_mixin`, `strategy_mixin`, `actions_mixin`,
-    `admin_mixin` — 2000 LOC) have 0 unit tests; only E2E boot smoke.
-  - `smart_orders.place_smart_buy` full flow (timeout → cancel →
-    settle → market fallback) untested.
-  - Many strategy modules with zero tests: `pead_strategy`,
-    `short_strategy`, `earnings_play`, `insider_signals`,
-    `options_flow`, `options_analysis`.
-- **Coverage ratchet**: CI floor is 15% (measured baseline ~19%).
-  Nudge up when you add test suites; pyproject.toml omits one-shot
-  CLIs from the measurement.
-- **Stock-split auto-detection in wheels**: current behaviour is to
-  FREEZE a wheel state when `share_delta >= 2*expected_delta`
-  (PR #14). Auto-resolving a split via yfinance splits feed would
-  be better but needs wheel-cycle testing.
+  ~400 prints in strategies / one-shots. Not blocking — shim handles it.
+- **`options_flow` + `options_analysis`** unit tests — ~90% network-
+  bound. Pure-helper tests would have low marginal value vs the
+  full-mock investment.
+
+### Accept-as-is (not bugs)
+
+- forgot-password enumeration via rate-limit exhaustion (bucket mitigates)
+- kill-switch latency up to one scheduler tick (~100ms — acceptable scale)
+- `_ServerProxy` late-binding circular-import workaround (unavoidable
+  because server.py runs as `__main__`)
 
 ### Explicitly won't fix (user's own audit flagged them as skip)
 
@@ -321,24 +332,100 @@ end of round-12 plus a focused production-readiness pass.
 
 ---
 
-## Last session state (2026-04-19 evening)
+## Rounds 14-17 (2026-04-19, second-half session)
 
-26 PRs total merged. Paper-trading 30-day validation window ongoing —
-started 2026-04-15, ends ~2026-05-15.
+Three additional audit/cleanup rounds + an architectural refactor
+landed after round-13. This is what each round delivered:
+
+### Round-14 audit (PR #28)
+
+Eight parallel Explore agents covering security, trading logic,
+concurrency, UI/UX, ops, integrations, tests, and a fresh-eyes
+architectural review. 7 fixes shipped, 9 false positives documented:
+
+* `observability.critical_alert` email path **completely broken since
+  round-11** — wrong import + wrong signature. Every kill-switch trip
+  silently failed to email the operator. Fixed.
+* `handle_logout` cleared session cookie but left CSRF cookie alive
+  for 30 days. Fixed.
+* Sentry `ignore_errors` only listed BrokenPipe variants → URLError /
+  TimeoutError noise burning the 5K/month free quota.
+* `notify` queue had no hard cap when DLQ persistently fails (memory).
+* `notify.log_notification` did read-modify-write without flock (race).
+* `llm_sentiment` daily counter used naive UTC not ET.
+* `track_record` HTML didn't escape strategy names (defensive).
+
+### Round-15 closeout (PR #29)
+
+11 deferred items from round-14 + new findings during verification:
+
+* **`smart_orders` partial-fill blended cost basis** — `filled_avg_price`
+  recorded only the market leg, ignoring the (often better) limit
+  partial fill. Drifted PnL ~0.8% over wheel cycles. Fixed with
+  `(limit_qty*limit_px + market_qty*market_px) / total` blend.
+* **Alpaca 401/403 auto-detect** — fires `critical_alert` once per
+  user per ET-day so credential rot doesn't silently fail orders.
+* **Daily -3% loss alert now notifies** — was a print + dashboard
+  flag with NO notification path. Now wired through `critical_alert`.
+* **Per-user isolation** — extracted `_load_with_shared_fallback` to
+  `per_user_isolation.py` with pinning tests so the user_id==1-only
+  invariant can't silently regress.
+* aria-sort on sortable headers; retry button on network errors;
+  screener progress banner.
+* notify + observability error logs scrub NTFY topic.
+* Subprocess SIGKILL fallback for screener timeouts + scheduler
+  shutdown.
+* `capital_check._compute_reserved_by_orders` extracted + tested
+  (prevents silent over-leverage on live-quote fetch failure).
+* Stock Watcher dead-code removed from `capitol_trades`.
+
+### Round-16 (PR #30)
+
+State-recovery validator + strategy module test coverage:
+
+* **`state_recovery.py`** — boot-time consistency check that compares
+  wheel state files + trade journal vs Alpaca-reported positions.
+  Doesn't auto-fix; logs drift via `observability.capture_message`
+  so the operator notices before drift becomes real-money damage.
+  Wired into `start_scheduler()` as a daemon thread.
+* **18 strategy tests** for previously-uncovered modules:
+  `pead_strategy`, `short_strategy`, `earnings_play`, `insider_signals`.
+  18 state_recovery tests too.
+
+### Round-17 (PR #31)
+
+`cloud_scheduler.py` 3800-LOC monolith split:
+
+* Extracted Alpaca API plumbing (`user_api_*`, `_cb_*`, `_rl_*`,
+  `_alert_alpaca_auth_failure`) into **`scheduler_api.py`** (~330 LOC).
+* `cloud_scheduler` re-exports every symbol via `from scheduler_api
+  import ...` — same objects shared (not copies), so `_cb_state` /
+  `_rl_state` / dedup dicts stay coherent across import sites.
+* Lazy import of `notify_user` inside `_cb_record_failure` to avoid
+  the `cloud_scheduler ↔ scheduler_api` import cycle.
+* 7 contract tests in `test_scheduler_api_extraction.py` pin the
+  re-export surface (callable presence + same-object identity).
+
+---
+
+## Last session state (2026-04-19 night)
+
+**31 PRs total merged across rounds 11-17.** Paper-trading 30-day
+validation window ongoing — started 2026-04-15, ends ~2026-05-15.
 
 **All code-side + operational-prereq work is complete.** User has:
   * Rotated Sentry DSN and set `SENTRY_DSN` on Railway
   * Set `MASTER_ENCRYPTION_KEY` on Railway (locked, do not rotate)
   * Wired notifications (ntfy.sh + Gmail + Sentry alerts)
-  * PWA PNG icons live (#25)
+  * PWA PNG icons live (PR #25)
 
 Only remaining pre-live items are timeboxed user actions:
   1. Finish the 30-day paper validation window
   2. Generate dedicated live Alpaca keys + flip via Settings
 
-Tests: **328 passing** locally (two sandbox-only failures in
+Tests: **410 passing** locally (two sandbox-only failures in
 `test_auth::test_password_strength_rejects_weak` and
 `test_dashboard_data::...trading_session...` as documented).
-Ruff clean. Coverage floor held at 15%.
+Ruff clean. Coverage floor held at 15% (~21% measured).
 
 See `GO_LIVE_CHECKLIST.md` for the pre-flip-to-live gating list.
