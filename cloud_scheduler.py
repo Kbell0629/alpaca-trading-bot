@@ -51,6 +51,34 @@ _last_runs = {}
 _recent_logs = []  # Circular buffer for dashboard display
 _logs_lock = threading.Lock()
 _last_fatal_notify_ts = 0.0  # rate-limit fatal-loop-error push notifications
+
+# Round-12 audit: kill-switch atomicity. The flag-on-disk + per-symbol
+# re-read pattern leaves a <100ms window where a multi-symbol deploy can
+# place orders AFTER the switch has tripped (the current iteration reads
+# the old value, places the order, then the next iteration reads the new
+# value). _deploy_abort_event is a process-local threading.Event that
+# kill-switch activation sets IMMEDIATELY; tight loops checking it will
+# see the change without a disk-read round-trip.
+_deploy_abort_event = threading.Event()
+
+
+def request_deploy_abort():
+    """Signal every in-progress deploy loop to bail out ASAP. Call this
+    from the kill-switch activation path so running deploys stop BEFORE
+    their next API call, not after their next per-symbol fs re-read."""
+    _deploy_abort_event.set()
+
+
+def clear_deploy_abort():
+    """Re-arm the abort event after a kill-switch deactivation. Called
+    by the deactivate flow once all state has been cleaned up."""
+    _deploy_abort_event.clear()
+
+
+def deploy_should_abort():
+    """Tight-loop-safe check. Returns True if kill-switch just tripped
+    and the current deploy loop should exit without placing more orders."""
+    return _deploy_abort_event.is_set()
 _staleness_last_alert = {}   # {task_key: ts} — prevent repeat alerts every tick
 _last_heartbeat_ts = 0.0     # when we last emitted a heartbeat log line
 
@@ -1986,6 +2014,14 @@ def run_auto_deployer(user):
     for pick in top_picks:
         if deployed >= max_per_day:
             break
+        # Round-12 audit fix: atomic abort on kill-switch trip. Previous
+        # per-symbol disk re-read left a window where orders could still
+        # fire after the switch activated; threading.Event is race-free.
+        if deploy_should_abort():
+            log(f"[{user['username']}] Auto-deployer ABORT: kill-switch tripped mid-loop "
+                f"({deployed}/{max_per_day} deployed, {candidates_evaluated} evaluated)",
+                "deployer")
+            break
         symbol = pick.get("symbol")
         best_strat = pick.get("best_strategy", "").lower().replace(" ", "_")
         candidates_evaluated += 1
@@ -3309,6 +3345,13 @@ def _run_wheel_auto_deploy_inner(user):
     max_per_day = int(wheel_cfg.get("max_new_per_day", 1))
     for pick in candidates:
         if deployed >= max_per_day:
+            break
+        # Round-12 audit fix: atomic abort on kill-switch trip (wheel
+        # deploys can place multiple puts in one tick; each put involves
+        # two API calls, so kill-switch mid-loop is a real window).
+        if deploy_should_abort():
+            log(f"[{user['username']}] Wheel auto-deploy ABORT: kill-switch tripped mid-loop",
+                "wheel")
             break
         success, msg, _ = ws.open_short_put(user, pick)
         if success:

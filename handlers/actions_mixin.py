@@ -197,6 +197,17 @@ class ActionsHandlerMixin:
         guardrails = server.load_json(guardrails_path) or {}
 
         if activate:
+            # Round-12 audit: signal ALL in-flight deploy loops to abort
+            # BEFORE we cancel orders. Otherwise a mid-loop deploy can
+            # keep placing orders for a few hundred ms after cancel-all
+            # returns — those survive into the "halted" state.
+            try:
+                from cloud_scheduler import request_deploy_abort
+                request_deploy_abort()
+            except Exception as _e:
+                log.warning("kill-switch: deploy abort signal failed",
+                            extra={"error": str(_e)})
+
             # 1. Cancel ALL open orders in one atomic bulk call
             orders_before = self.user_api_get(f"{self.user_api_endpoint}/orders?status=open")
             orders_cancelled = len(orders_before) if isinstance(orders_before, list) else 0
@@ -295,6 +306,15 @@ class ActionsHandlerMixin:
             guardrails["kill_switch_triggered_at"] = None
             guardrails["kill_switch_reason"] = None
             server.save_json(guardrails_path, guardrails)
+
+            # Re-arm the deploy-abort event so subsequent deploys aren't
+            # instantly aborted by the stale signal.
+            try:
+                from cloud_scheduler import clear_deploy_abort
+                clear_deploy_abort()
+            except Exception as _e:
+                log.warning("kill-switch deactivate: clear abort failed",
+                            extra={"error": str(_e)})
 
             log.warning("kill-switch DEACTIVATED", extra={"timestamp": timestamp})
 

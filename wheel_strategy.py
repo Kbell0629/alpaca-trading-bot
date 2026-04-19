@@ -948,6 +948,32 @@ def _advance_wheel_state_locked(user, state, events):
                 baseline = int(state.get("shares_at_open", 0) or 0)
                 expected_delta = 100 * contract_meta.get("quantity", 1)
                 share_delta = share_qty - baseline
+                # Round-12 audit fix: guard against stock-split anomalies.
+                # If the share delta is suspiciously larger than expected
+                # (e.g., 2:1 split during the put window would show delta
+                # ~200 on a qty=1 put — expected_delta=100 but double that),
+                # do NOT auto-advance state with a potentially-wrong cost
+                # basis. Log a critical warning + pin the state so the
+                # user can reconcile manually. Silent misattribution here
+                # produces wrong 1099 + wrong PnL going forward.
+                if share_delta >= expected_delta * 2:
+                    log_history(state, "anomalous_share_delta_no_auto_advance", {
+                        "shares_owned_now": share_qty,
+                        "shares_at_open_baseline": baseline,
+                        "expected_delta": expected_delta,
+                        "actual_delta": share_delta,
+                        "hint": "possible stock split, manual trade, or DRIP — reconcile "
+                                "cost_basis + cycles_completed by hand then clear this state.",
+                    })
+                    events.append(
+                        f"{symbol}: WARN anomalous share delta ({share_delta} vs "
+                        f"expected {expected_delta}). Wheel state FROZEN — check manually."
+                    )
+                    # Leave state on stage_1_put_active with contract_meta
+                    # in place; monitor will keep re-evaluating until the
+                    # user clears the state or the share count normalises.
+                    save_wheel_state(user, state)
+                    return events
                 if share_delta >= expected_delta:
                     # Put was assigned — attribute the new 100×qty shares to us.
                     # Cost basis = strike - premium per share (on ONLY the new shares).
