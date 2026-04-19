@@ -1210,9 +1210,14 @@ class DashboardHandler(
             avg_pnl = pnl / trades_n if trades_n else 0
             wr = (wins_n / trades_n * 100) if trades_n else 0
             pnl_cls = "positive" if pnl > 0 else "negative" if pnl < 0 else "neutral"
+            # Round-14: html.escape strategy name. _normalize_strategy_name
+            # restricts to [a-z0-9_] so practical XSS is unlikely, but
+            # defence in depth against future producers (e.g. user-supplied
+            # custom strategy names) is the right pattern.
+            from html import escape as _html_escape
             strat_rows_html += (
                 f"<tr>"
-                f"<td><strong>{strat}</strong></td>"
+                f"<td><strong>{_html_escape(str(strat))}</strong></td>"
                 f"<td>{trades_n} ({wins_n}W)</td>"
                 f"<td>{wr:.1f}%</td>"
                 f"<td>${avg_pnl:,.0f}</td>"

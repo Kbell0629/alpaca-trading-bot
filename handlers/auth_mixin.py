@@ -433,6 +433,12 @@ class AuthHandlerMixin:
         self.send_response(302)
         self.send_header("Location", "/login")
         self.send_header("Set-Cookie", "session=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict")
+        # Round-14: also clear the csrf cookie. Previously the csrf token
+        # outlived the session by up to 30 days. If the user logged back in,
+        # the stale csrf could be reused — defence-in-depth, not a confirmed
+        # exploit, but the symmetry with the session cookie is the right
+        # thing to do.
+        self.send_header("Set-Cookie", "csrf=; Path=/; Max-Age=0; SameSite=Strict")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
     def handle_change_password(self, body):
