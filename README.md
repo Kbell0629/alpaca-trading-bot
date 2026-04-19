@@ -4,6 +4,78 @@
 
 ---
 
+## 🆕 What's New (2026-04-18/19 — Round-12 Audit Sweep, 15 PRs shipped)
+
+Full-stack audit + fix cycle run on the 30-day paper validation window.
+Five parallel audits (security, database, trading logic, UI/UX/mobile,
+test coverage) + 15 squash-merged PRs + 110+ new regression tests. The
+most consequential finding: the `portfolio_risk` beta-exposure safety
+rail had been silently disabled in production since round-11 —
+`run_auto_deployer` referenced three variables before they were defined,
+so every call hit `NameError`, swallowed by the outer try/except. Now
+live. Watch your Railway log for `Beta exposure: …% beta-weighted` on
+the next deploy to confirm.
+
+### What changed behaviourally (things you'll notice)
+
+- **Login page**: session-expiry now shows a "Session expired" toast +
+  1-sec delay before redirect. Modals trap Tab focus inside and return
+  focus to the trigger on close. Colors (`.positive` green, `.negative`
+  red) brightened to WCAG-AA contrast on dark theme.
+- **Dashboard**: iPhone SE (375px) viewport now displays modals without
+  horizontal overflow. Refresh button shows spinner + disabled state
+  during the 5-30s screener run. Mobile tables have a visual
+  scroll-hint gradient on the right edge when content overflows.
+- **Kill switch**: now aborts in-flight deploys **atomically** via a
+  `threading.Event`. Previously had a 100-300ms window where a
+  multi-symbol deploy could keep placing orders after the switch
+  tripped. No more.
+- **Money math**: every internal accumulator — cost basis, wheel premium,
+  realized PnL, tax-lot summary, strategy-breakdown totals, position
+  sizing — now runs in `Decimal`. Your scorecard numbers are now exact
+  to the cent regardless of how many partial fills or wheel cycles
+  they've passed through. The JSON boundary is unchanged (still float
+  with 2dp) so no frontend changes.
+
+### What's required for your next Railway deploy
+
+- **`MASTER_ENCRYPTION_KEY` is mandatory**. If missing, the app refuses
+  to boot (intentional — PLAIN-fallback retired). Confirm it's set on
+  Railway → Variables before the next redeploy.
+- **Rotate the old Sentry DSN** per `docs/MONITORING_SETUP.md`. Old
+  key is in git history forever; Sentry dashboard → Project Settings
+  → Client Keys → Deactivate old → Create new.
+- **Generate SRI hashes locally** if you haven't — the manifest refs
+  are in place, but the `integrity="sha384-..."` values come from
+  `bash scripts/compute_sri.sh` on a dev machine (the sandbox can't
+  reach CDNs). Paste the three output lines into the 5 `<script>`
+  tags across `dashboard.html` / `track_record.html` / `signup.html`
+  / `reset.html`.
+
+### Round-12 ship list
+
+| # | PR | Area | Change |
+|---|---|---|---|
+| 2 | `b6c9bcd` | Security | Sentry auto-init, `MASTER_ENCRYPTION_KEY` mandatory |
+| 3 | `d1d7c3e` | Ops | JSON logging, `/api/version` dynamic, a11y, WCAG colours |
+| 4 | `9d6569a` | Security | SRI hashes pinned on CDN scripts |
+| 5 | `966e531` | Ops | Trade journal auto-trim (>2y closed → archive) |
+| 6 | `dcdf166` | Trading | `tax_lots.py` → Decimal (migration phase 1) |
+| 7 | `16afdf5` | Security | Token-bucket login rate limit |
+| 8 | `98d3f5c` | Trading | `update_scorecard.py` → Decimal (phase 2) |
+| 9 | `03becfc` | Trading | `portfolio_risk.py` → Decimal (phase 3) |
+| 10 | `c73c288` | Trading | `wheel_strategy.py` → Decimal + 39 parity-fuzz tests (phase 4) |
+| 11 | `7353b65` | Trading | `smart_orders.py` + `calc_position_size` → Decimal + 30k fuzz inputs (phase 5, FINAL) |
+| 12 | `c6827fa` | Security | Password-reset TOCTOU fixed, capital_check fallback tightened |
+| 13 | `bc40d49` | UI / a11y | XSS hardening, modal focus trap, forgot-password constant-time |
+| 14 | `d06760d` | Trading | Kill-switch atomic abort, trim flock, wheel split-anomaly guard |
+| 15 | `3ad82a7` | Ops | CI tooling (ruff + coverage), **beta-exposure gate revived (was DEAD CODE)** |
+
+**Details**: `CLAUDE.md` (session-resume context) and
+`IMPLEMENTATION_STATUS.md` (running changelog).
+
+---
+
 ## 🆕 What's New (2026-04-19 LIVE-TRADING READY)
 
 Weekend 2, Batch 2: the bot is now **live-trading ready**. Full in-app

@@ -36,6 +36,7 @@ All secrets in `.env` (gitignored) and Railway variables. No hardcoded defaults.
 | `FORCE_SECURE_COOKIE` | Set to `1` to always add `Secure` flag on session cookie (Railway adds automatically via `X-Forwarded-Proto`). |
 | `ENABLE_BASIC_AUTH` | Set to `1` to re-enable Basic Auth fallback (disabled by default). |
 | `ENABLE_CLOUD_SCHEDULER` | Default `true`. Set to `false` to disable background scheduler (debugging only). |
+| `LOG_LEVEL` | Root logger level for the JSON formatter (`DEBUG`/`INFO`/`WARNING`/`ERROR`). Defaults to `INFO`. Set to `DEBUG` for noisier Railway logs during a triage session. |
 | `PORT` | `8888` (Railway sets automatically) |
 | **Round-11 factor modules** | |
 | `GEMINI_API_KEY` | Google Gemini 1.5 Flash for LLM news sentiment (set). Fallback order: Gemini → Groq → OpenAI → Anthropic. |
@@ -61,6 +62,10 @@ All secrets in `.env` (gitignored) and Railway variables. No hardcoded defaults.
 - `server.py` — Dashboard server (localhost:8888 + Railway)
 - `update_dashboard.py` — Full market screener (12k+ stocks)
 - `PROJECT.md` — This file
+- `CLAUDE.md` — **Session-resume context for Claude Code**. Read first on every new session. Changelog + active state + audit playbook.
+- `logging_setup.py` — Central JSON-logger init. Monkey-patches `builtins.print` so legacy prints auto-emit JSON envelopes + timestamps. Sentry LoggingIntegration auto-captures via stdlib.
+- `trade_journal.py` — Trade-journal trim + archive management. Daily 3:15 AM ET flock-serialized trim moves closed trades >2y old into `trade_journal_archive.json`.
+- `pyproject.toml` — ruff + pytest + coverage config (round-12). Coverage ratchet floor at 15% (measured ~19%); nudge up as gaps close.
 
 ### Analysis Modules
 - `indicators.py` — RSI, MACD, Bollinger, ATR, Stochastic, VWAP, OBV
@@ -355,6 +360,7 @@ When readiness score hits 80/100 after 30 days:
 
 ## Recent Major Changes
 
+- **2026-04-18/19:** **Round-12 forensic audit sweep** — 15 PRs merged to `main`, 110+ new regression tests. Five parallel audits (security, database, trading logic, UI/UX/mobile, test coverage). Shipped: (1) complete float→Decimal migration across all 5 money-math phases (tax_lots, update_scorecard, portfolio_risk, wheel_strategy, smart_orders + calc_position_size) with 80+ parity tests; (2) atomic kill-switch abort via `threading.Event`; (3) password-reset TOCTOU fix via atomic UPDATE; (4) login token-bucket rate limit; (5) trade-journal auto-trim daily 3:15 AM ET + archive file; (6) structured JSON logging with `logging_setup.py` module; (7) PR-template ruff + coverage ratchet in CI; (8) full XSS hardening + modal focus trap + WCAG-AA colour tokens + iPhone-SE-responsive modals; (9) **revived the `portfolio_risk` beta-exposure safety rail** which had been silently disabled in prod since round-11 — `run_auto_deployer` hit `NameError` on every call (ruff F821 caught it); (10) wheel stock-split anomaly guard (freezes state when `share_delta >= 2*expected_delta` rather than record a wrong cost basis). Session details in `CLAUDE.md`; PR-by-PR list in `IMPLEMENTATION_STATUS.md`.
 - **2026-04-16:** Built all 6 strategies, 40+ features, cloud hosting, PWA, voice control
 - **2026-04-16:** Removed all hardcoded secrets, scrubbed git history
 - **2026-04-16:** Full audit: fixed 57 + 20 + 10 issues across code, configs, UI
