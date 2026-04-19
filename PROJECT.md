@@ -30,8 +30,7 @@ All secrets in `.env` (gitignored) and Railway variables. No hardcoded defaults.
 | `NOTIFICATION_EMAIL` | `se2login@gmail.com` |
 | `DASHBOARD_USER` / `DASHBOARD_PASS` | Basic auth for dashboard |
 | `DATA_DIR` | `/data` on Railway (volume mount for persistent storage). Locally unset (defaults to project dir). Holds `users.db`, `users/`, strategy files, `*.json` runtime data. |
-| `MASTER_ENCRYPTION_KEY` | 64-char random key used to derive AES-256-GCM encryption key for Alpaca credentials. Required in production (`REQUIRE_MASTER_KEY=1`). |
-| `REQUIRE_MASTER_KEY` | Set to `1` to fail-closed at import if `MASTER_ENCRYPTION_KEY` unset. Prevents silent plaintext fallback. |
+| `MASTER_ENCRYPTION_KEY` | 64-char random key used to derive the AES-256-GCM encryption key for Alpaca credentials. **Required in every environment** — the app refuses to boot if unset. The old `REQUIRE_MASTER_KEY` toggle has been retired (plaintext fallback is no longer a supported mode). |
 | `SIGNUP_INVITE_CODE` | If set, new signups must provide matching code. Prevents public account creation. Current: `CDjKmmrQr_x4MKnjPb0fGw`. |
 | `SIGNUP_DISABLED` | Set to `1` to block all new signups. |
 | `FORCE_SECURE_COOKIE` | Set to `1` to always add `Secure` flag on session cookie (Railway adds automatically via `X-Forwarded-Proto`). |

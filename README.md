@@ -833,8 +833,7 @@ Credentials are case-sensitive. If you've forgotten them or they've changed, che
 
 | Variable | Purpose |
 |---|---|
-| `MASTER_ENCRYPTION_KEY` | **Required in production.** 64-char random key used for AES-256-GCM encryption of each user's Alpaca credentials. Store off-Railway — if lost, all credentials must be re-entered via Settings. |
-| `REQUIRE_MASTER_KEY` | Set to `1` to fail-closed at boot if `MASTER_ENCRYPTION_KEY` is missing. Prevents silent plaintext fallback in production. |
+| `MASTER_ENCRYPTION_KEY` | **Required — the app refuses to boot without it.** 64-char random key used for AES-256-GCM encryption of each user's Alpaca credentials. Store off-Railway — if lost, all credentials must be re-entered via Settings. The earlier `REQUIRE_MASTER_KEY=1` toggle (plaintext-fallback opt-out) has been retired; the key is now mandatory in every environment. |
 | `DATA_DIR` | Volume mount path for persistent data (Railway: `/data`). Holds `users.db`, `users/`, strategy files, all JSON runtime state. |
 | `SIGNUP_INVITE_CODE` | If set, new signups require this code (multi-user gate). Current: `CDjKmmrQr_x4MKnjPb0fGw`. |
 | `SIGNUP_DISABLED` | Set to `1` to block all new signups (after bootstrap). |

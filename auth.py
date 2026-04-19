@@ -35,26 +35,20 @@ DB_PATH = os.path.join(DATA_DIR, "users.db")
 USERS_DIR = os.path.join(DATA_DIR, "users")
 
 # Master encryption key from env — set on Railway, never in code.
-# Production mode (REQUIRE_MASTER_KEY=1): fails closed if the key is missing.
-# Dev mode (default when REQUIRE_MASTER_KEY unset): falls back to plaintext
-# with a loud warning so local tests work without setup.
+# The plaintext-fallback mode (PLAIN: prefix for writes when MASTER_KEY was
+# unset) has been retired. Startup logs confirm all existing rows are on
+# ENCv3, so there is no longer a reason to tolerate a missing key: a silent
+# downgrade to plaintext is strictly worse than failing loud and letting the
+# operator fix their environment. Decryption of legacy PLAIN: rows (if any
+# ever existed) still works — only the WRITE path requires a key.
 MASTER_KEY = os.environ.get("MASTER_ENCRYPTION_KEY", "")
-_REQUIRE_MASTER_KEY = os.environ.get("REQUIRE_MASTER_KEY") == "1"
 if not MASTER_KEY:
-    if _REQUIRE_MASTER_KEY:
-        raise RuntimeError(
-            "MASTER_ENCRYPTION_KEY env var is required when REQUIRE_MASTER_KEY=1 "
-            "but was not set. Refusing to start in plaintext-fallback mode. "
-            "Either set MASTER_ENCRYPTION_KEY on the deployment or remove "
-            "REQUIRE_MASTER_KEY=1 (not recommended for production)."
-        )
-    # Dev mode: print a loud warning at import time so this never slips
-    import sys as _sys
-    print(
-        "[auth] WARNING: MASTER_ENCRYPTION_KEY is not set. Alpaca API secrets "
-        "will be stored in plaintext prefixed 'PLAIN:'. Set MASTER_ENCRYPTION_KEY "
-        "and REQUIRE_MASTER_KEY=1 in production.",
-        file=_sys.stderr, flush=True,
+    raise RuntimeError(
+        "MASTER_ENCRYPTION_KEY env var is required. Plaintext-fallback mode "
+        "(PLAIN: prefix for stored credentials) has been retired. Set "
+        "MASTER_ENCRYPTION_KEY on the deployment or in your local .env file. "
+        "For a fresh dev env: generate one with "
+        "`python -c 'import secrets; print(secrets.token_urlsafe(32))'`."
     )
 
 # Session duration
@@ -240,8 +234,10 @@ def needs_rehash(stored_hash):
 # ENCv3 (AES-GCM with HKDF key derivation); ENCv2 kept decrypt-only for
 # one more deploy cycle as a safety net.
 
-# Try to load cryptography (AES-GCM). Required in production; PLAIN:
-# fallback is used only when MASTER_KEY is unset (dev environments).
+# Try to load cryptography (AES-GCM). Required for the encrypt path —
+# PLAIN-fallback was retired along with MASTER_KEY-fallback; the module
+# now raises at import if the key is missing, and encrypt_secret raises
+# if AES-GCM is unavailable.
 try:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     _HAS_AESGCM = True
@@ -343,7 +339,9 @@ def encrypt_secret(plaintext):
     """Encrypt a secret (Alpaca API key).
 
     Format tiers (encoded as prefix):
-      "PLAIN:..."  -> dev-mode cleartext fallback (no MASTER_KEY set)
+      "PLAIN:..."  -> retired write path. decrypt_secret still recognises it
+                      for any legacy row, but this function never emits PLAIN
+                      any more — MASTER_KEY is required at import time.
       "ENCv2:..."  -> AES-256-GCM with SHA256-derived key (decrypt-only
                       safety net; new writes use ENCv3)
       "ENCv3:..."  -> AES-256-GCM with HKDF-SHA256-derived key (current)
@@ -358,16 +356,17 @@ def encrypt_secret(plaintext):
     """
     if not plaintext:
         return ""
+    # MASTER_KEY presence is enforced at import time; if we got here without
+    # one the module-level guard would already have raised. Defensive check
+    # in case someone later loosens that.
     if not MASTER_KEY:
-        return "PLAIN:" + plaintext
+        raise RuntimeError(
+            "encrypt_secret called without MASTER_ENCRYPTION_KEY set."
+        )
     if not _HAS_AESGCM:
-        # Production must have `cryptography` installed. Dev without it
-        # can use the PLAIN: fallback via missing MASTER_KEY. No middle
-        # ground — there is no longer a handrolled-cipher path.
         raise RuntimeError(
             "cryptography package required for encrypt_secret(). Install "
-            "it (pip install 'cryptography>=42.0.0') or unset MASTER_ENCRYPTION_KEY "
-            "to use the PLAIN: dev fallback."
+            "it (pip install 'cryptography>=42.0.0')."
         )
     key = _derive_aesgcm_key_v3(MASTER_KEY)
     aes = AESGCM(key)
