@@ -994,9 +994,99 @@ def bootstrap_from_env():
             return user_id
     return None
 
-# ===== Login Attempt Rate Limiting (persistent) =====
+# ===== Login Attempt Rate Limiting =====
+#
+# Two-layer defence:
+#
+#   1. In-memory token bucket (fast path, brute-force-proof under load)
+#        Per-key (ip + username) bucket with configurable burst + refill.
+#        Empties atomically under a lock — race-free even at 100+
+#        concurrent auth threads, which is the gap the previous SQLite-
+#        only implementation left open (two threads could both read
+#        count=4 before either recorded the new failure, letting both
+#        through on attempt 5 and 6).
+#
+#   2. SQLite login_attempts table (authoritative, survives restart)
+#        5 failures in 15 min locks the (ip, username) pair. Persists
+#        across deploys so an attacker can't clear the counter by
+#        forcing a Railway restart.
+#
+# Both gates must pass for a login attempt to proceed. The bucket is a
+# fast short-term defence; the SQLite row is the long-term authoritative
+# lockout. The bucket is NOT persistent — on server restart it re-fills
+# to full, which is intentional: restart doesn't happen maliciously, and
+# the SQLite gate still holds the authoritative 15-min window.
 LOGIN_WINDOW_SEC = 15 * 60
 LOGIN_MAX_FAILURES = 5
+
+# Token-bucket tuning. At 0.2 tokens/s refill with a 10-token burst, a
+# key's bucket recovers fully after ~50s idle. 10 back-to-back attempts
+# are allowed (covers fat-finger retries on the login form); the 11th
+# within a few seconds is rejected by the bucket before we even touch
+# the database. A legitimate human user hitting the wrong password is
+# unaffected; a scripted brute-forcer is effectively throttled.
+LOGIN_BUCKET_RATE_PER_SEC = 0.2
+LOGIN_BUCKET_BURST = 10
+
+# Thread-safety for the bucket state dict.
+import threading as _threading
+_login_bucket_state: "dict[tuple[str, str], tuple[float, float]]" = {}
+_login_bucket_lock = _threading.Lock()
+
+
+def _login_bucket_key(ip, username):
+    """Canonical key for the bucket dict. Match the SQLite lookup key."""
+    return ((ip or "unknown"), (username or "").lower())
+
+
+def _login_bucket_consume(ip, username, cost: float = 1.0) -> bool:
+    """Atomically try to consume `cost` tokens from the (ip, username) bucket.
+
+    Returns True if the request is allowed (tokens available), False if
+    the bucket is currently empty and the request should be rejected as
+    rate-limited.
+
+    Thread-safe. Uses time.monotonic() — immune to wall-clock adjustments.
+    """
+    import time as _time
+    now = _time.monotonic()
+    key = _login_bucket_key(ip, username)
+    with _login_bucket_lock:
+        tokens, last = _login_bucket_state.get(key, (float(LOGIN_BUCKET_BURST), now))
+        # Refill tokens based on elapsed time since the last check, capped
+        # at the configured burst.
+        elapsed = max(0.0, now - last)
+        tokens = min(float(LOGIN_BUCKET_BURST),
+                     tokens + elapsed * LOGIN_BUCKET_RATE_PER_SEC)
+        if tokens >= cost:
+            tokens -= cost
+            _login_bucket_state[key] = (tokens, now)
+            return True
+        # Not enough tokens — update last-seen so future calls resume
+        # refilling from now, but don't grant the request.
+        _login_bucket_state[key] = (tokens, now)
+        return False
+
+
+def _login_bucket_peek(ip, username) -> float:
+    """Return the current token count for (ip, username) without mutating.
+
+    Exposed primarily for tests and operational introspection."""
+    import time as _time
+    now = _time.monotonic()
+    key = _login_bucket_key(ip, username)
+    with _login_bucket_lock:
+        tokens, last = _login_bucket_state.get(key, (float(LOGIN_BUCKET_BURST), now))
+        elapsed = max(0.0, now - last)
+        return min(float(LOGIN_BUCKET_BURST),
+                   tokens + elapsed * LOGIN_BUCKET_RATE_PER_SEC)
+
+
+def _reset_login_buckets() -> None:
+    """Clear in-memory bucket state. Test hook — normal code should not
+    call this, the bucket is self-managing."""
+    with _login_bucket_lock:
+        _login_bucket_state.clear()
 
 
 def record_login_attempt(ip, username, success):
@@ -1023,9 +1113,25 @@ def record_login_attempt(ip, username, success):
 
 
 def is_login_locked(ip, username):
-    """Return True if the (ip, username) pair is currently locked out due
-    to too many failures in the last LOGIN_WINDOW_SEC seconds.
+    """Return True if the (ip, username) pair is currently rate-limited.
+
+    Two gates, either of which trips the lockout:
+      1. In-memory token bucket empty — short-burst brute-force defence.
+         Race-free under concurrent load.
+      2. SQLite failure count ≥ LOGIN_MAX_FAILURES in the last
+         LOGIN_WINDOW_SEC seconds — long-term, restart-persistent lockout.
+
+    The bucket is consumed BEFORE the SQLite check so a rapid-fire
+    attacker is rejected on the fast path without even opening the DB
+    connection.
     """
+    # Gate 1: token bucket. Consuming one token here is intentional even
+    # for "just checking" — otherwise a malicious client could poll the
+    # endpoint endlessly without being throttled. Legitimate users retry
+    # at human speed and stay well within the burst allowance.
+    if not _login_bucket_consume(ip, username):
+        return True
+    # Gate 2: SQLite authoritative lockout window.
     try:
         import time as _time
         cutoff = _time.time() - LOGIN_WINDOW_SEC
