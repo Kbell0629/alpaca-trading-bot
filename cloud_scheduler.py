@@ -1828,6 +1828,42 @@ def run_auto_deployer(user):
         if best_strat not in accepted_entries:
             skip_reasons.append(f"{symbol}: unsupported strategy ({best_strat})")
             continue
+        # Round-20 trade-quality gates: avoid chasing tops + avoid extreme
+        # volatility. Derived from the paper-trading backtest analysis
+        # where EVERY top-scored Breakout pick stopped out because the
+        # bot was buying the breakout day's peak and getting whipsawed.
+        #
+        # Gate A: don't chase picks already up >8% today. A breakout that
+        # already ran 8%+ intraday is typically at the top of the move;
+        # waiting for tomorrow's retest gives a better entry. Mean_
+        # reversion is exempt (it wants over-extensions to fade).
+        try:
+            _daily_change = float(pick.get("daily_change", 0) or 0)
+        except (TypeError, ValueError):
+            _daily_change = 0.0
+        if best_strat in ("breakout", "pead") and _daily_change > 8.0:
+            log(f"[{user['username']}] {symbol}: Skipped ({best_strat} "
+                f"already +{_daily_change:.1f}% today — don't chase). "
+                f"Waiting for retest.", "deployer")
+            skip_reasons.append(f"{symbol}: chase-block +{_daily_change:.1f}% intraday")
+            continue
+
+        # Gate B: volatility > 20% → skip. These are meme/pump-tier
+        # names where a 10% stop gets hit by normal noise. The backtest
+        # showed INFQ-class picks (vol 33%) stopping out in 2-3 days.
+        # 20% is the cutoff for "tradable momentum" vs "unmanageable
+        # noise". Mean_reversion is exempt — it profits from high vol.
+        try:
+            _vol = float(pick.get("volatility", 0) or 0)
+        except (TypeError, ValueError):
+            _vol = 0.0
+        if best_strat in ("breakout", "pead") and _vol > 20.0:
+            log(f"[{user['username']}] {symbol}: Skipped ({best_strat} "
+                f"volatility {_vol:.1f}% > 20% threshold — too noisy "
+                f"for a fixed-%-stop strategy).", "deployer")
+            skip_reasons.append(f"{symbol}: volatility {_vol:.1f}% > 20%")
+            continue
+
         # Round-11 Tier 1: breadth gate — block breakout + PEAD in weak
         # breadth regimes. MR and wheel continue since they're not
         # dependent on broad-market momentum.
