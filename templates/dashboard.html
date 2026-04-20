@@ -2709,46 +2709,62 @@ async function executeClosePosition(symbol) {
 
 /* ---- Sell Half Modal (new) ---- */
 function openSellHalfModal(symbol, totalQty, avgEntry, currentPrice, pnl, pnlPct) {
-    const halfQty = Math.max(1, Math.floor(totalQty / 2));
-    const proceeds = (currentPrice * halfQty).toFixed(2);
-    const halfPnl = (parseFloat(pnl) || 0) / totalQty * halfQty;
-    const halfPnlPct = parseFloat(pnlPct) || 0;
-    document.getElementById('sellHalfTitle').textContent = 'Sell Half of ' + symbol;
+    return openSellFractionModal(symbol, totalQty, avgEntry, currentPrice, pnl, pnlPct, 0.5);
+}
+
+// Generalised: the "Sell Half" modal is now parameterised by a
+// fraction so we can reuse it for 25% / 50% / (future) 75%. The
+// existing Sell Half wrapper stays for backward compat / existing
+// call sites. Guardrails: floor(qty * fraction) so we always sell
+// a whole-share integer, and clamp to min 1 share (never fire a
+// 0-qty order).
+function openSellFractionModal(symbol, totalQty, avgEntry, currentPrice, pnl, pnlPct, fraction) {
+    const sellQty = Math.max(1, Math.floor(totalQty * fraction));
+    const proceeds = (currentPrice * sellQty).toFixed(2);
+    const fracPnl = (parseFloat(pnl) || 0) / totalQty * sellQty;
+    const fracPnlPct = parseFloat(pnlPct) || 0;
+    const pctLabel = Math.round(fraction * 100) + '%';
+    document.getElementById('sellHalfTitle').textContent = 'Sell ' + pctLabel + ' of ' + symbol;
     document.getElementById('sellHalfSubtitle').textContent = 'You currently own ' + totalQty + ' shares';
     document.getElementById('sellHalfDetails').innerHTML =
-        '<div class="modal-detail-row"><span class="detail-label">Selling</span><span class="detail-value">' + halfQty + ' of ' + totalQty + ' shares</span></div>' +
-        '<div class="modal-detail-row"><span class="detail-label">Keeping</span><span class="detail-value">' + (totalQty - halfQty) + ' shares</span></div>' +
+        '<div class="modal-detail-row"><span class="detail-label">Selling</span><span class="detail-value">' + sellQty + ' of ' + totalQty + ' shares (' + pctLabel + ')</span></div>' +
+        '<div class="modal-detail-row"><span class="detail-label">Keeping</span><span class="detail-value">' + (totalQty - sellQty) + ' shares</span></div>' +
         '<div class="modal-detail-row"><span class="detail-label">Avg entry</span><span class="detail-value">' + fmtMoney(avgEntry) + '</span></div>' +
         '<div class="modal-detail-row"><span class="detail-label">Current price</span><span class="detail-value">' + fmtMoney(currentPrice) + '</span></div>';
-    const pnlColor = halfPnl >= 0 ? 'var(--green)' : 'var(--red)';
+    const pnlColor = fracPnl >= 0 ? 'var(--green)' : 'var(--red)';
     document.getElementById('sellHalfInfoContent').innerHTML =
-        'You will <strong>SELL ' + halfQty + ' shares</strong> of ' + symbol + ' at market price<br>' +
+        'You will <strong>SELL ' + sellQty + ' shares</strong> of ' + symbol + ' at market price<br>' +
         'Estimated proceeds: <strong>' + fmtMoney(proceeds) + '</strong><br>' +
-        'Estimated P&L on sold shares: <strong style="color:' + pnlColor + '">' + fmtMoney(halfPnl) + ' (' + fmtPct(halfPnlPct) + ')</strong><br>' +
-        'You will still own <strong>' + (totalQty - halfQty) + ' shares</strong> after this.';
+        'Estimated P&L on sold shares: <strong style="color:' + pnlColor + '">' + fmtMoney(fracPnl) + ' (' + fmtPct(fracPnlPct) + ')</strong><br>' +
+        'You will still own <strong>' + (totalQty - sellQty) + ' shares</strong> after this.';
     const btn = document.getElementById('sellHalfConfirm');
-    btn.onclick = () => executeSellHalf(symbol, totalQty);
+    btn.onclick = () => executeSellFraction(symbol, totalQty, fraction);
     openModal('sellHalfModal');
 }
 
 async function executeSellHalf(symbol, totalQty) {
-    const halfQty = Math.max(1, Math.floor(totalQty / 2));
+    return executeSellFraction(symbol, totalQty, 0.5);
+}
+
+async function executeSellFraction(symbol, totalQty, fraction) {
+    const sellQty = Math.max(1, Math.floor(totalQty * fraction));
+    const pctLabel = Math.round(fraction * 100) + '%';
     closeModal('sellHalfModal');
-    toast('Selling ' + halfQty + ' shares of ' + symbol + '...', 'info');
-    addLog('SELL ' + halfQty + ' ' + symbol + ' (half position)', 'sell');
+    toast('Selling ' + sellQty + ' shares of ' + symbol + ' (' + pctLabel + ')...', 'info');
+    addLog('SELL ' + sellQty + ' ' + symbol + ' (' + pctLabel + ' of position)', 'sell');
     try {
         const resp = await fetch(API_BASE + '/api/sell', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({symbol, qty: halfQty})
+            body: JSON.stringify({symbol, qty: sellQty})
         });
         const data = await resp.json();
         if (data.error) {
             toast('Sell failed: ' + data.error, 'error');
-            addLog('Sell half failed for ' + symbol + ': ' + data.error, 'error');
+            addLog('Sell ' + pctLabel + ' failed for ' + symbol + ': ' + data.error, 'error');
         } else {
-            toast('Sold ' + halfQty + ' shares of ' + symbol, 'success');
-            addLog('Sold ' + halfQty + ' ' + symbol + ' for ~' + fmtMoney(data.est_proceeds || 0), 'success');
+            toast('Sold ' + sellQty + ' shares of ' + symbol, 'success');
+            addLog('Sold ' + sellQty + ' ' + symbol + ' for ~' + fmtMoney(data.est_proceeds || 0), 'success');
             setTimeout(refreshData, 1500);
         }
     } catch(e) {
@@ -4696,7 +4712,12 @@ function renderDashboard() {
             '<td class="' + cls + '">' + fmtPct(uplPct) + '</td>' +
             '<td>' +
             '<button class="btn-danger btn-sm" onclick="openClosePositionModal(\'' + sym + '\',' + qty + ',' + avgEntry + ',' + curPrice + ',' + upl + ',' + uplPct + ')">Close</button> ' +
-            '<button class="btn-warning btn-sm" onclick="openSellHalfModal(\'' + sym + '\',' + qty + ',' + avgEntry + ',' + curPrice + ',' + upl + ',' + uplPct + ')">Sell Half</button>' +
+            '<button class="btn-warning btn-sm" onclick="openSellFractionModal(\'' + sym + '\',' + qty + ',' + avgEntry + ',' + curPrice + ',' + upl + ',' + uplPct + ', 0.5)">Sell 50%</button> ' +
+            // Sell 25% — partial profit-taking without fully exiting.
+            // Useful when a trailing-stop position has run far into
+            // profit and you want to lock some in without giving up
+            // all the upside. Uses the same /api/sell endpoint.
+            '<button class="btn-warning btn-sm" onclick="openSellFractionModal(\'' + sym + '\',' + qty + ',' + avgEntry + ',' + curPrice + ',' + upl + ',' + uplPct + ', 0.25)">Sell 25%</button>' +
             '</td></tr>';
     });
     if (!posHtml) posHtml = '<tr><td colspan="10"><div class="empty-state">' +
