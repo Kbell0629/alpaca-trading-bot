@@ -2137,6 +2137,16 @@ const API_BASE = '';
         }
         return _origFetch.call(this, input, init);
     };
+    // Expose the cookie-reader as a global so call sites that
+    // construct their own fetch headers (Settings save, admin
+    // actions) can still pass X-CSRF-Token explicitly if they want.
+    // Round-21 fix: 6 call sites in the file call getCSRFToken()
+    // directly; this was never defined as a global, so every one
+    // threw ReferenceError and blocked the POST. The wrapper above
+    // was already doing the right thing — these explicit calls are
+    // redundant AND broken. Aliasing the helper to a global name
+    // keeps backwards-compat without touching 6 call sites.
+    window.getCSRFToken = readCsrfCookie;
 })();
 window.currentUsername = '';
 let dashboardData = null;
