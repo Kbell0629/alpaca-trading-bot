@@ -214,7 +214,7 @@ def log(msg, task="scheduler"):
     _scheduler_logger.info(msg, extra={"task": task, "et_ts": et_ts})
     with _logs_lock:
         _recent_logs.append({"ts": et_ts, "ts_iso": now.isoformat(), "task": task, "msg": msg})
-        if len(_recent_logs) > 100:
+        if len(_recent_logs) > 500:
             _recent_logs.pop(0)
 
 # ============================================================================
@@ -3770,7 +3770,11 @@ def get_scheduler_status():
         })
 
     with _logs_lock:
-        logs = list(_recent_logs[-20:])
+        # Round-22: surface up to 200 recent log lines instead of 20.
+        # Dashboard activity pane is scrollable (max-height + overflow-y)
+        # so the extra depth doesn't hurt first-paint; user sees more
+        # history on scroll + doesn't have to tail Railway logs.
+        logs = list(_recent_logs[-200:])
 
     # Check market once via first user (all users share the same market clock)
     market_open = False

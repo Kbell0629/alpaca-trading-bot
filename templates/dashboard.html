@@ -215,7 +215,10 @@ button:active { transform: translateY(0); }
 .sched-task-status.pending { background: rgba(245,158,11,0.15); color: var(--orange); }
 .sched-task-schedule { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; }
 .sched-task-last { font-size: 11px; color: var(--text); font-family: monospace; }
-.sched-log-box { background: rgba(10,14,23,0.5); border: 1px solid var(--border); border-radius: 8px; padding: 12px; max-height: 300px; overflow-y: auto; font-family: 'SF Mono', Monaco, monospace; font-size: 11px; line-height: 1.6; }
+.sched-log-box { background: rgba(10,14,23,0.5); border: 1px solid var(--border); border-radius: 8px; padding: 12px; max-height: 520px; overflow-y: auto; font-family: 'SF Mono', Monaco, monospace; font-size: 11px; line-height: 1.6; scroll-behavior: smooth; }
+.sched-log-box::-webkit-scrollbar { width: 8px; }
+.sched-log-box::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+.sched-log-box::-webkit-scrollbar-thumb:hover { background: var(--accent); }
 .sched-log-line { color: var(--text-dim); }
 .sched-log-line .ts { color: var(--accent); }
 .sched-log-line .tag { color: var(--orange); }
