@@ -94,8 +94,13 @@ def score_news_article(article):
 
 def scan_post_market_news(hours_back=12, min_score=8):
     """Scan recent news for high-signal articles (post-market earnings, FDA news, etc.)"""
-    # Alpaca news API accepts ISO with any offset; ET offset is fine.
-    since = (now_et() - timedelta(hours=hours_back)).strftime("%Y-%m-%dT%H:%M:%S%z")
+    # Alpaca's news API wants RFC-3339 timestamps. Python's %z produces
+    # `-0400` (no colon) which their parser rejects with HTTP 400, AND
+    # the `-` is a reserved URL char that'd need encoding if left alone.
+    # Cleanest fix: convert to UTC and emit the `Z` suffix — no colon
+    # issues, no URL-encoding issues.
+    since_utc = (now_et() - timedelta(hours=hours_back)).astimezone(timezone.utc)
+    since = since_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
     url = f"https://data.alpaca.markets/v1beta1/news?limit=50&start={since}"
     data = api_get(url)
     # Round-21: surface the upstream error in the return payload instead
