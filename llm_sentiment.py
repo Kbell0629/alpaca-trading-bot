@@ -174,7 +174,25 @@ def _call_gemini(prompt):
            f"{model}:generateContent?key={api_key}")
     body = json.dumps({
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 100},
+        "generationConfig": {
+            "temperature": 0.2,
+            # Gemini 2.5-flash uses internal "thinking" tokens that eat
+            # into maxOutputTokens. With only 100 tokens the model was
+            # opening the ```json fence and running out — which is why
+            # every response looked "unparseable: ```". Bumped to 256
+            # for safety headroom (still only ~$0.00008/call).
+            "maxOutputTokens": 256,
+            # Disable thinking for 2.5-flash — this is a sentiment
+            # classifier, not a chain-of-thought task. No point paying
+            # for reasoning we don't use. Ignored by older 2.0 / 1.5
+            # models (they don't have this config), so safe for the
+            # env-var override path.
+            "thinkingConfig": {"thinkingBudget": 0},
+            # Force JSON MIME so the model can't wrap the response in
+            # ```json markdown fences. Eliminates the need for the
+            # fence-stripping dance in _parse_response entirely.
+            "responseMimeType": "application/json",
+        },
     }).encode()
     req = urllib.request.Request(url, data=body,
                                   headers={"Content-Type": "application/json"})
