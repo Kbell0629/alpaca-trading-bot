@@ -1381,7 +1381,11 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
        were 32-34px. Bump to 40px+ on mobile so you can actually tap. */
     .header-icon-btn, .kill-switch-btn-v2, .user-btn-v2 { min-height: 40px; min-width: 40px; }
     button, .btn-primary, .btn-secondary, .btn-ghost, .btn-warning, .btn-danger { min-height: 40px; }
-    .btn-sm { min-height: 32px; }  /* allow compact action buttons in tables */
+    /* Round-22: bumped from 32px to 40px — the positions table Close /
+       Sell 50% / Sell 25% buttons were under Apple HIG's 44px minimum
+       and felt fiddly to tap on iPhone. 40px is the practical floor
+       without forcing the action buttons to stack. */
+    .btn-sm { min-height: 40px; }
 
     /* Timeline items (What Happens at Market Open, etc.). On mobile the
        horizontal [time][action][badge] row breaks when a timestamp is
@@ -4307,17 +4311,19 @@ function renderDashboard() {
     // Helper: AI analysis line from Gemini. Only renders when we got a
     // real reasoning string back — skip the "gemini error: ..." cached
     // failures so the card doesn't show noise during outages.
+    // Round-22: bumped bg opacity 0.08 → 0.15 and text colors to WCAG-
+    // AA safe values so the text is readable on dark mode.
     function buildAiSentiment(p) {
         const reason = (p.llm_reasoning || '').trim();
         if (!reason) return '';
         if (/^gemini error/i.test(reason) || /^error/i.test(reason)) return '';
         const score = typeof p.llm_sentiment_score === 'number' ? p.llm_sentiment_score : null;
         let sentLabel = 'neutral';
-        let borderColor = 'rgba(139,92,246,0.25)';
-        let bgColor = 'rgba(139,92,246,0.08)';
-        let textColor = '#8b5cf6';
+        let borderColor = 'rgba(139,92,246,0.35)';
+        let bgColor = 'rgba(139,92,246,0.15)';
+        let textColor = '#c4b5fd';  // purple-300 — AA on dark bg
         if (score != null && score > 20) { sentLabel = 'bullish'; }
-        else if (score != null && score < -20) { sentLabel = 'bearish'; borderColor = 'rgba(239,68,68,0.25)'; bgColor = 'rgba(239,68,68,0.08)'; textColor = '#ef4444'; }
+        else if (score != null && score < -20) { sentLabel = 'bearish'; borderColor = 'rgba(239,68,68,0.35)'; bgColor = 'rgba(239,68,68,0.15)'; textColor = '#fca5a5'; }
         // Trim reasoning to ~110 chars so the card stays compact.
         const trimmed = reason.length > 110 ? (reason.slice(0, 107) + '\u2026') : reason;
         const scoreS = score != null ? (' (' + (score > 0 ? '+' : '') + score + ')') : '';
@@ -4333,13 +4339,16 @@ function renderDashboard() {
         const ns = (p.news_sentiment || '').toLowerCase();
         const kws = Array.isArray(p.bullish_keywords) ? p.bullish_keywords : [];
         if ((!ns || ns === 'neutral') && !kws.length) return '';
-        let cls = 'neutral', color = '#94a3b8';
-        if (ns === 'positive' || ns === 'bullish') { cls = 'bullish'; color = '#10b981'; }
-        else if (ns === 'negative' || ns === 'bearish') { cls = 'bearish'; color = '#ef4444'; }
+        // Round-22: text colors switched to palette tokens (--green-text,
+        // --red-text) that pass WCAG AA on dark bg; bg opacity bumped
+        // 0.08 → 0.15 so the pill is legible.
+        let cls = 'neutral', color = '#cbd5e1';
+        if (ns === 'positive' || ns === 'bullish') { cls = 'bullish'; color = '#6ee7b7'; }
+        else if (ns === 'negative' || ns === 'bearish') { cls = 'bearish'; color = '#fca5a5'; }
         const kwPart = kws.length ? (' \u2014 "' + esc(String(kws[0])) + '"') : '';
         const label = ns ? (ns.charAt(0).toUpperCase() + ns.slice(1)) : 'Neutral';
-        const bg = cls === 'bullish' ? 'rgba(16,185,129,0.08)' : cls === 'bearish' ? 'rgba(239,68,68,0.08)' : 'rgba(148,163,184,0.08)';
-        const border = cls === 'bullish' ? 'rgba(16,185,129,0.25)' : cls === 'bearish' ? 'rgba(239,68,68,0.25)' : 'rgba(148,163,184,0.25)';
+        const bg = cls === 'bullish' ? 'rgba(16,185,129,0.15)' : cls === 'bearish' ? 'rgba(239,68,68,0.15)' : 'rgba(148,163,184,0.15)';
+        const border = cls === 'bullish' ? 'rgba(16,185,129,0.35)' : cls === 'bearish' ? 'rgba(239,68,68,0.35)' : 'rgba(148,163,184,0.35)';
         return '<div class="pick-news-signal" style="font-size:11px;color:' + color + ';background:' + bg + ';border:1px solid ' + border + ';border-radius:6px;padding:6px 10px;margin-top:6px;line-height:1.4">' +
             '\ud83d\udcf0 <strong>News:</strong> ' + esc(label) + kwPart +
         '</div>';
@@ -4348,6 +4357,7 @@ function renderDashboard() {
     // Helper: insider cluster-buy badge. Only renders when has_cluster_buy
     // is true — a cluster buy is a stronger signal than a single filing,
     // and it's the case the user wants to notice at a glance.
+    // Round-22: brighter cyan + stronger bg for AA contrast on dark.
     function buildInsiderSignal(p) {
         const d = p.insider_data || {};
         if (!d.has_cluster_buy) return '';
@@ -4355,7 +4365,7 @@ function renderDashboard() {
         const recent = d.most_recent_date ? String(d.most_recent_date) : '';
         if (!buyers) return '';
         const recentPart = recent ? (', most recent ' + esc(recent)) : '';
-        return '<div class="pick-insider-signal" style="font-size:11px;color:#0ea5e9;background:rgba(14,165,233,0.08);border:1px solid rgba(14,165,233,0.25);border-radius:6px;padding:6px 10px;margin-top:6px;line-height:1.4">' +
+        return '<div class="pick-insider-signal" style="font-size:11px;color:#7dd3fc;background:rgba(14,165,233,0.15);border:1px solid rgba(14,165,233,0.35);border-radius:6px;padding:6px 10px;margin-top:6px;line-height:1.4">' +
             '\ud83d\udd35 <strong>Insider:</strong> ' + buyers + ' buyer' + (buyers === 1 ? '' : 's') + ' cluster-bought' + recentPart +
         '</div>';
     }

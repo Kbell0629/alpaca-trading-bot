@@ -116,24 +116,39 @@ def _bump_call_counter():
 
     Uses ET to match the rest of the bot's timeline — otherwise the
     "today" boundary jumps when the system clock crosses midnight UTC,
-    making the dashboard cost estimate look noisy across midnight ET."""
+    making the dashboard cost estimate look noisy across midnight ET.
+
+    Round-22: wrapped the read-modify-write in fcntl.flock to avoid
+    two screener threads racing and losing a count increment."""
     try:
+        import fcntl
         path = os.path.join(_cache_dir(), "_counter.json")
+        lock_path = path + ".lock"
         try:
             from et_time import now_et
             today = now_et().strftime("%Y-%m-%d")
         except Exception:
             today = datetime.now().strftime("%Y-%m-%d")
-        data = {}
-        if os.path.exists(path):
-            with open(path) as f:
-                data = json.load(f) or {}
-        if data.get("date") != today:
-            data = {"date": today, "count": 0}
-        data["count"] = int(data.get("count", 0)) + 1
-        with open(path, "w") as f:
-            json.dump(data, f)
+        # Open lock file and hold the exclusive flock across the entire
+        # read-modify-write. Any concurrent caller blocks here until
+        # we release on the `with` exit.
+        with open(lock_path, "a+") as lock_fp:
+            fcntl.flock(lock_fp.fileno(), fcntl.LOCK_EX)
+            data = {}
+            if os.path.exists(path):
+                with open(path) as f:
+                    try:
+                        data = json.load(f) or {}
+                    except (json.JSONDecodeError, OSError):
+                        data = {}
+            if data.get("date") != today:
+                data = {"date": today, "count": 0}
+            data["count"] = int(data.get("count", 0)) + 1
+            with open(path, "w") as f:
+                json.dump(data, f)
     except Exception:
+        # Cost-counter is best-effort telemetry — a failure here must
+        # not break the sentiment call. Fail soft.
         pass
 
 
@@ -391,10 +406,19 @@ def estimate_daily_cost():
     counter_path = os.path.join(_cache_dir(), "_counter.json")
     today_count = 0
     try:
+        # Round-22: use ET for the date match so this aligns with
+        # _bump_call_counter, otherwise the counter resets at midnight
+        # UTC while the dashboard reads "today" in ET, showing stale
+        # counts for ~4 hours after ET midnight.
+        try:
+            from et_time import now_et
+            today_str = now_et().strftime("%Y-%m-%d")
+        except Exception:
+            today_str = datetime.now().strftime("%Y-%m-%d")
         if os.path.exists(counter_path):
             with open(counter_path) as f:
                 d = json.load(f) or {}
-            if d.get("date") == datetime.now().strftime("%Y-%m-%d"):
+            if d.get("date") == today_str:
                 today_count = int(d.get("count", 0))
     except Exception:
         pass
