@@ -4,7 +4,33 @@
 
 ---
 
-## 🆕 What's New (2026-04-19 — Rounds 14-17, Production Hardening)
+## 🆕 What's New (2026-04-19 — Round-20: Trade Quality Filters)
+
+Based on analysing a live `/api/data` snapshot: every top-scored
+Breakout pick was stopping out for a loss because the bot was buying
+breakout-day peaks and getting whipsawed by normal pullbacks into
+tight 5% stops. Fixed:
+
+### Auto-deployer filters now active
+- **Don't chase** — skip Breakout/PEAD picks already `+8%` today
+- **Volatility cap** — skip Breakout/PEAD where `volatility > 20%`
+  (INFQ-tier names with 30%+ volatility are meme territory, not
+  tradable breakouts)
+- **Smaller positions** — `max_position_pct` 10% → **7%** per stock
+  (applied automatically to existing users on next Railway redeploy
+  — no "Apply Moderate" click needed)
+- **Wider breakout stop** — `breakout_stop_loss_pct` 5% → **12%**
+  (the 5% default was tighter than every other strategy's, backwards
+  — breakouts need room to breathe)
+
+### What changes Monday morning
+Instead of deploying INFQ (vol 33.9%, +12.5% today, backtest -14.42%)
++ JHX, the bot will skip INFQ entirely (blocked by BOTH gates) and
+pick cleaner setups like ALM / JHX at 7% sizing.
+
+---
+
+## 2026-04-19 — Rounds 14-17, Production Hardening
 
 Continued audit + cleanup pass after round-13. Four more rounds, 4 PRs,
 ~50 fixes. The biggest things you'll notice:

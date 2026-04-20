@@ -3645,10 +3645,30 @@ def start_scheduler():
 
 def _run_state_reconcile_safely():
     """Run state_recovery.reconcile_user for every active user. Logs
-    warnings via observability; never raises."""
+    warnings via observability; never raises.
+
+    Round-20: also runs migrations.run_all_migrations for the same
+    user list, so the boot-time sweep covers both state-consistency
+    checks AND idempotent config upgrades (e.g. max_position_pct
+    0.10 → 0.07 for users still on the round-13 default)."""
     try:
         import state_recovery
-        for u in get_all_users_for_scheduling():
+        users = list(get_all_users_for_scheduling())
+        # Round-20 migrations — idempotent, stamped with
+        # `_migrations_applied` so re-runs are no-ops.
+        try:
+            import migrations
+            summary = migrations.run_all_migrations(users, user_file)
+            for uid, actions in (summary or {}).items():
+                action = actions.get("round20_position_cap")
+                if action and action not in ("already_applied", "no_file"):
+                    log(f"[user_id={uid}] migration round20_position_cap: "
+                        f"{action}", "scheduler")
+        except Exception as _me:
+            log(f"migration sweep failed: {type(_me).__name__}: {_me}",
+                "scheduler")
+
+        for u in users:
             try:
                 udir = u.get("_data_dir") or ""
                 wheel_dir = os.path.join(udir, "strategies")

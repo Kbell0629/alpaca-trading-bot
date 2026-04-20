@@ -3,11 +3,17 @@
 Use this before flipping the Settings → 🔴 Live Trading toggle.
 Paper-trading mode has forgiving edges that real money does not.
 
-Last updated: 2026-04-19 (end of round-19 final polish).
+Last updated: 2026-04-19 (end of round-20 trade-quality layer).
 **Code-side work is complete. Only timeboxed user actions remain.**
 
-**Current `main` HEAD**: `648339d` (round-19).
-**Tests**: 423 passing. **Coverage**: floor 20%, measured 25.4%.
+**Current `main` HEAD**: round-20 (PRs #35-#37 on top of round-19's `648339d`).
+**Tests**: 431 passing. **Coverage**: floor 20%, measured 25.4%.
+
+**Round-20 defaults** (auto-applied to existing users on next boot):
+- `max_position_pct`: 7% per stock (was 10%)
+- `breakout_stop_loss_pct`: 12% (was 5%)
+- Don't-chase gate: skip Breakout/PEAD if `daily_change > 8%` today
+- Volatility cap: skip Breakout/PEAD if `volatility > 20%`
 
 ---
 
