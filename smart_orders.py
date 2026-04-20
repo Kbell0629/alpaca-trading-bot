@@ -35,7 +35,7 @@ Public API:
 from __future__ import annotations
 import time
 import uuid
-from decimal import Decimal, ROUND_HALF_EVEN
+from decimal import Decimal, ROUND_HALF_EVEN, InvalidOperation
 
 # Phase 5 of the float->Decimal migration (plan: docs/DECIMAL_MIGRATION_PLAN.md).
 # HIGHEST-risk phase: this module is the order-placement path. The limit price
@@ -57,7 +57,10 @@ def _dec(v, default=Decimal("0")):
         return v
     try:
         return Decimal(str(v))
-    except Exception:
+    except (InvalidOperation, ValueError, TypeError):
+        # Narrow catch so genuine bugs (e.g. upstream shape drift that
+        # returns a dict/list where a scalar was expected) still raise
+        # into the enclosing handler instead of being masked as 0.
         return default
 
 
@@ -94,7 +97,18 @@ def _get_quote(api_get, data_endpoint, symbol, headers=None):
             "mid": float(mid_d),
             "spread_pct": float(spread_pct_d),
         }
-    except Exception:
+    except Exception as e:
+        # Keep the broad catch — the fallback-to-market-order path
+        # downstream relies on getting None back for ANY problem
+        # (including network errors from api_get). But route failures
+        # through observability so shape drift / systematic quote
+        # breakage surfaces in Sentry instead of being silently masked
+        # as "no quote available".
+        try:
+            from observability import capture_exception
+            capture_exception(e, component="smart_orders_get_quote", symbol=symbol)
+        except ImportError:
+            pass
         return None
 
 

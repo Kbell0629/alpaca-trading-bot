@@ -48,11 +48,19 @@ def get_stocktwits_sentiment(symbol):
                         "stale": True,
                         "error": f"stale: only {len(fresh)} fresh msgs (<{MIN_FRESH_MSGS})"}
             messages = fresh
-        except Exception:
+        except Exception as e:
             # Recency filter failed (shape drift) — fall back to raw list
             # rather than blocking sentiment entirely. The existing path
             # handled the last 12 months of StockTwits fine.
-            pass
+            # Still route through observability so a systematic shape
+            # change (StockTwits renaming "created_at") doesn't silently
+            # corrupt every sentiment reading.
+            try:
+                from observability import capture_exception
+                capture_exception(e, component="stocktwits_recency_filter",
+                                  symbol=symbol)
+            except ImportError:
+                pass
 
         bullish = 0
         bearish = 0

@@ -89,14 +89,26 @@ def _read_cache(path, max_age_seconds=3600):
 
 
 def _write_cache(path, data):
+    # Narrow catch so code bugs (TypeError on non-serialisable payload)
+    # still surface. Disk / permission errors route through observability
+    # so we notice systematic cache breakage instead of silently re-running
+    # the LLM every call.
+    tmp = None
     try:
         d = os.path.dirname(path)
         fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
         with os.fdopen(fd, "w") as f:
             json.dump(data, f)
         os.rename(tmp, path)
-    except Exception:
-        pass
+    except (OSError, TypeError, ValueError) as e:
+        if tmp:
+            try: os.unlink(tmp)
+            except OSError: pass
+        try:
+            from observability import capture_exception
+            capture_exception(e, component="llm_sentiment_cache_write")
+        except ImportError:
+            pass
 
 
 def _bump_call_counter():
