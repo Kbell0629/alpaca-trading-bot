@@ -56,6 +56,12 @@ if not MASTER_KEY:
 
 # Session duration
 SESSION_DAYS = 30
+
+# Round-23: absolute-max session age is 30 days (the SESSION_DAYS ceiling),
+# BUT if there's no activity for SESSION_IDLE_HOURS consecutive hours the
+# session is invalidated on next use. Mitigates stolen-token / lost-laptop
+# risk without forcing active users to re-log-in every day.
+SESSION_IDLE_HOURS = int(os.environ.get("SESSION_IDLE_HOURS", "12"))
 RESET_TOKEN_HOURS = 1
 
 def _get_db():
@@ -161,6 +167,19 @@ def init_db():
             except Exception as _e:
                 log.warning("auth: DDL migration failed",
                             extra={"column": col, "error": str(_e)})
+    # Round-23: add last_activity_at to sessions for idle-timeout check.
+    # validate_session bumps it on every check; expired-by-idle sessions
+    # are rejected regardless of expires_at (the 30-day absolute ceiling).
+    _sess_existing = {row[1] for row in cur.execute("PRAGMA table_info(sessions)").fetchall()}
+    if "last_activity_at" not in _sess_existing:
+        try:
+            cur.execute("ALTER TABLE sessions ADD COLUMN last_activity_at TEXT")
+            # Backfill existing rows with their created_at so they're not
+            # instantly invalidated on the deploy that adds the column.
+            cur.execute("UPDATE sessions SET last_activity_at = created_at WHERE last_activity_at IS NULL")
+        except Exception as _e:
+            log.warning("auth: DDL migration failed",
+                        extra={"column": "last_activity_at", "error": str(_e)})
     conn.commit()
     conn.close()
     os.makedirs(USERS_DIR, exist_ok=True)
@@ -778,27 +797,57 @@ def create_session(user_id, ip_address=None):
     conn = _get_db()
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO sessions (token, user_id, created_at, expires_at, ip_address)
-        VALUES (?, ?, ?, ?, ?)
-    """, (token, user_id, now.isoformat(), expires.isoformat(), ip_str))
+        INSERT INTO sessions (token, user_id, created_at, expires_at, ip_address, last_activity_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (token, user_id, now.isoformat(), expires.isoformat(), ip_str, now.isoformat()))
     conn.commit()
     conn.close()
     return token
 
 def validate_session(token):
-    """Return user dict if session valid, None otherwise."""
+    """Return user dict if session valid, None otherwise.
+
+    Round-23: enforces an idle timeout of SESSION_IDLE_HOURS on top of
+    the absolute SESSION_DAYS ceiling. Every successful validation also
+    bumps last_activity_at so the window is sliding, not fixed-from-
+    create.
+    """
     if not token:
         return None
     conn = _get_db()
     cur = conn.cursor()
+    now = now_et()
+    idle_cutoff = (now - timedelta(hours=SESSION_IDLE_HOURS)).isoformat()
     cur.execute("""
-        SELECT u.* FROM sessions s
+        SELECT u.*, s.last_activity_at FROM sessions s
         JOIN users u ON s.user_id = u.id
-        WHERE s.token = ? AND s.expires_at > ? AND u.is_active = 1
-    """, (token, now_et().isoformat()))
+        WHERE s.token = ?
+          AND s.expires_at > ?
+          AND u.is_active = 1
+          AND (s.last_activity_at IS NULL OR s.last_activity_at > ?)
+    """, (token, now.isoformat(), idle_cutoff))
     row = cur.fetchone()
+    if row:
+        # Bump last_activity_at so the idle window slides forward on
+        # each validated request. Tolerate a stale read by doing a
+        # best-effort UPDATE — if it fails we just don't slide the
+        # window this tick (worst case: user has to re-auth earlier
+        # than they otherwise would).
+        try:
+            cur.execute(
+                "UPDATE sessions SET last_activity_at = ? WHERE token = ?",
+                (now.isoformat(), token))
+            conn.commit()
+        except Exception as e:
+            log.warning("session activity bump failed", extra={"error": str(e)})
     conn.close()
-    return dict(row) if row else None
+    if not row:
+        return None
+    # Strip the last_activity_at column that was just used for the check —
+    # callers expect user fields only.
+    d = dict(row)
+    d.pop("last_activity_at", None)
+    return d
 
 def delete_session(token):
     conn = _get_db()

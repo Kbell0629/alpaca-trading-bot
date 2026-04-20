@@ -2357,6 +2357,28 @@ def main():
         log.error("WAL setup failed", extra={"error": str(e)})
         observability.capture_exception(e, source="init.wal_setup")
 
+    # Round-23: boot-time config visibility. These env vars are
+    # OPTIONAL (bot works without them) but silently degrade functionality
+    # if missing. Surface that at boot so the operator knows which
+    # features are dormant and how to turn them on. No WARN for ones
+    # that ARE set — keep boot noise down.
+    _optional_features = [
+        ("GEMINI_API_KEY",
+         "🤖 LLM sentiment scoring on pick cards will be DISABLED. "
+         "Fix: set GEMINI_API_KEY on Railway (see https://aistudio.google.com/apikey — free tier is plenty)."),
+        ("SENTRY_DSN",
+         "📡 Exception tracking is DISABLED — errors log to stdout only, no Sentry feed. "
+         "Fix: set SENTRY_DSN on Railway (free tier = 5K events/month). "
+         "Without this, a silent bug could run for days before you notice."),
+        ("NTFY_TOPIC",
+         "🔔 Critical-alert ntfy push notifications DISABLED. Email still works if configured. "
+         "Fix: set NTFY_TOPIC on Railway to any unique string (e.g. 'alpaca-bot-yourname'), "
+         "then subscribe to that topic in the ntfy mobile app."),
+    ]
+    for env_var, consequence in _optional_features:
+        if not os.environ.get(env_var):
+            log.warning(f"boot: {env_var} not set — {consequence}")
+
     server = ThreadingHTTPServer(("0.0.0.0", port), DashboardHandler)
     log.info("dashboard listening", extra={"port": port})
     log.info("ready; SIGINT/SIGTERM triggers graceful shutdown")

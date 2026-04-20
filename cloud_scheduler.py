@@ -3703,6 +3703,82 @@ def start_scheduler():
                          name="StateReconcile").start()
     except Exception as _e:
         log(f"state-reconcile thread failed to start: {_e}", "scheduler")
+    # Round-23: Alpaca real-time news stream. Opt-in via env var
+    # (defaults to "true" since websocket-client is in requirements.txt).
+    # Streams breaking news for each user's watched symbols and writes
+    # actionable alerts to news_alerts.json. Doesn't auto-trade — it's
+    # informational + ntfy push. Fails soft (broken import, bad creds,
+    # etc. all just log and return).
+    if os.environ.get("ENABLE_NEWS_WEBSOCKET", "true").lower() == "true":
+        try:
+            threading.Thread(target=_start_news_streams_safely,
+                             daemon=True,
+                             name="NewsStreamBoot").start()
+        except Exception as _e:
+            log(f"news-stream boot thread failed to start: {_e}", "scheduler")
+
+
+def _start_news_streams_safely():
+    """Kick off news_websocket for the bootstrap user with their
+    current watched symbols (union of open positions + auto-deployed
+    strategy symbols). Single-stream design — if multi-user comes
+    later we'd need to refactor news_websocket's module-level globals.
+
+    Runs in a short-lived thread so a slow first fetch of positions
+    doesn't block scheduler startup."""
+    try:
+        import news_websocket
+        # Only start for user_id == 1 (bootstrap admin) for now —
+        # news_websocket uses module-level globals and can't run
+        # multiple streams concurrently without refactor.
+        users = list(get_all_users_for_scheduling())
+        admin = next((u for u in users if u.get("id") == 1), None)
+        if not admin:
+            log("news-stream: no admin user found, skipping", "scheduler")
+            return
+        # Union of watched symbols: open positions + active strategy files
+        symbols = set()
+        try:
+            positions = user_api_get(admin, "/positions")
+            if isinstance(positions, list):
+                for p in positions:
+                    sym = (p or {}).get("symbol", "")
+                    # Skip options — news stream is for underlying equities
+                    if sym and len(sym) <= 6 and sym.isalpha():
+                        symbols.add(sym.upper())
+        except Exception as _e:
+            log(f"news-stream: positions fetch failed: {_e}", "scheduler")
+        try:
+            udir = admin.get("_data_dir") or ""
+            strat_dir = os.path.join(udir, "strategies")
+            if os.path.isdir(strat_dir):
+                for fname in os.listdir(strat_dir):
+                    # Strategy files are named "breakout_TSLA.json" etc.
+                    if fname.endswith(".json") and "_" in fname:
+                        sym = fname.rsplit(".json", 1)[0].split("_", 1)[-1]
+                        if sym and sym.isalpha() and len(sym) <= 6:
+                            symbols.add(sym.upper())
+        except Exception as _e:
+            log(f"news-stream: strategy enumeration failed: {_e}", "scheduler")
+        if not symbols:
+            log("news-stream: no watched symbols, skipping boot "
+                "(will retry on next reconcile)", "scheduler")
+            return
+        # Surface the Alpaca credentials the websocket uses (its
+        # on_open handler authenticates with these).
+        admin_copy = dict(admin)
+        admin_copy["api_key"] = admin.get("_api_key", "")
+        admin_copy["api_secret"] = admin.get("_api_secret", "")
+        thread = news_websocket.start_news_stream(admin_copy, list(symbols))
+        if thread:
+            log(f"news-stream: connected for user_id=1, "
+                f"{len(symbols)} symbols", "scheduler")
+        else:
+            log("news-stream: start_news_stream returned None "
+                "(pip package or creds missing)", "scheduler")
+    except Exception as e:
+        log(f"news-stream boot failed: {type(e).__name__}: {e}",
+            "scheduler")
 
 
 def _run_state_reconcile_safely():
