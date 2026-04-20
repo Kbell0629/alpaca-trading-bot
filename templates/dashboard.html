@@ -1569,7 +1569,12 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
     .next-refresh-chip { display: none; }
 }
 
-/* Ultra-narrow (< 380px, e.g. iPhone SE portrait) — one more tier. */
+/* Ultra-narrow (< 380px, e.g. iPhone SE portrait) — one more tier.
+   Round-24: Close / Sell 50% / Sell 25% buttons plus 8 columns of
+   numbers were overflowing the viewport on iPhone SE. Wrap the
+   positions table in a horizontal scroll container so the content
+   overflows right instead of truncating, and shrink action padding
+   so 3 buttons can still fit on one row of the Actions cell. */
 @media (max-width: 380px) {
     .heatmap-stats { grid-template-columns: repeat(2, 1fr) !important; }
     .readiness-metrics { grid-template-columns: 1fr !important; }
@@ -1577,6 +1582,17 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
     .nav-tab { padding: 6px 8px; font-size: 11px; }
     .header-brand h1 { font-size: 15px; }
     .readme-content h1 { font-size: 18px; }
+    /* Let the positions + any dense table scroll horizontally instead
+       of truncating content on iPhone SE. Table-cards render inline so
+       targeting .table-card table is enough to catch positions +
+       open-orders. */
+    .table-card { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .table-card table { min-width: 520px; }
+    /* Compact the Sell 25% / Sell 50% / Close action cell so 3 buttons
+       still fit on a single row at narrow widths. */
+    .table-card .btn-sm {
+        padding: 4px 8px; font-size: 11px; min-height: 36px;
+    }
 }
 .backtest-section {
     background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
@@ -3583,8 +3599,22 @@ async function refreshData() {
     // stale data if the later-started fetch returns first.
     if (_refreshInFlight) return;
     _refreshInFlight = true;
+    // Round-24: 30s fetch timeout via AbortController. Without this the
+    // browser fetch can hang indefinitely on a network stall, leaving
+    // the countdown stuck at "Next refresh: 0s" forever. On timeout we
+    // toast the user + offer a manual retry, and clear _refreshInFlight
+    // so the next tick can fire again.
+    const _ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    let _timeoutId = null;
+    if (_ctrl) {
+        _timeoutId = setTimeout(function() {
+            try { _ctrl.abort(); } catch(_) {}
+        }, 30000);
+    }
     try {
-        const resp = await fetch(API_BASE + '/api/data', {credentials: 'same-origin'});
+        const fetchOpts = {credentials: 'same-origin'};
+        if (_ctrl) fetchOpts.signal = _ctrl.signal;
+        const resp = await fetch(API_BASE + '/api/data', fetchOpts);
         // If server returns 401 (session expired), stop the refresh loop and
         // redirect to login. Previously the countdown kept firing every 60s
         // forever, generating log spam and failed fetches.
@@ -3625,6 +3655,30 @@ async function refreshData() {
                 }
             })
             .catch(function(_) { /* stale card is fine, not fatal */ });
+        // Round-24: pull breaking news alerts (written by the Alpaca
+        // real-time news websocket). Stored in a global lookup keyed
+        // by symbol so pick-card renderer can query instantly. Non-
+        // fatal — if the endpoint 500s, cards just skip the 🚨 line.
+        fetch(API_BASE + '/api/news-alerts?minutes=60', {credentials: 'same-origin'})
+            .then(function(r) { return r.ok ? r.json() : null; })
+            .then(function(n) {
+                window._newsAlertsBySymbol = {};
+                if (n && Array.isArray(n.alerts)) {
+                    // Keep only the most-recent alert per symbol so the
+                    // card shows the freshest rather than stacking
+                    // multiple lines.
+                    for (var i = 0; i < n.alerts.length; i++) {
+                        var a = n.alerts[i];
+                        if (!a || !a.symbol) continue;
+                        var existing = window._newsAlertsBySymbol[a.symbol];
+                        if (!existing || (a.received_at || '') > (existing.received_at || '')) {
+                            window._newsAlertsBySymbol[a.symbol] = a;
+                        }
+                    }
+                }
+                if (dashboardData) renderDashboard();
+            })
+            .catch(function(_) { /* empty alerts are fine */ });
         renderDashboard();
         countdown = 60;
     } catch(e) {
@@ -3634,11 +3688,19 @@ async function refreshData() {
         if (window._fetchFailCount % 5 === 1) {
             // Round-15: include a Retry action so the user can re-try
             // immediately rather than wait the 60s auto-countdown.
-            toast('Failed to load data: ' + e.message, 'error', '',
-                  function() { refresh(); });
+            // Round-24: detect AbortError (30s timeout) separately so
+            // the toast says "stalled" instead of the generic error
+            // message — clearer signal that retry is likely to help.
+            var isAbort = (e && (e.name === 'AbortError' ||
+                                  /aborted/i.test(String(e.message || ''))));
+            var msg = isAbort
+                ? 'Dashboard fetch stalled (>30s). Network issue?'
+                : 'Failed to load data: ' + e.message;
+            toast(msg, 'error', '', function() { refresh(); });
         }
         countdown = 60;  // Reset even on failure so we don't spam
     } finally {
+        if (_timeoutId) clearTimeout(_timeoutId);
         _refreshInFlight = false;
     }
 }
@@ -4370,6 +4432,38 @@ function renderDashboard() {
         '</div>';
     }
 
+    // Round-24: real-time breaking-news alert from the Alpaca news
+    // websocket. When a headline scored |score| >= 6 arrived in the
+    // last 60 min for this symbol, surface it prominently at the top
+    // of the pick card. window._newsAlertsBySymbol is populated by
+    // the /api/news-alerts fetch in refreshData.
+    function buildBreakingNews(p) {
+        var alerts = window._newsAlertsBySymbol || {};
+        var a = alerts[p.symbol];
+        if (!a) return '';
+        var score = typeof a.score === 'number' ? a.score : 0;
+        var isBullish = score >= 6;
+        var isBearish = score <= -6;
+        if (!isBullish && !isBearish) return '';
+        // Compute "Nm ago" from received_at.
+        var ageStr = 'just now';
+        try {
+            var rec = new Date(a.received_at);
+            if (!isNaN(rec)) {
+                var mins = Math.max(1, Math.floor((Date.now() - rec) / 60000));
+                ageStr = mins < 60 ? (mins + 'm ago') : (Math.floor(mins / 60) + 'h ago');
+            }
+        } catch(_) {}
+        var color = isBullish ? '#fbbf24' : '#ef4444';   // amber-400 / red-500
+        var bg = isBullish ? 'rgba(251,191,36,0.18)' : 'rgba(239,68,68,0.18)';
+        var border = isBullish ? 'rgba(251,191,36,0.45)' : 'rgba(239,68,68,0.45)';
+        var label = isBullish ? 'BULLISH' : 'BEARISH';
+        var headline = String(a.headline || '').slice(0, 100);
+        return '<div class="pick-breaking-news" style="font-size:11px;color:' + color + ';background:' + bg + ';border:1px solid ' + border + ';border-radius:6px;padding:7px 10px;margin-top:6px;margin-bottom:2px;line-height:1.4;font-weight:600">' +
+            '\ud83d\udea8 <strong>BREAKING ' + esc(label) + '</strong> (' + esc(ageStr) + '): ' + esc(headline) +
+        '</div>';
+    }
+
     // Helper: politician signal HTML for a pick that won via Copy
     // Trading. Only renders when there's actual data from capitol_trades.
     function buildCopySignal(p) {
@@ -4465,6 +4559,7 @@ function renderDashboard() {
             '<div class="score-row"><span class="score-label" style="color:#ef4444">Breakout</span><div class="score-bar-bg"><div class="score-bar" style="width:' + boPct + '%;background:#ef4444"></div></div><span class="score-val">' + Math.round(p.breakout_score||0) + '</span></div>' +
             '<div class="score-row"><span class="score-label" style="color:#06b6d4" title="Post-Earnings Drift — drives 30-60d holds after big beats">PEAD</span><div class="score-bar-bg"><div class="score-bar" style="width:' + peadPct + '%;background:#06b6d4"></div></div><span class="score-val">' + Math.round(p.pead_score||0) + '</span></div></div>' +
             buildPickIndicators(p) +
+            buildBreakingNews(p) +
             buildPickSocial(p) +
             buildAiSentiment(p) +
             buildNewsSentiment(p) +

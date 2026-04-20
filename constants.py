@@ -116,3 +116,23 @@ NEGATIVE_KEYWORDS = [
 # unrelated copy). Q_PATTERN catches "Q1", "Q2", etc.
 EARNINGS_PATTERN = re.compile(r'\b(earnings|quarterly results|revenue report|guidance)\b', re.IGNORECASE)
 Q_PATTERN = re.compile(r'\bQ[1-4]\b')
+
+
+# --- Round-24: HTTP timeout defaults ---
+# Centralised so one module doesn't wait 30s while another waits 10s for
+# the same Alpaca endpoint. Pick the shortest value that still gives the
+# upstream time to respond under normal conditions.
+#
+#   HTTP_TIMEOUT_FAST      — trade-critical paths (orders, quotes). Must
+#                            return fast or we'd rather fail and retry.
+#   HTTP_TIMEOUT_DEFAULT   — everything not price-sensitive (account,
+#                            positions, news, options chains).
+#   HTTP_TIMEOUT_SLOW      — explicitly-slow endpoints (yfinance history,
+#                            Gemini LLM calls, SEC EDGAR scrapes).
+#
+# Callers can still override for their specific needs — this is just the
+# default so accidental omission doesn't leave a socket-default 300s
+# timeout hanging a scheduler thread.
+HTTP_TIMEOUT_FAST = 5
+HTTP_TIMEOUT_DEFAULT = 10
+HTTP_TIMEOUT_SLOW = 20
