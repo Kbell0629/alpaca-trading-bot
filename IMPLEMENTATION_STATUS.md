@@ -32,8 +32,31 @@ new findings from a fresh top-to-bottom audit.
   strike_price. Both fixed + 13 new options tests. CI coverage floor
   bumped 15% → 20% (measured 25.4%).
 
-**Test suite:** 229 → 423 passing (+194 over rounds 12-19).
+## Round-20 trade-quality layer (2026-04-19 night)
+
+PRs #35-#38 — triggered by the paper-trading backtest pattern where
+every top-scored Breakout pick stopped out at a loss (bot chasing
+breakout-day peaks, getting whipsawed on noise).
+
+* **#35** — Dashboard filters past economic-calendar events +
+  client-side recompute of `days_away` so stale cache doesn't show
+  "0d away" on Friday's opex on Sunday.
+* **#36** — `run_auto_deployer` don't-chase gate (skip Breakout/PEAD
+  picks already +8% today); volatility cap (skip vol > 20%);
+  `max_position_pct` 10% → 7%; `breakout_stop_loss_pct` 5% → 12%
+  (the old 5% was tighter than every other strategy's default —
+  backwards, breakouts need MORE room).
+* **#37** — `migrations.py` + boot-time auto-migration hooks into the
+  state-recovery thread. Every user's `guardrails.json` is rewritten
+  from 0.10 → 0.07 on first boot, stamped idempotent. User no longer
+  needs to click Apply Moderate.
+* **#38** — Fixed the dashboard "Currently running: CUSTOM" bug that
+  surfaced after the migration (preset detector was checking 0.10;
+  now accepts either 0.07 or 0.10 during the rollout window).
+
+**Test suite:** 229 → 431 passing (+202 over rounds 12-20).
 **Coverage:** floor 20%, measured 25.4%.
+**Current main HEAD:** `763a029`.
 
 See `GO_LIVE_CHECKLIST.md` for the pre-live gating list.
 

@@ -452,27 +452,28 @@ Tests: **431 passing** locally (two sandbox-only failures in
 Ruff clean. **Coverage floor 20% (measured 25.4%)** — bumped from 15%
 in round-19 once tests crossed the threshold.
 
-**Current `main` HEAD:** `648339d` (round-19 final polish) → round-20
-trade-quality PRs #35, #36, #37 layered on top.
+**Current `main` HEAD:** `763a029` (round-20 + Moderate preset detect fix).
 
-### Round-20 trade-quality layer (2026-04-19 night)
+### Round-20 trade-quality layer (2026-04-19 night → Monday open prep)
 
 Triggered by analysing a real `/api/data` snapshot — every top-scored
 Breakout pick had `backtest.stopped_out: true` with negative return.
 Bot was chasing breakout-day peaks (stocks already +8-12% intraday)
 and getting whipsawed by normal pullbacks into tight 5% stops.
 
-Shipped in PRs #35-#37:
+Shipped in PRs #35-#38:
 
 | PR | What |
 |---|---|
-| #35 | Dashboard filters past economic-calendar events + recomputes `days_away` from event.date (was showing "0d away" for Friday's opex on Sunday) |
+| #35 | Dashboard filters past economic-calendar events + recomputes `days_away` from event.date client-side (was showing "0d away" for Friday's opex on Sunday) |
 | #36 | `run_auto_deployer` don't-chase gate (`daily_change > 8%` skip on Breakout/PEAD); volatility cap (`volatility > 20%` skip); `max_position_pct` 0.10 → 0.07 in preset + config; `breakout_stop_loss_pct` 0.05 → 0.12 (old value was TIGHTER than default, backwards) |
 | #37 | `migrations.py` + boot-time `run_all_migrations` hooked into state-recovery thread. Auto-migrates every user's `guardrails.json` from `max_position_pct: 0.10` → `0.07` idempotently (stamped with `_migrations_applied`). User no longer needs to click Apply Moderate to get the new cap. |
+| #38 | Dashboard "Currently running" preset detector was reading CUSTOM because `detectActivePreset` still matched Moderate only on 0.10. Now accepts either 0.07 OR 0.10 during the rollout window. Moderate preset card display: `10%` → `7%`; description expanded to surface round-20 trade-quality gates. |
 
 Net: Monday's deploy pipeline will skip INFQ-class picks (vol 33.9%,
 already +12.5% today — blocked by BOTH new gates), prefer lower-vol
 breakouts like ALM / JHX, size at 7% not 10%, stop at 12% not 5%.
+Dashboard correctly detects Moderate as active (no more "CUSTOM").
 
 ### Picking this up from a new session
 
