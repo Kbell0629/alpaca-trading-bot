@@ -163,8 +163,14 @@ def _call_gemini(prompt):
     api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key:
         return None, "GEMINI_API_KEY not set"
+    # Round-21: gemini-1.5-flash was deprecated → Google's API returns
+    # 404 on that model name. Switched to gemini-2.0-flash (stable,
+    # same pricing tier). Model is configurable via env var so a future
+    # deprecation doesn't require a code change — operator can set
+    # GEMINI_MODEL=gemini-2.5-flash when they want to upgrade.
+    model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-           f"gemini-1.5-flash:generateContent?key={api_key}")
+           f"{model}:generateContent?key={api_key}")
     body = json.dumps({
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.2, "maxOutputTokens": 100},

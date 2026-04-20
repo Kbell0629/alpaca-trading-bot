@@ -98,6 +98,19 @@ def scan_post_market_news(hours_back=12, min_score=8):
     since = (now_et() - timedelta(hours=hours_back)).strftime("%Y-%m-%dT%H:%M:%S%z")
     url = f"https://data.alpaca.markets/v1beta1/news?limit=50&start={since}"
     data = api_get(url)
+    # Round-21: surface the upstream error in the return payload instead
+    # of silently returning 0 articles. The previous behaviour made "API
+    # down" indistinguishable from "genuinely no news today", which
+    # masked the Gemini-404-adjacent symptom we hit today.
+    if isinstance(data, dict) and data.get("error"):
+        return {
+            "scanned_at": now_et().isoformat(),
+            "hours_scanned": hours_back,
+            "total_articles": 0,
+            "actionable_count": 0,
+            "actionable": [],
+            "error": f"Alpaca news API: {data['error']}",
+        }
     news = data.get("news", []) if isinstance(data, dict) else []
 
     actionable = []

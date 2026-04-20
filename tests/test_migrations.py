@@ -141,3 +141,111 @@ def test_run_all_migrations_tolerates_errors(tmp_path):
     summary = run_all_migrations(users, _user_file_fn)
     assert summary[1]["round20_position_cap"] == "migrated"
     assert summary[2]["round20_position_cap"].startswith("error")
+
+
+# ---------- Round-21: auto_deployer_config migration ----------
+
+
+def test_round21_migrates_default_breakout_stop(tmp_path):
+    """The pre-round-21 default was `breakout_stop_loss_pct: 0.05` (too
+    tight — backwards: tighter than every other strategy). Round-21
+    bumps it to 0.12 if it's still at 0.05 or unset, and pins
+    max_portfolio_pct_per_stock to 0.07 to match round-20 guardrails."""
+    from migrations import (
+        migrate_auto_deployer_config_round21,
+        MIGRATION_ROUND21_BREAKOUT_STOP,
+    )
+    p = str(tmp_path / "auto_deployer_config.json")
+    _write(p, {
+        "enabled": True,
+        "max_portfolio_pct_per_stock": 0.10,
+        "risk_settings": {"breakout_stop_loss_pct": 0.05},
+    })
+    assert migrate_auto_deployer_config_round21(p) == "migrated"
+    c = _read(p)
+    assert c["risk_settings"]["breakout_stop_loss_pct"] == 0.12
+    assert c["max_portfolio_pct_per_stock"] == 0.07
+    assert MIGRATION_ROUND21_BREAKOUT_STOP in c["_migrations_applied"]
+
+
+def test_round21_respects_user_customised_breakout_stop(tmp_path):
+    """Operator set breakout_stop_loss_pct to 0.08 (neither pre-round-21
+    default) — don't rewrite, but stamp so we never try again."""
+    from migrations import (
+        migrate_auto_deployer_config_round21,
+        MIGRATION_ROUND21_BREAKOUT_STOP,
+    )
+    p = str(tmp_path / "auto_deployer_config.json")
+    _write(p, {
+        "enabled": True,
+        "max_portfolio_pct_per_stock": 0.10,
+        "risk_settings": {"breakout_stop_loss_pct": 0.08},
+    })
+    assert migrate_auto_deployer_config_round21(p) == "user_customised"
+    c = _read(p)
+    # Neither value rewritten
+    assert c["risk_settings"]["breakout_stop_loss_pct"] == 0.08
+    assert c["max_portfolio_pct_per_stock"] == 0.10
+    # But stamped so we don't retry
+    assert MIGRATION_ROUND21_BREAKOUT_STOP in c["_migrations_applied"]
+
+
+def test_round21_respects_user_customised_per_stock(tmp_path):
+    """Operator set max_portfolio_pct_per_stock to 0.15 — that's NOT
+    one of the pre-round-21 defaults (0.10 or 0.07), so don't rewrite."""
+    from migrations import migrate_auto_deployer_config_round21
+    p = str(tmp_path / "auto_deployer_config.json")
+    _write(p, {
+        "enabled": True,
+        "max_portfolio_pct_per_stock": 0.15,
+        "risk_settings": {"breakout_stop_loss_pct": 0.05},
+    })
+    assert migrate_auto_deployer_config_round21(p) == "user_customised"
+    c = _read(p)
+    assert c["max_portfolio_pct_per_stock"] == 0.15
+
+
+def test_round21_is_idempotent(tmp_path):
+    from migrations import migrate_auto_deployer_config_round21
+    p = str(tmp_path / "auto_deployer_config.json")
+    _write(p, {"max_portfolio_pct_per_stock": 0.10,
+               "risk_settings": {"breakout_stop_loss_pct": 0.05}})
+    assert migrate_auto_deployer_config_round21(p) == "migrated"
+    # Re-run: stamp present → no-op
+    assert migrate_auto_deployer_config_round21(p) == "already_applied"
+
+
+def test_round21_handles_missing_risk_settings(tmp_path):
+    """Pre-round-21 configs that never set risk_settings at all should
+    still migrate cleanly — the function creates the dict."""
+    from migrations import migrate_auto_deployer_config_round21
+    p = str(tmp_path / "auto_deployer_config.json")
+    _write(p, {"enabled": True, "max_portfolio_pct_per_stock": 0.10})
+    assert migrate_auto_deployer_config_round21(p) == "migrated"
+    c = _read(p)
+    assert c["risk_settings"]["breakout_stop_loss_pct"] == 0.12
+
+
+def test_round21_handles_missing_file(tmp_path):
+    from migrations import migrate_auto_deployer_config_round21
+    p = str(tmp_path / "nonexistent.json")
+    assert migrate_auto_deployer_config_round21(p) == "no_file"
+
+
+def test_run_all_migrations_applies_both_rounds(tmp_path):
+    """run_all_migrations must wire round-20 AND round-21 per user."""
+    from migrations import run_all_migrations
+    udir = tmp_path / "users/1"
+    udir.mkdir(parents=True)
+    _write(str(udir / "guardrails.json"), {"max_position_pct": 0.10})
+    _write(str(udir / "auto_deployer_config.json"), {
+        "max_portfolio_pct_per_stock": 0.10,
+        "risk_settings": {"breakout_stop_loss_pct": 0.05},
+    })
+
+    def _user_file_fn(user, filename):
+        return str(udir / filename)
+
+    summary = run_all_migrations([{"id": 1}], _user_file_fn)
+    assert summary[1]["round20_position_cap"] == "migrated"
+    assert summary[1]["round21_breakout_stop"] == "migrated"
