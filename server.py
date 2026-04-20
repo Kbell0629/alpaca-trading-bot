@@ -641,15 +641,33 @@ def _login_attempt_record(ip, username, success):
                 log.warning("auth GC failed", extra={"gc_fn": _fn, "error": str(_e)})
                 observability.capture_exception(_e, source="auth.gc", gc_fn=_fn)
 
-# Signup invite code gate. Set SIGNUP_INVITE_CODE env var on Railway to require
-# the code for new signups. Set SIGNUP_DISABLED=1 to block all new signups.
+# Signup invite code gate. Set SIGNUP_DISABLED=1 to block all new signups.
+# Otherwise a `provided_code` must validate EITHER:
+#   (a) the SIGNUP_INVITE_CODE env var (a single shared code for admin
+#       convenience), OR
+#   (b) a single-use DB-backed invite (auth.check_invite — round-26).
+# When neither is set and SIGNUP_DISABLED isn't 1, signup is open.
 def signup_allowed(provided_code):
     if os.environ.get("SIGNUP_DISABLED") == "1":
         return False, "Signup is disabled on this deployment."
-    expected = os.environ.get("SIGNUP_INVITE_CODE", "").strip()
-    if expected:
-        if not hmac.compare_digest((provided_code or "").strip(), expected):
-            return False, "Invalid invite code."
+    code = (provided_code or "").strip()
+    env_expected = os.environ.get("SIGNUP_INVITE_CODE", "").strip()
+    if env_expected and code and hmac.compare_digest(code, env_expected):
+        return True, None
+    # Round-26: try the DB invite table. If the code matches an unused,
+    # unexpired invite, accept.
+    if code:
+        try:
+            ok, _reason = auth.check_invite(code)
+            if ok:
+                return True, None
+        except Exception:
+            pass  # DB error shouldn't block signup when env code is set
+    # If SIGNUP_INVITE_CODE is set but the provided code doesn't match
+    # either path, reject.
+    if env_expected:
+        return False, "Invalid invite code."
+    # No env gate + no DB invite match — fall through to open signup.
     return True, None
 
 
@@ -2111,6 +2129,10 @@ class DashboardHandler(
             except Exception as e:
                 self._send_error_safe(e, 500, "admin-users")
 
+        elif path == "/api/admin/invites":
+            # Round-26: admin-only list of signup invites they created.
+            self.handle_admin_list_invites()
+
         elif path == "/api/admin/audit-log":
             # Admin-only: return recent audit log entries with optional filters
             if not self.current_user or not self.current_user.get("is_admin"):
@@ -2267,6 +2289,10 @@ class DashboardHandler(
             return
         if path == "/api/admin/create-backup":
             self.handle_admin_create_backup()
+            return
+        if path == "/api/admin/invites":
+            # Round-26: POST creates a single-use signup invite.
+            self.handle_admin_create_invite(body)
             return
 
         if path == "/api/refresh":
