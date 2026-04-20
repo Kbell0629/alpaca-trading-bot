@@ -35,6 +35,15 @@ class _ServerProxy:
 server = _ServerProxy()
 
 
+# Round-22: per-user throttle for /api/force-auto-deploy. In-memory
+# because the endpoint is already expensive enough (subprocess screener
+# + deploy) that we don't need cross-instance coordination — a single
+# Railway instance is enough to bottleneck. Key = user_id, value = last
+# invocation timestamp. 30s cooldown enforced in handler.
+_FORCE_DEPLOY_LAST: dict[int, float] = {}
+_FORCE_DEPLOY_LOCK = threading.Lock()
+
+
 class ActionsHandlerMixin:
     def handle_refresh(self):
         """Run update_dashboard.py with current user's credentials and return fresh data."""
@@ -375,6 +384,20 @@ class ActionsHandlerMixin:
         """
         if not self.current_user:
             return self.send_json({"error": "Not authenticated"}, 401)
+        # Round-22: per-user rate limit. A deploy cycle is expensive
+        # (hits Alpaca + places orders) and the endpoint had no guard
+        # against someone hammering it. 30-second cooldown per user is
+        # plenty — the real use-case is "I clicked once, I'd like to
+        # see it run", not "I want to run it 10 times in 10 seconds".
+        uid = self.current_user.get("id")
+        now_ts = time.time()
+        with _FORCE_DEPLOY_LOCK:
+            last = _FORCE_DEPLOY_LAST.get(uid, 0.0)
+            if now_ts - last < 30:
+                wait = int(30 - (now_ts - last))
+                return self.send_json(
+                    {"error": f"Rate limited. Try again in {wait}s."}, 429)
+            _FORCE_DEPLOY_LAST[uid] = now_ts
         # Round-11: audit the force-deploy so we have a record if it
         # was triggered off-hours or outside the normal 9:35 window.
         try:
