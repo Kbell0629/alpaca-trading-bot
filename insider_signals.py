@@ -76,20 +76,34 @@ def _read_cache(symbol, max_age_seconds=86400):
             return None
         with open(path) as f:
             return json.load(f)
-    except Exception:
+    except (OSError, json.JSONDecodeError):
+        # Matches llm_sentiment._read_cache — narrow catch lets genuine
+        # code bugs surface while still treating corrupt-file / missing-
+        # file / permission as a cache miss.
         return None
 
 
 def _write_cache(symbol, data):
     path = _cache_path(symbol)
+    tmp = None
     try:
         d = os.path.dirname(path)
         fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
         with os.fdopen(fd, "w") as f:
             json.dump(data, f, default=str)
         os.rename(tmp, path)
-    except Exception:
-        pass
+    except (OSError, TypeError, ValueError) as e:
+        # Silent cache-write failure meant the same EDGAR Form 4 scan
+        # would re-run on every refresh, hitting SEC rate limits. Route
+        # through observability so we see systematic breakage.
+        if tmp:
+            try: os.unlink(tmp)
+            except OSError: pass
+        try:
+            from observability import capture_exception
+            capture_exception(e, component="insider_signals_cache_write")
+        except ImportError:
+            pass
 
 
 _LAST_REQUEST_TIME = 0.0

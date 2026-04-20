@@ -32,9 +32,13 @@ def safe_save_json(path, data):
         with os.fdopen(fd, 'w') as f:
             json.dump(data, f, indent=2, default=str)
         os.rename(tmp_path, path)
-    except:
+    except Exception:
+        # Narrow to Exception so KeyboardInterrupt / SystemExit aren't
+        # swallowed during shutdown. Inner unlink stays narrow to OSError
+        # (the only thing os.unlink legitimately raises when cleaning up
+        # a temp file that may already be gone).
         try: os.unlink(tmp_path)
-        except: pass
+        except OSError: pass
         raise
 
 
