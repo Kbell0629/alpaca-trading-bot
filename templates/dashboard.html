@@ -4792,6 +4792,26 @@ function renderDashboard() {
         // strike, and cash-at-risk at a glance without decoding
         // HIMS260508P00027000 in his head every time.
         let symCell = '<strong>' + esc(sym) + '</strong>' + srcBadge + stratBadge;
+        // Round-25: breaking-news badge on held positions. The round-24
+        // pick-card breaking-news line only shows for symbols that
+        // happen to be in top-5 picks that cycle. If the websocket
+        // catches a |score| >= 6 event for a held symbol that ISN'T
+        // a top pick, you'd miss it entirely — surface here too.
+        // Uses the same window._newsAlertsBySymbol lookup as the pick
+        // cards. For option positions, keys off the underlying so a
+        // HIMS put gets the HIMS alert.
+        try {
+            var _underlying = occ ? occ.underlying : sym;
+            var _alerts = window._newsAlertsBySymbol || {};
+            var _alert = _underlying ? _alerts[_underlying.toUpperCase()] : null;
+            if (_alert && Math.abs(_alert.score || 0) >= 6) {
+                var _isBull = (_alert.score || 0) >= 6;
+                var _badgeColor = _isBull ? '#fbbf24' : '#ef4444';
+                var _badgeBg = _isBull ? 'rgba(251,191,36,0.22)' : 'rgba(239,68,68,0.22)';
+                var _badgeLabel = _isBull ? 'BULL' : 'BEAR';
+                symCell += ' <span class="breaking-news-badge" title="' + esc(String(_alert.headline || '').slice(0, 150)) + '" style="background:' + _badgeBg + ';color:' + _badgeColor + ';border:1px solid ' + _badgeColor + ';padding:2px 6px;border-radius:6px;font-size:10px;font-weight:700;margin-left:6px;letter-spacing:0.3px">\ud83d\udea8 ' + _badgeLabel + '</span>';
+            }
+        } catch(_) { /* non-fatal */ }
         if (occ) {
             const sideWord = qty < 0 ? 'short' : 'long';
             const riskStr = cashAtRisk > 0

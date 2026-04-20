@@ -3884,8 +3884,13 @@ def _scheduler_death_watchdog():
             # Secondary check: subprocess zombie accumulation. Screener
             # subprocesses can linger if SIGKILL also fails. Poll for
             # zombies owned by this process and alert if we exceed 5.
+            # The function RETURNS the updated last-alert timestamp so
+            # our rate-limit tracker actually advances — the round-24
+            # first-cut passed the local variable by value, which meant
+            # the 1-alert-per-hour limit never kicked in (it'd fire
+            # every 60s once zombies > 5).
             try:
-                _check_subprocess_zombies(_last_zombie_alert_ts)
+                _last_zombie_alert_ts = _check_subprocess_zombies(_last_zombie_alert_ts)
             except Exception as _e:
                 # Watchdog must never crash — log and continue.
                 log(f"watchdog: zombie check failed: {_e}", "scheduler")
@@ -3901,6 +3906,10 @@ def _check_subprocess_zombies(_last_alert_ts):
     """Count zombie children of this process and fire critical_alert
     if we exceed 5. Rate-limited to one alert per hour so a persistent
     zombie buildup doesn't spam — ntfy caps hourly anyway.
+
+    Returns the updated last-alert timestamp (may equal the input if
+    no alert fired this tick). Caller is expected to assign the return
+    value back so the rate-limit actually advances.
 
     Uses os.waitpid(-1, os.WNOHANG) to reap finished-but-not-waited
     children first; the zombie count is then whatever remains."""
@@ -3942,12 +3951,12 @@ def _check_subprocess_zombies(_last_alert_ts):
                             except (OSError, IndexError):
                                 continue
     except Exception:
-        return  # Best-effort; never alert on inspection failure
+        return _last_alert_ts  # Best-effort; never alert on inspection failure
     if zombie_count > 5:
         # Rate-limit to 1 alert per hour
         now_ts = time.time()
         if now_ts - _last_alert_ts < 3600:
-            return
+            return _last_alert_ts
         try:
             import observability
             observability.critical_alert(
@@ -3959,9 +3968,12 @@ def _check_subprocess_zombies(_last_alert_ts):
                 tags={"source": "zombie_watchdog",
                       "count": str(zombie_count)},
             )
+            return now_ts  # rate-limit advances only on a successful alert
         except Exception as _e:
             log(f"watchdog: zombie critical_alert failed: {_e}",
                 "scheduler")
+            return _last_alert_ts
+    return _last_alert_ts
 
 
 def stop_scheduler():
