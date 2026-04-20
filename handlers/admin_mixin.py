@@ -137,3 +137,74 @@ class AdminHandlerMixin:
             })
         except Exception as e:
             self._send_error_safe(e, 500, "create-backup")
+
+    def handle_admin_create_invite(self, body):
+        """Admin-only: generate a single-use signup invite. Returns the
+        plaintext token ONCE in the response (never stored plaintext —
+        only SHA-256 hash lands in the DB). Admin copies the URL and
+        shares it with the invitee; on signup the token is consumed
+        and can't be reused.
+
+        Body: {"note": "friend1", "days": 7}  — both optional."""
+        if not self.current_user or not self.current_user.get("is_admin"):
+            return self.send_json({"error": "Admin only"}, 403)
+        note = (body.get("note") or "")[:80]
+        days = body.get("days")
+        try:
+            days_i = int(days) if days else None
+            if days_i is not None and (days_i < 1 or days_i > 30):
+                return self.send_json(
+                    {"error": "days must be between 1 and 30"}, 400)
+        except (TypeError, ValueError):
+            return self.send_json({"error": "days must be an integer"}, 400)
+        try:
+            token = auth.create_invite(self.current_user["id"],
+                                        note=note,
+                                        days_valid=days_i)
+            auth.log_admin_action(
+                "create_invite",
+                actor=self.current_user,
+                ip_address=self.client_address[0] if self.client_address else None,
+                detail={"note": note, "days": days_i or auth.INVITE_DAYS})
+            # Build the signup URL using the request host — works on
+            # both Railway prod + localhost dev without hardcoding.
+            host = self.headers.get("Host", "localhost")
+            scheme = "https" if self.headers.get(
+                "X-Forwarded-Proto", "").lower() == "https" else "http"
+            signup_url = f"{scheme}://{host}/signup?invite={token}"
+            return self.send_json({
+                "success": True,
+                "token": token,
+                "signup_url": signup_url,
+                "expires_in_days": days_i or auth.INVITE_DAYS,
+            })
+        except Exception as e:
+            self._send_error_safe(e, 500, "create-invite")
+
+    def handle_admin_list_invites(self):
+        """Admin-only: list all invites the admin has created (hashes
+        only — plaintext was shown once at creation time)."""
+        if not self.current_user or not self.current_user.get("is_admin"):
+            return self.send_json({"error": "Admin only"}, 403)
+        try:
+            rows = auth.list_invites(self.current_user["id"])
+            # Strip the hash from the response — it's useless client-side
+            # and leaking the hash doesn't help but isn't needed either.
+            # Enrich with computed status: active / used / expired.
+            from et_time import now_et as _now_et
+            now_iso = _now_et().isoformat()
+            out = []
+            for r in rows:
+                status = "used" if r.get("used_at") else (
+                    "expired" if r["expires_at"] < now_iso else "active")
+                out.append({
+                    "created_at": r["created_at"],
+                    "expires_at": r["expires_at"],
+                    "used_at": r.get("used_at"),
+                    "used_by_user_id": r.get("used_by_user_id"),
+                    "note": r.get("note") or "",
+                    "status": status,
+                })
+            self.send_json({"invites": out})
+        except Exception as e:
+            self._send_error_safe(e, 500, "list-invites")

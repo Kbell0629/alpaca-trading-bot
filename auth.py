@@ -141,6 +141,20 @@ def init_db():
         ts REAL NOT NULL,                 -- UNIX timestamp
         success INTEGER NOT NULL          -- 0 or 1
     );
+    CREATE TABLE IF NOT EXISTS invites (
+        -- Round-26: single-use signup invites. Admin generates a token,
+        -- shares the URL with one person, the token consumes on signup.
+        -- token_hash is SHA-256 of the plaintext token (same defense-
+        -- in-depth pattern as password_resets).
+        token_hash TEXT PRIMARY KEY,
+        created_by_user_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        used_at TEXT,                     -- NULL until consumed
+        used_by_user_id INTEGER,
+        note TEXT,                        -- free-form label ("friend1")
+        FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
     CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
     CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
     CREATE INDEX IF NOT EXISTS idx_reset_token ON password_resets(token);
@@ -864,6 +878,131 @@ def cleanup_expired_sessions():
     conn.commit()
     conn.close()
     return deleted
+
+
+# ===== Single-use signup invites (round-26) =====
+# Admin generates an invite → gets a plaintext token (shown once) →
+# shares signup URL with a friend → friend signs up → token is
+# atomically marked used. Tokens are stored as SHA-256 hashes so a
+# users.db leak doesn't expose usable invites (same defense-in-depth
+# as password-reset tokens).
+INVITE_DAYS = int(os.environ.get("INVITE_DAYS_VALID", "7"))
+
+
+def _hash_invite_token(tok):
+    return hashlib.sha256((tok or "").encode()).hexdigest()
+
+
+def create_invite(created_by_user_id, note="", days_valid=None):
+    """Generate a single-use signup invite. Returns the PLAINTEXT
+    token (shown once to the admin so they can share the URL). Store
+    hash-only."""
+    token = secrets.token_urlsafe(32)
+    token_h = _hash_invite_token(token)
+    now = now_et()
+    expires = now + timedelta(days=(days_valid or INVITE_DAYS))
+    conn = _get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO invites (token_hash, created_by_user_id, created_at,
+                             expires_at, note)
+        VALUES (?, ?, ?, ?, ?)
+    """, (token_h, created_by_user_id, now.isoformat(),
+          expires.isoformat(), (note or "").strip()[:80]))
+    conn.commit()
+    conn.close()
+    return token
+
+
+def consume_invite(token, new_user_id):
+    """Atomically mark an invite as used. Returns (True, None) on
+    success or (False, reason). Called from handle_signup after the
+    new user row is created so we only consume on the happy path.
+
+    TOCTOU-safe: the UPDATE uses `WHERE used_at IS NULL` so two
+    concurrent signup attempts on the same token can't both succeed
+    (second one returns rowcount == 0).
+    """
+    if not token:
+        return False, "missing invite token"
+    token_h = _hash_invite_token(token)
+    now = now_et()
+    conn = _get_db()
+    cur = conn.cursor()
+    # First check it exists + isn't expired. (If it's already used,
+    # the WHERE clause below will fail with rowcount=0 — treat that
+    # as "already used" in the message.)
+    row = cur.execute(
+        "SELECT expires_at, used_at FROM invites WHERE token_hash = ?",
+        (token_h,)).fetchone()
+    if not row:
+        conn.close()
+        return False, "invite not found"
+    if row["used_at"]:
+        conn.close()
+        return False, "invite already used"
+    if row["expires_at"] < now.isoformat():
+        conn.close()
+        return False, "invite expired"
+    cur.execute("""
+        UPDATE invites
+        SET used_at = ?, used_by_user_id = ?
+        WHERE token_hash = ? AND used_at IS NULL
+    """, (now.isoformat(), new_user_id, token_h))
+    consumed = cur.rowcount
+    conn.commit()
+    conn.close()
+    if consumed == 0:
+        # Lost the race with another consumer.
+        return False, "invite already used"
+    return True, None
+
+
+def check_invite(token):
+    """Read-only check: is this invite valid (exists, unused, unexpired)?
+    Used by signup_allowed before we do the expensive Alpaca verify.
+    Returns (True, None) or (False, reason)."""
+    if not token:
+        return False, "missing"
+    token_h = _hash_invite_token(token)
+    conn = _get_db()
+    cur = conn.cursor()
+    row = cur.execute(
+        "SELECT expires_at, used_at FROM invites WHERE token_hash = ?",
+        (token_h,)).fetchone()
+    conn.close()
+    if not row:
+        return False, "invite not found"
+    if row["used_at"]:
+        return False, "invite already used"
+    if row["expires_at"] < now_et().isoformat():
+        return False, "invite expired"
+    return True, None
+
+
+def list_invites(created_by_user_id=None):
+    """Return invite rows for admin display (no plaintext tokens —
+    those aren't stored). Filters by creator if provided."""
+    conn = _get_db()
+    cur = conn.cursor()
+    if created_by_user_id is not None:
+        rows = cur.execute("""
+            SELECT token_hash, created_by_user_id, created_at, expires_at,
+                   used_at, used_by_user_id, note
+            FROM invites
+            WHERE created_by_user_id = ?
+            ORDER BY created_at DESC
+        """, (created_by_user_id,)).fetchall()
+    else:
+        rows = cur.execute("""
+            SELECT token_hash, created_by_user_id, created_at, expires_at,
+                   used_at, used_by_user_id, note
+            FROM invites
+            ORDER BY created_at DESC
+        """).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
 
 # ===== Password Reset =====
 # Reset tokens are returned to the user in plaintext (via email / UI) but

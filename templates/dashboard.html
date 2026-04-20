@@ -2048,6 +2048,7 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
 
     <div class="settings-tabs">
       <button type="button" class="settings-tab active" data-tab="users" onclick="switchAdminTab('users')">Users</button>
+      <button type="button" class="settings-tab" data-tab="invites" onclick="switchAdminTab('invites')">Invites</button>
       <button type="button" class="settings-tab" data-tab="audit" onclick="switchAdminTab('audit')">Audit Log</button>
       <button type="button" class="settings-tab" data-tab="backups" onclick="switchAdminTab('backups')">Backups</button>
     </div>
@@ -2073,6 +2074,27 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
         <button type="button" class="btn-ghost btn-sm" onclick="loadAdminAuditLog()" style="margin-left:auto">↻ Reload</button>
       </div>
       <div id="adminAuditList"><div style="color:var(--text-dim)">Loading...</div></div>
+    </div>
+
+    <div class="settings-panel" id="adminPanel-invites">
+      <div class="modal-info-box" style="margin-bottom:12px">
+        Generate a single-use signup link to invite one person. Token is shown ONCE — copy the URL when it appears. Anyone with the URL can sign up (and they'll still need their own Alpaca API keys). Default expiry: 7 days.
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+        <input type="text" id="inviteNoteInput" placeholder="Note (optional, e.g. friend1)" maxlength="80" style="flex:1" />
+        <input type="number" id="inviteDaysInput" placeholder="Days" min="1" max="30" value="7" style="width:80px" />
+        <button type="button" class="btn-primary btn-sm" onclick="adminCreateInvite()">🔗 Generate Invite</button>
+      </div>
+      <div id="adminInviteNewUrl" style="display:none;margin-bottom:10px;padding:10px;background:rgba(16,185,129,0.12);border:1px solid rgba(16,185,129,0.35);border-radius:6px;font-size:13px;word-break:break-all">
+        <div style="font-weight:600;margin-bottom:4px">✅ Invite URL (copy now — not shown again):</div>
+        <code id="adminInviteNewUrlText" style="display:block;padding:6px;background:rgba(0,0,0,0.25);border-radius:4px;margin-top:6px"></code>
+        <button type="button" class="btn-ghost btn-sm" style="margin-top:6px" onclick="adminCopyInviteUrl()">📋 Copy URL</button>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+        <div style="font-size:12px;color:var(--text-dim)">Existing invites:</div>
+        <button type="button" class="btn-ghost btn-sm" onclick="loadAdminInvites()" style="margin-left:auto">↻ Reload</button>
+      </div>
+      <div id="adminInviteList"><div style="color:var(--text-dim)">Loading...</div></div>
     </div>
 
     <div class="settings-panel" id="adminPanel-backups">
@@ -6346,6 +6368,85 @@ function switchAdminTab(name) {
     if (name === 'users') loadAdminUsers();
     else if (name === 'audit') loadAdminAuditLog();
     else if (name === 'backups') loadAdminBackups();
+    else if (name === 'invites') loadAdminInvites();
+}
+
+// Round-26: admin signup-invite helpers.
+async function adminCreateInvite() {
+    var note = (document.getElementById('inviteNoteInput').value || '').trim();
+    var days = parseInt(document.getElementById('inviteDaysInput').value || '7', 10);
+    try {
+        const resp = await fetch(API_BASE + '/api/admin/invites', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({note: note, days: days})
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+            toast(data.error || 'Failed to create invite', 'error');
+            return;
+        }
+        var box = document.getElementById('adminInviteNewUrl');
+        var txt = document.getElementById('adminInviteNewUrlText');
+        if (box && txt) {
+            txt.textContent = data.signup_url;
+            box.style.display = 'block';
+        }
+        document.getElementById('inviteNoteInput').value = '';
+        toast('Invite created — copy the URL before navigating away!', 'success');
+        loadAdminInvites();
+    } catch(e) {
+        toast('Error: ' + e.message, 'error');
+    }
+}
+
+function adminCopyInviteUrl() {
+    var txt = document.getElementById('adminInviteNewUrlText');
+    if (!txt) return;
+    try {
+        navigator.clipboard.writeText(txt.textContent);
+        toast('Copied to clipboard', 'success');
+    } catch(_) {
+        toast('Copy failed — select and copy manually', 'warning');
+    }
+}
+
+async function loadAdminInvites() {
+    var listEl = document.getElementById('adminInviteList');
+    if (!listEl) return;
+    listEl.innerHTML = '<div style="color:var(--text-dim)">Loading...</div>';
+    try {
+        const resp = await fetch(API_BASE + '/api/admin/invites', {credentials: 'same-origin'});
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'HTTP ' + resp.status);
+        var invites = data.invites || [];
+        if (!invites.length) {
+            listEl.innerHTML = '<div style="color:var(--text-dim)">No invites yet.</div>';
+            return;
+        }
+        var html = '<table style="width:100%;font-size:12px"><thead><tr>' +
+            '<th style="text-align:left">Note</th>' +
+            '<th style="text-align:left">Status</th>' +
+            '<th style="text-align:left">Created</th>' +
+            '<th style="text-align:left">Expires</th>' +
+            '<th style="text-align:left">Used by</th>' +
+            '</tr></thead><tbody>';
+        invites.forEach(function(inv) {
+            var statusColor = inv.status === 'active' ? '#10b981' :
+                               inv.status === 'used' ? '#94a3b8' : '#ef4444';
+            html += '<tr>' +
+                '<td>' + esc(inv.note || '—') + '</td>' +
+                '<td style="color:' + statusColor + ';font-weight:600">' + esc(inv.status) + '</td>' +
+                '<td>' + esc(fmtAuditTime(inv.created_at)) + '</td>' +
+                '<td>' + esc(fmtAuditTime(inv.expires_at)) + '</td>' +
+                '<td>' + (inv.used_by_user_id ? 'user ' + inv.used_by_user_id : '—') + '</td>' +
+            '</tr>';
+        });
+        html += '</tbody></table>';
+        listEl.innerHTML = html;
+    } catch(e) {
+        listEl.innerHTML = '<div style="color:var(--red)">Failed to load: ' + esc(e.message) + '</div>';
+    }
 }
 
 /* Format an ISO timestamp as 12-hour ET for the audit log + backup list.

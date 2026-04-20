@@ -251,6 +251,26 @@ class AuthHandlerMixin:
         if err:
             return self.send_json({"error": err}, 400)
 
+        # Round-26: if signup was gated by a DB-backed single-use invite
+        # (not the shared SIGNUP_INVITE_CODE env var), mark it used so it
+        # can't be reused. Env-var matches don't get consumed — that's
+        # the "shared code" case. Failure here logs but doesn't roll
+        # back the user (the signup already succeeded; worst case the
+        # invite stays reusable for a few minutes which a human-attack
+        # can't meaningfully exploit).
+        try:
+            env_code = (os.environ.get("SIGNUP_INVITE_CODE") or "").strip()
+            is_env_match = (env_code and invite_code and
+                            env_code == invite_code)
+            if invite_code and not is_env_match:
+                ok, reason = auth.consume_invite(invite_code, user_id)
+                if not ok:
+                    log.warning("signup: invite consume failed",
+                                extra={"user_id": user_id, "reason": reason})
+        except Exception as _e:
+            log.warning("signup: invite consume raised",
+                        extra={"user_id": user_id, "error": str(_e)})
+
         # Auto-login
         ip = self.client_address[0] if self.client_address else None
         new_user = auth.get_user_by_id(user_id)
