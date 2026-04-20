@@ -3864,9 +3864,12 @@ function detectActivePreset(d) {
     var maxPerStock = g.max_position_pct || 0.10;
     var allowed = (g.strategies_allowed || []).slice().sort().join(',');
 
-    // Preset signatures
+    // Preset signatures.
+    // Round-20: moderate's per-stock cap moved 0.10 → 0.07; allow either
+    // value to match so users running the auto-migrated 0.07 still
+    // detect as Moderate (not Custom).
     if (stopPct === 0.05 && maxPos === 3 && maxPerStock === 0.05) return 'conservative';
-    if (stopPct === 0.10 && maxPos === 5 && maxPerStock === 0.10) return 'moderate';
+    if (stopPct === 0.10 && maxPos === 5 && (maxPerStock === 0.07 || maxPerStock === 0.10)) return 'moderate';
     if (stopPct === 0.05 && maxPos >= 8 && maxPerStock >= 0.15) return 'aggressive';
     return 'custom';
 }
@@ -3901,16 +3904,16 @@ function buildStrategyTemplates(d) {
         },
         moderate: {
             name: 'Moderate',
-            tagline: 'Balanced risk/reward',
+            tagline: 'Balanced risk/reward — round-20 trade quality',
             stopLoss: '10%',
             maxPositions: 5,
-            maxPerStock: '10%',
+            maxPerStock: '7%',
             maxNewPerDay: 2,
             strategies: ['Breakout + Mean Reversion + Wheel + PEAD', '(shorts only in bear markets)'],
             excluded: ['Short Selling auto-deploy in bull'],
-            detail: 'Standard 10% stop-loss. Up to 5 concurrent positions with dynamic volatility-based sizing. All strategies enabled, but shorts only activate in bear markets. This is the default "set and forget" mode for most traders.',
+            detail: 'Standard 10% stop-loss with a wider 12% breakout stop (volatile breakouts need room). Up to 5 concurrent positions sized at 7% each so a single loser is bounded at -0.7% portfolio. All 5 strategies enabled. Round-20 trade-quality gates active: skip Breakout/PEAD picks already +8% intraday (don\'t-chase) and skip volatility >20% picks (avoid INFQ-tier meme noise). Shorts only auto-deploy in bear markets.',
             goodFor: 'The default recommendation. Accounts $5k-$50k. Users who want the bot to work across all market conditions without babysitting.',
-            tradeoffs: 'Middle ground — won\'t be the best in any single market regime but stays reasonable across all of them.',
+            tradeoffs: 'Middle ground — won\'t be the best in any single market regime but stays reasonable across all of them. Smaller positions mean lower upside on a winner; the trade-quality gates may pass on hot momentum names.',
             expectedReturn: '15-25% annually',
             maxDrawdown: '~10% max (enforced by guardrails)',
             color: '#3b82f6'
