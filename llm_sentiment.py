@@ -343,7 +343,12 @@ def score_news(headline, summary=None, symbol=None):
 
     cache_path = _cache_key(provider, headline, summary or "")
     cached = _read_cache(cache_path, max_age_seconds=3600)
-    if cached is not None:
+    # Skip malformed cached entries so they re-fetch with the current
+    # code. Without this, a bad response cached during an outage (e.g.
+    # Gemini returning just "```" when maxOutputTokens was too low)
+    # would keep being served until TTL expiry even after a deploy
+    # fixes the underlying issue. Effectively self-heals the cache.
+    if cached is not None and not cached.get("malformed"):
         return {**cached, "cached": True}
 
     prompt = _build_prompt(headline, summary, symbol)

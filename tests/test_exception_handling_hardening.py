@@ -306,3 +306,74 @@ def test_notify_safe_save_json_still_cleans_up_tmp_on_error(tmp_path, monkeypatc
     assert len(unlinked) == 1
     assert unlinked[0].endswith(".tmp")
     assert not os.path.exists(unlinked[0])
+
+
+# ---------- llm_sentiment cache self-heals on malformed entries ----------
+
+
+def test_llm_sentiment_cache_skips_malformed_entries(monkeypatch, tmp_path):
+    """Malformed cache entries (e.g. from a previous outage where Gemini
+    returned just "```" because maxOutputTokens was too low) must NOT
+    be served. They should be treated as a cache miss so the next call
+    hits the fixed code path and overwrites them with a good response."""
+    import llm_sentiment
+
+    monkeypatch.setenv("GEMINI_API_KEY", "fake")
+    monkeypatch.setattr(llm_sentiment, "_cache_dir", lambda: str(tmp_path))
+
+    # Pre-seed a malformed cache entry (simulating the old outage)
+    import hashlib
+    key = hashlib.sha1(b"gemini|Test headline|").hexdigest()
+    cache_path = os.path.join(str(tmp_path), f"{key}.json")
+    with open(cache_path, "w") as f:
+        json.dump({
+            "score": 0,
+            "reasoning": "unparseable: ```",
+            "provider": "gemini",
+            "cached": False,
+            "malformed": True,
+        }, f)
+
+    # Replace _call_gemini with a stub that returns a good response
+    calls = []
+    def _fake_gemini(prompt):
+        calls.append(prompt)
+        return '{"score": 7, "reason": "Positive earnings beat"}', None
+    monkeypatch.setitem(llm_sentiment._PROVIDERS, "gemini", _fake_gemini)
+
+    result = llm_sentiment.score_news("Test headline", "")
+    # Should have called Gemini (cache was skipped) and returned the fresh result
+    assert len(calls) == 1, "malformed cache entry was served instead of re-fetched"
+    assert result["score"] == 7
+    assert result["reasoning"] == "Positive earnings beat"
+    assert result["malformed"] is False
+
+
+def test_llm_sentiment_cache_serves_good_entries(monkeypatch, tmp_path):
+    """Sanity check: well-formed cache entries are still served as before.
+    We shouldn't invalidate every entry — only malformed ones."""
+    import llm_sentiment
+
+    monkeypatch.setenv("GEMINI_API_KEY", "fake")
+    monkeypatch.setattr(llm_sentiment, "_cache_dir", lambda: str(tmp_path))
+
+    import hashlib
+    key = hashlib.sha1(b"gemini|Good headline|").hexdigest()
+    cache_path = os.path.join(str(tmp_path), f"{key}.json")
+    with open(cache_path, "w") as f:
+        json.dump({
+            "score": 5, "reasoning": "Cached analysis",
+            "provider": "gemini", "cached": False, "malformed": False,
+        }, f)
+
+    calls = []
+    def _fake_gemini(prompt):
+        calls.append(prompt)
+        return '{"score": 1, "reason": "fresh"}', None
+    monkeypatch.setitem(llm_sentiment._PROVIDERS, "gemini", _fake_gemini)
+
+    result = llm_sentiment.score_news("Good headline", "")
+    # Should NOT have re-called Gemini
+    assert len(calls) == 0
+    assert result["score"] == 5
+    assert result["cached"] is True
