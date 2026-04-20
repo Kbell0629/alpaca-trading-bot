@@ -14,6 +14,7 @@ Run: python3 "/Users/kevinbell/Alpaca Trading/error_recovery.py"
 import json
 import os
 import os.path
+import re
 import subprocess
 import sys
 import tempfile
@@ -117,6 +118,28 @@ def load_json(path):
             return json.load(f)
     except Exception:
         return None
+
+
+# Round-25: OCC option-symbol helpers. Alpaca returns options with
+# symbols like "CHWY260515P00025000" — 1-6 letters of underlying, then
+# YYMMDD, then C/P, then 8-digit strike × 1000. A plain regex covers
+# the shape well enough for the orphan-check path (we don't need to
+# parse the date/strike/right, just recognise-and-split).
+_OCC_OPTION_RE = re.compile(r"^([A-Z]{1,6})\d{6}[CP]\d{8}$")
+
+
+def _is_occ_option_symbol(sym):
+    """Return True if sym matches the OCC option-symbol shape."""
+    return bool(sym and _OCC_OPTION_RE.match(sym))
+
+
+def _occ_underlying(sym):
+    """Extract underlying equity symbol from an OCC option symbol.
+    Returns None if sym isn't an OCC symbol."""
+    if not sym:
+        return None
+    m = _OCC_OPTION_RE.match(sym)
+    return m.group(1) if m else None
 
 
 def list_strategy_files():
@@ -278,7 +301,22 @@ def main():
     orphans = []
     orphans_found = []
     for sym, pos in position_map.items():
-        if sym not in strategy_symbol_map:
+        # Round-25: if this is an option contract (OCC symbol like
+        # CHWY260515P00025000), the matching wheel strategy file is
+        # keyed off the UNDERLYING (CHWY), not the OCC symbol. Without
+        # this mapping, every short-put / covered-call position looks
+        # like an orphan and the bot emails a false-positive alert.
+        lookup_sym = sym
+        if _is_occ_option_symbol(sym):
+            underlying = _occ_underlying(sym)
+            if underlying and underlying in strategy_symbol_map:
+                # Wheel file exists for the underlying — not an orphan.
+                continue
+            # No wheel file either — keep lookup as underlying so the
+            # "orphan" path at least reports a sensible symbol.
+            if underlying:
+                lookup_sym = underlying
+        if lookup_sym not in strategy_symbol_map:
             # Grace period: skip if there are pending buy orders for this symbol
             recent_orders = [o for o in all_open_orders if o.get("symbol") == sym and o.get("side") == "buy"]
             if recent_orders:
