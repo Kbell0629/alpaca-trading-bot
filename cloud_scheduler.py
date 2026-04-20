@@ -171,12 +171,17 @@ def _heartbeat_tick():
     """Emit a heartbeat log line every ~2 min so /healthz sees recent
     activity even when the scheduler is idle (after hours, weekends).
     Without this, healthz starts returning degraded after 5 minutes of
-    silence, triggering Railway restarts for no real reason."""
+    silence, triggering Railway restarts for no real reason.
+
+    Round-23: also snapshot _recent_logs to disk so the dashboard
+    Activity pane survives Railway redeploys. Cheap — one tempfile+
+    rename per ~2 min."""
     global _last_heartbeat_ts
     now = time.time()
     if now - _last_heartbeat_ts > 120:  # 2 min
         _last_heartbeat_ts = now
         log("heartbeat", task="scheduler")
+        _save_recent_logs()
 
 # ET is the canonical timezone for this app — the US markets run in ET,
 # the user is in ET, and there is no reason for UTC to surface anywhere in
@@ -216,6 +221,59 @@ def log(msg, task="scheduler"):
         _recent_logs.append({"ts": et_ts, "ts_iso": now.isoformat(), "task": task, "msg": msg})
         if len(_recent_logs) > 500:
             _recent_logs.pop(0)
+
+
+# Round-23: persist _recent_logs across Railway redeploys so the
+# dashboard Activity pane doesn't reset to empty every time we ship a
+# PR. Without this, the user sees "RECENT ACTIVITY (LAST N)" where N is
+# however many heartbeats+events fired since the last container boot,
+# typically 3-8 in the first few minutes. Persisting keeps the rolling
+# 500-line buffer intact across restarts.
+_RECENT_LOGS_PATH = os.path.join(DATA_DIR, "scheduler_recent_logs.json")
+
+
+def _load_recent_logs():
+    """Best-effort restore of the _recent_logs ring buffer on boot.
+    Called once from start_scheduler. Silent no-op on any failure —
+    we'd rather boot with an empty buffer than block the scheduler."""
+    global _recent_logs
+    try:
+        if not os.path.exists(_RECENT_LOGS_PATH):
+            return
+        with open(_RECENT_LOGS_PATH) as f:
+            loaded = json.load(f)
+        if isinstance(loaded, list):
+            # Safety cap — in case someone edits the file to something huge
+            with _logs_lock:
+                _recent_logs.extend(loaded[-500:])
+    except Exception as e:
+        # Log but don't crash — boot must not block on telemetry
+        try:
+            log(f"Could not restore recent_logs from disk: {e}", "scheduler")
+        except Exception:
+            pass
+
+
+def _save_recent_logs():
+    """Snapshot the ring buffer to disk atomically. Called periodically
+    (every ~60s heartbeat) + on graceful shutdown via stop_scheduler."""
+    try:
+        with _logs_lock:
+            snapshot = list(_recent_logs)[-500:]
+        d = os.path.dirname(_RECENT_LOGS_PATH) or "."
+        os.makedirs(d, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(snapshot, f)
+            os.rename(tmp, _RECENT_LOGS_PATH)
+        except Exception:
+            try: os.unlink(tmp)
+            except OSError: pass
+            raise
+    except Exception:
+        # Best-effort; never fail a scheduler tick over telemetry I/O.
+        pass
 
 # ============================================================================
 # MULTI-USER CONTEXT HELPERS
@@ -3266,6 +3324,10 @@ def scheduler_loop():
     # Load persisted _last_runs so we don't re-fire tasks that already
     # completed before a container restart. Round-8+ fix.
     _load_last_runs()
+    # Round-23: also restore the in-memory Activity ring buffer from disk
+    # so the dashboard Activity pane doesn't reset to empty on every
+    # Railway redeploy. Best-effort; failure doesn't block boot.
+    _load_recent_logs()
     notify_user_global("Cloud scheduler started — autonomous bot running on Railway", "info")
 
     while _scheduler_running:
@@ -3699,8 +3761,14 @@ def stop_scheduler():
     _scheduler_running = False
     try:
         _save_last_runs()
+    except Exception as _e_lr:
+        log(f"stop_scheduler _save_last_runs failed: {_e_lr}", "scheduler")
+    # Round-23: also flush the Activity ring buffer so whatever was
+    # logged since the last heartbeat-save isn't lost on SIGTERM.
+    try:
+        _save_recent_logs()
     except Exception as _e:
-        log(f"stop_scheduler _save_last_runs failed: {_e}", "scheduler")
+        log(f"stop_scheduler _save_recent_logs failed: {_e}", "scheduler")
     # Reap any tracked subprocess children.
     # Round-15: terminate() alone doesn't guarantee the child dies.
     # Issue SIGTERM, wait briefly, then SIGKILL if still alive. Keeps

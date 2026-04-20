@@ -38,6 +38,8 @@ accounts.json
 guardrails.json
 auto_deployer_config.json
 email_queue.json.lock
+scheduler_last_runs.json
+scheduler_recent_logs.json
 
 # Data dir for Railway volume (if ever present locally)
 data/
