@@ -28,6 +28,14 @@ Instead of deploying INFQ (vol 33.9%, +12.5% today, backtest -14.42%)
 + JHX, the bot will skip INFQ entirely (blocked by BOTH gates) and
 pick cleaner setups like ALM / JHX at 7% sizing.
 
+### Dashboard also fixed
+- Strategy Templates panel correctly shows **MODERATE** as active
+  (was reading "CUSTOM" after the auto-migration because the
+  detection logic still checked the old 10% cap)
+- Moderate card displays **7%** per stock (matches what Apply writes)
+- Moderate description now surfaces the round-20 trade-quality gates
+  (don't-chase +8%, volatility >20%, 12% breakout stop)
+
 ---
 
 ## 2026-04-19 — Rounds 14-17, Production Hardening
