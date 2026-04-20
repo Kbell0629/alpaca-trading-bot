@@ -645,16 +645,36 @@ New file `tests/test_round25_followups.py` pins:
 
 461 passing locally (was 455 before round-25).
 
+### Round-25 follow-on fixes (same day, after PR #54 merged)
+
+| PR | Subject |
+|---|---|
+| #55 | `error_recovery.py` OCC option false-positive orphan alerts |
+| #56 | Heatmap legend row renders blank (color-class scoping bug) |
+
+PR #55: The orphan-position check in `error_recovery.py` compared
+positions' raw Alpaca symbols against strategy-file underlying
+symbols. For options, Alpaca returns OCC-format (`CHWY260515P00025000`)
+while wheel files key off the underlying (`CHWY`). Every active wheel
+put/call was flagged and emailed as an orphan every run. Added
+`_is_occ_option_symbol` + `_occ_underlying` helpers and 4 tests.
+
+PR #56: Heatmap Loss/Win legend rendered as blank space because the
+color classes (`.loss-big`, `.win-big` etc.) were scoped only to
+`.heatmap-cell` — the legend uses `.heatmap-legend-box`. Double-
+selected both. Cosmetic only; the data was always correct.
+
+465 passing locally (461 + 4 OCC option tests).
+
 ---
 
-## Last session state (2026-04-20 — END OF SESSION, after round-25)
+## Last session state (2026-04-20 — END OF SESSION, after round-25 followups)
 
-**56 PRs total merged** across rounds 11-25. Paper-trading validation
-window still active (started 2026-04-15, ends ~2026-05-15).
+**58 PRs total merged** across rounds 11-25 (including rounds 23-24 +
+the round-25 sweep + PRs #55 / #56 follow-up fixes). Paper-trading
+validation window still active (started 2026-04-15, ends ~2026-05-15).
 
-**Current `main` HEAD (before round-25):** `8601c0c` (PR #53 final pre-
-live sweep). Round-25 is open on branch `claude/round25-honest-followups`
-awaiting review.
+**Current `main` HEAD:** `c00442d` (PR #56 heatmap legend fix).
 
 **All code-side pre-live items are shipped.** Only remaining items
 are operational:
@@ -662,27 +682,26 @@ are operational:
   2. Generate dedicated live Alpaca keys.
   3. Flip Settings → 🔴 Live Trading.
 
-**Test suite:** 461 passing locally (455 existing + 6 round-25 tests).
-Ruff clean on all Python files touched this session.
+**Test suite:** 465 passing locally (455 baseline + 6 round-25
+session-idle/news-alerts/watchdog tests + 4 OCC-option tests). Ruff
+clean on all Python files touched this session.
 
-**User's open positions as of round-20 snapshot** (unchanged from last
-note — positions change day-to-day):
+**User's open positions as of end of session:**
   * SOXL 117 shares @ $85.11 entry. Stop trailing at $90.76, locking in
     ~$660 minimum profit. Trailing strategy working as designed.
   * INTC 63 shares @ $66.66. Stop at $61.34.
   * HIMS 260508P00027000 (-1 short put).
   * CHWY 260515P00025000 (-1 short put).
   * Portfolio: ~$101k on $100k seed, +1.1% since 2026-04-15 start.
+  * Trade Heatmap: 3 trading days, 3 wins, $1,226.65 total P&L.
 
 ### Picking this up from a new session
 
-1. `git pull --ff-only` on `main`.
-2. Check open PRs; round-25 (`claude/round25-honest-followups`) may
-   still be open awaiting user review.
-3. `MASTER_ENCRYPTION_KEY=<64hex> python3 -m pytest tests/ --ignore=tests/test_auth.py --ignore=tests/test_dashboard_data.py` — expect **461 passing**.
-4. `ruff check .` — expect ~109 known findings (mostly F401 unused
+1. `git pull --ff-only` on `main`. HEAD should be at `c00442d` or later.
+2. `MASTER_ENCRYPTION_KEY=<64hex> python3 -m pytest tests/ --ignore=tests/test_auth.py --ignore=tests/test_dashboard_data.py` — expect **465 passing**.
+3. `ruff check .` — expect ~109 known findings (mostly F401 unused
    imports, low priority). None in critical modules.
-5. Read this file + `README.md` + `GO_LIVE_CHECKLIST.md`.
+4. Read this file + `README.md` + `GO_LIVE_CHECKLIST.md`.
 6. If the user says "audit again", follow the playbook (5-8 parallel
    Explore agents, triage into fix/deferred/false-positive, verify
    trading-logic claims against actual code — that agent has a
