@@ -555,50 +555,137 @@ for future reference.
 
 ---
 
-## Last session state (2026-04-20 — END OF SESSION)
+---
 
-**51 PRs total merged** across rounds 11-22. Paper-trading validation
+## Rounds 23-25 (2026-04-20 late, same day as 21-22)
+
+After the round-22 audit landed (PR #51), user asked "anything else
+needed to fix?" — which triggered rounds 23, 24, and 25. 5 more PRs.
+
+### Shipped this round
+
+| PR | Subject |
+|---|---|
+| #52 | Round-23: session 12-hr idle timeout + boot config WARNs + wire news_websocket into scheduler |
+| #53 | Round-24: scheduler death watchdog + subprocess zombie tracking + HTTP timeout constants + fetch-stall retry + 375px positions overflow fix + Breaking News banner on pick cards |
+| #XX | Round-25: zombie rate-limit bug fix + Breaking News badge on position rows + 6 new tests + docs refresh |
+
+### Key behaviour changes 23-25
+
+1. **Session 12-hour idle timeout** (round-23). `sessions.last_activity_at`
+   column added; `validate_session` rejects any session idle > 12 hr
+   (configurable via `SESSION_IDLE_HOURS` env var) and slides the
+   window forward on every valid request. 30-day absolute ceiling
+   still applies on top.
+
+2. **Boot-time config WARN** (round-23). `server.main()` logs a
+   helpful WARN for each of `GEMINI_API_KEY`, `SENTRY_DSN`,
+   `NTFY_TOPIC` that's unset — names the consequence and the exact
+   Railway env-var fix.
+
+3. **news_websocket wired** (round-23). Alpaca real-time news stream
+   runs for user_id=1. `|score| >= 6` alerts go to
+   `users/1/news_alerts.json` and ntfy. Gated by
+   `ENABLE_NEWS_WEBSOCKET` env var (default "true" —
+   websocket-client is in requirements.txt). Single-stream design
+   limit documented; multi-user would need news_websocket module
+   refactor.
+
+4. **Scheduler death watchdog** (round-24). Daemon thread polls
+   `_scheduler_thread.is_alive()` every 60s and fires `critical_alert`
+   (ntfy + Sentry + email) once per process if the thread dies.
+   Previously a silent scheduler death left the HTTP server up but
+   the bot had stopped trading — operator wouldn't know.
+
+5. **Subprocess zombie tracking** (round-24, bug-fixed in round-25).
+   Piggy-backs on the watchdog tick. Reaps via `waitpid(-1, WNOHANG)`,
+   counts Z-state children via `/proc` (Linux-only; silent skip
+   elsewhere), alerts hourly when count > 5. Round-24 first cut had
+   a rate-limit bug — passed `_last_zombie_alert_ts` by value so the
+   1-hour limit never engaged. Round-25 refactored to return the
+   updated timestamp so the watchdog's local advances correctly.
+
+6. **Dashboard fetch 30s timeout** (round-24). `refreshData` wraps
+   the `/api/data` fetch in an `AbortController`; on stall the toast
+   says "Dashboard fetch stalled (>30s). Network issue?" with a
+   Retry action, and `_refreshInFlight` is cleared so the next tick
+   fires cleanly. No more infinite "Next refresh: 0s" hang.
+
+7. **iPhone SE positions table fix** (round-24). `.table-card` at
+   ≤380px viewports gets `overflow-x: auto` + `min-width: 520px`,
+   and `.btn-sm` shrinks to 36px min-height with tighter padding.
+   Close / Sell 50% / Sell 25% all fit on one row + horizontal
+   scroll handles the remaining overflow.
+
+8. **🚨 Breaking News on pick cards AND position rows** (round-24 + 25).
+   - New `GET /api/news-alerts?minutes=60` returns the user's recent
+     websocket-scored alerts.
+   - `refreshData` fetches in parallel, populates
+     `window._newsAlertsBySymbol`.
+   - `buildBreakingNews(p)` adds a 🚨 BREAKING BULLISH/BEARISH banner
+     to any TOP pick whose symbol has a `|score| >= 6` alert in the
+     last 60 min.
+   - Round-25: same lookup is also used in the positions-row renderer
+     — a held position like SOXL / INTC now shows a 🚨 BULL / 🚨 BEAR
+     badge next to the symbol when fresh news arrives. For option
+     positions the badge is keyed off the underlying (HIMS put shows
+     HIMS news).
+
+### Round-25 test coverage additions
+
+New file `tests/test_round25_followups.py` pins:
+  * Session idle timeout rejects stale sessions (last_activity_at >
+    SESSION_IDLE_HOURS ago) even if expires_at is still in the future.
+  * Session validation SLIDES the window forward (timestamp advances
+    on each successful check).
+  * `news_websocket.get_recent_alerts` returns [] on empty dir, filters
+    by max_age_minutes, tolerates malformed `received_at` entries.
+  * `_check_subprocess_zombies` returns a float timestamp in all paths
+    — prevents the round-24 rate-limit regression from recurring.
+
+461 passing locally (was 455 before round-25).
+
+---
+
+## Last session state (2026-04-20 — END OF SESSION, after round-25)
+
+**56 PRs total merged** across rounds 11-25. Paper-trading validation
 window still active (started 2026-04-15, ends ~2026-05-15).
 
-**Current `main` HEAD:** `c51f411` (PR #50 Sell 25% button). **PR #51
-(round-22 audit sweep) is open as draft** awaiting CI + user review;
-its 6 fixes are ready to ship.
+**Current `main` HEAD (before round-25):** `8601c0c` (PR #53 final pre-
+live sweep). Round-25 is open on branch `claude/round25-honest-followups`
+awaiting review.
 
-**Test suite:** 455 passing locally. Ruff clean on all Python files
-touched this session.
+**All code-side pre-live items are shipped.** Only remaining items
+are operational:
+  1. Finish 30-day paper validation window (~2026-05-15).
+  2. Generate dedicated live Alpaca keys.
+  3. Flip Settings → 🔴 Live Trading.
 
-**User's open positions as of end of session:**
-  * SOXL 117 shares @ $85.11 entry, current ~$95 → +$1,039 unrealised,
-    stop at $90.76 (has trailed up from initial $74.24, now locking in
-    +$660 minimum profit). Trailing stop is doing its job.
-  * INTC 63 shares @ $66.66, current ~$65.55 → -$70 unrealised,
-    stop at $61.34.
-  * HIMS 260508P00027000 (-1 short put) → +$88 unrealised.
-  * CHWY 260515P00025000 (-1 short put) → +$2 unrealised.
-  * Portfolio: ~$101k on $100k seed, +1.1% since validation-window start.
+**Test suite:** 461 passing locally (455 existing + 6 round-25 tests).
+Ruff clean on all Python files touched this session.
 
-**User's explicit remaining asks from this session:**
-  * Answer whether to upgrade to Gemini 3.1 Flash → answered: pocket
-    change cost-wise, but LLM signal is capped in the scoring so the
-    2.5 → 3.1 upgrade wouldn't move top picks much. Stick with 2.5 for
-    now; evaluate after a week of real AI reasoning text on the cards.
-  * 3 decisions on round-22 audit items (session idle / config WARN /
-    news_websocket) — still pending, flagged in PR #51.
+**User's open positions as of round-20 snapshot** (unchanged from last
+note — positions change day-to-day):
+  * SOXL 117 shares @ $85.11 entry. Stop trailing at $90.76, locking in
+    ~$660 minimum profit. Trailing strategy working as designed.
+  * INTC 63 shares @ $66.66. Stop at $61.34.
+  * HIMS 260508P00027000 (-1 short put).
+  * CHWY 260515P00025000 (-1 short put).
+  * Portfolio: ~$101k on $100k seed, +1.1% since 2026-04-15 start.
 
 ### Picking this up from a new session
 
 1. `git pull --ff-only` on `main`.
-2. Check if PR #51 is still open; if so, review user's answer to the
-   three decision items before merging.
-3. `MASTER_ENCRYPTION_KEY=<64hex> python3 -m pytest tests/ --ignore=tests/test_auth.py --ignore=tests/test_dashboard_data.py` — expect 455 passing.
-4. `ruff check .` — expect 109 known findings (mostly F401 unused
-   imports, low priority cleanup). None in critical modules.
-5. Read this file + `README.md` + `GO_LIVE_CHECKLIST.md` if the user
-   asks "what's left?".
-6. If the user says "audit again", follow the playbook above — spawn
-   5-8 parallel Explore agents in a SINGLE message, triage into
-   fix/deferred/false-positive, verify trading-logic claims against
-   the actual code before "fixing" (the trading-logic agent has a
-   history of false-positives — read PR #51 body for examples).
+2. Check open PRs; round-25 (`claude/round25-honest-followups`) may
+   still be open awaiting user review.
+3. `MASTER_ENCRYPTION_KEY=<64hex> python3 -m pytest tests/ --ignore=tests/test_auth.py --ignore=tests/test_dashboard_data.py` — expect **461 passing**.
+4. `ruff check .` — expect ~109 known findings (mostly F401 unused
+   imports, low priority). None in critical modules.
+5. Read this file + `README.md` + `GO_LIVE_CHECKLIST.md`.
+6. If the user says "audit again", follow the playbook (5-8 parallel
+   Explore agents, triage into fix/deferred/false-positive, verify
+   trading-logic claims against actual code — that agent has a
+   history of false-positives, see PR #51 body for examples).
 
 See `GO_LIVE_CHECKLIST.md` for the pre-flip-to-live gating list.
