@@ -4876,10 +4876,38 @@ function renderDashboard() {
     if (readinessScore >= 80) readBarColor = 'var(--green)';
     else if (readinessScore >= 40) readBarColor = 'var(--orange)';
 
-    // Economic calendar banner
+    // Economic calendar banner.
+    // Round-20: filter out events whose date is in the past + recompute
+    // days_away from event.date instead of trusting the cached field.
+    // Why: the screener writes days_away at run time, but on weekends
+    // it doesn't run, so Friday's 0d-away opex would still display
+    // "0d away" Sunday. We don't want users to see ghost events for
+    // dates that have already passed.
     const econ = d.economic_calendar || {};
     let econBannerHtml = '';
-    const econEvents = econ.events || [];
+    const _econToday = new Date();
+    _econToday.setHours(0, 0, 0, 0);
+    const econEvents = (econ.events || []).filter(function(e) {
+        if (!e || !e.date) return false;
+        // Parse YYYY-MM-DD as local midnight to compare against today
+        const parts = String(e.date).split('-');
+        if (parts.length !== 3) return true;  // unknown shape, keep
+        const eDate = new Date(parseInt(parts[0], 10),
+                               parseInt(parts[1], 10) - 1,
+                               parseInt(parts[2], 10));
+        return eDate >= _econToday;
+    }).map(function(e) {
+        // Recompute days_away so a stale cache doesn't show wrong value
+        try {
+            const parts = String(e.date).split('-');
+            const eDate = new Date(parseInt(parts[0], 10),
+                                   parseInt(parts[1], 10) - 1,
+                                   parseInt(parts[2], 10));
+            const ms = eDate.getTime() - _econToday.getTime();
+            const days = Math.round(ms / (24 * 3600 * 1000));
+            return Object.assign({}, e, {days_away: days});
+        } catch (_err) { return e; }
+    });
     const econRisk = (econ.risk_level || 'normal').toLowerCase();
     if (econEvents.length > 0) {
         const topEvent = econEvents[0];
