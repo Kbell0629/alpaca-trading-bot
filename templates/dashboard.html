@@ -6655,9 +6655,9 @@ function applyPreset(preset) {
             note: 'Conservative: smaller positions, wider stops, no aggressive strategies'
         },
         moderate: {
-            stop_loss_pct: 0.10, max_positions: 5, max_position_pct: 0.10,
+            stop_loss_pct: 0.10, max_positions: 5, max_position_pct: 0.07,
             strategies: ['trailing_stop', 'wheel', 'copy_trading', 'mean_reversion', 'breakout'],
-            note: 'Moderate: balanced risk/reward with all strategies'
+            note: 'Moderate: balanced risk/reward with all strategies (7% positions)'
         },
         aggressive: {
             stop_loss_pct: 0.05, max_positions: 8, max_position_pct: 0.15,
