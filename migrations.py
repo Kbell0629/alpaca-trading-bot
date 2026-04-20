@@ -38,6 +38,7 @@ log = logging.getLogger(__name__)
 
 
 MIGRATION_ROUND20_POSITION_CAP = "round20_position_cap_0.07"
+MIGRATION_ROUND21_BREAKOUT_STOP = "round21_breakout_stop_0.12"
 
 
 def _load_json(path):
@@ -96,6 +97,53 @@ def migrate_guardrails_round20(guardrails_path):
     return "migrated"
 
 
+def migrate_auto_deployer_config_round21(config_path):
+    """Round-21: widen breakout stop from the old 0.05 default (which
+    was tighter than every other strategy — backwards) to 0.12. Also
+    pin max_portfolio_pct_per_stock to 0.07 to match the round-20
+    guardrails cap (when values are out of sync the narrower one wins
+    in run_auto_deployer, but keeping them aligned avoids confusion).
+
+    Idempotent via `_migrations_applied` list on the config JSON. Only
+    writes if values are the pre-round-21 defaults (0.05 or missing,
+    and 0.10 or missing) — operators who customised stay untouched.
+    Returns: "migrated" | "already_applied" | "user_customised" |
+    "no_file".
+    """
+    if not os.path.exists(config_path):
+        return "no_file"
+    c = _load_json(config_path)
+    if not isinstance(c, dict):
+        return "no_file"
+    applied = c.get("_migrations_applied") or []
+    if MIGRATION_ROUND21_BREAKOUT_STOP in applied:
+        return "already_applied"
+
+    risk = c.get("risk_settings")
+    if not isinstance(risk, dict):
+        risk = {}
+        c["risk_settings"] = risk
+
+    current_breakout_stop = risk.get("breakout_stop_loss_pct")
+    current_per_stock = c.get("max_portfolio_pct_per_stock")
+
+    # User customised if EITHER value was set to something other than
+    # the pre-round-21 defaults. Stamp as applied so we don't retry.
+    user_customised = False
+    if current_breakout_stop is not None and current_breakout_stop not in (0.05, 0.10):
+        user_customised = True
+    if current_per_stock is not None and current_per_stock not in (0.10, 0.07):
+        user_customised = True
+
+    if not user_customised:
+        risk["breakout_stop_loss_pct"] = 0.12
+        c["max_portfolio_pct_per_stock"] = 0.07
+
+    c["_migrations_applied"] = applied + [MIGRATION_ROUND21_BREAKOUT_STOP]
+    _save_json_atomic(config_path, c)
+    return "user_customised" if user_customised else "migrated"
+
+
 def run_all_migrations(users, user_file_fn):
     """Apply every idempotent migration to every user.
 
@@ -113,6 +161,14 @@ def run_all_migrations(users, user_file_fn):
             user_result["round20_position_cap"] = migrate_guardrails_round20(gpath)
         except Exception as e:
             user_result["round20_position_cap"] = f"error: {type(e).__name__}"
-            log.warning(f"migration failed for {uid}: {e}")
+            log.warning(f"migration round20 failed for {uid}: {e}")
+        try:
+            apath = user_file_fn(u, "auto_deployer_config.json")
+            user_result["round21_breakout_stop"] = (
+                migrate_auto_deployer_config_round21(apath)
+            )
+        except Exception as e:
+            user_result["round21_breakout_stop"] = f"error: {type(e).__name__}"
+            log.warning(f"migration round21 failed for {uid}: {e}")
         summary[uid] = user_result
     return summary
