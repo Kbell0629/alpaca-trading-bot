@@ -1275,8 +1275,14 @@ def fetch_all_data():
         print(f"Enriching top {len(top_candidates)} candidates with 20-day historical bars (parallel)...")
         from indicators import analyze_stock
 
-        # Fetch all bars in parallel first
-        bars_map = fetch_bars_for_picks(top_candidates, days=20, max_workers=6)
+        # Fetch all bars in parallel first. Need at least 26 trading days
+        # for the MACD-26 EMA; fetching 60 calendar days ensures ≥40
+        # trading days of history which comfortably covers RSI-14,
+        # MACD-12/26/9, and the 20-day momentum / volatility computations
+        # below. The previous days=20 meant len(bars_20d) < 26 always
+        # short-circuited the technical-indicator branch into neutral
+        # defaults (RSI=50, MACD=0, BIAS=neutral) for every pick.
+        bars_map = fetch_bars_for_picks(top_candidates, days=60, max_workers=6)
         print(f"  Fetched bars for {len(bars_map)} symbols in parallel")
 
         # Round-11 Tier 1: ATR-based stop sizing. Attach atr_14 and
