@@ -475,12 +475,130 @@ already +12.5% today — blocked by BOTH new gates), prefer lower-vol
 breakouts like ALM / JHX, size at 7% not 10%, stop at 12% not 5%.
 Dashboard correctly detects Moderate as active (no more "CUSTOM").
 
+---
+
+## Rounds 21-22 (2026-04-20, day-after-round-20 session)
+
+Ran intensively during Monday's paper-trading hours — started with a
+live `/api/data` snapshot, surfaced 12 real bugs over the course of
+the session, shipped fixes in 11 PRs.
+
+### Shipped this round
+
+| PR | Subject |
+|---|---|
+| #40 | `getCSRFToken is not defined` — blocked every Settings save |
+| #41 | Activity log: 200-entry buffer + taller scroll box |
+| #42 | Activity ring buffer persisted to JSON (survives Railway redeploy) |
+| #43 | Exception-handling hardening (round 2) — 6 sites + 15 tests |
+| #44 | `.score-label` width so MOMENTUM fits on pick cards |
+| #45 | Round-21 trio: Gemini 2.0, auto_deployer_config migration, news_scanner error surfacing |
+| #46 | 🤖 AI / 📰 News / 🔵 Insider sentiment lines on pick cards |
+| #47 | Gemini `gemini-2.0-flash` → `gemini-2.5-flash` + Alpaca news RFC-3339 `Z` suffix |
+| #48 | **Two high-impact fixes**: Gemini `maxOutputTokens 100→256` + `thinkingBudget:0` + `responseMimeType:json` (fixed `AI: unparseable: ```` ``` ```` ` display); AND `fetch_bars_for_picks(days=20→60)` so MACD-26 EMA has enough history (RSI/MACD/BIAS were all `50 / 0 / neutral` defaults on every pick) |
+| #49 | `llm_sentiment` cache self-heals on `malformed:true` entries |
+| #50 | Sell 25% button on Open Positions (generalised Sell Half → Sell Fraction modal) |
+| #51 | **Round-22 audit sweep** — 6 fixes from 5 parallel Explore-agent audits |
+
+### Key behaviour changes 21-22
+
+1. **Gemini 2.5-flash** is the default LLM, configurable via `GEMINI_MODEL` env var. `thinkingBudget:0` disables chain-of-thought for this binary classifier (saves tokens). `responseMimeType:"application/json"` bypasses markdown-fence wrapping. `maxOutputTokens:256` gives headroom. Cache auto-invalidates malformed entries on next read (self-heal on deploy).
+2. **Alpaca news API** — `start` parameter now uses UTC with `Z` suffix. Previously `-0400` (no colon) was RFC-3339 invalid and returned HTTP 400 silently.
+3. **Pick-card technical indicators** now show real RSI/MACD/BIAS (were hardcoded defaults due to bar-fetch window being shorter than MACD's 26-EMA requirement).
+4. **Pick cards** gained three new sentiment lines: 🤖 AI (Gemini reasoning), 📰 News (Alpaca news sentiment + first bullish keyword), 🔵 Insider (SEC Form 4 cluster buys). All three are render-if-data-exists and use `esc()` on free-form strings.
+5. **Positions table** gained a Sell 25% button alongside existing Close / Sell 50%. Backed by existing `/api/sell` endpoint (no backend change).
+6. **`/api/force-auto-deploy` 30s cooldown** per user — authenticated DoS guard (round-22 audit finding).
+7. **`_counter.json` race fixed** with `fcntl.flock` — LLM cost counter was losing increments under parallel screener threads.
+
+### Round-22 audit findings (CLAUDE.md playbook executed)
+
+5 parallel Explore agents covered security, DB/concurrency, trading
+logic, UI/UX/mobile, production-readiness. 25+ findings triaged into:
+
+**Fixed in PR #51** (6 items):
+  * `update_scorecard.safe_save_json` bare-except narrowing (last site)
+  * `llm_sentiment._bump_call_counter` flock race
+  * `estimate_daily_cost` ET vs UTC date mismatch
+  * Positions-table `.btn-sm` 32px → 40px on mobile
+  * Sentiment-line contrast (WCAG AA)
+  * `/api/force-auto-deploy` per-user 30s cooldown
+
+**Need user decision** (flagged in PR #51 body):
+  * **Session idle timeout** — sessions persist 30 days with no
+    activity-based expiry. Should we add a 12-hr idle logout?
+    Convenience vs. lost-laptop risk.
+  * **Boot-time config WARNs** — GEMINI_API_KEY / SENTRY_DSN /
+    NTFY_TOPIC are silently optional. Add boot-time warnings when
+    any are unset? (Noise vs. visibility.)
+  * **`news_websocket.py` module** — code exists but never wired
+    into `cloud_scheduler`. Wire / feature-flag / delete?
+
+**Deferred with known gaps** (bigger items needing their own PR):
+  * Scheduler thread-death monitor (HIGH pre-live) — needs a
+    separate monitor thread in `start_scheduler` that fires
+    `critical_alert` if `_scheduler_thread.is_alive()` goes False.
+  * Alpaca news WebSocket `on_error` handler (MEDIUM, feature dormant).
+  * Subprocess zombie tracking (MEDIUM).
+  * HTTP timeout centralisation in `constants.py` (MEDIUM).
+  * Auto-refresh countdown retry-on-stall (MEDIUM) — if fetch hangs
+    past 30s, show retry UI instead of an infinite `0s`.
+  * Positions-table 375px overflow on iPhone SE (LOW).
+  * Positions-fetch loading state (LOW).
+
+**False alarms from trading-logic agent** (verified in PR #51 body):
+Agent claimed 7 "critical" trading bugs — all turned out to be
+misreadings of the code. `partial-fill stop orphan`, `trailing-stop
+gap-down`, `double-stop stacking`, `option multiplier missing`, and
+`cost-basis quantization drift` were all spot-checked against the
+actual code and the handling is already correct. Notes in PR body
+for future reference.
+
+---
+
+## Last session state (2026-04-20 — END OF SESSION)
+
+**51 PRs total merged** across rounds 11-22. Paper-trading validation
+window still active (started 2026-04-15, ends ~2026-05-15).
+
+**Current `main` HEAD:** `c51f411` (PR #50 Sell 25% button). **PR #51
+(round-22 audit sweep) is open as draft** awaiting CI + user review;
+its 6 fixes are ready to ship.
+
+**Test suite:** 455 passing locally. Ruff clean on all Python files
+touched this session.
+
+**User's open positions as of end of session:**
+  * SOXL 117 shares @ $85.11 entry, current ~$95 → +$1,039 unrealised,
+    stop at $90.76 (has trailed up from initial $74.24, now locking in
+    +$660 minimum profit). Trailing stop is doing its job.
+  * INTC 63 shares @ $66.66, current ~$65.55 → -$70 unrealised,
+    stop at $61.34.
+  * HIMS 260508P00027000 (-1 short put) → +$88 unrealised.
+  * CHWY 260515P00025000 (-1 short put) → +$2 unrealised.
+  * Portfolio: ~$101k on $100k seed, +1.1% since validation-window start.
+
+**User's explicit remaining asks from this session:**
+  * Answer whether to upgrade to Gemini 3.1 Flash → answered: pocket
+    change cost-wise, but LLM signal is capped in the scoring so the
+    2.5 → 3.1 upgrade wouldn't move top picks much. Stick with 2.5 for
+    now; evaluate after a week of real AI reasoning text on the cards.
+  * 3 decisions on round-22 audit items (session idle / config WARN /
+    news_websocket) — still pending, flagged in PR #51.
+
 ### Picking this up from a new session
 
 1. `git pull --ff-only` on `main`.
-2. `MASTER_ENCRYPTION_KEY=<64hex> python3 -m pytest tests/ --ignore=tests/test_auth.py --ignore=tests/test_dashboard_data.py` — expect 423 passing. The two ignored suites fail locally due to sandbox limits (no zxcvbn, no outbound network) but pass on CI.
-3. `ruff check .` — must be clean.
-4. Read this file + `README.md` + `GO_LIVE_CHECKLIST.md` if the user asks "what's left?".
-5. If the user says "audit again", follow the playbook above (8 parallel Explore agents, triage into fix/deferred/false-positive).
+2. Check if PR #51 is still open; if so, review user's answer to the
+   three decision items before merging.
+3. `MASTER_ENCRYPTION_KEY=<64hex> python3 -m pytest tests/ --ignore=tests/test_auth.py --ignore=tests/test_dashboard_data.py` — expect 455 passing.
+4. `ruff check .` — expect 109 known findings (mostly F401 unused
+   imports, low priority cleanup). None in critical modules.
+5. Read this file + `README.md` + `GO_LIVE_CHECKLIST.md` if the user
+   asks "what's left?".
+6. If the user says "audit again", follow the playbook above — spawn
+   5-8 parallel Explore agents in a SINGLE message, triage into
+   fix/deferred/false-positive, verify trading-logic claims against
+   the actual code before "fixing" (the trading-logic agent has a
+   history of false-positives — read PR #51 body for examples).
 
 See `GO_LIVE_CHECKLIST.md` for the pre-flip-to-live gating list.
