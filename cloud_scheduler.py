@@ -3692,6 +3692,18 @@ def start_scheduler():
     _scheduler_thread = threading.Thread(target=scheduler_loop, daemon=True, name="CloudScheduler")
     _scheduler_thread.start()
     log("Scheduler thread started", "scheduler")
+    # Round-24: watchdog that fires critical_alert if the scheduler
+    # thread dies unexpectedly. Without this, an unhandled exception
+    # in scheduler_loop kills the thread but leaves the HTTP server
+    # up — the bot would silently stop trading with no notification.
+    # Runs in its own daemon thread, polls is_alive() every 60s, and
+    # fires at most one alert per process lifetime (_alerted latch).
+    try:
+        threading.Thread(target=_scheduler_death_watchdog,
+                         daemon=True,
+                         name="SchedulerWatchdog").start()
+    except Exception as _e:
+        log(f"scheduler watchdog thread failed to start: {_e}", "scheduler")
     # Round-16: boot-time state-recovery sweep. Reads wheel JSON state
     # + journal vs Alpaca positions for every user; surfaces any
     # discrepancy via Sentry capture_message. Doesn't auto-fix — purely
@@ -3826,6 +3838,131 @@ def _run_state_reconcile_safely():
                     f"{type(_e).__name__}", "scheduler")
     except Exception as _e:
         log(f"state-reconcile sweep failed: {type(_e).__name__}", "scheduler")
+
+
+def _scheduler_death_watchdog():
+    """Runs for the lifetime of the process. Every 60s checks that the
+    scheduler thread is still alive while _scheduler_running is True.
+    If the thread has died, fires critical_alert (ntfy + Sentry + email)
+    exactly once per process so the operator knows the bot is no
+    longer trading even though the HTTP server is still responding.
+
+    `_alerted` latches after the first firing — repeated alerts would
+    spam the user every 60s, and once the thread is dead one alert is
+    enough to demand attention.
+
+    Round-24: zombie-subprocess counter also checked here so we piggy-
+    back on the same minute-polling loop and don't spin up another
+    thread just for that.
+    """
+    _alerted = False
+    _last_zombie_alert_ts = 0.0
+    while True:
+        try:
+            time.sleep(60)
+            # Primary check: scheduler liveness
+            if _scheduler_running and (
+                    not _scheduler_thread or not _scheduler_thread.is_alive()):
+                if not _alerted:
+                    _alerted = True
+                    try:
+                        import observability
+                        observability.critical_alert(
+                            title="🚨 Scheduler thread died",
+                            body=("The cloud_scheduler background thread "
+                                  "is no longer running. HTTP server is "
+                                  "still up but the bot has STOPPED "
+                                  "trading. Railway will redeploy on "
+                                  "next /healthz 503; if that doesn't "
+                                  "recover, manually restart the "
+                                  "service."),
+                            tags={"source": "scheduler_watchdog"},
+                        )
+                    except Exception as _e:
+                        log(f"watchdog: critical_alert failed: {_e}",
+                            "scheduler")
+            # Secondary check: subprocess zombie accumulation. Screener
+            # subprocesses can linger if SIGKILL also fails. Poll for
+            # zombies owned by this process and alert if we exceed 5.
+            try:
+                _check_subprocess_zombies(_last_zombie_alert_ts)
+            except Exception as _e:
+                # Watchdog must never crash — log and continue.
+                log(f"watchdog: zombie check failed: {_e}", "scheduler")
+        except Exception as _e:
+            # The watchdog itself must never die.
+            try:
+                log(f"watchdog tick error: {_e}", "scheduler")
+            except Exception:
+                pass
+
+
+def _check_subprocess_zombies(_last_alert_ts):
+    """Count zombie children of this process and fire critical_alert
+    if we exceed 5. Rate-limited to one alert per hour so a persistent
+    zombie buildup doesn't spam — ntfy caps hourly anyway.
+
+    Uses os.waitpid(-1, os.WNOHANG) to reap finished-but-not-waited
+    children first; the zombie count is then whatever remains."""
+    # Best-effort reap. Round-15 added SIGKILL fallback but doesn't
+    # always call waitpid — reap any we can here so they don't
+    # accumulate as zombies.
+    while True:
+        try:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+            if pid == 0:
+                break
+        except (ChildProcessError, OSError):
+            break
+    # Count remaining zombies by reading /proc/self/task/*/children
+    # (Linux only — best-effort). On macOS or non-proc systems this
+    # silently returns 0.
+    zombie_count = 0
+    try:
+        proc_dir = f"/proc/{os.getpid()}/task"
+        if os.path.isdir(proc_dir):
+            for tid in os.listdir(proc_dir):
+                chld_path = f"{proc_dir}/{tid}/children"
+                if os.path.isfile(chld_path):
+                    with open(chld_path) as f:
+                        children = f.read().strip().split()
+                    for cpid in children:
+                        # Check if zombie
+                        stat_path = f"/proc/{cpid}/stat"
+                        if os.path.isfile(stat_path):
+                            try:
+                                with open(stat_path) as f:
+                                    stat_line = f.read()
+                                # Field 3 is state: Z = zombie
+                                parts = stat_line.rsplit(")", 1)
+                                if len(parts) == 2:
+                                    state = parts[1].split()[0]
+                                    if state == "Z":
+                                        zombie_count += 1
+                            except (OSError, IndexError):
+                                continue
+    except Exception:
+        return  # Best-effort; never alert on inspection failure
+    if zombie_count > 5:
+        # Rate-limit to 1 alert per hour
+        now_ts = time.time()
+        if now_ts - _last_alert_ts < 3600:
+            return
+        try:
+            import observability
+            observability.critical_alert(
+                title=f"⚠️ {zombie_count} subprocess zombies",
+                body=(f"Accumulated {zombie_count} zombie children "
+                      f"of the scheduler process. Likely SIGKILL "
+                      f"fallback didn't reap them. Railway restart "
+                      f"will clear — monitor for repeated alerts."),
+                tags={"source": "zombie_watchdog",
+                      "count": str(zombie_count)},
+            )
+        except Exception as _e:
+            log(f"watchdog: zombie critical_alert failed: {_e}",
+                "scheduler")
+
 
 def stop_scheduler():
     """Flip the running flag AND force-flush _last_runs + reap any

@@ -2060,6 +2060,32 @@ class DashboardHandler(
             except Exception as e:
                 self._send_error_safe(e, 500, "wheel-status")
 
+        elif path == "/api/news-alerts":
+            # Round-24: surface the news_alerts.json written by the
+            # Alpaca real-time news websocket (started in round-23).
+            # Returns alerts from the last N minutes (default 60) so the
+            # dashboard can render a 🚨 Breaking line on pick cards +
+            # a dedicated breaking-news section. Empty list on error or
+            # when the file doesn't exist yet (websocket hasn't received
+            # a scoreable alert).
+            if not self.current_user:
+                return self.send_json({"error": "Not authenticated"}, 401)
+            try:
+                import news_websocket
+                udir = auth.user_data_dir(self.current_user["id"])
+                minutes = 60
+                try:
+                    qs = urllib.parse.urlparse(self.path).query or ""
+                    if "minutes=" in qs:
+                        minutes = int(qs.split("minutes=")[-1].split("&")[0])
+                    minutes = max(1, min(720, minutes))  # clamp 1 min to 12 hr
+                except (ValueError, AttributeError, IndexError):
+                    minutes = 60
+                alerts = news_websocket.get_recent_alerts(udir, max_age_minutes=minutes)
+                self.send_json({"alerts": alerts, "window_minutes": minutes})
+            except Exception as e:
+                self._send_error_safe(e, 500, "news-alerts")
+
         elif path == "/api/admin/users":
             # Admin only: list all users (active + inactive) with metadata.
             if not self.current_user or not self.current_user.get("is_admin"):
