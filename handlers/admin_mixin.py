@@ -268,3 +268,47 @@ class AdminHandlerMixin:
             return self.send_json({"success": True})
         except Exception as e:
             self._send_error_safe(e, 500, "set-admin")
+
+    def handle_admin_update_user(self, body):
+        """Round-37: admin-only edit of a user's email and/or username.
+
+        Body: {"user_id": 12, "email": "new@x.com", "username": "newname"}
+        Either field may be omitted; None / missing means "leave alone".
+        Uniqueness is enforced at the DB level; the helper returns a
+        friendly error if the new email/username collides with another
+        active user.
+        """
+        if not self.current_user or not self.current_user.get("is_admin"):
+            return self.send_json({"error": "Admin only"}, 403)
+        target_id = body.get("user_id")
+        try:
+            target_id = int(target_id)
+        except (TypeError, ValueError):
+            return self.send_json({"error": "Missing or invalid user_id"}, 400)
+        if target_id <= 0:
+            return self.send_json({"error": "Invalid user_id"}, 400)
+        email = body.get("email")
+        username = body.get("username")
+        # Distinguish "field not provided" from "field provided as empty
+        # string" — empty string should fail validation; None leaves alone.
+        email = email if (email is None or isinstance(email, str)) else None
+        username = username if (username is None or isinstance(username, str)) else None
+        if email is None and username is None:
+            return self.send_json({"error": "No fields to update"}, 400)
+        try:
+            ok, err = auth.update_user(
+                target_id, email=email, username=username)
+            if not ok:
+                return self.send_json({"error": err or "Update failed"}, 400)
+            auth.log_admin_action(
+                "update_user",
+                actor=self.current_user,
+                target_user_id=target_id,
+                ip_address=self.client_address[0] if self.client_address else None,
+                detail={
+                    "email_changed": email is not None,
+                    "username_changed": username is not None,
+                })
+            return self.send_json({"success": True})
+        except Exception as e:
+            self._send_error_safe(e, 500, "update-user")

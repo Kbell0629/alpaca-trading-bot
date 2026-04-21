@@ -2325,6 +2325,10 @@ class DashboardHandler(
             # Round-36: admin promotes/demotes another user.
             self.handle_admin_set_admin(body)
             return
+        if path == "/api/admin/update-user":
+            # Round-37: admin edits another user's email / username.
+            self.handle_admin_update_user(body)
+            return
 
         if path == "/api/refresh":
             self.handle_refresh()
