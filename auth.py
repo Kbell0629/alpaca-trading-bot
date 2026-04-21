@@ -553,8 +553,11 @@ def create_user(email, username, password, alpaca_key, alpaca_secret,
     except Exception as e:
         return None, str(e)
     finally:
+        # Narrow from bare except so KeyboardInterrupt / SystemExit
+        # propagate during shutdown. sqlite3.Error covers DB-level
+        # close failures (locked, I/O error, corrupted DB).
         try: conn.close()
-        except: pass
+        except (sqlite3.Error, OSError): pass
 
 def get_user_by_id(user_id):
     conn = _get_db()

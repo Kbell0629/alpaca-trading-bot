@@ -51,9 +51,11 @@ def safe_save_json(path, data):
         with os.fdopen(fd, 'w') as f:
             json.dump(data, f, indent=2, default=str)
         os.rename(tmp_path, path)
-    except:
+    except Exception:
+        # Narrow from bare except so KeyboardInterrupt / SystemExit
+        # propagate instead of hitting the cleanup+re-raise branch.
         try: os.unlink(tmp_path)
-        except: pass
+        except OSError: pass
         raise
 
 
@@ -2467,7 +2469,7 @@ def main():
         os.rename(tmp_path, DASHBOARD_PATH)
     except Exception:
         try: os.unlink(tmp_path)
-        except: pass
+        except OSError: pass
         raise
     print(f"Dashboard saved: {DASHBOARD_PATH}")
 
