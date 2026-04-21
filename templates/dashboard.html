@@ -5395,14 +5395,14 @@ function renderDashboard() {
             '</tr>';
         });
         shortHtml = '<div class="short-section" id="section-shorts">' +
-            '<h3>\u{1F4C9} Short Selling Candidates (Bear Market Plays) ' + shortBadge + '</h3>' +
+            '<h3>\u{1F4C9} Short Selling Candidates (Bear Market Plays)' + sectionHelpButton('short-candidates') + ' ' + shortBadge + '</h3>' +
             '<div style="font-size:12px;color:var(--text-dim);margin-bottom:12px">' + shortStatusLine + '</div>' +
             '<table><thead><tr><th>Symbol</th><th>Price</th><th>Score</th><th>20d Mom</th><th>Stop</th><th>Target</th><th>R:R</th><th>Reasons</th></tr></thead>' +
             '<tbody>' + rows + '</tbody></table></div>';
     } else {
         // Still show the section with status even if no candidates
         shortHtml = '<div class="short-section" id="section-shorts">' +
-            '<h3>\u{1F4C9} Short Selling Candidates (Bear Market Plays) ' + shortBadge + '</h3>' +
+            '<h3>\u{1F4C9} Short Selling Candidates (Bear Market Plays)' + sectionHelpButton('short-candidates') + ' ' + shortBadge + '</h3>' +
             '<div style="font-size:12px;color:var(--text-dim)">' + shortStatusLine + '</div>' +
             '<div class="empty" style="padding:16px;color:var(--text-dim)">No short candidates scored above threshold today.</div>' +
             '</div>';
@@ -5427,7 +5427,7 @@ function renderDashboard() {
             '</tr>';
         });
         taxHtml = '<div class="tax-section" id="section-tax">' +
-            '<h3>\u{1F4B0} Tax-Loss Harvesting Opportunities</h3>' +
+            '<h3>\u{1F4B0} Tax-Loss Harvesting Opportunities' + sectionHelpButton('tax-loss') + '</h3>' +
             '<table><thead><tr><th>Symbol</th><th>Loss</th><th>Loss %</th><th>Tax Savings Est.</th><th>Replace With</th><th>Action</th></tr></thead>' +
             '<tbody>' + taxRows + '</tbody></table></div>';
     }
@@ -5436,7 +5436,7 @@ function renderDashboard() {
     let corrHtml = '';
     if (positions.length > 1) {
         corrHtml = '<div class="correlation-section" id="section-correlation">' +
-            '<h3>Position Correlation</h3>' +
+            '<h3>Position Correlation' + sectionHelpButton('correlation') + '</h3>' +
             '<div class="corr-warning">\u26A0 You hold ' + positions.length + ' positions. Review sector overlap to avoid concentrated risk. Positions in the same sector tend to move together during sell-offs.</div>' +
             '<div style="font-size:12px;color:var(--text-dim);margin-top:8px">Sectors: ' +
             positions.map(function(p) { return '<strong>' + esc(p.symbol||'') + '</strong>'; }).join(', ') +
@@ -5452,7 +5452,7 @@ function renderDashboard() {
     // even though only one market day had actually completed.
     const scDays = Math.max(0, Math.floor((new Date() - new Date(sc.start_date || new Date())) / 86400000));
     let readinessHtml = '<div class="readiness-card" id="section-readiness">' +
-        '<h3>\u{1F4CA} Paper Trading Progress</h3>' +
+        '<h3>\u{1F4CA} Paper Trading Progress' + sectionHelpButton('paper-progress') + '</h3>' +
         '<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">' +
             '<span style="font-size:22px;font-weight:800">Readiness Score: ' + readinessScore + '/100</span>' +
             '<span class="' + (readinessScore >= 80 ? 'badge-active' : 'badge-inactive') + '">' + (readinessScore >= 80 ? 'READY' : 'NOT READY') + '</span>' +
@@ -5737,7 +5737,7 @@ function renderDashboard() {
         '<div class="backtest-section">' +
             '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:12px">' +
                 '<div style="flex:1;min-width:240px">' +
-                    '<h3 style="margin:0">Visual Backtest</h3>' +
+                    '<h3 style="margin:0">Visual Backtest' + sectionHelpButton('visual-backtest') + '</h3>' +
                     '<div style="font-size:12px;color:var(--text-dim);margin-top:4px">Simulate how a strategy would have performed on any stock over the last 30 trading days</div>' +
                 '</div>' +
                 '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">' +
@@ -5761,13 +5761,13 @@ function renderDashboard() {
         '</div>' +
         '</section>' +
         '<section id="section-scheduler" class="scheduler-section" aria-label="Cloud scheduler status">' +
-            '<h3 style="display:flex;justify-content:space-between;align-items:center">Cloud Scheduler <button class="btn-ghost btn-sm" onclick="refreshSchedulerStatus()" aria-label="Refresh scheduler status">Refresh</button></h3>' +
+            '<h3 style="display:flex;justify-content:space-between;align-items:center"><span>Cloud Scheduler' + sectionHelpButton('cloud-scheduler') + '</span><button class="btn-ghost btn-sm" onclick="refreshSchedulerStatus()" aria-label="Refresh scheduler status">Refresh</button></h3>' +
             '<div id="schedulerPanel" role="region" aria-live="polite"><div class="empty-state loading"><div class="icon">\u{23F3}</div><div class="title">Loading scheduler status</div><div class="subtitle">Fetching last-run times and task states\u2026</div></div></div>' +
         '</section>' +
         '<section id="section-perf-attribution" class="factor-health-section" aria-label="Performance attribution by strategy">' +
             '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">' +
                 '<div>' +
-                    '<h3 style="margin:0">Performance Attribution</h3>' +
+                    '<h3 style="margin:0">Performance Attribution' + sectionHelpButton('performance-attribution') + '</h3>' +
                     '<div style="font-size:12px;color:var(--text-dim);margin-top:4px">Total $ contribution by strategy. Best-performing strategies should be scaled up; losing strategies disabled or tuned.</div>' +
                 '</div>' +
                 '<button class="btn-ghost btn-sm" onclick="refreshPerfAttribution()" aria-label="Refresh performance attribution">Refresh</button>' +
@@ -5779,7 +5779,7 @@ function renderDashboard() {
         '<section id="section-tax-report" class="factor-health-section" aria-label="Tax report">' +
             '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">' +
                 '<div>' +
-                    '<h3 style="margin:0">Tax Report</h3>' +
+                    '<h3 style="margin:0">Tax Report' + sectionHelpButton('tax-report') + '</h3>' +
                     '<div style="font-size:12px;color:var(--text-dim);margin-top:4px">FIFO cost-basis lots, short/long-term split, wash-sale warnings. Download Form 8949 CSV for tax filing.</div>' +
                 '</div>' +
                 '<div style="display:flex;gap:8px">' +
@@ -5794,7 +5794,7 @@ function renderDashboard() {
         '<section id="section-factor-health" class="factor-health-section" aria-label="Factor health">' +
             '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">' +
                 '<div>' +
-                    '<h3 style="margin:0">Factor Health</h3>' +
+                    '<h3 style="margin:0">Factor Health' + sectionHelpButton('factor-health') + '</h3>' +
                     '<div style="font-size:12px;color:var(--text-dim);margin-top:4px">Market breadth, sector rotation, and factor-cache status. All feeds should be healthy before Monday 9:45 AM ET deploy.</div>' +
                 '</div>' +
                 '<button class="btn-ghost btn-sm" onclick="refreshFactorHealth()" aria-label="Refresh factor health">Refresh</button>' +
@@ -5814,11 +5814,11 @@ function renderDashboard() {
             '<div id="heatmapContent" role="region" aria-live="polite"><div class="empty-state loading"><div class="icon">\u{23F3}</div><div class="title">Loading heatmap</div><div class="subtitle">Computing daily P&L history from trade journal\u2026</div></div></div>' +
         '</section>' +
         '<section id="section-comparison" class="comparison-section" aria-label="Paper vs live comparison">' +
-            '<h3>Paper vs Live Comparison</h3>' +
+            '<h3>Paper vs Live Comparison' + sectionHelpButton('comparison') + '</h3>' +
             '<div id="comparisonContent">' + buildComparisonPanel(d) + '</div>' +
         '</section>' +
         '<section class="activity-log" aria-label="Activity log">' +
-            '<h3>Activity Log <button class="btn-ghost btn-sm" style="margin-left:12px" onclick="activityLog=[];renderLog();" aria-label="Clear activity log">Clear</button></h3>' +
+            '<h3>Activity Log' + sectionHelpButton('activity-log') + ' <button class="btn-ghost btn-sm" style="margin-left:12px" onclick="activityLog=[];renderLog();" aria-label="Clear activity log">Clear</button></h3>' +
             '<div class="log-entries" id="logEntries" role="log" aria-live="polite"></div>' +
         '</section>' +
         '<section id="section-settings" aria-label="Strategy settings and presets">' +
@@ -6868,7 +6868,8 @@ var SECTION_GUIDES = {
                 '<li><strong>🚨 BULL / BEAR</strong> badge — breaking news alert on this symbol from the real-time Alpaca news stream.</li>' +
             '</ul>' +
             '<p>The top summary bar shows Market Value, Cost Basis, Unrealized P&amp;L, Today\'s P&amp;L, and Option Risk (collateral locked by short puts × 100).</p>' +
-            '<p><strong>For wheel options</strong>: the row shows the OCC symbol + a plain-English decode. Clicking Close opens a modal that explains the trade in wheel terms (premium collected, breakeven, what happens if assigned).</p>'
+            '<p><strong>For wheel options</strong>: the row shows the OCC symbol + a plain-English decode. Clicking Close opens a modal that explains the trade in wheel terms (premium collected, breakeven, what happens if assigned).</p>' +
+            '<p><strong>Auto-exits (round-29)</strong>: the bot will automatically close any <em>non-wheel, non-PEAD</em> position 1 day before its earnings event to sidestep the binary surprise move. Configure via Settings → Guardrails (<code>earnings_exit_days_before</code> default 1, or <code>earnings_exit_disabled</code> to opt out). Wheel short puts are deliberately held through earnings to capture IV crush.</p>'
     },
     'screener': {
         title: 'Top 50 Screener',
@@ -6967,13 +6968,106 @@ var SECTION_GUIDES = {
         html:
             '<p>Six tabs:</p>' +
             '<ul>' +
-                '<li><strong>Guardrails</strong> — max position % (default 7%), max concurrent positions (5), per-day loss cutoff (-3%). Breach = auto kill-switch.</li>' +
+                '<li><strong>Guardrails</strong> — max position % (default 7%), max concurrent positions (5), per-day loss cutoff (-3%), <strong>earnings exit days before</strong> (round-29 default: 1 day). Breach = auto kill-switch.</li>' +
                 '<li><strong>Presets</strong> — Conservative / Moderate / Aggressive / Custom. Moderate is the default and is what the paper-validation window is running.</li>' +
                 '<li><strong>Strategies</strong> — per-strategy on/off + individual rule overrides.</li>' +
                 '<li><strong>Alpaca API</strong> — rotate your paper and/or live API keys. Keys are stored encrypted with your password.</li>' +
                 '<li><strong>Notifications</strong> — ntfy push topic, notification email override, scorecard email toggle.</li>' +
                 '<li><strong>Account</strong> — change password, export data, delete account, toggle live trading.</li>' +
             '</ul>'
+    },
+    'correlation': {
+        title: 'Position Correlation',
+        html:
+            '<p>Warns when you hold multiple positions in the same sector. Positions in the same sector tend to move together during sell-offs — a bad day for tech hits every tech name you hold simultaneously.</p>' +
+            '<p><strong>Why it matters</strong>: diversification is free risk reduction. Three uncorrelated 7% positions survive one blow-up; three correlated 7% positions die together.</p>' +
+            '<p><strong>How to fix</strong>: if you see 3+ in one sector, consider closing one or widening the sector mix on your next deploy. The auto-deployer respects this warning but does NOT auto-close — the decision stays yours.</p>' +
+            '<p><em>Known limitation (cosmetic)</em>: some ETF-heavy tickers like SOXL get bucketed as "Other" instead of "Technology" so the sector mix can look worse than it is. Low-priority fix.</p>'
+    },
+    'paper-progress': {
+        title: 'Paper Trading Progress',
+        html:
+            '<p>A live gauge of how close you are to flipping live. Five criteria must all pass (see the readiness card on the right):</p>' +
+            '<ul>' +
+                '<li><strong>30+ days</strong> of paper trading history</li>' +
+                '<li><strong>30+ closed trades</strong> (not open positions — actually realized)</li>' +
+                '<li><strong>Win rate &ge; 50%</strong></li>' +
+                '<li><strong>Profit factor &ge; 1.5</strong> (total wins &divide; total losses)</li>' +
+                '<li><strong>Max drawdown &lt; 15%</strong> from peak portfolio value</li>' +
+            '</ul>' +
+            '<p>Current paper validation window started 2026-04-15 and runs through ~2026-05-15. Only after you hit all five should you generate live Alpaca keys and flip Settings → \u{1F534} Live Trading.</p>'
+    },
+    'tax-loss': {
+        title: 'Tax-Loss Harvesting',
+        html:
+            '<p>Lists open positions currently showing a loss that could be closed before Dec 31 to offset capital gains. The table ranks by dollar size of the unrealized loss.</p>' +
+            '<p><strong>Wash-sale warning</strong>: the IRS disallows a loss if you re-buy the same (or "substantially identical") security within 30 days. The bot flags candidates but does NOT automatically tax-loss-harvest — the decision needs your awareness of broader tax context.</p>' +
+            '<p><strong>Not tax advice</strong>: always confirm with your accountant before acting on these lists, especially for options and ETFs where "substantially identical" is fuzzy.</p>'
+    },
+    'visual-backtest': {
+        title: 'Visual Backtest',
+        html:
+            '<p>Interactive 30-day price chart for any screened pick, showing:</p>' +
+            '<ul>' +
+                '<li><strong>Equity curve</strong> — how the strategy\'s position would have evolved over the last 30 trading days</li>' +
+                '<li><strong>Stop levels</strong> — the trailing stop line (rises with price on winners)</li>' +
+                '<li><strong>Entry / exit markers</strong> — where the strategy signaled buy, where it closed (either stop hit or end of window)</li>' +
+                '<li><strong>Return %</strong> — final P&amp;L for the 30-day window</li>' +
+            '</ul>' +
+            '<p><em>Caveat</em>: past performance is not future performance. Backtests use today\'s strategy rules applied to historical prices — they do NOT model slippage, after-hours gaps, or liquidity events.</p>' +
+            '<p>A red "stopped out" backtest with negative return is common and does NOT disqualify the pick — it\'s information, not a verdict.</p>'
+    },
+    'cloud-scheduler': {
+        title: 'Cloud Scheduler',
+        html:
+            '<p>Shows the last-run timestamp + task state for every background job:</p>' +
+            '<ul>' +
+                '<li><strong>Screener</strong> — runs every 30 min during market hours</li>' +
+                '<li><strong>Auto-deployer</strong> — runs 9:45 AM + 3:30 PM ET</li>' +
+                '<li><strong>Monitor loop</strong> — runs every 5 min per active strategy file</li>' +
+                '<li><strong>Daily close</strong> — runs at 4:05 PM ET (scorecard rebuild + trade journal trim)</li>' +
+                '<li><strong>Watchdog</strong> — polls the scheduler thread every 60s and pages you if it dies (round-24)</li>' +
+            '</ul>' +
+            '<p><strong>What to look for</strong>: any job with a last-run &gt; 30 min old during market hours indicates a scheduler issue. The watchdog should fire a ntfy + email alert within 1 min of a scheduler-thread death.</p>'
+    },
+    'performance-attribution': {
+        title: 'Performance Attribution',
+        html:
+            '<p>Per-strategy P&amp;L contribution. Shows total $ generated (or lost) by each of the 6 strategies over the paper window. Helps you decide which strategies to scale up and which to disable.</p>' +
+            '<p><strong>How to read it</strong>: a strategy with +$2000 and 3 trades is outperforming per-trade vs a strategy with +$2000 and 12 trades. The bars show total dollars; hover for trade count and win rate.</p>' +
+            '<p>Loss-making strategies below a threshold should be disabled via Settings → Strategies. If a strategy\'s attribution is &lt; -$500 over 10+ trades, its edge isn\'t there in current market conditions.</p>'
+    },
+    'tax-report': {
+        title: 'Tax Report',
+        html:
+            '<p>FIFO cost-basis report for all closed trades. Short-term (held &lt; 1 year) is taxed at ordinary income rate; long-term gets preferential capital-gains rate.</p>' +
+            '<p><strong>Form 8949 CSV</strong>: click "Download 8949 CSV" to get the exact columns the IRS wants — date acquired, date sold, proceeds, cost basis, gain/loss. Hand this to your accountant at tax time.</p>' +
+            '<p><strong>Wash-sale warnings</strong>: flagged inline when the bot detects a repurchase within 30 days of a losing close. Not tax advice — always verify with your accountant.</p>'
+    },
+    'factor-health': {
+        title: 'Factor Health',
+        html:
+            '<p>Dashboard for the data feeds that power the screener + scoring pipeline. All feeds should be healthy before Monday 9:45 AM ET deploy.</p>' +
+            '<ul>' +
+                '<li><strong>Market breadth</strong> — % of stocks advancing vs declining (proxy for broad market health)</li>' +
+                '<li><strong>Sector rotation</strong> — 20-day returns of 11 SPDR sector ETFs vs SPY (which sectors are leading / lagging)</li>' +
+                '<li><strong>Factor cache status</strong> — timestamp of the latest RSI / MACD / momentum cache refresh</li>' +
+                '<li><strong>Regime</strong> — current market regime (bull / bear / choppy) which weights strategy multipliers</li>' +
+            '</ul>' +
+            '<p>Red or stale feeds mean the screener is scoring on incomplete data — worth a manual refresh before trusting new deploys that cycle.</p>'
+    },
+    'activity-log': {
+        title: 'Activity Log',
+        html:
+            '<p>Chronological ring buffer of everything the bot did: deploys, stop raises, profit ladders, exits, kill-switch trips, notification sends. The newest 200 entries are kept and persisted across Railway redeploys (round-24).</p>' +
+            '<p><strong>Filter conventions</strong>:</p>' +
+            '<ul>' +
+                '<li>Lines starting with <strong>[monitor]</strong> are from the strategy monitor loop</li>' +
+                '<li>Lines starting with <strong>[deploy]</strong> are from the auto-deployer</li>' +
+                '<li>Lines starting with <strong>[screener]</strong> are from the 30-min screener run</li>' +
+                '<li><strong>WARN</strong> or <strong>ERR</strong> prefixes route to Sentry + ntfy</li>' +
+            '</ul>' +
+            '<p>Clear button resets the in-memory buffer but the persistent journal stays intact.</p>'
     }
 };
 

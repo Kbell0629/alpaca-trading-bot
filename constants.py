@@ -84,6 +84,47 @@ SECTOR_MAP = {
     # Industrial (extended)
     "UNP": "Industrial", "CSX": "Industrial", "FDX": "Industrial", "NOC": "Industrial",
     "MMM": "Industrial", "ETN": "Industrial", "EMR": "Industrial", "WM": "Industrial",
+    # Round-30 additions — tickers bucketed as "Other" in correlation
+    # warnings because they were missing from the map. 3x-leveraged
+    # semi ETFs (SOXL/SOXS/SOXX/SMH) belong in Tech for concentration
+    # purposes since they all move with the semi index.
+    "SOXL": "Tech", "SOXS": "Tech", "SOXX": "Tech", "SMH": "Tech",
+    "TSDD": "Tech", "TSLQ": "Consumer", "TSLG": "Consumer",
+    # Consumer / retail
+    "CHWY": "Consumer", "BBWI": "Consumer", "GME": "Consumer",
+    "PTON": "Consumer", "RBLX": "Consumer", "MGM": "Consumer",
+    "NCLH": "Consumer", "MAIR": "Consumer",
+    # Tech additions (small/mid cap)
+    "BB": "Tech", "POET": "Tech", "LUMN": "Tech", "SIRI": "Tech",
+    "SOUN": "Tech", "TEAM": "Tech", "KVYO": "Tech", "DELL": "Tech",
+    "SMCI": "Tech", "GTLB": "Tech", "PINS": "Tech", "TTD": "Tech",
+    "CELH": "Consumer",
+    # Semiconductor names
+    "GFS": "Tech", "MU": "Tech", "AMKR": "Tech", "ON": "Tech",
+    "VIAV": "Tech", "SNDK": "Tech",
+    # Crypto / crypto-adjacent (MARA / RIOT / WULF / CIFR already in
+    # the Crypto bucket above — only add new ones here)
+    "MSTR": "Finance", "BMNR": "Finance",
+    "BTDR": "Finance", "IREN": "Finance", "GLXY": "Finance",
+    # Healthcare / biotech
+    "TSHA": "Healthcare", "ENVX": "Healthcare", "OGN": "Healthcare",
+    # Quantum / emerging tech
+    "IONQ": "Tech", "QBTS": "Tech", "QUBT": "Tech", "RGTI": "Tech",
+    "ONDS": "Tech", "SMR": "Industrial", "OKLO": "Industrial",
+    "ASPI": "Materials", "EOSE": "Industrial", "UAMY": "Materials",
+    # Defense / space / satellite
+    "LUNR": "Industrial", "RKLB": "Industrial", "RCAT": "Industrial",
+    "SATL": "Industrial", "TRVI": "Healthcare", "RDW": "Industrial",
+    # Rare earth / materials
+    "USAR": "Materials", "NEXT": "Energy",
+    # Finance / trading
+    "BULL": "Finance", "CRWV": "Tech", "FIGR": "Finance", "XP": "Finance",
+    "SBET": "Finance", "PURR": "Consumer", "NB": "Finance",
+    # Energy / oilfield
+    "FRO": "Energy", "HAL": "Energy", "SM": "Energy", "AG": "Materials",
+    "DOW": "Materials", "BF.B": "Consumer",
+    # Apparel / travel
+    "VFC": "Consumer", "UAL": "Industrial", "W": "Consumer",
 }
 
 

@@ -4,6 +4,40 @@
 
 ---
 
+## 🆕 What's New (2026-04-21 — Rounds 28-30)
+
+**Round-29 — Universal pre-earnings auto-exit.** Before this round, only
+the PEAD strategy exited before earnings. Breakout / trailing / mean-
+reversion / copy-trading positions sat through earnings and got whipsawed
+by surprise moves. Now the bot automatically closes any such position
+**1 day before** its earnings event. Wheel short puts are deliberately
+held — they profit from IV crush post-earnings, which is the wheel's
+profit engine.
+
+**Configurable via Settings → Guardrails:**
+- `earnings_exit_days_before` — how far ahead to exit (default 1)
+- `earnings_exit_disabled` — set `true` to opt out entirely
+
+**Round-30 — UX polish + sector map fix.**
+- Every dashboard section now has an ⓘ info button that opens a
+  plain-English guide: Position Correlation, Paper Trading Progress,
+  Tax-Loss Harvesting, Visual Backtest, Cloud Scheduler, Performance
+  Attribution, Tax Report, Factor Health, Activity Log, Short
+  Candidates, Paper vs Live.
+- Sector map populated for 80+ additional tickers (SOXL, SOXS, CHWY,
+  SNDK, BB, POET, MSTR, MARA, IONQ, QBTS, and more). Correlation
+  warnings no longer flag everything as "Other" — concentration
+  alerts now reflect real sector overlap.
+
+**Round-28 — Exception-handling cleanup (merged).** Narrowed bare
+`except:` clauses across `error_recovery.py`, `learn.py`,
+`update_dashboard.py`, `auth.py` so KeyboardInterrupt / SystemExit
+propagate during shutdown. Surfaced three silent swallows in
+`strategy_mixin.py` as WARN logs (audit log breakage, cooldown
+timestamp parse, PEAD scorer failure).
+
+---
+
 ## 🆕 What's New (2026-04-20 — Rounds 21-27)
 
 Monday's paper-trading session added a big batch of features and reliability fixes. The short version: the dashboard is now information-rich enough that most of what the bot knows about a stock is visible on the card — AI reasoning, breaking news alerts, insider cluster buys, news sentiment — and the manual-override UX has been filled in with Sell 25% / Sell 50% buttons and a wheel-aware Close modal that explains every trade in plain English.
