@@ -2317,6 +2317,14 @@ class DashboardHandler(
             # Round-26: POST creates a single-use signup invite.
             self.handle_admin_create_invite(body)
             return
+        if path == "/api/admin/revoke-invite":
+            # Round-36: admin revokes an unused invite.
+            self.handle_admin_revoke_invite(body)
+            return
+        if path == "/api/admin/set-admin":
+            # Round-36: admin promotes/demotes another user.
+            self.handle_admin_set_admin(body)
+            return
 
         if path == "/api/refresh":
             self.handle_refresh()

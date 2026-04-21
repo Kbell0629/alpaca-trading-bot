@@ -1007,6 +1007,66 @@ def list_invites(created_by_user_id=None):
     return [dict(r) for r in rows]
 
 
+def revoke_invite(token_hash):
+    """Round-36: admin-only revoke of an unused invite.
+
+    Sets expires_at to one second in the past so `check_invite`
+    returns "expired" on any subsequent attempt to redeem it. Only
+    affects UNUSED invites — already-consumed ones are left alone
+    (revoking a used invite has no effect + could mask audit history).
+
+    Returns True if a row was updated, False if no matching unused
+    invite exists (already used, or hash doesn't match).
+    """
+    if not token_hash:
+        return False
+    past = (now_et() - timedelta(seconds=1)).isoformat()
+    conn = _get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE invites
+            SET expires_at = ?
+            WHERE token_hash = ? AND used_at IS NULL
+        """, (past, token_hash))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        try: conn.close()
+        except (sqlite3.Error, OSError): pass
+
+
+def set_user_admin(user_id, is_admin):
+    """Round-36: admin-only promote/demote. Returns True on success.
+
+    Guard rail: the last active admin cannot be demoted — the handler
+    layer is responsible for detecting this, but we also check at the
+    DB layer as defense-in-depth.
+    """
+    if not user_id:
+        return False, "missing user_id"
+    target_admin = 1 if is_admin else 0
+    conn = _get_db()
+    try:
+        cur = conn.cursor()
+        if target_admin == 0:
+            # Count active admins BESIDES the one being demoted.
+            others = cur.execute("""
+                SELECT COUNT(*) as n FROM users
+                WHERE is_admin = 1 AND is_active = 1 AND id != ?
+            """, (user_id,)).fetchone()
+            if not others or others["n"] == 0:
+                return False, "cannot demote the last admin"
+        cur.execute("""
+            UPDATE users SET is_admin = ? WHERE id = ?
+        """, (target_admin, user_id))
+        conn.commit()
+        return (cur.rowcount > 0), None
+    finally:
+        try: conn.close()
+        except (sqlite3.Error, OSError): pass
+
+
 # ===== Password Reset =====
 # Reset tokens are returned to the user in plaintext (via email / UI) but
 # stored as SHA-256 hashes in the DB. Defense-in-depth: if the users.db

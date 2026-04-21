@@ -2161,16 +2161,28 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
 
 <!-- ===== ADMIN PANEL MODAL ===== -->
 <div class="modal-overlay" id="adminPanelModal">
-  <div class="modal" style="max-width:900px">
-    <h2>👥 Admin</h2>
-    <div class="modal-subtitle" id="adminSubtitle">Admin-only controls — users, audit log, and volume backups</div>
+  <!-- Round-36: max-height + overflow containment so long audit-log
+       or user-list contents scroll INSIDE the modal instead of busting
+       out of the viewport. Before this, clicking the Audit Log tab
+       with a deep history rendered the list past the viewport bottom,
+       hiding the Close button and making the modal un-dismissable
+       without a page refresh. The inner scrollable region holds the
+       tab panels; the Close button stays pinned at the bottom. -->
+  <div class="modal admin-modal" style="max-width:900px;max-height:88vh;display:flex;flex-direction:column;overflow:hidden">
+    <h2 style="flex:0 0 auto">👥 Admin</h2>
+    <div class="modal-subtitle" id="adminSubtitle" style="flex:0 0 auto">Admin-only controls — users, audit log, and volume backups</div>
 
-    <div class="settings-tabs">
+    <div class="settings-tabs" style="flex:0 0 auto">
       <button type="button" class="settings-tab active" data-tab="users" onclick="switchAdminTab('users')">Users</button>
       <button type="button" class="settings-tab" data-tab="invites" onclick="switchAdminTab('invites')">Invites</button>
       <button type="button" class="settings-tab" data-tab="audit" onclick="switchAdminTab('audit')">Audit Log</button>
       <button type="button" class="settings-tab" data-tab="backups" onclick="switchAdminTab('backups')">Backups</button>
     </div>
+
+    <!-- Scrollable tab-content container. Tabs above + Close button
+         below remain visible while the audit log / user list scrolls
+         independently. -->
+    <div class="admin-tab-scroll" style="flex:1 1 auto;overflow-y:auto;overflow-x:auto;min-height:0;margin:0 -4px;padding:0 4px">
 
     <div class="settings-panel active" id="adminPanel-users">
       <div id="adminUserList" style="margin-top:4px"><div style="color:var(--text-dim)">Loading...</div></div>
@@ -2227,7 +2239,9 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
       <div id="adminBackupList"><div style="color:var(--text-dim)">Loading...</div></div>
     </div>
 
-    <div class="modal-actions" style="margin-top:18px">
+    </div><!-- /.admin-tab-scroll -->
+
+    <div class="modal-actions" style="margin-top:18px;flex:0 0 auto">
       <button type="button" class="btn-ghost" onclick="closeModal('adminPanelModal')">Close</button>
     </div>
   </div>
@@ -6871,6 +6885,30 @@ function adminCopyInviteUrl() {
     }
 }
 
+// Round-36: revoke an unused invite. Backend sets expires_at to the
+// past so any subsequent attempt to redeem it returns "expired".
+// Only enabled for active invites (used / expired already have no effect).
+async function adminRevokeInvite(tokenHash, noteLabel) {
+    var msg = 'Revoke invite "' + noteLabel + '"? The signup URL will stop working immediately.';
+    if (!confirm(msg)) return;
+    try {
+        const resp = await fetch(API_BASE + '/api/admin/revoke-invite', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({token_hash: tokenHash}),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+            toast(data.error || 'Failed to revoke invite', 'error');
+            return;
+        }
+        toast('Invite revoked', 'success');
+        loadAdminInvites();
+    } catch(e) {
+        toast('Error: ' + e.message, 'error');
+    }
+}
+
 async function loadAdminInvites() {
     var listEl = document.getElementById('adminInviteList');
     if (!listEl) return;
@@ -6890,16 +6928,29 @@ async function loadAdminInvites() {
             '<th style="text-align:left">Created</th>' +
             '<th style="text-align:left">Expires</th>' +
             '<th style="text-align:left">Used by</th>' +
+            '<th style="text-align:left">Actions</th>' +
             '</tr></thead><tbody>';
         invites.forEach(function(inv) {
             var statusColor = inv.status === 'active' ? '#10b981' :
                                inv.status === 'used' ? '#94a3b8' : '#ef4444';
+            // Round-36: Revoke button — only shown for active invites.
+            // Used / expired invites have no action (revoking a used
+            // invite has no effect; expired ones already can't be used).
+            var actionHtml = '';
+            if (inv.status === 'active' && inv.token_hash) {
+                actionHtml = '<button class="btn-warning btn-sm" ' +
+                    'onclick="adminRevokeInvite(\'' + jsStr(inv.token_hash) + '\', \'' +
+                    jsStr(inv.note || '(no note)') + '\')">Revoke</button>';
+            } else {
+                actionHtml = '<span style="color:var(--text-dim);font-size:11px">—</span>';
+            }
             html += '<tr>' +
                 '<td>' + esc(inv.note || '—') + '</td>' +
                 '<td style="color:' + statusColor + ';font-weight:600">' + esc(inv.status) + '</td>' +
                 '<td>' + esc(fmtAuditTime(inv.created_at)) + '</td>' +
                 '<td>' + esc(fmtAuditTime(inv.expires_at)) + '</td>' +
                 '<td>' + (inv.used_by_user_id ? 'user ' + inv.used_by_user_id : '—') + '</td>' +
+                '<td>' + actionHtml + '</td>' +
             '</tr>';
         });
         html += '</tbody></table>';
@@ -7044,7 +7095,14 @@ async function loadAdminUsers() {
             } else {
                 actions += '<button class="btn-primary btn-sm" onclick="adminSetActive(' + u.id + ', true)">Reactivate</button> ';
             }
-            actions += '<button class="btn-ghost btn-sm" onclick="adminResetPassword(' + Number(u.id) + ', \'' + jsStr(u.username) + '\')">Reset Password</button>';
+            actions += '<button class="btn-ghost btn-sm" onclick="adminResetPassword(' + Number(u.id) + ', \'' + jsStr(u.username) + '\')">Reset Password</button> ';
+            // Round-36: promote / demote admin. Server-side guard prevents
+            // demoting the last active admin; UI just sends the request.
+            if (u.is_admin) {
+                actions += '<button class="btn-ghost btn-sm" onclick="adminSetAdmin(' + Number(u.id) + ', \'' + jsStr(u.username) + '\', false)">Revoke Admin</button>';
+            } else {
+                actions += '<button class="btn-ghost btn-sm" onclick="adminSetAdmin(' + Number(u.id) + ', \'' + jsStr(u.username) + '\', true)">Make Admin</button>';
+            }
             html += '<tr>' +
                 '<td><strong>' + esc(u.username) + '</strong>' + (u.is_admin ? ' <span class="paper-badge" style="font-size:9px">ADMIN</span>' : '') + '</td>' +
                 '<td>' + esc(u.email) + '</td>' +
@@ -7093,6 +7151,29 @@ async function adminResetPassword(userId, username) {
         var d = await resp.json();
         if (!resp.ok || d.error) { toast(d.error || 'Failed', 'error'); return; }
         toast('Password reset for ' + username, 'success');
+    } catch (e) { toast(e.message, 'error'); }
+}
+
+// Round-36: promote / demote admin. Server-side protects the last
+// active admin from being demoted, but we confirm first to prevent
+// click-through accidents.
+async function adminSetAdmin(userId, username, makeAdmin) {
+    var verb = makeAdmin ? 'Make' : 'Revoke';
+    var msg = makeAdmin
+        ? 'Grant admin rights to ' + username + '? They will have access to this Manage Users panel.'
+        : 'Revoke admin rights from ' + username + '? They will lose access to the Admin panel.';
+    if (!confirm(msg)) return;
+    try {
+        var resp = await fetch(API_BASE + '/api/admin/set-admin', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: JSON.stringify({user_id: userId, is_admin: makeAdmin}),
+        });
+        var d = await resp.json();
+        if (!resp.ok || d.error) { toast(d.error || 'Failed', 'error'); return; }
+        toast(verb + ' admin: ' + username, 'success');
+        loadAdminUsers();
     } catch (e) { toast(e.message, 'error'); }
 }
 
