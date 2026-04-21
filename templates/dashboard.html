@@ -2285,6 +2285,37 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
   </div>
 </div>
 
+<!-- Round-39: Tier B native chart modal.  Opened from any 📈 Chart
+     button on a pick card, screener row, or position. Renders a
+     native canvas chart using the existing 'chartKit' minimal lib
+     below (no external deps).  Shows last N days of bars + overlays
+     the user's entry + stop if they hold the symbol. -->
+<div class="modal-overlay" id="chartModal">
+  <div class="modal" style="width:min(1000px, 95vw);max-width:none;max-height:92vh;display:flex;flex-direction:column;overflow:hidden">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;flex:0 0 auto">
+      <h2 id="chartModalTitle" style="margin:0">📈 Chart</h2>
+      <div style="display:flex;gap:4px">
+        <button type="button" class="btn-ghost btn-sm" onclick="chartSetDays(30)" id="chartDaysBtn30">30d</button>
+        <button type="button" class="btn-ghost btn-sm" onclick="chartSetDays(60)" id="chartDaysBtn60">60d</button>
+        <button type="button" class="btn-ghost btn-sm" onclick="chartSetDays(90)" id="chartDaysBtn90">90d</button>
+        <button type="button" class="btn-ghost btn-sm" onclick="chartSetDays(180)" id="chartDaysBtn180">6M</button>
+      </div>
+    </div>
+    <div class="modal-subtitle" id="chartModalSubtitle" style="flex:0 0 auto">Last 60 days, daily bars</div>
+    <div class="chart-legend" id="chartLegend" style="font-size:12px;color:var(--text-dim);margin-bottom:8px;flex:0 0 auto"></div>
+    <div style="flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:8px">
+      <div style="position:relative;flex:1 1 auto;min-height:260px">
+        <canvas id="chartCanvas" style="width:100%;height:100%;display:block"></canvas>
+        <div id="chartLoading" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text-dim)">Loading chart…</div>
+        <div id="chartError" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;color:var(--red);text-align:center;padding:20px"></div>
+      </div>
+    </div>
+    <div class="modal-actions" style="flex:0 0 auto;margin-top:12px">
+      <button type="button" class="btn-ghost" onclick="closeModal('chartModal')">Close</button>
+    </div>
+  </div>
+</div>
+
 <main id="main-content" tabindex="-1">
 <div id="app">Loading dashboard...</div>
 </main>
@@ -5041,8 +5072,10 @@ function renderDashboard() {
                     + '</div>';
             })() +
             (p.earnings_warning ? '<div class="earnings-badge">\u26A0 Earnings Soon</div>' : '') +
-            '<div class="pick-actions">' +
-            '<button class="pick-deploy-btn" onclick="openDeployModal(\'' + jsStr(p.symbol) + '\',\'' + jsStr(p.best_strategy) + '\',' + Number(recShares||0) + ',' + Number(p.price||0) + ')">Deploy ' + esc(p.best_strategy) + ' — ' + recShares + ' sh @ ' + fmtMoney((Number(recShares)||0)*(Number(p.price)||0)) + '</button></div></div>';
+            '<div class="pick-actions" style="display:flex;gap:6px;align-items:stretch;flex-wrap:wrap">' +
+            '<button class="pick-deploy-btn" style="flex:1 1 auto;min-width:0" onclick="openDeployModal(\'' + jsStr(p.symbol) + '\',\'' + jsStr(p.best_strategy) + '\',' + Number(recShares||0) + ',' + Number(p.price||0) + ')">Deploy ' + esc(p.best_strategy) + ' — ' + recShares + ' sh @ ' + fmtMoney((Number(recShares)||0)*(Number(p.price)||0)) + '</button>' +
+            '<button class="btn-ghost btn-sm" style="flex:0 0 auto;padding:6px 10px" onclick="openChartModal(\'' + jsStr(p.symbol) + '\')" title="View 📈 chart">📈</button>' +
+            '</div></div>';
     });
     if (!picksHtml) {
         // Round-11: distinguish "market closed" from "screener returned
@@ -5302,6 +5335,7 @@ function renderDashboard() {
             // was misaligning against stacked buttons.  If the buttons
             // still don\'t fit, the parent .table-card scrolls horizontally.
             '<div class="pos-action-btns">' +
+                '<button class="btn-ghost btn-sm" onclick="openChartModal(\'' + sym + '\')" title="View chart">📈</button>' +
                 '<button class="btn-danger btn-sm" onclick="openClosePositionModal(\'' + sym + '\',' + qty + ',' + avgEntry + ',' + curPrice + ',' + upl + ',' + uplPct + ')">Close</button>' +
                 '<button class="btn-warning btn-sm" onclick="openSellFractionModal(\'' + sym + '\',' + qty + ',' + avgEntry + ',' + curPrice + ',' + upl + ',' + uplPct + ', 0.5)">Sell 50%</button>' +
                 '<button class="btn-warning btn-sm" onclick="openSellFractionModal(\'' + sym + '\',' + qty + ',' + avgEntry + ',' + curPrice + ',' + upl + ',' + uplPct + ', 0.25)">Sell 25%</button>' +
@@ -5526,7 +5560,10 @@ function renderDashboard() {
             '<td title="' + costTitle + '" style="white-space:nowrap">' + fmtMoney(estCost) + '</td>' +
             '<td title="' + costTitle + '" style="color:' + acctColor + ';font-weight:600;white-space:nowrap">' + acctPct.toFixed(1) + '%</td>' +
             '<td title="' + riskTitle + '" class="negative" style="white-space:nowrap">-' + fmtMoney(maxLoss) + '</td>' +
-            '<td><button class="btn-primary btn-sm" onclick="openDeployModal(\'' + jsStr(p.symbol) + '\',\'' + jsStr(p.best_strategy) + '\',' + Number(recShares||0) + ',' + Number(p.price||0) + ')">Deploy</button></td></tr>';
+            '<td style="white-space:nowrap">' +
+                '<button class="btn-primary btn-sm" onclick="openDeployModal(\'' + jsStr(p.symbol) + '\',\'' + jsStr(p.best_strategy) + '\',' + Number(recShares||0) + ',' + Number(p.price||0) + ')">Deploy</button> ' +
+                '<button class="btn-ghost btn-sm" onclick="openChartModal(\'' + jsStr(p.symbol) + '\')" title="View chart">📈</button>' +
+            '</td></tr>';
     });
     if (!scrHtml) {
         const ts = (d.trading_session || '').toLowerCase();
@@ -7525,6 +7562,227 @@ var SECTION_GUIDES = {
             '<p>Clear button resets the in-memory buffer but the persistent journal stays intact.</p>'
     }
 };
+
+/* =============================================================
+   Round-39: Tier B native chart.
+   Minimal canvas-based line chart — no external deps, ~100 LOC.
+   Draws last N days of price + volume micro-bar strip.
+   Overlays horizontal lines for user's entry + stop (if held).
+   ============================================================= */
+var _chartState = {
+    symbol: null,
+    days: 60,
+    lastPayload: null,
+};
+
+async function openChartModal(symbol) {
+    _chartState.symbol = (symbol || "").toUpperCase();
+    _chartState.days = 60;
+    var t = document.getElementById("chartModalTitle");
+    var s = document.getElementById("chartModalSubtitle");
+    if (t) t.textContent = "📈 " + _chartState.symbol;
+    if (s) s.textContent = "Last 60 days, daily bars";
+    openModal("chartModal");
+    _chartUpdateDaysButtons();
+    await _chartFetchAndRender();
+}
+
+function chartSetDays(days) {
+    _chartState.days = days;
+    var s = document.getElementById("chartModalSubtitle");
+    if (s) s.textContent = "Last " + days + " days, daily bars";
+    _chartUpdateDaysButtons();
+    _chartFetchAndRender();
+}
+
+function _chartUpdateDaysButtons() {
+    [30, 60, 90, 180].forEach(function(d) {
+        var b = document.getElementById("chartDaysBtn" + d);
+        if (!b) return;
+        if (d === _chartState.days) {
+            b.classList.remove("btn-ghost");
+            b.classList.add("btn-primary");
+        } else {
+            b.classList.remove("btn-primary");
+            b.classList.add("btn-ghost");
+        }
+    });
+}
+
+async function _chartFetchAndRender() {
+    var loading = document.getElementById("chartLoading");
+    var errEl = document.getElementById("chartError");
+    if (loading) loading.style.display = "flex";
+    if (errEl) { errEl.style.display = "none"; errEl.textContent = ""; }
+    try {
+        var url = API_BASE + "/api/chart-bars?symbol=" +
+            encodeURIComponent(_chartState.symbol) +
+            "&days=" + _chartState.days +
+            "&timeframe=1Day";
+        var resp = await fetch(url, {credentials: "same-origin"});
+        var data = await resp.json();
+        if (!resp.ok || data.error) {
+            throw new Error(data.error || ("HTTP " + resp.status));
+        }
+        _chartState.lastPayload = data;
+        _chartRender(data);
+    } catch (e) {
+        if (errEl) {
+            errEl.textContent = "Failed to load chart: " + e.message;
+            errEl.style.display = "flex";
+        }
+    } finally {
+        if (loading) loading.style.display = "none";
+    }
+}
+
+function _chartRender(data) {
+    var canvas = document.getElementById("chartCanvas");
+    if (!canvas) return;
+    var bars = (data && data.bars) || [];
+    if (!bars.length) {
+        var errEl = document.getElementById("chartError");
+        if (errEl) {
+            errEl.textContent = "No bar data available for this symbol.";
+            errEl.style.display = "flex";
+        }
+        return;
+    }
+    // HiDPI-aware sizing
+    var dpr = window.devicePixelRatio || 1;
+    var parent = canvas.parentElement;
+    var w = (parent && parent.clientWidth) || 800;
+    var h = (parent && parent.clientHeight) || 300;
+    canvas.width = Math.floor(w * dpr);
+    canvas.height = Math.floor(h * dpr);
+    canvas.style.width = w + "px";
+    canvas.style.height = h + "px";
+    var ctx = canvas.getContext("2d");
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, w, h);
+
+    var pad = {l: 54, r: 14, t: 16, b: 28};
+    var plotW = w - pad.l - pad.r;
+    var plotH = h - pad.t - pad.b;
+
+    // Data ranges
+    var closes = bars.map(function(b) { return b.c; });
+    var overlay = (data && data.overlay) || {};
+    var mins = Math.min.apply(null, closes);
+    var maxs = Math.max.apply(null, closes);
+    if (overlay.entry && overlay.entry > 0) { mins = Math.min(mins, overlay.entry); maxs = Math.max(maxs, overlay.entry); }
+    if (overlay.stop && overlay.stop > 0) { mins = Math.min(mins, overlay.stop); maxs = Math.max(maxs, overlay.stop); }
+    // Padding 5% top/bottom so the line isn't flush to the edges
+    var span = maxs - mins || 1;
+    mins -= span * 0.05;
+    maxs += span * 0.05;
+    var yRange = maxs - mins;
+
+    function xAt(i) { return pad.l + (plotW * i) / Math.max(1, bars.length - 1); }
+    function yAt(price) { return pad.t + plotH - ((price - mins) / yRange) * plotH; }
+
+    // Grid + y-axis labels
+    ctx.strokeStyle = "rgba(255,255,255,0.06)";
+    ctx.lineWidth = 1;
+    ctx.fillStyle = "rgba(255,255,255,0.5)";
+    ctx.font = "11px system-ui, -apple-system, sans-serif";
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    for (var g = 0; g <= 4; g++) {
+        var gy = pad.t + (plotH * g) / 4;
+        ctx.beginPath();
+        ctx.moveTo(pad.l, gy);
+        ctx.lineTo(pad.l + plotW, gy);
+        ctx.stroke();
+        var gp = maxs - (yRange * g) / 4;
+        ctx.fillText("$" + gp.toFixed(2), pad.l - 6, gy);
+    }
+
+    // Price line
+    var lastClose = closes[closes.length - 1];
+    var firstClose = closes[0];
+    var trendUp = lastClose >= firstClose;
+    ctx.strokeStyle = trendUp ? "#10b981" : "#ef4444";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    bars.forEach(function(b, i) {
+        var x = xAt(i), y = yAt(b.c);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // Area fill under the line
+    ctx.lineTo(xAt(bars.length - 1), pad.t + plotH);
+    ctx.lineTo(xAt(0), pad.t + plotH);
+    ctx.closePath();
+    ctx.fillStyle = trendUp ? "rgba(16,185,129,0.08)" : "rgba(239,68,68,0.08)";
+    ctx.fill();
+
+    // Overlay: entry line
+    function drawOverlay(price, color, label) {
+        if (!price || price <= 0) return;
+        var y = yAt(price);
+        ctx.strokeStyle = color;
+        ctx.setLineDash([4, 4]);
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(pad.l, y);
+        ctx.lineTo(pad.l + plotW, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        // Label tag on right edge
+        ctx.fillStyle = color;
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        ctx.fillText(label + " $" + price.toFixed(2),
+                     pad.l + plotW + 4, y);
+    }
+    drawOverlay(overlay.entry, "#8b5cf6", "Entry");  // purple
+    drawOverlay(overlay.stop, "#fb923c", "Stop");    // orange
+
+    // X-axis: first + last date label
+    ctx.fillStyle = "rgba(255,255,255,0.5)";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    var fmt = function(isoT) {
+        try {
+            var d = new Date(isoT);
+            return d.toLocaleDateString("en-US",
+                {month: "short", day: "numeric"});
+        } catch (_) { return ""; }
+    };
+    ctx.fillText(fmt(bars[0].t), pad.l, pad.t + plotH + 6);
+    ctx.textAlign = "right";
+    ctx.fillText(fmt(bars[bars.length - 1].t),
+                 pad.l + plotW, pad.t + plotH + 6);
+
+    // Legend (current price, change, overlays)
+    var legend = document.getElementById("chartLegend");
+    if (legend) {
+        var pct = firstClose > 0
+            ? ((lastClose / firstClose - 1) * 100).toFixed(2)
+            : "0.00";
+        var changeColor = trendUp ? "var(--green)" : "var(--red)";
+        var parts = [
+            '<strong style="color:var(--text)">$' + lastClose.toFixed(2) + '</strong>',
+            '<span style="color:' + changeColor + '">' +
+                (trendUp ? "+" : "") + pct + '% over ' + _chartState.days + 'd' +
+            '</span>',
+        ];
+        if (overlay.entry) parts.push('<span style="color:#8b5cf6">Entry $' + overlay.entry.toFixed(2) + '</span>');
+        if (overlay.stop) parts.push('<span style="color:#fb923c">Stop $' + overlay.stop.toFixed(2) + '</span>');
+        legend.innerHTML = parts.join(' &nbsp;·&nbsp; ');
+    }
+}
+
+// Re-render on window resize so the canvas stays crisp.
+window.addEventListener("resize", function() {
+    var m = document.getElementById("chartModal");
+    if (m && m.classList.contains("active") && _chartState.lastPayload) {
+        _chartRender(_chartState.lastPayload);
+    }
+}, {passive: true});
 
 function openSectionGuide(sectionId) {
     var guide = SECTION_GUIDES[sectionId];

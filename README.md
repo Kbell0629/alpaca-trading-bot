@@ -4,6 +4,47 @@
 
 ---
 
+## 🆕 What's New (2026-04-21 night — Rounds 38-39)
+
+**Round-38 — CI timeout fix + Deploy modal scroll containment.**
+See prior PRs for full detail — `/api/signup` was timing out on CI
+under zxcvbn's first-call lazy-load (bumped from 5s to 15s), and
+John's Deploy modal on a laptop was cutting off the Confirm Buy
+button (same class of bug as the admin modal).
+
+**Round-39 — Cross-user activity-log leak FIX + native price charts.**
+
+*Privacy fix (HIGH severity):* `/api/scheduler-status` was returning
+the unfiltered 200-line scheduler ring buffer + the full list of
+all usernames to every authenticated user. That's why you saw
+`[godgurusefone]` entries in your activity log. Now:
+- Non-admins see only entries tagged with their own username +
+  generic scheduler events (heartbeat, boot, migrations). Other
+  users' screener / monitor / deploy events are filtered out.
+- Users tab (in admin panel) still shows everyone — admins have
+  rights. `/api/scheduler-status` non-admin roster trims to just
+  your row.
+- **Audit result**: spawned an Explore agent to sweep every other
+  endpoint for similar leaks. Result: `scheduler-status` was the
+  only one. All per-user data endpoints (`/api/data`,
+  `/api/tax-report`, `/api/positions`, etc.) correctly filter by
+  `current_user['id']`.
+
+*Native charts (Tier B):* added a 📈 Chart button on every pick
+card, screener row, and position row. Opens a modal with a native
+canvas line chart fed by a new `/api/chart-bars` endpoint.
+- 30d / 60d / 90d / 6M timeframe toggle
+- Options chart the underlying (HIMS put shows HIMS bars)
+- Overlays: **purple** dashed line = your entry, **orange**
+  dashed line = your current stop, picked up live from your
+  positions + open orders.
+- No external deps — ~100 LOC of inline canvas drawing. No
+  TradingView iframe, no Chart.js bundle. Matches app dark theme.
+- Legend shows current price, % change over the window, and any
+  entry/stop values you hold.
+
+---
+
 ## 🆕 What's New (2026-04-21 evening — Round 36)
 
 **Admin-panel overhaul + weekly-learning bug fix.**

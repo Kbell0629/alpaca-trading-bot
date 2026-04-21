@@ -1619,6 +1619,99 @@ class DashboardHandler(
             )
             self.send_json(data)
 
+        elif path == "/api/chart-bars":
+            # Round-39: lightweight native charts (Tier B).
+            # ?symbol=SOXL&days=60&timeframe=1Day
+            # Returns {bars:[{t, o, h, l, c, v}, ...]} for Chart.js
+            # plus overlay lines (entry + stop) derived from the user's
+            # current position if they hold the symbol.
+            import urllib.parse as _up
+            _qs = self.path.split("?", 1)[1] if "?" in self.path else ""
+            q = _up.parse_qs(_qs)
+            symbol = (q.get("symbol", [""])[0] or "").upper()
+            try:
+                days = int(q.get("days", ["60"])[0])
+            except (TypeError, ValueError):
+                days = 60
+            # Clamp to reasonable bounds so an attacker can't ask for
+            # decades of data.
+            days = max(5, min(days, 365))
+            timeframe = q.get("timeframe", ["1Day"])[0]
+            if timeframe not in ("1Day", "1Hour", "15Min"):
+                timeframe = "1Day"
+            # Validate symbol — a-z, digits, dot (BF.B etc). OCC option
+            # symbols contain digits but we still want them accepted
+            # since users might want to chart the underlying.
+            import re as _re_chart
+            if not symbol or not _re_chart.match(r"^[A-Z0-9.]{1,20}$", symbol):
+                self.send_json({"error": "invalid symbol"}, 400)
+                return
+            # For options: chart the underlying stock, not the contract
+            _m = _re_chart.match(r"^([A-Z]{1,6})\d{6}[CP]\d{8}$", symbol)
+            chart_symbol = _m.group(1) if _m else symbol
+
+            # Fetch bars from Alpaca (uses user's creds)
+            from datetime import timedelta as _td
+            end = now_et()
+            start = end - _td(days=days + 5)  # slack for weekends/holidays
+            # RFC-3339 UTC with 'Z' suffix — Alpaca is strict
+            start_iso = start.astimezone(
+                __import__("datetime").timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            end_iso = end.astimezone(
+                __import__("datetime").timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            url = (f"{self.user_data_endpoint}/stocks/{chart_symbol}/bars"
+                   f"?timeframe={timeframe}&start={start_iso}&end={end_iso}"
+                   f"&limit={days + 10}&feed=iex")
+            result = self.user_api_get(url)
+            if isinstance(result, dict) and "error" in result:
+                self.send_json({"error": result["error"]}, 502)
+                return
+            bars_raw = (result or {}).get("bars", []) or []
+            bars = [{
+                "t": b.get("t"),
+                "o": b.get("o"),
+                "h": b.get("h"),
+                "l": b.get("l"),
+                "c": b.get("c"),
+                "v": b.get("v"),
+            } for b in bars_raw]
+
+            # Overlay: if user holds this symbol, pull entry + current stop
+            overlay = {"entry": None, "stop": None, "strategy": None}
+            try:
+                positions = self.user_api_get(
+                    f"{self.user_api_endpoint}/positions") or []
+                if isinstance(positions, list):
+                    for p in positions:
+                        sym_u = (p.get("symbol") or "").upper()
+                        if sym_u == symbol or sym_u == chart_symbol:
+                            try:
+                                overlay["entry"] = float(p.get("avg_entry_price") or 0) or None
+                            except (TypeError, ValueError):
+                                overlay["entry"] = None
+                            break
+                # Stop price: scan open orders for a GTC sell-stop on this symbol
+                orders = self.user_api_get(
+                    f"{self.user_api_endpoint}/orders?status=open&limit=50") or []
+                if isinstance(orders, list):
+                    for o in orders:
+                        if ((o.get("symbol") or "").upper() in (symbol, chart_symbol)
+                                and o.get("order_type") == "stop"):
+                            try:
+                                overlay["stop"] = float(o.get("stop_price") or 0) or None
+                            except (TypeError, ValueError):
+                                overlay["stop"] = None
+                            break
+            except Exception:
+                pass  # overlays are best-effort; never fail the chart
+            self.send_json({
+                "symbol": chart_symbol,
+                "timeframe": timeframe,
+                "bars": bars,
+                "overlay": overlay,
+            })
+            return
+
         elif path == "/api/account":
             result = self.user_api_get(f"{self.user_api_endpoint}/account")
             self.send_json(result)
@@ -1641,7 +1734,15 @@ class DashboardHandler(
 
         elif path == "/api/scheduler-status":
             if SCHEDULER_AVAILABLE:
-                self.send_json(get_scheduler_status())
+                # Round-39: pass the caller's username + admin flag so
+                # the activity log + user roster are filtered to THEIR
+                # data. Before this, every authenticated user saw every
+                # other user's scheduler events + the full user list.
+                _cu = self.current_user or {}
+                self.send_json(get_scheduler_status(
+                    filter_username=_cu.get("username"),
+                    is_admin=bool(_cu.get("is_admin")),
+                ))
             else:
                 self.send_json({"running": False, "error": "Scheduler module not loaded"})
 

@@ -4178,7 +4178,42 @@ def _track_child(popen):
     except Exception:
         pass
 
-def get_scheduler_status():
+# Round-39: match `[username]` tags in log messages so we can filter
+# the activity ring per-user. Username chars per auth.py are
+# [A-Za-z0-9_-]{3,30}. Generic scheduler events (heartbeat, boot) have
+# no tag and are shared context.
+import re as _re_log
+_USER_TAG_RE = _re_log.compile(r"\[[A-Za-z0-9_-]{3,30}\]")
+# Prefix tags the log() calls add — these are task types, not usernames.
+_TASK_TAGS = frozenset([
+    "[scheduler]", "[screener]", "[monitor]", "[deployer]", "[learn]",
+    "[friday]", "[news-stream]", "[journal]", "[wheel]", "[pead]",
+    "[error]", "[kill-switch]", "[auth]", "[migration]",
+])
+
+
+def _has_user_tag(msg):
+    """Return True if `msg` contains a `[username]` tag (not a task tag)."""
+    if not msg:
+        return False
+    for m in _USER_TAG_RE.findall(msg):
+        if m not in _TASK_TAGS:
+            return True
+    return False
+
+
+def get_scheduler_status(filter_username=None, is_admin=False):
+    """Return scheduler health + recent activity.
+
+    Round-39 privacy fix: non-admin callers pass their own username
+    via `filter_username` so the activity ring buffer is filtered to
+    entries that belong to THEM (either tagged `[username]` or
+    generic scheduler-level events). Before this, every authenticated
+    user saw every other user's scheduler + screener + monitor
+    events, which leaked activity metadata across accounts.
+
+    Admins see everything unfiltered.
+    """
     is_alive = _scheduler_running and _scheduler_thread is not None and _scheduler_thread.is_alive()
     et_now = get_et_time()
     # Use zoneinfo to determine EDT vs EST — handles DST boundaries correctly.
@@ -4194,8 +4229,13 @@ def get_scheduler_status():
     et_date_display = et_now.strftime("%a %b %-d")
 
     users = get_all_users_for_scheduling()
+    # Round-39: non-admins don't see the list of other users. They see
+    # only their own row (for the "who am I" indicator). Admins get
+    # the full roster as before.
     user_info = []
     for u in users:
+        if not is_admin and filter_username and u.get("username") != filter_username:
+            continue
         user_info.append({
             "id": u["id"],
             "username": u["username"],
@@ -4207,7 +4247,28 @@ def get_scheduler_status():
         # Dashboard activity pane is scrollable (max-height + overflow-y)
         # so the extra depth doesn't hurt first-paint; user sees more
         # history on scroll + doesn't have to tail Railway logs.
-        logs = list(_recent_logs[-200:])
+        all_logs = list(_recent_logs[-500:])
+
+    # Round-39: filter log entries by username for non-admins.
+    # Log messages are tagged `[username]` after the task prefix for
+    # user-specific events (screener, monitor, deploy, kill-switch,
+    # admin audit). Generic scheduler events (heartbeat, boot, etc.)
+    # have no username tag and are shared context — safe to show.
+    # Matching is case-sensitive because usernames are case-sensitive
+    # at the auth layer.
+    if is_admin or not filter_username:
+        logs = all_logs[-200:]
+    else:
+        tag = f"[{filter_username}]"
+        filtered = []
+        for entry in all_logs:
+            msg = entry.get("msg", "")
+            has_any_user_tag = _has_user_tag(msg)
+            # Include if it's a generic (no user tag) event, OR it's
+            # tagged with our user.
+            if tag in msg or not has_any_user_tag:
+                filtered.append(entry)
+        logs = filtered[-200:]
 
     # Check market once via first user (all users share the same market clock)
     market_open = False
