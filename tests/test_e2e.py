@@ -144,6 +144,17 @@ def live_server(fake_alpaca):
         shutil.rmtree(data_dir, ignore_errors=True)
 
 
+# Round-38: 5-second per-request timeout was fine for the local sandbox
+# but caused flaky CI failures on ubuntu-latest runners.  /api/signup
+# hits zxcvbn (slow first-call — the library lazy-loads a 30k-word
+# dictionary) + the Alpaca /account verify call + a bcrypt hash.
+# Under CI contention this occasionally crossed 5s and the test suite
+# failed the pull_request check with a URLError timeout.  15s gives
+# plenty of headroom without making a genuine hang invisible.
+_POST_TIMEOUT = 15
+_GET_TIMEOUT = 15
+
+
 def _post_json(opener, url, body):
     req = urllib.request.Request(
         url,
@@ -152,7 +163,7 @@ def _post_json(opener, url, body):
         method="POST",
     )
     try:
-        with opener.open(req, timeout=5) as r:
+        with opener.open(req, timeout=_POST_TIMEOUT) as r:
             return r.status, json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
         return e.code, json.loads(e.read().decode() or "{}")
@@ -160,7 +171,7 @@ def _post_json(opener, url, body):
 
 def _get_json(opener, url):
     try:
-        with opener.open(url, timeout=5) as r:
+        with opener.open(url, timeout=_GET_TIMEOUT) as r:
             return r.status, json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
         return e.code, json.loads(e.read().decode() or "{}")
@@ -210,7 +221,7 @@ def test_e2e_dashboard_requires_auth(live_server):
         )
         # Note: Python's HTTPRedirectHandler follows by default, so we detect
         # via the final URL not being "/". Looser assertion below.
-        with no_redirect_opener.open(req, timeout=5) as resp:
+        with no_redirect_opener.open(req, timeout=_GET_TIMEOUT) as resp:
             final_url = resp.geturl()
             assert "/login" in final_url, f"unauthed GET / should land on login, got {final_url}"
     except urllib.error.HTTPError as e:
@@ -230,7 +241,7 @@ def test_e2e_api_data_unauthenticated_returns_401(live_server):
     # Use a fresh opener with no cookies
     bare = urllib.request.build_opener()
     try:
-        with bare.open(f"{base}/api/data", timeout=5) as resp:
+        with bare.open(f"{base}/api/data", timeout=_GET_TIMEOUT) as resp:
             pytest.fail(f"expected 401, got {resp.status}")
     except urllib.error.HTTPError as e:
         assert e.code == 401, f"expected 401, got {e.code}"

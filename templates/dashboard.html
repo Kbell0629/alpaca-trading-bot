@@ -1775,9 +1775,20 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
 
 <!-- Deploy Modal (Enhanced with P&L estimates) -->
 <div class="modal-overlay" id="deployModal">
-  <div class="modal" style="max-width:540px">
-    <h2 id="deployModalTitle">Deploy Strategy</h2>
-    <div class="modal-subtitle" id="deployModalSubtitle">Configure and deploy on TSLA</div>
+  <!-- Round-38: max-height + internal scroll so the Deploy button stays
+       visible on laptop/tablet portrait views.  Before this, the deploy
+       modal was rendering the strategy explainer + P&L estimate card +
+       form + Deploy button all stacked unconstrained, pushing Deploy
+       past viewport bottom on shorter screens. Flex-column layout so
+       the title + Deploy action stay pinned; only the middle content
+       scrolls. -->
+  <div class="modal" style="width:min(540px, calc(100vw - 24px));max-width:540px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden">
+    <h2 id="deployModalTitle" style="flex:0 0 auto">Deploy Strategy</h2>
+    <div class="modal-subtitle" id="deployModalSubtitle" style="flex:0 0 auto">Configure and deploy on TSLA</div>
+    <!-- Scrollable middle: strategy explainer + form. The modal-actions
+         footer stays pinned below so the Deploy button is always
+         reachable regardless of how tall the explainer gets. -->
+    <div class="deploy-modal-scroll" style="flex:1 1 auto;overflow-y:auto;min-height:0;margin:0 -4px;padding:0 4px">
     <div class="modal-action-text" id="deployActionText"></div>
     <div class="modal-info-box" id="deployInfoBox">
       <div class="info-title">What This Means</div>
@@ -1811,7 +1822,8 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
     </div>
     <!-- Round-11 expansion item 5: portfolio impact preview rendered here -->
     <div id="deployPortfolioImpact"></div>
-    <div class="modal-actions">
+    </div><!-- /.deploy-modal-scroll -->
+    <div class="modal-actions" style="flex:0 0 auto">
       <button class="btn-ghost" onclick="closeModal('deployModal')">Cancel</button>
       <button class="btn-success" onclick="executeDeploy()" id="deployConfirmBtn">Confirm Buy</button>
     </div>
