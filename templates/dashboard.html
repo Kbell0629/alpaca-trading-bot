@@ -1687,7 +1687,20 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
     .table-card .btn-sm {
         padding: 4px 8px; font-size: 11px; min-height: 36px;
     }
+    .pos-action-btns .btn-sm { padding: 4px 6px; font-size: 10px; }
 }
+
+/* Round-35: force the positions-table action buttons to stay on a
+   single horizontal row.  Before, at narrower viewport widths they
+   wrapped onto 3 vertical lines which made the Actions column balloon
+   tall and misaligned the header above the buttons.  The parent
+   .table-card already has overflow-x: auto, so if the row is wider
+   than the viewport the user scrolls horizontally. */
+.actions-cell { white-space: nowrap; min-width: 220px; }
+.pos-action-btns {
+    display: flex; flex-wrap: nowrap; gap: 4px; white-space: nowrap;
+}
+.pos-action-btns .btn-sm { flex: 0 0 auto; white-space: nowrap; }
 .backtest-section {
     background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
     padding: 20px; margin-bottom: 24px;
@@ -5230,14 +5243,17 @@ function renderDashboard() {
             '<td title="Change since yesterday\'s close — stock-level move × qty" class="' + dayCls2 + '" style="white-space:nowrap">' + dayChgStr + '</td>' +
             '<td class="' + cls + '">' + fmtMoney(upl) + '</td>' +
             '<td class="' + cls + '">' + fmtPct(uplPct) + '</td>' +
-            '<td>' +
-            '<button class="btn-danger btn-sm" onclick="openClosePositionModal(\'' + sym + '\',' + qty + ',' + avgEntry + ',' + curPrice + ',' + upl + ',' + uplPct + ')">Close</button> ' +
-            '<button class="btn-warning btn-sm" onclick="openSellFractionModal(\'' + sym + '\',' + qty + ',' + avgEntry + ',' + curPrice + ',' + upl + ',' + uplPct + ', 0.5)">Sell 50%</button> ' +
-            // Sell 25% — partial profit-taking without fully exiting.
-            // Useful when a trailing-stop position has run far into
-            // profit and you want to lock some in without giving up
-            // all the upside. Uses the same /api/sell endpoint.
-            '<button class="btn-warning btn-sm" onclick="openSellFractionModal(\'' + sym + '\',' + qty + ',' + avgEntry + ',' + curPrice + ',' + upl + ',' + uplPct + ', 0.25)">Sell 25%</button>' +
+            '<td class="actions-cell">' +
+            // Round-35: wrap the 3 action buttons in a flex-nowrap
+            // container so they stay on ONE horizontal row instead of
+            // stacking vertically on narrow widths.  The column header
+            // was misaligning against stacked buttons.  If the buttons
+            // still don\'t fit, the parent .table-card scrolls horizontally.
+            '<div class="pos-action-btns">' +
+                '<button class="btn-danger btn-sm" onclick="openClosePositionModal(\'' + sym + '\',' + qty + ',' + avgEntry + ',' + curPrice + ',' + upl + ',' + uplPct + ')">Close</button>' +
+                '<button class="btn-warning btn-sm" onclick="openSellFractionModal(\'' + sym + '\',' + qty + ',' + avgEntry + ',' + curPrice + ',' + upl + ',' + uplPct + ', 0.5)">Sell 50%</button>' +
+                '<button class="btn-warning btn-sm" onclick="openSellFractionModal(\'' + sym + '\',' + qty + ',' + avgEntry + ',' + curPrice + ',' + upl + ',' + uplPct + ', 0.25)">Sell 25%</button>' +
+            '</div>' +
             '</td></tr>';
     });
     if (!posHtml) posHtml = '<tr><td colspan="10"><div class="empty-state">' +
@@ -5601,15 +5617,91 @@ function renderDashboard() {
             '<tbody>' + taxRows + '</tbody></table></div>';
     }
 
-    // Correlation warning
+    // Round-35: real Position Correlation breakdown.  Previously this
+    // section printed "Sectors: <list of position symbols>" — which is
+    // NOT sectors at all, just symbols.  Useless.  Rebuild as a proper
+    // sector-allocation panel with $ + % per sector, smart warning only
+    // when one sector exceeds 40% concentration.
     let corrHtml = '';
-    if (positions.length > 1) {
+    if (positions.length > 0) {
+        // Group by server-annotated _sector (falls back to "Other").
+        // Market value for shorts is negative — use absolute value so
+        // a short put counts as exposure.
+        var sectorBuckets = {};
+        var totalExposure = 0;
+        positions.forEach(function(p) {
+            var sector = p._sector || 'Other';
+            var mv = 0;
+            try { mv = Math.abs(parseFloat(p.market_value || 0)); } catch(_) { mv = 0; }
+            if (!sectorBuckets[sector]) {
+                sectorBuckets[sector] = {value: 0, positions: []};
+            }
+            sectorBuckets[sector].value += mv;
+            var displaySym = p._underlying || p.symbol || '';
+            if (p.asset_class === 'us_option' && p._underlying) {
+                displaySym = p._underlying + ' ' + (parseFloat(p.qty) < 0 ? 'short put' : 'put');
+            }
+            sectorBuckets[sector].positions.push(displaySym);
+            totalExposure += mv;
+        });
+        var sectorsList = Object.keys(sectorBuckets).map(function(s) {
+            var b = sectorBuckets[s];
+            return {
+                sector: s,
+                value: b.value,
+                positions: b.positions,
+                pct: totalExposure > 0 ? (b.value / totalExposure) * 100 : 0,
+            };
+        }).sort(function(a, b) { return b.value - a.value; });
+        var topSectorPct = sectorsList.length ? sectorsList[0].pct : 0;
+        var status, statusColor, statusIcon;
+        if (topSectorPct >= 60) {
+            status = 'Concentrated';
+            statusColor = 'var(--red)';
+            statusIcon = '\u26A0';
+        } else if (topSectorPct >= 40) {
+            status = 'Moderately concentrated';
+            statusColor = 'var(--orange)';
+            statusIcon = '\u26A0';
+        } else {
+            status = 'Well diversified';
+            statusColor = 'var(--green)';
+            statusIcon = '\u2705';
+        }
+        var rowsHtml = sectorsList.map(function(s) {
+            var barColor = s.pct >= 60 ? 'var(--red)' :
+                           s.pct >= 40 ? 'var(--orange)' : 'var(--green)';
+            return '<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04)">' +
+                '<div style="flex:0 0 110px;font-weight:600">' + esc(s.sector) + '</div>' +
+                '<div style="flex:1 1 auto;min-width:80px">' +
+                    '<div style="background:rgba(255,255,255,0.06);height:6px;border-radius:3px;overflow:hidden">' +
+                        '<div style="background:' + barColor + ';height:100%;width:' + s.pct.toFixed(1) + '%"></div>' +
+                    '</div>' +
+                '</div>' +
+                '<div style="flex:0 0 70px;text-align:right;font-weight:600">' + s.pct.toFixed(1) + '%</div>' +
+                '<div style="flex:0 0 90px;text-align:right;color:var(--text-dim);font-size:12px">' + fmtMoney(s.value) + '</div>' +
+            '</div>' +
+            '<div style="padding:2px 0 8px 120px;color:var(--text-dim);font-size:11px">' +
+                s.positions.map(function(p) { return esc(p); }).join(', ') +
+            '</div>';
+        }).join('');
+        var warningBanner = '';
+        if (topSectorPct >= 40) {
+            var top = sectorsList[0];
+            warningBanner = '<div class="corr-warning" style="margin-top:10px;padding:10px;background:rgba(251,146,60,0.08);border:1px solid ' + statusColor + ';border-radius:8px;font-size:13px">' +
+                statusIcon + ' <strong>' + esc(top.sector) + '</strong> is ' + top.pct.toFixed(0) + '% of your portfolio. ' +
+                'Same-sector positions tend to move together during sell-offs — consider trimming or diversifying on new deploys.' +
+            '</div>';
+        }
         corrHtml = '<div class="correlation-section" id="section-correlation">' +
-            '<h3>Position Correlation' + sectionHelpButton('correlation') + '</h3>' +
-            '<div class="corr-warning">\u26A0 You hold ' + positions.length + ' positions. Review sector overlap to avoid concentrated risk. Positions in the same sector tend to move together during sell-offs.</div>' +
-            '<div style="font-size:12px;color:var(--text-dim);margin-top:8px">Sectors: ' +
-            positions.map(function(p) { return '<strong>' + esc(p.symbol||'') + '</strong>'; }).join(', ') +
-            '</div></div>';
+            '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">' +
+                '<h3 style="margin:0">Position Correlation' + sectionHelpButton('correlation') + '</h3>' +
+                '<div style="font-size:12px"><span style="color:var(--text-dim)">Status:</span> <strong style="color:' + statusColor + '">' + statusIcon + ' ' + status + '</strong></div>' +
+            '</div>' +
+            '<div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">Breakdown by sector (using absolute market value \u2014 shorts count as exposure):</div>' +
+            rowsHtml +
+            warningBanner +
+        '</div>';
     }
 
     // Readiness scorecard section
@@ -7149,10 +7241,16 @@ var SECTION_GUIDES = {
     'correlation': {
         title: 'Position Correlation',
         html:
-            '<p>Warns when you hold multiple positions in the same sector. Positions in the same sector tend to move together during sell-offs — a bad day for tech hits every tech name you hold simultaneously.</p>' +
-            '<p><strong>Why it matters</strong>: diversification is free risk reduction. Three uncorrelated 7% positions survive one blow-up; three correlated 7% positions die together.</p>' +
-            '<p><strong>How to fix</strong>: if you see 3+ in one sector, consider closing one or widening the sector mix on your next deploy. The auto-deployer respects this warning but does NOT auto-close — the decision stays yours.</p>' +
-            '<p><em>Known limitation (cosmetic)</em>: some ETF-heavy tickers like SOXL get bucketed as "Other" instead of "Technology" so the sector mix can look worse than it is. Low-priority fix.</p>'
+            '<p>Shows your portfolio broken down by sector with bars + $ allocation per sector. Positions in the same sector tend to move together during sell-offs, so concentration is real risk.</p>' +
+            '<p><strong>Status thresholds</strong>:</p>' +
+            '<ul>' +
+                '<li>🟢 <strong>Well diversified</strong>: no single sector &gt; 40% of portfolio</li>' +
+                '<li>🟠 <strong>Moderately concentrated</strong>: top sector 40-60%</li>' +
+                '<li>🔴 <strong>Concentrated</strong>: top sector &ge; 60%</li>' +
+            '</ul>' +
+            '<p><strong>How exposure is measured</strong>: uses absolute market value so a short put (negative market value in Alpaca) counts as real exposure. Option positions route through their underlying symbol for sector lookup (e.g. a HIMS put counts as Healthcare).</p>' +
+            '<p><strong>How to fix concentration</strong>: trim the biggest position in the over-weighted sector, or steer your next deploy toward a different sector. The auto-deployer does not automatically close — the decision stays yours.</p>' +
+            '<p><em>"Other" bucket</em>: if a symbol falls in Other, it just means we don\'t have a sector mapping for it yet. ETFs and new IPOs sometimes land here. Round-30 populated ~80 common tickers; add more to <code>constants.SECTOR_MAP</code> as needed.</p>'
     },
     'paper-progress': {
         title: 'Paper Trading Progress',

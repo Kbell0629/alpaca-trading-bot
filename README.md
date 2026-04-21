@@ -4,6 +4,59 @@
 
 ---
 
+## 🆕 What's New (2026-04-21 afternoon — Rounds 31-35)
+
+**Rounds 31-32 — Sticky nav polish.** Nav tabs (Overview / Picks /
+Strategies / Positions / Screener / etc.) now stay sticky below the
+top header on both desktop AND mobile. Scroll-hint gradient + animated
+`›` chevron on the right edge cue you to swipe for more tabs (and
+auto-fade when you reach the end). Readiness-score labels corrected:
+the five scored criteria are Days Tracked ≥30, Win Rate ≥50%, Max
+Drawdown <10%, Profit Factor ≥1.5, Sharpe ≥0.5. "Total Trades" is
+informational only — doesn't affect the 0-100 score.
+
+**Round-33 — Journal-undercount fix.** Before round-33, only
+`cloud_scheduler.run_auto_deployer`'s main path wrote to
+`trade_journal.json`. Wheel puts (sold by `wheel_strategy.open_put`)
+and manual deploys (from the dashboard Deploy button) never appended
+an "open" entry, so when they later closed, the scorecard undercount.
+Now a new `record_trade_open()` helper is called by all 6 deploy
+paths (trailing / breakout / mean-reversion / copy-trading / wheel-
+put-open / manual dashboard deploy).
+
+**Round-34 — Today's Closes panel + orphan-close safety net.**
+- New "Today's Closes" panel in the Overview section shows every
+  stop-trigger / earnings auto-exit / profit-ladder sell / PEAD
+  window close / manual Close click that happened today, with time /
+  symbol / strategy / reason / exit price / P&L and a net-P&L
+  summary. Auto-hides when there's nothing to show.
+- `record_trade_close` hardened: when no matching open entry exists
+  (e.g. a pre-round-33 close), it now appends a synthetic entry
+  marked `orphan_close: true` instead of silently returning False.
+  The dollar P&L and exit reason are preserved; only the entry
+  price is missing. Orange `[orphan]` tag on the panel row warns
+  you this is a reconstructed entry.
+
+**Round-34 (continued) — Positions-table scroll containment.** On
+mobile, swiping the Positions or Orders table sideways used to drag
+the whole viewport (account-bar / metric cards slid off-screen).
+Added `overscroll-behavior-x: contain` so the pan stays inside the
+card.
+
+**Round-35 — Real Position Correlation + action-button alignment.**
+- **Correlation section rebuilt.** Previously printed "Sectors:
+  <list of your position SYMBOLS>" — which isn't sectors at all, just
+  symbols. Useless. New panel groups by actual sector with bars +
+  $ allocation + %, and flags concentration only when one sector
+  exceeds 40% (orange) or 60% (red). Options route through the
+  underlying symbol (e.g. HIMS put → Healthcare).
+- **Positions-table action buttons** (Close / Sell 50% / Sell 25%)
+  now stay on a single horizontal row. Before, at narrow widths
+  they wrapped onto 3 vertical lines and misaligned the Actions
+  column header.
+
+---
+
 ## 🆕 What's New (2026-04-21 — Rounds 28-30)
 
 **Round-29 — Universal pre-earnings auto-exit.** Before this round, only
