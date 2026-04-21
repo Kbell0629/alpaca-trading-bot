@@ -2197,12 +2197,16 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
     <div class="admin-tab-scroll" style="flex:1 1 auto;overflow-y:auto;overflow-x:auto;min-height:0;margin:0 -4px;padding:0 4px">
 
     <div class="settings-panel active" id="adminPanel-users">
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:10px">
+        <!-- Round-40: backfill the caller's own journal in one click -->
+        <button type="button" class="btn-ghost btn-sm" onclick="adminBackfillJournal()" title="Add missing open entries to your trade journal from Alpaca positions">📝 Backfill My Journal</button>
+      </div>
       <div id="adminUserList" style="margin-top:4px"><div style="color:var(--text-dim)">Loading...</div></div>
     </div>
 
     <div class="settings-panel" id="adminPanel-audit">
-      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
-        <label style="font-size:12px;color:var(--text-dim);margin:0">Filter:</label>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+        <label style="font-size:12px;color:var(--text-dim);margin:0">Action:</label>
         <select id="adminAuditFilter" onchange="loadAdminAuditLog()" style="padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">
           <option value="">All events</option>
           <option value="login_success">Logins (success)</option>
@@ -2213,6 +2217,17 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
           <option value="reactivate_user">Reactivations</option>
           <option value="admin_reset_password">Admin password resets</option>
           <option value="backup_downloaded">Backup downloads</option>
+          <option value="update_user">Profile edits</option>
+          <option value="set_admin">Admin promotions</option>
+          <option value="revoke_admin">Admin revokes</option>
+          <option value="delete_user">Account deletions</option>
+          <option value="export_user_data">Data exports</option>
+          <option value="revoke_invite">Invite revokes</option>
+        </select>
+        <!-- Round-40: user-id filter (populated from /api/admin/users). -->
+        <label style="font-size:12px;color:var(--text-dim);margin:0">User:</label>
+        <select id="adminAuditUserFilter" onchange="loadAdminAuditLog()" style="padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;max-width:180px">
+          <option value="">All users</option>
         </select>
         <button type="button" class="btn-ghost btn-sm" onclick="loadAdminAuditLog()" style="margin-left:auto">↻ Reload</button>
       </div>
@@ -7056,8 +7071,11 @@ async function loadAdminAuditLog() {
     listEl.innerHTML = '<div style="color:var(--text-dim)">Loading...</div>';
     var filter = document.getElementById('adminAuditFilter');
     var filterVal = filter ? filter.value : '';
+    var userFilter = document.getElementById('adminAuditUserFilter');
+    var userFilterVal = userFilter ? userFilter.value : '';
     var url = API_BASE + '/api/admin/audit-log?limit=200';
     if (filterVal) url += '&action=' + encodeURIComponent(filterVal);
+    if (userFilterVal) url += '&user_id=' + encodeURIComponent(userFilterVal);
     try {
         var resp = await fetch(url, {credentials: 'same-origin'});
         var d = await resp.json();
@@ -7155,6 +7173,21 @@ async function loadAdminUsers() {
         if (!resp.ok || d.error) { listEl.innerHTML = '<div style="color:var(--red)">' + esc(d.error || 'Failed') + '</div>'; return; }
         var users = d.users || [];
         if (!users.length) { listEl.innerHTML = '<div style="color:var(--text-dim)">No users found</div>'; return; }
+        // Round-40: populate the Audit Log tab's user filter from the
+        // roster we just fetched. Keeps the two tabs in sync without a
+        // second round trip.
+        var userFilterSel = document.getElementById('adminAuditUserFilter');
+        if (userFilterSel) {
+            var prev = userFilterSel.value;
+            var opts = '<option value="">All users</option>';
+            users.forEach(function(u) {
+                opts += '<option value="' + Number(u.id) + '">' +
+                    esc(u.username) + ' (#' + Number(u.id) + ')</option>';
+            });
+            userFilterSel.innerHTML = opts;
+            // Restore previous selection if still valid
+            userFilterSel.value = prev;
+        }
         var html = '<table class="data-table"><thead><tr>' +
             '<th>User</th><th>Email</th><th>Role</th><th>Status</th>' +
             '<th>Last Login</th><th>Logins</th><th>Actions</th>' +
@@ -7182,6 +7215,10 @@ async function loadAdminUsers() {
             } else {
                 actions += '<button class="btn-ghost btn-sm" onclick="adminSetAdmin(' + Number(u.id) + ', \'' + jsStr(u.username) + '\', true)">Make Admin</button>';
             }
+            // Round-40: GDPR export + permanent delete. Export is safe;
+            // delete is destructive and confirms via typed-username modal.
+            actions += ' <a class="btn-ghost btn-sm" style="text-decoration:none" href="/api/admin/export-user-data?user_id=' + Number(u.id) + '" title="Download all data for this user as a ZIP">📦 Export</a>';
+            actions += ' <button class="btn-danger btn-sm" onclick="adminDeleteUser(' + Number(u.id) + ', \'' + jsStr(u.username) + '\')" title="Permanently delete this user + all their data">🗑 Delete</button>';
             html += '<tr>' +
                 '<td><strong>' + esc(u.username) + '</strong>' + (u.is_admin ? ' <span class="paper-badge" style="font-size:9px">ADMIN</span>' : '') + '</td>' +
                 '<td>' + esc(u.email) + '</td>' +
@@ -7279,6 +7316,60 @@ async function adminSubmitEditUser() {
         closeModal('adminEditUserModal');
         loadAdminUsers();
     } catch (e) { toast(e.message, 'error'); }
+}
+
+// Round-40: permanent delete.  Double-confirm with a typed username
+// to prevent an accidental click on the wrong row from nuking real
+// data.  Server also refuses to delete yourself or the last active
+// admin, but confirmation is belt-and-suspenders.
+async function adminDeleteUser(userId, username) {
+    var first = confirm(
+        "PERMANENT DELETE of user \"" + username + "\"\n\n" +
+        "This removes their login, strategies, trade history, and all " +
+        "per-user data from disk. The audit log entry stays (for " +
+        "compliance). This CANNOT be undone.\n\n" +
+        "Continue?");
+    if (!first) return;
+    var typed = prompt(
+        "Type the username exactly to confirm: " + username);
+    if (typed !== username) {
+        toast("Delete cancelled — username didn't match", "info");
+        return;
+    }
+    try {
+        var resp = await fetch(API_BASE + "/api/admin/delete-user", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            credentials: "same-origin",
+            body: JSON.stringify({user_id: userId}),
+        });
+        var d = await resp.json();
+        if (!resp.ok || d.error) { toast(d.error || "Failed", "error"); return; }
+        toast("Deleted user: " + username, "success");
+        loadAdminUsers();
+    } catch (e) { toast(e.message, "error"); }
+}
+
+// Round-40: trigger a one-shot backfill of the caller's journal.
+// Only backfills missing open entries — idempotent.
+async function adminBackfillJournal() {
+    if (!confirm(
+        "Backfill journal from Alpaca positions?\n\n" +
+        "Adds missing 'open' entries for positions that were deployed " +
+        "before round-33's journal fix.  Safe + idempotent.")) return;
+    try {
+        var resp = await fetch(API_BASE + "/api/admin/backfill-journal", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            credentials: "same-origin",
+            body: JSON.stringify({}),
+        });
+        var d = await resp.json();
+        if (!resp.ok || d.error) { toast(d.error || "Failed", "error"); return; }
+        var r = d.result || {};
+        toast("Backfill: +" + (r.backfilled||0) + " entries, " +
+              (r.skipped_existing||0) + " already present", "success");
+    } catch (e) { toast(e.message, "error"); }
 }
 
 // Round-36: promote / demote admin. Server-side protects the last
