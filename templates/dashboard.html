@@ -2788,7 +2788,6 @@ function openClosePositionModal(symbol, qty, avgEntry, currentPrice, pnl, pnlPct
         var numContracts = Math.abs(qtyNum);
         var avgEntryNum = parseFloat(avgEntry) || 0;
         var currentPriceNum = parseFloat(currentPrice) || 0;
-        var pnlNum = parseFloat(pnl) || 0;
         // Each contract represents 100 shares of the underlying.
         var MULT = 100;
         var premiumCollected = avgEntryNum * MULT * numContracts;
@@ -2797,8 +2796,8 @@ function openClosePositionModal(symbol, qty, avgEntry, currentPrice, pnl, pnlPct
         // value drops (bought back cheaper than sold).
         var closedPnl = isShort ? (premiumCollected - costToCloseNow)
                                    : (costToCloseNow - premiumCollected);
-        var pnlColor = closedPnl >= 0 ? 'var(--green)' : 'var(--red)';
-        var pnlWord = closedPnl >= 0 ? 'gain' : 'loss';
+        var optPnlColor = closedPnl >= 0 ? 'var(--green)' : 'var(--red)';
+        var optPnlWord = closedPnl >= 0 ? 'gain' : 'loss';
         var action = isShort ? 'BUY-TO-CLOSE' : 'SELL-TO-CLOSE';
         var breakeven, maxProfit, maxLoss, assignmentNote;
         if (isShort && occ.type === 'put') {
@@ -2836,10 +2835,10 @@ function openClosePositionModal(symbol, qty, avgEntry, currentPrice, pnl, pnlPct
         document.getElementById('closeInfoContent').innerHTML =
             'You will <strong>' + action + '</strong> ' + numContracts + ' contract' + (numContracts > 1 ? 's' : '') + ' at market<br>' +
             (isShort ? 'Cost to close now: <strong>' + fmtMoney(costToCloseNow) + '</strong><br>' : 'Proceeds: <strong>' + fmtMoney(costToCloseNow) + '</strong><br>') +
-            'Realised P&amp;L on close: <strong style="color:' + pnlColor + '">' + fmtMoney(closedPnl) + '</strong> ' + pnlWord + '<br>' +
+            'Realised P&amp;L on close: <strong style="color:' + optPnlColor + '">' + fmtMoney(closedPnl) + '</strong> ' + optPnlWord + '<br>' +
             '<br><em style="font-size:12px;opacity:0.85">' + assignmentNote + '</em>';
-        var btn = document.getElementById('closeModalConfirm');
-        btn.onclick = function() { executeClosePosition(symbol); };
+        var optBtn = document.getElementById('closeModalConfirm');
+        optBtn.onclick = function() { executeClosePosition(symbol); };
         openModal('closeModal');
         return;
     }
