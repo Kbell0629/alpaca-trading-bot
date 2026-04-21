@@ -1160,6 +1160,216 @@ def _hash_reset_token(tok):
     return hashlib.sha256((tok or "").encode()).hexdigest()
 
 
+def export_user_data(user_id):
+    """Round-40: bundle everything the app knows about `user_id` into
+    a ZIP for GDPR / CCPA-style subject-access requests.
+
+    Returned bytes are a ready-to-send ZIP archive. Sensitive data is
+    SANITIZED before export:
+      * `password_hash` / `password_salt` — removed (useless to the
+        user, damaging if leaked)
+      * `alpaca_key_encrypted` / `alpaca_secret_encrypted` — removed
+        (ciphertext is worthless without the MASTER_ENCRYPTION_KEY,
+        but still out of scope for a data-export request — the user
+        already has the plaintext in their Alpaca dashboard)
+
+    Files included:
+      * `profile.json` — sanitized users row
+      * `sessions.json` — session metadata (id, created_at, expires_at, ip)
+      * `audit_log.json` — rows where user is actor OR target
+      * `invites.json` — invites this user created
+      * `strategies/<filename>.json` — each strategy file
+      * `trade_journal.json`, `scorecard.json`, `learned_weights.json`,
+        `guardrails.json`, `dashboard_data.json` — whatever exists in
+        their /data/users/<id>/ directory
+
+    Returns (zip_bytes, err) — err is None on success.
+    """
+    import io
+    import zipfile
+    if not user_id:
+        return None, "missing user_id"
+    try:
+        user_id = int(user_id)
+    except (TypeError, ValueError):
+        return None, "invalid user_id"
+
+    conn = _get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+        row = cur.fetchone()
+        if not row:
+            return None, "user not found"
+        profile = {k: row[k] for k in row.keys()}
+        # Strip sensitive fields
+        for k in ("password_hash", "password_salt",
+                  "alpaca_key_encrypted", "alpaca_secret_encrypted"):
+            profile.pop(k, None)
+
+        # Sessions — metadata only, no session token
+        try:
+            session_rows = cur.execute("""
+                SELECT token, user_id, created_at, expires_at, ip_address
+                FROM sessions WHERE user_id = ?
+            """, (user_id,)).fetchall()
+            sessions = [{k: r[k] for k in r.keys() if k != "token"}
+                        for r in session_rows]
+        except sqlite3.Error:
+            sessions = []
+
+        # Audit entries where user is actor OR target
+        try:
+            audit_rows = cur.execute("""
+                SELECT * FROM audit_log
+                WHERE user_id = ? OR target_user_id = ?
+                ORDER BY created_at DESC
+            """, (user_id, user_id)).fetchall()
+            audit = [{k: r[k] for k in r.keys()} for r in audit_rows]
+        except sqlite3.Error:
+            audit = []
+
+        # Invites this user created (hash only — plaintext was never stored)
+        try:
+            inv_rows = cur.execute("""
+                SELECT token_hash, created_at, expires_at, used_at,
+                       used_by_user_id, note
+                FROM invites WHERE created_by_user_id = ?
+            """, (user_id,)).fetchall()
+            invites = [{k: r[k] for k in r.keys()} for r in inv_rows]
+        except sqlite3.Error:
+            invites = []
+    finally:
+        try: conn.close()
+        except (sqlite3.Error, OSError): pass
+
+    # Build the ZIP in memory
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as z:
+        z.writestr("README.txt",
+            f"Stock Trading Bot — data export for user_id={user_id}\n"
+            f"Generated: {now_et().isoformat()}\n\n"
+            "This archive contains every piece of data the app stores\n"
+            "about this account. Sensitive credentials (password hash,\n"
+            "encrypted Alpaca keys) are deliberately excluded.\n\n"
+            "Files:\n"
+            "  profile.json        — account info (email, username, etc)\n"
+            "  sessions.json       — login session metadata\n"
+            "  audit_log.json      — admin / auth / privacy events\n"
+            "  invites.json        — invites you created\n"
+            "  strategies/         — active + historical strategy files\n"
+            "  trade_journal.json  — every trade you've ever made\n"
+            "  scorecard.json      — performance metrics\n"
+            "  learned_weights.json — weekly learning output\n"
+            "  guardrails.json     — risk caps / settings\n"
+            "  dashboard_data.json — last screener snapshot\n"
+        )
+        z.writestr("profile.json", json.dumps(profile, indent=2, default=str))
+        z.writestr("sessions.json", json.dumps(sessions, indent=2, default=str))
+        z.writestr("audit_log.json", json.dumps(audit, indent=2, default=str))
+        z.writestr("invites.json", json.dumps(invites, indent=2, default=str))
+
+        # Walk per-user data dir
+        udir = os.path.join(USERS_DIR, str(user_id))
+        if os.path.isdir(udir):
+            for root, _dirs, files in os.walk(udir):
+                for fname in files:
+                    full = os.path.join(root, fname)
+                    rel = os.path.relpath(full, udir)
+                    # Skip hidden files + tempfiles
+                    if fname.startswith(".") or fname.endswith(".tmp"):
+                        continue
+                    try:
+                        with open(full, "rb") as f:
+                            z.writestr(rel, f.read())
+                    except OSError:
+                        continue
+
+    return buf.getvalue(), None
+
+
+def delete_user(user_id, actor_user_id=None, keep_audit_log=True):
+    """Round-40: permanently delete a user + their per-user data dir.
+
+    Destructive, irreversible. Guard rails:
+      * Refuses to delete the last ACTIVE admin (same rule as
+        set_user_admin — so an admin can't accidentally lock
+        everyone out).
+      * Refuses to delete yourself (self-deletion via the admin
+        panel is almost certainly a misclick).
+      * `audit_log` rows where the target was the actor are
+        PRESERVED by default (audit integrity trumps data cleanup).
+        Pass `keep_audit_log=False` to also purge them.
+
+    Cascade:
+      * `users` row (FK cascades handle `sessions`)
+      * Per-user data dir (`/data/users/<id>/` and everything below)
+      * `invites` created by this user (`DELETE`, not revoke — the
+        user is gone, their outstanding invite URLs should hard-fail)
+      * `password_reset_tokens` they own (tiny table, avoid orphan rows)
+
+    Returns `(ok, err)` — err is None on success.
+    """
+    if not user_id:
+        return False, "missing user_id"
+    try:
+        user_id = int(user_id)
+    except (TypeError, ValueError):
+        return False, "invalid user_id"
+    if actor_user_id is not None and int(actor_user_id) == user_id:
+        return False, "cannot delete your own account from the admin panel"
+
+    conn = _get_db()
+    try:
+        cur = conn.cursor()
+        # Fetch the target so we can log + sanity-check before destroy
+        cur.execute("SELECT id, username, is_admin, is_active FROM users WHERE id = ?",
+                    (user_id,))
+        target = cur.fetchone()
+        if not target:
+            return False, "user not found"
+        # Guard: last active admin
+        if target["is_admin"] and target["is_active"]:
+            others = cur.execute("""
+                SELECT COUNT(*) as n FROM users
+                WHERE is_admin = 1 AND is_active = 1 AND id != ?
+            """, (user_id,)).fetchone()
+            if not others or others["n"] == 0:
+                return False, "cannot delete the last active admin"
+        # Delete invites created by this user
+        cur.execute("DELETE FROM invites WHERE created_by_user_id = ?", (user_id,))
+        # Delete password reset tokens owned by this user
+        try:
+            cur.execute("DELETE FROM password_reset_tokens WHERE user_id = ?", (user_id,))
+        except sqlite3.OperationalError:
+            pass  # table may not exist in older schemas
+        if not keep_audit_log:
+            cur.execute("DELETE FROM audit_log WHERE user_id = ?", (user_id,))
+        # Delete the users row LAST so FK cascades (sessions) fire cleanly
+        cur.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        conn.commit()
+    finally:
+        try: conn.close()
+        except (sqlite3.Error, OSError): pass
+
+    # Purge the per-user data directory. Separate from the DB
+    # transaction because filesystem ops aren't transactional —
+    # if the DB delete succeeded but rmtree fails, we at least
+    # leave an orphan directory (not the other way around).
+    try:
+        import shutil
+        udir = os.path.join(USERS_DIR, str(user_id))
+        if os.path.isdir(udir):
+            shutil.rmtree(udir, ignore_errors=True)
+    except Exception as e:
+        log.warning("delete_user: filesystem cleanup failed for user_id=%s: %s",
+                    user_id, e)
+        # DB row is already gone; orphan dir is cosmetic
+
+    return True, None
+
+
+
 def create_password_reset(email):
     """Create a reset token. Returns (token, user) or (None, None).
     The DB stores only the hash; the plaintext is returned once to the caller

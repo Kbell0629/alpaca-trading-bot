@@ -2257,6 +2257,10 @@ class DashboardHandler(
             # Round-26: admin-only list of signup invites they created.
             self.handle_admin_list_invites()
 
+        elif path == "/api/admin/export-user-data":
+            # Round-40: GDPR-style data export. Returns a ZIP.
+            self.handle_admin_export_user_data()
+
         elif path == "/api/admin/audit-log":
             # Admin-only: return recent audit log entries with optional filters
             if not self.current_user or not self.current_user.get("is_admin"):
@@ -2429,6 +2433,14 @@ class DashboardHandler(
         if path == "/api/admin/update-user":
             # Round-37: admin edits another user's email / username.
             self.handle_admin_update_user(body)
+            return
+        if path == "/api/admin/delete-user":
+            # Round-40: admin permanent-deletes a user (cascades).
+            self.handle_admin_delete_user(body)
+            return
+        if path == "/api/admin/backfill-journal":
+            # Round-40: one-shot backfill of the caller's trade journal.
+            self.handle_admin_backfill_journal(body)
             return
 
         if path == "/api/refresh":

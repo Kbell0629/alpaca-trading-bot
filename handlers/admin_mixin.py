@@ -312,3 +312,124 @@ class AdminHandlerMixin:
             return self.send_json({"success": True})
         except Exception as e:
             self._send_error_safe(e, 500, "update-user")
+
+    def handle_admin_delete_user(self, body):
+        """Round-40: admin-only permanent delete of a user account.
+
+        Destructive. Cascades through per-user data dir, invites, password
+        reset tokens. Preserves audit_log entries by default so the trail
+        of "who deleted this user" stays intact.
+
+        Body: {"user_id": 12}
+        """
+        if not self.current_user or not self.current_user.get("is_admin"):
+            return self.send_json({"error": "Admin only"}, 403)
+        target_id = body.get("user_id")
+        try:
+            target_id = int(target_id)
+        except (TypeError, ValueError):
+            return self.send_json({"error": "Missing or invalid user_id"}, 400)
+        if target_id <= 0:
+            return self.send_json({"error": "Invalid user_id"}, 400)
+        # Capture username BEFORE deletion so the audit log entry is
+        # meaningful — can't SELECT username after DELETE cascaded.
+        pre = auth.get_user_by_id(target_id)
+        if not pre:
+            return self.send_json({"error": "User not found"}, 404)
+        try:
+            ok, err = auth.delete_user(
+                target_id,
+                actor_user_id=self.current_user.get("id"))
+            if not ok:
+                return self.send_json({"error": err or "Delete failed"}, 400)
+            auth.log_admin_action(
+                "delete_user",
+                actor=self.current_user,
+                target_user_id=target_id,
+                ip_address=self.client_address[0] if self.client_address else None,
+                detail={
+                    "deleted_username": pre.get("username"),
+                    "deleted_email": pre.get("email"),
+                })
+            return self.send_json({"success": True})
+        except Exception as e:
+            self._send_error_safe(e, 500, "delete-user")
+
+    def handle_admin_export_user_data(self):
+        """Round-40: admin-only GDPR / CCPA-style data export for a user.
+
+        Query: ?user_id=12
+        Returns a ZIP attachment with JSON files covering the user's
+        profile, sessions, audit log, invites, strategies, trade
+        journal, scorecard, learned weights, and guardrails.
+        Sensitive fields (password hash, encrypted Alpaca keys) are
+        SANITIZED before export.
+        """
+        if not self.current_user or not self.current_user.get("is_admin"):
+            return self.send_json({"error": "Admin only"}, 403)
+        import urllib.parse as _up
+        qs = self.path.split("?", 1)[1] if "?" in self.path else ""
+        params = _up.parse_qs(qs)
+        try:
+            target_id = int((params.get("user_id") or ["0"])[0])
+        except (TypeError, ValueError):
+            return self.send_json({"error": "Missing or invalid user_id"}, 400)
+        if target_id <= 0:
+            return self.send_json({"error": "Invalid user_id"}, 400)
+        pre = auth.get_user_by_id(target_id)
+        if not pre:
+            return self.send_json({"error": "User not found"}, 404)
+        try:
+            zip_bytes, err = auth.export_user_data(target_id)
+            if err:
+                return self.send_json({"error": err}, 400)
+            auth.log_admin_action(
+                "export_user_data",
+                actor=self.current_user,
+                target_user_id=target_id,
+                ip_address=self.client_address[0] if self.client_address else None,
+                detail={"size_bytes": len(zip_bytes)})
+            # Return as downloadable ZIP
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header(
+                "Content-Disposition",
+                f'attachment; filename="user_{target_id}_data_export.zip"')
+            self.send_header("Content-Length", str(len(zip_bytes)))
+            self.end_headers()
+            self.wfile.write(zip_bytes)
+        except Exception as e:
+            self._send_error_safe(e, 500, "export-user-data")
+
+    def handle_admin_backfill_journal(self, body):
+        """Round-40: one-shot backfill of the current user's trade journal
+        from their Alpaca positions. Adds "open" entries for positions
+        deployed before round-33's journal fix shipped. Idempotent.
+
+        Body: {} — operates on the caller's own journal (not another
+        user's). Kept admin-only for now since running it on someone
+        else's journal would be a surprising privacy action; users
+        should be able to run it on themselves if we ever expose a
+        self-service version.
+        """
+        if not self.current_user or not self.current_user.get("is_admin"):
+            return self.send_json({"error": "Admin only"}, 403)
+        try:
+            import journal_backfill
+            # Use the handler's own Alpaca fetcher for the caller's
+            # creds. This intentionally only backfills the caller's
+            # own journal — if you need to backfill another user's
+            # journal, run it from their login.
+            def _fetch(user):
+                return self.user_api_get(f"{self.user_api_endpoint}/positions")
+            result = journal_backfill.backfill_user_journal(
+                self.current_user, _fetch)
+            auth.log_admin_action(
+                "journal_backfill",
+                actor=self.current_user,
+                target_user_id=self.current_user.get("id"),
+                ip_address=self.client_address[0] if self.client_address else None,
+                detail=result)
+            return self.send_json({"success": True, "result": result})
+        except Exception as e:
+            self._send_error_safe(e, 500, "backfill-journal")
