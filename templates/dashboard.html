@@ -1071,7 +1071,7 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
     display: flex; gap: 4px; margin-bottom: 24px; padding: 4px;
     background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
     overflow-x: auto; -webkit-overflow-scrolling: touch;
-    position: sticky; top: 0; z-index: 90;
+    position: sticky; top: var(--sticky-header-height, 100px); z-index: 90;
     backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
 }
 .nav-tabs::-webkit-scrollbar { height: 0; }
@@ -1391,7 +1391,12 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
     .pick-symbol { font-size: 20px; }
     .timeline-item { flex-wrap: wrap; }
     .kill-switch-btn { width: 100%; }
-    .nav-tabs { gap: 2px; padding: 3px; position: relative; }
+    /* Round-31: keep nav-tabs sticky on mobile too — before, the mobile
+       override forced position: relative, so the tabs scrolled away and
+       users had to scroll to the top to navigate. Now the tabs stick
+       just below the sticky header (offset by --sticky-header-height,
+       measured at runtime). */
+    .nav-tabs { gap: 2px; padding: 3px; }
     .nav-tab { padding: 8px 12px; font-size: 12px; }
     /* Scroll hint — tabs overflow off-screen (Screener, Short Sells,
        Tax Harvest, Backtest, etc.) but the scrollbar is hidden so
@@ -2423,6 +2428,41 @@ function scrollToTop() {
         window.scrollTo(0, 0);
     }
 }
+
+// Round-31: measure the sticky header height and publish it as a CSS
+// variable so .nav-tabs can stick JUST BELOW the header instead of
+// overlapping it. Runs on load, on window resize, and whenever the
+// dashboard re-renders (header height changes when KILL banner or
+// econ banner appears/disappears). ResizeObserver catches layout
+// changes that simple resize events miss (e.g. wrapping chips when
+// more readiness data loads).
+(function() {
+    function measureStickyHeader() {
+        var hdr = document.querySelector('.header-v2');
+        if (!hdr) return;
+        var h = hdr.getBoundingClientRect().height;
+        if (h > 0) {
+            document.documentElement.style.setProperty(
+                '--sticky-header-height', h + 'px');
+        }
+    }
+    // Initial measure + retry in case layout isn't settled
+    measureStickyHeader();
+    setTimeout(measureStickyHeader, 100);
+    setTimeout(measureStickyHeader, 500);
+    window.addEventListener('resize', measureStickyHeader, {passive: true});
+    // ResizeObserver: fires when header height changes from chip
+    // wrap / kill banner appearing / econ banner appearing.
+    if (typeof ResizeObserver !== 'undefined') {
+        var ro = new ResizeObserver(measureStickyHeader);
+        var tryObserve = function() {
+            var hdr = document.querySelector('.header-v2');
+            if (hdr) { ro.observe(hdr); }
+            else { setTimeout(tryObserve, 200); }
+        };
+        tryObserve();
+    }
+})();
 
 function scrollToSection(id) {
     var el = document.getElementById(id);
