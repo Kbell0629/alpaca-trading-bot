@@ -742,6 +742,23 @@ def open_short_put(user, pick):
     }]
     save_wheel_state(user, state)
 
+    # Round-33: log to the per-user trade journal so the scorecard's
+    # total_trades counter + win-rate math reflect wheel deploys.
+    # Previously only run_auto_deployer's main equity path appended
+    # here, so wheel puts were invisible to the readiness gauge.
+    try:
+        from cloud_scheduler import record_trade_open
+        record_trade_open(
+            user, contract["symbol"], "wheel",
+            price=limit_price, qty=-1, side="sell_short",
+            reason=(f"Sold-to-open put. Strike ${strike}, exp {exp}, "
+                    f"premium ${premium_received:.2f}"),
+            deployer="wheel_auto_deploy",
+            extra={"underlying": symbol, "option_side": "put"},
+        )
+    except Exception:
+        pass  # never block the trade on a journal-write hiccup
+
     return True, (
         f"Sold-to-open {contract['symbol']} @ ${limit_price:.2f} "
         f"(premium ${premium_received:.2f} if filled). Stage: put active."

@@ -1067,12 +1067,43 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
    gets slightly more opaque + a backdrop blur so scrolled content
    doesn't show through. z-index sits just below the main header so
    if both are in view at once (at the top), header renders above. */
-.nav-tabs {
-    display: flex; gap: 4px; margin-bottom: 24px; padding: 4px;
-    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
-    overflow-x: auto; -webkit-overflow-scrolling: touch;
+/* Round-33: wrap nav-tabs in a sticky/positioned parent so the
+   scroll-hint gradient + chevron can pin to the viewport right edge
+   WITHOUT scrolling with the tab content. Previously the ::after was
+   on .nav-tabs (which is the scroller) so right:0 was the scrollable
+   content edge, and the chevron drifted to mid-list as users swiped.
+   Now the scroller lives inside .nav-tabs-wrap; the hint is on the
+   wrapper and stays put. */
+.nav-tabs-wrap {
     position: sticky; top: var(--sticky-header-height, 100px); z-index: 90;
+    margin-bottom: 24px;
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
     backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+}
+.nav-tabs-wrap::after {
+    content: '\203A';  /* › single right-angle quote */
+    position: absolute; top: 0; bottom: 0; right: 0;
+    width: 36px;
+    display: flex; align-items: center; justify-content: flex-end;
+    padding-right: 10px;
+    background: linear-gradient(to right, transparent, var(--card) 55%);
+    color: var(--text-dim); font-size: 18px; font-weight: 800;
+    pointer-events: none;
+    border-radius: 0 var(--radius) var(--radius) 0;
+    animation: navScrollHint 1.8s ease-in-out infinite;
+    transition: opacity 0.2s;
+    z-index: 1;
+}
+@keyframes navScrollHint {
+    0%, 100% { transform: translateX(0); opacity: 0.85; }
+    50% { transform: translateX(-3px); opacity: 1; }
+}
+.nav-tabs-wrap.at-end::after { opacity: 0; animation: none; }
+.nav-tabs {
+    display: flex; gap: 4px; padding: 4px;
+    overflow-x: auto; -webkit-overflow-scrolling: touch;
+    background: transparent; border: none;
+    border-radius: var(--radius);
 }
 .nav-tabs::-webkit-scrollbar { height: 0; }
 .nav-tab {
@@ -2451,6 +2482,42 @@ function scrollToTop() {
         };
         tryObserve();
     }
+})();
+
+// Round-33: fade the nav-scroll hint (›) when the user has scrolled
+// the tab list all the way to the right — otherwise the animated
+// chevron keeps beckoning even when there's nothing more to reveal.
+// Uses rAF throttling to avoid fighting mobile's 120Hz scroll events.
+(function() {
+    var wrap = null;
+    var inner = null;
+    var rafQueued = false;
+    function updateScrollHint() {
+        rafQueued = false;
+        if (!wrap) wrap = document.querySelector('.nav-tabs-wrap');
+        if (!inner) inner = document.querySelector('.nav-tabs-wrap .nav-tabs');
+        if (!wrap || !inner) return;
+        var maxScroll = inner.scrollWidth - inner.clientWidth;
+        // 4px fuzz so we don't flicker at exact-end.
+        var atEnd = maxScroll <= 4 || inner.scrollLeft >= (maxScroll - 4);
+        wrap.classList.toggle('at-end', atEnd);
+    }
+    function onTabScroll() {
+        if (rafQueued) return;
+        rafQueued = true;
+        requestAnimationFrame(updateScrollHint);
+    }
+    function bind() {
+        inner = document.querySelector('.nav-tabs-wrap .nav-tabs');
+        if (!inner) { setTimeout(bind, 200); return; }
+        inner.addEventListener('scroll', onTabScroll, {passive: true});
+        // Also recompute when viewport resizes (tab list width changes).
+        window.addEventListener('resize', onTabScroll, {passive: true});
+        // Initial state.
+        updateScrollHint();
+        setTimeout(updateScrollHint, 300);
+    }
+    bind();
 })();
 
 function scrollToSection(id) {
@@ -5525,7 +5592,7 @@ function renderDashboard() {
     }
 
     // Navigation tabs
-    const navTabs = '<div class="nav-tabs">' +
+    const navTabs = '<div class="nav-tabs-wrap"><div class="nav-tabs">' +
         '<button class="nav-tab active" onclick="scrollToSection(\'section-overview\')">Overview</button>' +
         '<button class="nav-tab" onclick="scrollToSection(\'section-picks\')">Picks</button>' +
         '<button class="nav-tab" onclick="scrollToSection(\'section-strategies\')">Strategies</button>' +
@@ -5540,7 +5607,7 @@ function renderDashboard() {
         '<button class="nav-tab" onclick="scrollToSection(\'section-comparison\')">Paper vs Live</button>' +
         '<button class="nav-tab" onclick="scrollToSection(\'section-settings\')">Templates</button>' +
         '<button class="nav-tab" onclick="openSettingsModal()">\u2699\ufe0f Account</button>' +
-    '</div>';
+    '</div></div>';
 
     document.getElementById('app').innerHTML =
         '<div class="header header-v2">' +
