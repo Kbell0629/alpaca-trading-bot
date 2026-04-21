@@ -593,6 +593,13 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
        `100vw !important` override war with the 600px media query. */
     width: min(420px, calc(100vw - 24px));
     max-width: 500px;
+    /* Round-41 fix: cap height + scroll internally so tall modals
+       (Close Position with P&L detail box, Settings with multi-row
+       Danger Zone, Cancel Order with explanation panel) don't push
+       the confirm/cancel buttons past the viewport bottom on
+       short screens (laptop + browser devtools docked). */
+    max-height: 92vh;
+    overflow-y: auto;
     transform: scale(0.95); transition: transform 0.25s;
     box-shadow: 0 20px 60px rgba(0,0,0,0.5);
 }
@@ -2119,7 +2126,7 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
       </div>
       <div class="settings-row">
         <label>Notification Email</label>
-        <input type="email" id="setNotifyEmail" placeholder="you@example.com">
+        <input type="email" id="setNotifyEmail" placeholder="you@example.com" autocomplete="email" inputmode="email">
         <div class="settings-hint">Leave blank to stop receiving bot emails entirely.</div>
       </div>
       <details style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border)">
@@ -3147,7 +3154,15 @@ function openClosePositionModal(symbol, qty, avgEntry, currentPrice, pnl, pnlPct
     openModal('closeModal');
 }
 
+// Round-41: double-submit guard. Fast double-click on Confirm Sell
+// fires the POST twice before the modal dismiss animation finishes.
+const _closeInFlight = new Set();
 async function executeClosePosition(symbol) {
+    if (_closeInFlight.has(symbol)) {
+        toast('Close already in flight for ' + symbol, 'info');
+        return;
+    }
+    _closeInFlight.add(symbol);
     closeModal('closeModal');
     toast('Closing ' + symbol + ' position...', 'info');
     addLog('SELL ALL ' + symbol + ' at market', 'sell');
@@ -3168,6 +3183,8 @@ async function executeClosePosition(symbol) {
         }
     } catch(e) {
         toast('Error: ' + e.message, 'error');
+    } finally {
+        _closeInFlight.delete(symbol);
     }
 }
 
@@ -3210,9 +3227,16 @@ async function executeSellHalf(symbol, totalQty) {
     return executeSellFraction(symbol, totalQty, 0.5);
 }
 
+const _sellInFlight = new Set();
 async function executeSellFraction(symbol, totalQty, fraction) {
     const sellQty = Math.max(1, Math.floor(totalQty * fraction));
     const pctLabel = Math.round(fraction * 100) + '%';
+    const key = symbol + ':' + sellQty;
+    if (_sellInFlight.has(key)) {
+        toast('Sell already in flight for ' + symbol, 'info');
+        return;
+    }
+    _sellInFlight.add(key);
     closeModal('sellHalfModal');
     toast('Selling ' + sellQty + ' shares of ' + symbol + ' (' + pctLabel + ')...', 'info');
     addLog('SELL ' + sellQty + ' ' + symbol + ' (' + pctLabel + ' of position)', 'sell');
@@ -3233,6 +3257,8 @@ async function executeSellFraction(symbol, totalQty, fraction) {
         }
     } catch(e) {
         toast('Error: ' + e.message, 'error');
+    } finally {
+        _sellInFlight.delete(key);
     }
 }
 
@@ -3259,7 +3285,13 @@ function openCancelOrderModal(orderId, symbol, side, type, qty, price) {
     openModal('cancelOrderModal');
 }
 
+const _cancelInFlight = new Set();
 async function executeCancelOrder(orderId, symbol) {
+    if (_cancelInFlight.has(orderId)) {
+        toast('Cancel already in flight for ' + symbol, 'info');
+        return;
+    }
+    _cancelInFlight.add(orderId);
     closeModal('cancelOrderModal');
     toast('Canceling order for ' + symbol + '...', 'info');
     addLog('CANCEL order ' + orderId.substring(0,8) + '... for ' + symbol, 'cancel');
@@ -3280,6 +3312,8 @@ async function executeCancelOrder(orderId, symbol) {
         }
     } catch(e) {
         toast('Error: ' + e.message, 'error');
+    } finally {
+        _cancelInFlight.delete(orderId);
     }
 }
 

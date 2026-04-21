@@ -50,32 +50,19 @@ def backfill_user_journal(user: dict, fetch_positions_fn: Callable,
     if user_file_fn is None:
         from cloud_scheduler import user_file as _uf
         user_file_fn = _uf
+    # Round-41 fix: acquire strategy_file_lock around the read-modify-write
+    # of trade_journal.json so a concurrent record_trade_open / record_trade_close
+    # from the scheduler or a manual deploy can't silently drop entries.
+    from cloud_scheduler import strategy_file_lock
 
     result = {"backfilled": 0, "skipped_existing": 0,
               "skipped_no_strategy": 0, "errors": []}
 
-    # Load current journal
     journal_path = user_file_fn(user, "trade_journal.json")
-    try:
-        if os.path.exists(journal_path):
-            with open(journal_path) as f:
-                journal = json.load(f)
-        else:
-            journal = {"trades": [], "daily_snapshots": []}
-    except (OSError, ValueError) as e:
-        result["errors"].append(f"load journal: {e}")
-        return result
-    trades = journal.get("trades", [])
 
-    # Build a set of existing OPEN (symbol, strategy) pairs so we
-    # don't double-enter
-    existing_open = {
-        ((t.get("symbol") or "").upper(), t.get("strategy") or "")
-        for t in trades
-        if isinstance(t, dict) and t.get("status") == "open"
-    }
-
-    # Fetch Alpaca positions
+    # Fetch Alpaca positions OUTSIDE the lock (network I/O — don't hold
+    # the flock across a slow HTTP call or we'll stall record_trade_open
+    # in other threads).
     positions = fetch_positions_fn(user) if fetch_positions_fn else []
     if isinstance(positions, dict) and "error" in positions:
         result["errors"].append(f"fetch positions: {positions['error']}")
@@ -87,68 +74,82 @@ def backfill_user_journal(user: dict, fetch_positions_fn: Callable,
     strats_dir = os.path.dirname(user_file_fn(user, "strategies/placeholder"))
     now_iso = now_et().isoformat()
 
-    for p in positions:
+    with strategy_file_lock(journal_path):
         try:
-            sym = (p.get("symbol") or "").upper()
-            if not sym:
-                continue
-            asset_class = (p.get("asset_class") or "").lower()
-            # OCC option symbols route via underlying for strategy lookup
-            if asset_class == "us_option":
-                m = re.match(r"^([A-Z]{1,6})\d{6}[CP]\d{8}$", sym)
-                underlying = m.group(1) if m else sym
+            if os.path.exists(journal_path):
+                with open(journal_path) as f:
+                    journal = json.load(f)
             else:
-                underlying = sym
-            # Find which strategy owns this position
-            strategy = _detect_strategy_file(strats_dir, underlying, sym)
-            if not strategy:
-                result["skipped_no_strategy"] += 1
-                continue
-            if (sym, strategy) in existing_open:
-                result["skipped_existing"] += 1
-                continue
-            # Pull entry price from Alpaca
-            try:
-                entry_px = float(p.get("avg_entry_price") or 0)
-            except (TypeError, ValueError):
-                entry_px = 0
-            try:
-                qty = float(p.get("qty") or 0)
-                qty = int(qty) if abs(qty - int(qty)) < 1e-9 else qty
-            except (TypeError, ValueError):
-                qty = 0
-            # Options are sold short (negative qty), buy-to-open (positive qty
-            # for long calls) — use Alpaca's `side` field as source of truth
-            side_raw = (p.get("side") or "").lower()
-            side = "sell_short" if side_raw == "short" else "buy"
-            entry = {
-                "timestamp": now_iso,
-                "symbol": sym,
-                "side": side,
-                "qty": qty,
-                "price": entry_px or None,
-                "strategy": strategy,
-                "reason": "Backfilled from Alpaca avg_entry_price — deployed pre-round-33 journaling",
-                "deployer": "journal_backfill",
-                "status": "open",
-                "backfilled": True,
-            }
-            trades.append(entry)
-            existing_open.add((sym, strategy))
-            result["backfilled"] += 1
-        except Exception as e:
-            result["errors"].append(f"{p.get('symbol','?')}: {e}")
-
-    if result["backfilled"] > 0:
-        journal["trades"] = trades
-        try:
-            tmp = journal_path + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(journal, f, indent=2, default=str)
-            os.rename(tmp, journal_path)
+                journal = {"trades": [], "daily_snapshots": []}
         except (OSError, ValueError) as e:
-            result["errors"].append(f"write journal: {e}")
-            result["backfilled"] = 0  # rollback the counter
+            result["errors"].append(f"load journal: {e}")
+            return result
+        trades = journal.get("trades", [])
+
+        existing_open = {
+            ((t.get("symbol") or "").upper(), t.get("strategy") or "")
+            for t in trades
+            if isinstance(t, dict) and t.get("status") == "open"
+        }
+
+        for p in positions:
+            try:
+                sym = (p.get("symbol") or "").upper()
+                if not sym:
+                    continue
+                asset_class = (p.get("asset_class") or "").lower()
+                # OCC option symbols route via underlying for strategy lookup
+                if asset_class == "us_option":
+                    m = re.match(r"^([A-Z]{1,6})\d{6}[CP]\d{8}$", sym)
+                    underlying = m.group(1) if m else sym
+                else:
+                    underlying = sym
+                strategy = _detect_strategy_file(strats_dir, underlying, sym)
+                if not strategy:
+                    result["skipped_no_strategy"] += 1
+                    continue
+                if (sym, strategy) in existing_open:
+                    result["skipped_existing"] += 1
+                    continue
+                try:
+                    entry_px = float(p.get("avg_entry_price") or 0)
+                except (TypeError, ValueError):
+                    entry_px = 0
+                try:
+                    qty = float(p.get("qty") or 0)
+                    qty = int(qty) if abs(qty - int(qty)) < 1e-9 else qty
+                except (TypeError, ValueError):
+                    qty = 0
+                side_raw = (p.get("side") or "").lower()
+                side = "sell_short" if side_raw == "short" else "buy"
+                entry = {
+                    "timestamp": now_iso,
+                    "symbol": sym,
+                    "side": side,
+                    "qty": qty,
+                    "price": entry_px or None,
+                    "strategy": strategy,
+                    "reason": "Backfilled from Alpaca avg_entry_price — deployed pre-round-33 journaling",
+                    "deployer": "journal_backfill",
+                    "status": "open",
+                    "backfilled": True,
+                }
+                trades.append(entry)
+                existing_open.add((sym, strategy))
+                result["backfilled"] += 1
+            except Exception as e:
+                result["errors"].append(f"{p.get('symbol','?')}: {e}")
+
+        if result["backfilled"] > 0:
+            journal["trades"] = trades
+            try:
+                tmp = journal_path + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump(journal, f, indent=2, default=str)
+                os.rename(tmp, journal_path)
+            except (OSError, ValueError) as e:
+                result["errors"].append(f"write journal: {e}")
+                result["backfilled"] = 0  # rollback the counter
 
     return result
 
