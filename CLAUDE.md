@@ -693,7 +693,35 @@ legacy env-var `SIGNUP_CODE` OR a DB invite token. 8 tests.
   `optPnlColor` / `optPnlWord` / `optBtn`. Lesson learned: run
   `node --check` on extracted dashboard JS before merging.
 
-### Round-29 (PR on `claude/round29-earnings-exit-all-strategies`)
+### Round-30 (in flight on `claude/round29-earnings-exit-all-strategies`, appended after merge)
+
+UX polish + correlation-warning accuracy fix. Triggered by a mobile
+screenshot showing the FULL STOCK SCREENER section had an ⓘ info
+button but the Position Correlation warning above it did not —
+inconsistent ⓘ coverage across sections.
+
+**What shipped:**
+
+* **ⓘ on every dashboard section.** Previously only Top Picks /
+  Active Strategies / Positions / Screener / Heatmap had the guide
+  button. Now added: Position Correlation, Paper Trading Progress,
+  Tax-Loss Harvesting, Short Candidates, Visual Backtest, Cloud
+  Scheduler, Performance Attribution, Tax Report, Factor Health,
+  Paper vs Live Comparison, Activity Log. 11 new SECTION_GUIDES
+  entries.
+* **SOXL / SOXS / SOXX sector map fix** — these were bucketed as
+  "Other" in correlation warnings instead of "Tech". 80+ ticker
+  entries added to `constants.SECTOR_MAP` covering the full
+  screener output: leveraged semi ETFs, crypto miners (bucketed
+  under Finance), quantum / nuclear / satellite plays, and 2026
+  IPO names. Eliminates the false "3+ positions in same sector"
+  warning where the sector was actually just "Other → unknown".
+
+Dashboard JS validated via `node --check` after extraction
+(round-27 lesson from PR #61: always check extracted JS when
+editing the inline script blocks).
+
+### Round-29 (merged as PR after round-28)
 
 Universal pre-earnings exit for non-PEAD equity strategies. Triggered
 by spotting INTC (earnings April 23, user held 63 shares from the
