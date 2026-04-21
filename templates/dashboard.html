@@ -1775,9 +1775,20 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
 
 <!-- Deploy Modal (Enhanced with P&L estimates) -->
 <div class="modal-overlay" id="deployModal">
-  <div class="modal" style="max-width:540px">
-    <h2 id="deployModalTitle">Deploy Strategy</h2>
-    <div class="modal-subtitle" id="deployModalSubtitle">Configure and deploy on TSLA</div>
+  <!-- Round-38: max-height + internal scroll so the Deploy button stays
+       visible on laptop/tablet portrait views.  Before this, the deploy
+       modal was rendering the strategy explainer + P&L estimate card +
+       form + Deploy button all stacked unconstrained, pushing Deploy
+       past viewport bottom on shorter screens. Flex-column layout so
+       the title + Deploy action stay pinned; only the middle content
+       scrolls. -->
+  <div class="modal" style="width:min(540px, calc(100vw - 24px));max-width:540px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden">
+    <h2 id="deployModalTitle" style="flex:0 0 auto">Deploy Strategy</h2>
+    <div class="modal-subtitle" id="deployModalSubtitle" style="flex:0 0 auto">Configure and deploy on TSLA</div>
+    <!-- Scrollable middle: strategy explainer + form. The modal-actions
+         footer stays pinned below so the Deploy button is always
+         reachable regardless of how tall the explainer gets. -->
+    <div class="deploy-modal-scroll" style="flex:1 1 auto;overflow-y:auto;min-height:0;margin:0 -4px;padding:0 4px">
     <div class="modal-action-text" id="deployActionText"></div>
     <div class="modal-info-box" id="deployInfoBox">
       <div class="info-title">What This Means</div>
@@ -1811,7 +1822,8 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
     </div>
     <!-- Round-11 expansion item 5: portfolio impact preview rendered here -->
     <div id="deployPortfolioImpact"></div>
-    <div class="modal-actions">
+    </div><!-- /.deploy-modal-scroll -->
+    <div class="modal-actions" style="flex:0 0 auto">
       <button class="btn-ghost" onclick="closeModal('deployModal')">Cancel</button>
       <button class="btn-success" onclick="executeDeploy()" id="deployConfirmBtn">Confirm Buy</button>
     </div>
@@ -2163,12 +2175,12 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
 <div class="modal-overlay" id="adminPanelModal">
   <!-- Round-36: max-height + overflow containment so long audit-log
        or user-list contents scroll INSIDE the modal instead of busting
-       out of the viewport. Before this, clicking the Audit Log tab
-       with a deep history rendered the list past the viewport bottom,
-       hiding the Close button and making the modal un-dismissable
-       without a page refresh. The inner scrollable region holds the
-       tab panels; the Close button stays pinned at the bottom. -->
-  <div class="modal admin-modal" style="max-width:900px;max-height:88vh;display:flex;flex-direction:column;overflow:hidden">
+       out of the viewport.
+       Round-37: widened to `min(1280px, 95vw)` so on desktop the
+       Users table renders without forcing a horizontal scroll just
+       to see the Actions column.  The inner scrollable region holds
+       the tab panels; Close button stays pinned at the bottom. -->
+  <div class="modal admin-modal" style="width:min(1280px, 95vw);max-width:none;max-height:92vh;display:flex;flex-direction:column;overflow:hidden">
     <h2 style="flex:0 0 auto">👥 Admin</h2>
     <div class="modal-subtitle" id="adminSubtitle" style="flex:0 0 auto">Admin-only controls — users, audit log, and volume backups</div>
 
@@ -2243,6 +2255,32 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
 
     <div class="modal-actions" style="margin-top:18px;flex:0 0 auto">
       <button type="button" class="btn-ghost" onclick="closeModal('adminPanelModal')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Round-37: Edit User modal.  Opened from the Users tab "Edit"
+     button.  Backend validates uniqueness + format and returns a
+     friendly error string if the username/email is taken or
+     malformed. -->
+<div class="modal-overlay" id="adminEditUserModal">
+  <div class="modal" style="max-width:440px">
+    <h2>✏️ Edit User</h2>
+    <div class="modal-subtitle">Change username or email. The user keeps their password, API keys, strategies, and trade history.</div>
+    <input type="hidden" id="adminEditUserId" />
+    <div class="form-group">
+      <label for="adminEditUsername">Username</label>
+      <input type="text" id="adminEditUsername" maxlength="30" autocomplete="off" spellcheck="false" />
+      <div style="font-size:11px;color:var(--text-dim);margin-top:4px">3-30 chars. Letters, digits, underscore, hyphen.</div>
+    </div>
+    <div class="form-group">
+      <label for="adminEditEmail">Email</label>
+      <input type="email" id="adminEditEmail" maxlength="254" autocomplete="off" spellcheck="false" />
+      <div style="font-size:11px;color:var(--text-dim);margin-top:4px">Must be unique across all users.</div>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn-ghost" onclick="closeModal('adminEditUserModal')">Cancel</button>
+      <button type="button" class="btn-primary" onclick="adminSubmitEditUser()">Save</button>
     </div>
   </div>
 </div>
@@ -7096,6 +7134,10 @@ async function loadAdminUsers() {
                 actions += '<button class="btn-primary btn-sm" onclick="adminSetActive(' + u.id + ', true)">Reactivate</button> ';
             }
             actions += '<button class="btn-ghost btn-sm" onclick="adminResetPassword(' + Number(u.id) + ', \'' + jsStr(u.username) + '\')">Reset Password</button> ';
+            // Round-37: edit username / email.  Opens a modal pre-filled
+            // with the current values.  Uniqueness + format are validated
+            // server-side.
+            actions += '<button class="btn-ghost btn-sm" onclick="adminOpenEditUser(' + Number(u.id) + ', \'' + jsStr(u.username) + '\', \'' + jsStr(u.email) + '\')">Edit</button> ';
             // Round-36: promote / demote admin. Server-side guard prevents
             // demoting the last active admin; UI just sends the request.
             if (u.is_admin) {
@@ -7151,6 +7193,54 @@ async function adminResetPassword(userId, username) {
         var d = await resp.json();
         if (!resp.ok || d.error) { toast(d.error || 'Failed', 'error'); return; }
         toast('Password reset for ' + username, 'success');
+    } catch (e) { toast(e.message, 'error'); }
+}
+
+// Round-37: open the Edit User modal pre-filled with current values.
+function adminOpenEditUser(userId, currentUsername, currentEmail) {
+    var idEl = document.getElementById('adminEditUserId');
+    var unEl = document.getElementById('adminEditUsername');
+    var emEl = document.getElementById('adminEditEmail');
+    if (idEl) idEl.value = String(userId);
+    if (unEl) unEl.value = currentUsername || '';
+    if (emEl) emEl.value = currentEmail || '';
+    openModal('adminEditUserModal');
+}
+
+// Round-37: submit the Edit User form.  Sends only the fields the
+// admin actually changed so we don't accidentally overwrite one
+// with a stale value from a UI race.
+async function adminSubmitEditUser() {
+    var idEl = document.getElementById('adminEditUserId');
+    var unEl = document.getElementById('adminEditUsername');
+    var emEl = document.getElementById('adminEditEmail');
+    if (!idEl || !unEl || !emEl) return;
+    var userId = parseInt(idEl.value, 10);
+    if (!userId || userId <= 0) { toast('Invalid user', 'error'); return; }
+    var newUsername = unEl.value.trim();
+    var newEmail = emEl.value.trim();
+    if (!newUsername && !newEmail) {
+        toast('Nothing to update', 'warning');
+        return;
+    }
+    var body = {user_id: userId};
+    if (newUsername) body.username = newUsername;
+    if (newEmail) body.email = newEmail;
+    try {
+        var resp = await fetch(API_BASE + '/api/admin/update-user', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: JSON.stringify(body),
+        });
+        var d = await resp.json();
+        if (!resp.ok || d.error) {
+            toast(d.error || 'Failed to update user', 'error');
+            return;
+        }
+        toast('User updated', 'success');
+        closeModal('adminEditUserModal');
+        loadAdminUsers();
     } catch (e) { toast(e.message, 'error'); }
 }
 

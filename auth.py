@@ -1067,6 +1067,88 @@ def set_user_admin(user_id, is_admin):
         except (sqlite3.Error, OSError): pass
 
 
+def update_user(user_id, email=None, username=None):
+    """Round-37: admin-only edit of a user's email and/or username.
+
+    Pass only the fields you want to change — None means "leave alone".
+    Validates the same regex/format rules as create_user, and enforces
+    the UNIQUE constraint at the application layer with a clearer
+    error message than SQLite's IntegrityError.
+
+    Returns (ok, err) — err is None on success, or a string describing
+    why the update was rejected.
+    """
+    import re as _re
+    if not user_id:
+        return False, "missing user_id"
+    # Nothing to do
+    if email is None and username is None:
+        return False, "no fields to update"
+    # Validate shape of each provided field
+    if username is not None:
+        username = username.strip()
+        if not _re.match(r"^[A-Za-z0-9_-]{3,30}$", username):
+            return False, "Username must be 3-30 chars (letters, digits, _, -)"
+    if email is not None:
+        email = email.strip()
+        if not email or "@" not in email or len(email) > 254:
+            return False, "Invalid email"
+
+    conn = _get_db()
+    try:
+        cur = conn.cursor()
+        # Make sure the target user actually exists before we do
+        # uniqueness checks — otherwise a non-existent id could return
+        # a confusing "already taken" error if the NEW email happens
+        # to match another user.
+        cur.execute("SELECT id FROM users WHERE id = ?", (user_id,))
+        if not cur.fetchone():
+            return False, "user not found"
+        # Uniqueness check: reject if another user already has the
+        # email / username we're changing to.
+        if email is not None:
+            cur.execute("""
+                SELECT id FROM users WHERE email = ? AND id != ?
+            """, (email, user_id))
+            if cur.fetchone():
+                return False, "Email already in use by another user"
+        if username is not None:
+            cur.execute("""
+                SELECT id FROM users WHERE username = ? AND id != ?
+            """, (username, user_id))
+            if cur.fetchone():
+                return False, "Username already taken"
+        # Build the UPDATE dynamically so we don't touch fields the
+        # admin didn't provide.
+        sets = []
+        params = []
+        if email is not None:
+            sets.append("email = ?")
+            params.append(email)
+        if username is not None:
+            sets.append("username = ?")
+            params.append(username)
+        params.append(user_id)
+        cur.execute(
+            f"UPDATE users SET {', '.join(sets)} WHERE id = ?",
+            tuple(params),
+        )
+        conn.commit()
+        return (cur.rowcount > 0), None
+    except sqlite3.IntegrityError as e:
+        # Belt-and-braces: should be caught by our app-layer uniqueness
+        # checks, but the UNIQUE constraint is the authoritative guard.
+        msg = str(e).lower()
+        if "email" in msg:
+            return False, "Email already in use by another user"
+        if "username" in msg:
+            return False, "Username already taken"
+        return False, f"update failed: {e}"
+    finally:
+        try: conn.close()
+        except (sqlite3.Error, OSError): pass
+
+
 # ===== Password Reset =====
 # Reset tokens are returned to the user in plaintext (via email / UI) but
 # stored as SHA-256 hashes in the DB. Defense-in-depth: if the users.db
