@@ -856,7 +856,47 @@ def record_trade_close(user, symbol, strategy, exit_price, pnl, exit_reason,
                     t["exit_side"] = side
                     save_json(journal_path, journal)
                     return True
-            return False  # No matching open trade found
+            # Round-34: no matching open entry.  Before, this silently
+            # returned False and the close DISAPPEARED — nothing in the
+            # journal, scorecard undercounted, user had to guess from the
+            # activity log what actually happened.  This is the exact
+            # gap that caused `last_loss_time` to advance at 10:59 AM
+            # with no visible record of which position closed.
+            #
+            # Fix: append a synthetic entry marked orphan_close=True so
+            # the close IS recorded, flows into the scorecard, and shows
+            # up in /api/data todays_closes.  The synthetic entry carries
+            # as much info as we have — it can't know the original entry
+            # price (so pnl_pct can't be computed), but symbol / strategy
+            # / exit_price / pnl / exit_reason are all captured.
+            synthetic = {
+                "timestamp": now_et().isoformat(),
+                "symbol": symbol,
+                "side": "buy" if side == "sell" else "sell_short",
+                "qty": qty,
+                "price": None,  # unknown entry price
+                "strategy": strategy,
+                "reason": "synthetic open entry — original never journaled",
+                "deployer": "record_trade_close_orphan",
+                "status": "closed",
+                "orphan_close": True,
+                "exit_timestamp": now_et().isoformat(),
+                "exit_price": round(float(exit_price), 4) if exit_price else None,
+                "exit_reason": exit_reason,
+                "exit_side": side,
+                "pnl": None,
+                "pnl_pct": None,
+            }
+            try:
+                synthetic["pnl"] = round(float(pnl), 2)
+            except (TypeError, ValueError):
+                pass
+            journal.setdefault("trades", []).append(synthetic)
+            save_json(journal_path, journal)
+            log(f"[{user.get('username','?')}] {symbol}: closed with no matching "
+                f"open journal entry — recorded as orphan_close "
+                f"(reason={exit_reason}, pnl=${synthetic.get('pnl')})", "monitor")
+            return True
     except Exception as e:
         log(f"[{user.get('username','?')}] Journal close writeback failed for {symbol}: {e}", "monitor")
         return False

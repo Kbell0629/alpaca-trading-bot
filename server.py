@@ -434,6 +434,18 @@ def _mark_auto_deployed(positions, strats_dir):
     return positions
 
 
+def _scan_todays_closes(user_dir, user_id):
+    """Round-34 thin wrapper — the real logic lives in todays_closes.py
+    so tests don't have to reload server (which drags auth + sqlite)."""
+    journal = _load_with_shared_fallback(
+        os.path.join(user_dir, "trade_journal.json"),
+        os.path.join(DATA_DIR, "trade_journal.json"),
+        user_id,
+    ) or {}
+    from todays_closes import scan_todays_closes
+    return scan_todays_closes(journal)
+
+
 def _load_overlay_files(user_dir, strats_dir, user_id):
     """Load per-user strategy + config files. Returns a dict ready to be
     merged into the response. Uses the share-fallback rule above."""
@@ -468,6 +480,7 @@ def _load_overlay_files(user_dir, strats_dir, user_id):
             os.path.join(DATA_DIR, "guardrails.json"),
             user_id,
         ) or {},
+        "todays_closes": _scan_todays_closes(user_dir, user_id),
     }
 
 

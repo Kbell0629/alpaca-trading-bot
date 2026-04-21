@@ -4157,6 +4157,68 @@ function buildGuardrailMeters(dailyPnlPct, portfolioValue, lastEquity) {
     '</div>';
 }
 
+// Round-34: Today's Closes panel — previously, when a stop triggered
+// mid-session or a pre-earnings exit fired, the close only showed up
+// in (a) the activity log buried under scheduler heartbeats, (b) the
+// scorecard which rebuilds at 4:05 PM, or (c) a ntfy/email push you
+// might have missed.  The operator had no way to see "what closed
+// today" at a glance.  This panel fixes that.
+function buildTodaysClosesPanel(d) {
+    var closes = Array.isArray(d.todays_closes) ? d.todays_closes : [];
+    if (!closes.length) {
+        return '';  // Nothing closed today — hide the panel entirely
+    }
+    var totalPnl = closes.reduce(function(acc, c) {
+        var p = c.pnl;
+        return acc + (typeof p === 'number' ? p : 0);
+    }, 0);
+    var rows = closes.map(function(c) {
+        var pnlNum = (typeof c.pnl === 'number') ? c.pnl : null;
+        var pnlColor = pnlNum === null ? 'var(--text-dim)' :
+                       (pnlNum > 0 ? 'var(--green)' :
+                        pnlNum < 0 ? 'var(--red)' : 'var(--text-dim)');
+        var pnlStr = pnlNum === null ? '—' : fmtMoney(pnlNum);
+        var pctStr = (typeof c.pnl_pct === 'number')
+                     ? ' (' + (c.pnl_pct >= 0 ? '+' : '') + c.pnl_pct.toFixed(2) + '%)'
+                     : '';
+        var tm = '';
+        try {
+            var dt = new Date(c.exit_timestamp);
+            tm = dt.toLocaleTimeString('en-US', {hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York'});
+        } catch(_) { tm = c.exit_timestamp || ''; }
+        var orphan = c.orphan_close
+            ? ' <span title="Synthetic entry — original open trade was not journaled" style="font-size:10px;color:var(--orange)">[orphan]</span>'
+            : '';
+        var exitPx = (typeof c.exit_price === 'number') ? '$' + c.exit_price.toFixed(2) : '—';
+        return '<tr>' +
+            '<td style="white-space:nowrap">' + esc(tm) + '</td>' +
+            '<td><strong>' + esc(c.symbol || '?') + '</strong>' + orphan + '</td>' +
+            '<td>' + esc(c.strategy || '?') + '</td>' +
+            '<td>' + esc(c.exit_reason || '?') + '</td>' +
+            '<td style="text-align:right">' + exitPx + '</td>' +
+            '<td style="text-align:right;color:' + pnlColor + ';white-space:nowrap">' +
+                pnlStr + pctStr +
+            '</td>' +
+        '</tr>';
+    }).join('');
+    var totalColor = totalPnl > 0 ? 'var(--green)' : totalPnl < 0 ? 'var(--red)' : 'var(--text-dim)';
+    return '<div class="todays-closes-panel" style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:24px">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">' +
+            '<h3 style="margin:0;font-size:14px">Today\'s Closes' + sectionHelpButton('todays-closes') + '</h3>' +
+            '<div style="font-size:13px"><span style="color:var(--text-dim)">Net P&L:</span> <strong style="color:' + totalColor + '">' + fmtMoney(totalPnl) + '</strong></div>' +
+        '</div>' +
+        '<div style="overflow-x:auto">' +
+        '<table style="width:100%;font-size:12px;min-width:520px">' +
+            '<thead><tr style="color:var(--text-dim);text-align:left">' +
+                '<th>Time</th><th>Symbol</th><th>Strategy</th><th>Reason</th>' +
+                '<th style="text-align:right">Exit</th><th style="text-align:right">P&L</th>' +
+            '</tr></thead>' +
+            '<tbody>' + rows + '</tbody>' +
+        '</table>' +
+        '</div>' +
+    '</div>';
+}
+
 function buildNextActionsPanel(d) {
     const gr = guardrailsData || {};
     const orders = d.open_orders || [];
@@ -5683,6 +5745,7 @@ function renderDashboard() {
         '</div>' +
         buildGuardrailMeters(dailyPnlPct, portfolioValue, lastEquity) +
         buildNextActionsPanel(d) +
+        buildTodaysClosesPanel(d) +
         '</div>' +
         '<div id="section-picks">' +
         '<div class="section-title">Top 3 Stock Picks' + sectionHelpButton('top-picks') + ' <span class="subtitle">- Screened ' + (d.total_screened||0).toLocaleString() + ' stocks, scored ' + (d.total_passed||0).toLocaleString() + ' after filtering</span></div>' +
@@ -7163,6 +7226,21 @@ var SECTION_GUIDES = {
                 '<li><strong>Regime</strong> — current market regime (bull / bear / choppy) which weights strategy multipliers</li>' +
             '</ul>' +
             '<p>Red or stale feeds mean the screener is scoring on incomplete data — worth a manual refresh before trusting new deploys that cycle.</p>'
+    },
+    'todays-closes': {
+        title: "Today's Closes",
+        html:
+            '<p>Every position that CLOSED today — stop-triggered exits, pre-earnings auto-exits, profit-ladder sells, PEAD time exits, and manual Close-button clicks all surface here.</p>' +
+            '<p><strong>Why this panel exists</strong>: before round-34, a mid-session close only showed up in (a) the activity log under a pile of scheduler heartbeats, (b) the scorecard which rebuilds at 4:05 PM ET, or (c) a ntfy/email push you might have missed. Now you see "what closed today" at a glance.</p>' +
+            '<p><strong>Columns</strong>:</p>' +
+            '<ul>' +
+                '<li><strong>Time</strong> — ET clock of the close</li>' +
+                '<li><strong>Symbol / Strategy</strong> — what closed, which strategy deployed it</li>' +
+                '<li><strong>Reason</strong> — <code>stop_triggered</code>, <code>pre_earnings_exit</code>, <code>target_hit</code>, <code>pead_window_complete</code>, <code>manual_close</code>, etc.</li>' +
+                '<li><strong>Exit / P&L</strong> — fill price and dollar/percent gain or loss</li>' +
+            '</ul>' +
+            '<p><strong>[orphan] tag</strong>: if the original open trade was never journaled (e.g. pre-round-33 wheel or manual deploy), the close is recorded as a synthetic entry so nothing disappears. These show an orange [orphan] badge and may have a missing entry price. Round-33 + round-34 together close this loop for future trades.</p>' +
+            '<p>Panel auto-hides when there are zero closes today.</p>'
     },
     'activity-log': {
         title: 'Activity Log',
