@@ -762,6 +762,44 @@ def run_screener(user, max_age_seconds=0):
 # final sell) updated the per-symbol strategy file with exit details but
 # NEVER wrote back to trade_journal.json. Result: update_scorecard never
 # saw any closed trades → win_rate stayed 0, Sharpe ≈0, readiness capped
+# Round-33: Counterpart to record_trade_close. Previously only the main
+# run_auto_deployer path appended to the journal. Wheel puts and
+# manual-deploy (via dashboard Deploy button) never wrote entries, so the
+# scorecard's total_trades counter undercounted reality. Centralise the
+# journal-append logic here + call from all three deploy paths so the
+# scorecard has ground truth for win rate / profit factor / Sharpe.
+def record_trade_open(user, symbol, strategy, price, qty, reason,
+                       side="buy", deployer="unknown", extra=None):
+    """Append an 'open' entry to the user's trade journal. Held under
+    strategy_file_lock so it doesn't race with record_trade_close or
+    update_scorecard's daily_snapshots append."""
+    journal_path = user_file(user, "trade_journal.json")
+    try:
+        with strategy_file_lock(journal_path):
+            journal = load_json(journal_path) or {"trades": [], "daily_snapshots": []}
+            entry = {
+                "timestamp": now_et().isoformat(),
+                "symbol": symbol,
+                "side": side,
+                "qty": qty,
+                "price": float(price) if price is not None else None,
+                "strategy": strategy,
+                "reason": reason,
+                "deployer": deployer,
+                "status": "open",
+            }
+            if extra and isinstance(extra, dict):
+                entry.update(extra)
+            journal.setdefault("trades", []).append(entry)
+            save_json(journal_path, journal)
+    except Exception as e:
+        try:
+            log(f"[{user.get('username','?')}] {symbol}: journal append failed: {e}",
+                "journal")
+        except Exception:
+            pass
+
+
 # at ~40, learn.py never adjusted weights.
 #
 # This helper finds the most recent OPEN journal entry for the symbol

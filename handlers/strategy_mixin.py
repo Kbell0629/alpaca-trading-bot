@@ -31,6 +31,28 @@ server = _ServerProxy()
 
 
 class StrategyHandlerMixin:
+    def _record_manual_deploy(self, strategy, symbol, price, qty, reason=""):
+        """Round-33: append a journal entry for manually-deployed
+        positions so the scorecard's total_trades / win-rate math sees
+        them. Before this helper, only cloud_scheduler.run_auto_deployer
+        wrote to the journal, so positions deployed via the dashboard
+        Deploy button were invisible to the readiness gauge."""
+        if not self.current_user:
+            return
+        try:
+            import cloud_scheduler
+            cloud_scheduler.record_trade_open(
+                self.current_user, symbol, strategy,
+                price=price, qty=qty, side="buy",
+                reason=reason or f"Manual deploy of {strategy} from dashboard",
+                deployer="manual_dashboard",
+            )
+        except Exception as _e:
+            log.warning(
+                "record_trade_open failed for manual deploy",
+                extra={"strategy": strategy, "symbol": symbol, "error": str(_e)},
+            )
+
     def handle_deploy(self, body):
         """Deploy a strategy on a symbol."""
         symbol = body.get("symbol", "").upper()
@@ -221,6 +243,7 @@ class StrategyHandlerMixin:
         }
         # Per-symbol file so multiple trailing stops don't overwrite each other (and per-user)
         server.save_json(os.path.join(self._user_strategies_dir(), f"trailing_stop_{symbol}.json"), strategy_data)
+        self._record_manual_deploy("trailing_stop", symbol, price, qty)
 
         self.send_json({
             "success": True,
@@ -322,6 +345,10 @@ class StrategyHandlerMixin:
             },
         }
         server.save_json(os.path.join(self._user_strategies_dir(), "copy_trading.json"), strategy_data)
+        # NOTE: copy_trading is a subscription (it picks politicians + scans).
+        # No actual position opens here — real trades are deployed later by
+        # the copy_trading monitor loop in cloud_scheduler. Journal entry
+        # happens there, not here.
 
         self.send_json({
             "success": True,
@@ -383,6 +410,7 @@ class StrategyHandlerMixin:
             },
         }
         server.save_json(os.path.join(self._user_strategies_dir(), f"mean_reversion_{symbol}.json"), strategy_data)
+        self._record_manual_deploy("mean_reversion", symbol, price, qty)
 
         self.send_json({
             "success": True,
@@ -447,6 +475,7 @@ class StrategyHandlerMixin:
             },
         }
         server.save_json(os.path.join(self._user_strategies_dir(), f"breakout_{symbol}.json"), strategy_data)
+        self._record_manual_deploy("breakout", symbol, price, qty)
 
         self.send_json({
             "success": True,
@@ -535,6 +564,7 @@ class StrategyHandlerMixin:
             },
         }
         server.save_json(os.path.join(self._user_strategies_dir(), f"pead_{symbol}.json"), strategy_data)
+        self._record_manual_deploy("pead", symbol, price, qty)
 
         self.send_json({
             "success": True,
