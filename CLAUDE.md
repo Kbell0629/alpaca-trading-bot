@@ -721,6 +721,79 @@ Dashboard JS validated via `node --check` after extraction
 (round-27 lesson from PR #61: always check extracted JS when
 editing the inline script blocks).
 
+### Rounds 31-35 (2026-04-21 afternoon, all merged or in flight)
+
+After round-30 shipped, the paper-trading window surfaced a stream
+of small-but-real UX + data-integrity bugs during Tuesday's
+live-session. Five more rounds fixed them:
+
+**Round-31 (PR #66) — sticky nav-tabs overlapped sticky header +
+broke on mobile.** `.nav-tabs { top: 0 }` collided with `.header-v2
+{ top: 0 }`, so the tabs hid behind the header. Mobile override
+forced `position: relative` which undid the sticky entirely. Fixed:
+tabs now stick at `top: var(--sticky-header-height)` which a runtime
+ResizeObserver keeps updated as the header wraps / banners appear.
+
+**Round-32 (PRs #67-68) — nav chevron drift + readiness label
+mismatch.** The `›` scroll hint was an `::after` on the scroller
+with `right: 0` — so it drifted into the middle of the tab list on
+swipe. Removed, then re-added properly in round-33 (below) wrapped
+in a sticky non-scrolling container. Also: the "Total Trades /
+Target: 20" label didn't match the backend scoring (backend checks
+5 criteria not including trade count). Changed to "Informational"
+with a tooltip. Fixed the `paper-progress` and `comparison` section
+guides to list the 5 real criteria with correct thresholds.
+
+**Round-33 (same PR as round-32 continuations) — journal undercount
++ scroll-hint wrapper.** Only `run_auto_deployer`'s main equity path
+wrote `trade_journal.json` open-entries. Wheel `open_put` and
+dashboard manual deploys never journaled, so closes had nothing to
+match and the scorecard undercount. New `record_trade_open()`
+helper in `cloud_scheduler.py`; wired into `wheel_strategy.open_put`
+and a `_record_manual_deploy()` method on `StrategyHandlerMixin`
+that each of the 4 real-position deploy paths calls. Plus a new
+`.nav-tabs-wrap` sticky parent with a proper right-edge gradient +
+animated chevron that fades out when the user scrolls to end.
+
+**Round-34 (PRs #69, #70/#71) — positions-table overscroll + Today's
+Closes panel + orphan close.** Three fixes landed across two PRs:
+
+* PR #69: `.table-card { overscroll-behavior-x: contain }` so a
+  horizontal swipe on Positions/Orders tables doesn't drag the
+  whole viewport sideways on iOS/Android.
+* PR #70/71: New "Today's Closes" panel in Overview, fed by a new
+  `todays_closes.py` scanner and an `_scan_todays_closes` helper in
+  `server.py`. Shows every close that happened today with time /
+  symbol / strategy / reason / exit / P&L + net P&L summary. Panel
+  auto-hides when zero closes today.
+* Same PR: `record_trade_close` hardened to append a synthetic
+  orphan entry (flagged `orphan_close: true`) when no matching open
+  exists, instead of silently returning False. Orange `[orphan]`
+  tag in the dashboard warns that the entry price is missing. This
+  is the exact gap that was hiding the 10:59 AM 2026-04-21 close
+  from the scorecard.
+
+**Round-35 (PR in flight on `claude/position-correlation-redesign`)
+— real Position Correlation + action-button alignment.** Two user-
+flagged UX issues:
+
+* Correlation section was printing "Sectors: <list of position
+  SYMBOLS>" — not sectors at all, just symbols. New panel groups by
+  real sector with bars, $ allocation, and % per sector. Fires a
+  warning only when top sector ≥ 40% (orange) or ≥ 60% (red).
+  Options route via underlying for sector lookup (HIMS put →
+  Healthcare, CHWY put → Consumer). Backed by a new
+  `position_sector.annotate_sector` helper that reuses
+  `constants.SECTOR_MAP` (which round-30 populated).
+* Positions-table action buttons (Close / Sell 50% / Sell 25%)
+  were stacking vertically on narrow screens, which made the
+  Actions column grow tall and misalign the header. Wrapped in a
+  `.pos-action-btns` flex-nowrap container so they stay on one row.
+
+11 new tests in `test_position_sector_annotation.py` pin the sector
+lookup + option underlying resolution + "Other" fallback. 520
+passing locally (was 509 after round-34). Ruff clean.
+
 ### Round-29 (merged as PR after round-28)
 
 Universal pre-earnings exit for non-PEAD equity strategies. Triggered

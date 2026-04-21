@@ -434,6 +434,13 @@ def _mark_auto_deployed(positions, strats_dir):
     return positions
 
 
+def _annotate_sector(positions):
+    """Round-35 thin wrapper — real logic in position_sector.py so
+    tests don't have to reload server (which drags auth + sqlite)."""
+    from position_sector import annotate_sector
+    return annotate_sector(positions)
+
+
 def _scan_todays_closes(user_dir, user_id):
     """Round-34 thin wrapper — the real logic lives in todays_closes.py
     so tests don't have to reload server (which drags auth + sqlite)."""
@@ -529,6 +536,9 @@ def get_dashboard_data(api_endpoint=None, api_headers=None, user_id=None):
 
     # Annotate AUTO/MANUAL on each position based on strategy-file presence.
     positions = _mark_auto_deployed(positions, strats_dir)
+    # Round-35: annotate sector + underlying so the Position Correlation
+    # panel can render a real sector breakdown with $ allocation.
+    positions = _annotate_sector(positions)
 
     if data:
         data["account"] = account if isinstance(account, dict) and "error" not in account else data.get("account", {})
