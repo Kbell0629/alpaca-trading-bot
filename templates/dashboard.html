@@ -1062,11 +1062,17 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
     border-top: 1px solid var(--border);
 }
 
-/* Navigation Tabs */
+/* Navigation Tabs — round-28: sticky at top of viewport so switching
+   sections doesn't require scrolling back to the header. Background
+   gets slightly more opaque + a backdrop blur so scrolled content
+   doesn't show through. z-index sits just below the main header so
+   if both are in view at once (at the top), header renders above. */
 .nav-tabs {
     display: flex; gap: 4px; margin-bottom: 24px; padding: 4px;
     background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
     overflow-x: auto; -webkit-overflow-scrolling: touch;
+    position: sticky; top: 0; z-index: 90;
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
 }
 .nav-tabs::-webkit-scrollbar { height: 0; }
 .nav-tab {
@@ -1076,6 +1082,27 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
 }
 .nav-tab:hover { color: var(--text); background: rgba(255,255,255,0.05); }
 .nav-tab.active { color: #fff; background: var(--accent); }
+
+/* Round-28: floating back-to-top button. 44x44 (Apple HIG touch size)
+   circle pinned to the bottom-right. Hidden until scroll > 400px.
+   sits above modals-closed z-index but below modals-open. */
+.back-to-top-btn {
+    position: fixed; bottom: 20px; right: 20px;
+    width: 44px; height: 44px; border-radius: 50%;
+    background: var(--accent); color: #fff;
+    border: none; font-size: 20px; font-weight: 700; line-height: 1;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+    cursor: pointer; z-index: 80;
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.back-to-top-btn.visible {
+    opacity: 0.9; pointer-events: auto;
+}
+.back-to-top-btn:hover { opacity: 1; transform: translateY(-2px); }
+@media (max-width: 600px) {
+    .back-to-top-btn { bottom: 16px; right: 16px; }
+}
 
 /* ===== Header V2 (cleaner 2-row layout) ===== */
 .header-v2 {
@@ -2161,6 +2188,14 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
 <div id="app">Loading dashboard...</div>
 </main>
 
+<!-- Round-28: floating back-to-top button. Hidden by default, fades in
+     after the user has scrolled past ~400px. Single-tap smooth-scrolls
+     to top so the user can reach Settings / KILL / full header again
+     without a long manual scroll. Pair for the sticky nav-tabs CSS
+     above: tabs stay on-screen for section switching, this button
+     covers "jump home" when the header is out of view. -->
+<button id="backToTopBtn" class="back-to-top-btn" aria-label="Back to top" title="Back to top" onclick="scrollToTop()">&uarr;</button>
+
 <script>
 /* XSS escaping helper for user/API data inserted into innerHTML */
 function esc(s) {
@@ -2357,6 +2392,36 @@ function renderLog() {
         '<span class="log-icon">' + (icons[e.type]||icons.info) + '</span>' +
         '<span class="log-msg">' + esc(e.msg) + '</span></div>'
     ).join('') || '<div class="empty">No activity yet</div>';
+}
+
+// Round-28: back-to-top button — toggle visibility on scroll, smooth
+// scroll to top on click. Throttled via requestAnimationFrame so we
+// don't run the show/hide math on every scroll tick (mobile can fire
+// scroll events at 120Hz).
+(function() {
+    var btn = null;
+    var rafQueued = false;
+    function updateBtnVisibility() {
+        rafQueued = false;
+        if (!btn) btn = document.getElementById('backToTopBtn');
+        if (!btn) return;
+        var shouldShow = (window.scrollY || document.documentElement.scrollTop || 0) > 400;
+        btn.classList.toggle('visible', shouldShow);
+    }
+    window.addEventListener('scroll', function() {
+        if (rafQueued) return;
+        rafQueued = true;
+        requestAnimationFrame(updateBtnVisibility);
+    }, {passive: true});
+})();
+
+function scrollToTop() {
+    try {
+        window.scrollTo({top: 0, behavior: 'smooth'});
+    } catch(_) {
+        // Older browsers: fallback to instant jump.
+        window.scrollTo(0, 0);
+    }
 }
 
 function scrollToSection(id) {
