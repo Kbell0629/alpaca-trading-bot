@@ -63,6 +63,21 @@ if ('serviceWorker' in navigator) {
     --fs-xl: 20px;   /* large stats, hero numbers */
 }
 * { margin:0; padding:0; box-sizing:border-box; }
+/* Round-27: ⓘ help button next to section headings. Circle with text-dim
+   on hover → accent. Click opens a focused guide snippet modal. */
+.section-help-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; padding: 0;
+    background: transparent; color: var(--text-dim);
+    border: 1px solid var(--border); border-radius: 50%;
+    font-size: 13px; font-weight: 600; line-height: 1;
+    cursor: pointer; vertical-align: middle; margin-left: 6px;
+    transition: all 0.15s ease;
+}
+.section-help-btn:hover {
+    color: var(--accent); border-color: var(--accent);
+    background: rgba(59,130,246,0.1);
+}
 /* Round-26: clamp horizontal scroll at the viewport level. Without
    this, a single too-wide element (an un-wrapped headline, a chart
    that overran its card, a min-width: 520px table) would let the
@@ -1814,6 +1829,24 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
   </div>
 </div>
 
+<!-- Round-27: per-section guide modal. Shows a focused snippet for
+     the section the user clicked ⓘ on, rather than opening the full
+     README. "Open Full Guide" button dives into the README for more
+     context. -->
+<div class="modal-overlay" id="sectionGuideModal">
+  <div class="modal" style="max-width:640px">
+    <h2 style="display:flex;justify-content:space-between;align-items:center">
+      <span id="sectionGuideTitle">Section Guide</span>
+      <button class="modal-close" aria-label="Close" onclick="closeModal('sectionGuideModal')">✕</button>
+    </h2>
+    <div id="sectionGuideBody" style="font-size:14px;line-height:1.55;max-height:60vh;overflow-y:auto;margin-top:8px"></div>
+    <div class="modal-actions" style="margin-top:16px">
+      <button type="button" class="btn-ghost" onclick="closeModal('sectionGuideModal')">Close</button>
+      <button type="button" class="btn-primary" onclick="closeModal('sectionGuideModal'); openReadme();">Open Full Guide →</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="killSwitchModal">
   <div class="modal" style="max-width:540px">
     <h2 style="color:var(--red)">EMERGENCY KILL SWITCH</h2>
@@ -2721,14 +2754,105 @@ async function executeDeploy() {
 }
 
 /* ---- Close Position Modal (enhanced) ---- */
+// Round-27: OCC regex duplicated here because parseOCCSymbol is
+// scoped inside renderDashboard. Keeping the modal self-contained.
+function _occParse(sym) {
+    var m = /^([A-Z]{1,6})(\d{2})(\d{2})(\d{2})([CP])(\d{8})$/.exec(sym || '');
+    if (!m) return null;
+    var yy = 2000 + parseInt(m[2], 10);
+    var mm = parseInt(m[3], 10);
+    var dd = parseInt(m[4], 10);
+    var monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    var expiry = new Date(yy, mm - 1, dd);
+    var dte = Math.max(0, Math.round((expiry - Date.now()) / 86400000));
+    return {
+        underlying: m[1],
+        type: m[5] === 'C' ? 'call' : 'put',
+        strike: parseInt(m[6], 10) / 1000,
+        expiry: expiry,
+        dte: dte,
+        expiryLabel: monthNames[mm - 1] + ' ' + dd + ', ' + yy,
+    };
+}
+
 function openClosePositionModal(symbol, qty, avgEntry, currentPrice, pnl, pnlPct) {
+    var occ = _occParse(symbol);
+    // Round-27: wheel-aware breakdown for option positions. For short
+    // puts and covered calls the math is different enough from equities
+    // that a generic "shares × price" summary was misleading. Show
+    // premium collected, breakeven, max profit, max loss, and what
+    // happens if assigned.
+    if (occ) {
+        var qtyNum = parseInt(qty) || 0;
+        var isShort = qtyNum < 0;
+        var numContracts = Math.abs(qtyNum);
+        var avgEntryNum = parseFloat(avgEntry) || 0;
+        var currentPriceNum = parseFloat(currentPrice) || 0;
+        var pnlNum = parseFloat(pnl) || 0;
+        // Each contract represents 100 shares of the underlying.
+        var MULT = 100;
+        var premiumCollected = avgEntryNum * MULT * numContracts;
+        var costToCloseNow = currentPriceNum * MULT * numContracts;
+        // P&L if closed now. For shorts, you profit as the contract
+        // value drops (bought back cheaper than sold).
+        var closedPnl = isShort ? (premiumCollected - costToCloseNow)
+                                   : (costToCloseNow - premiumCollected);
+        var pnlColor = closedPnl >= 0 ? 'var(--green)' : 'var(--red)';
+        var pnlWord = closedPnl >= 0 ? 'gain' : 'loss';
+        var action = isShort ? 'BUY-TO-CLOSE' : 'SELL-TO-CLOSE';
+        var breakeven, maxProfit, maxLoss, assignmentNote;
+        if (isShort && occ.type === 'put') {
+            breakeven = occ.strike - avgEntryNum;
+            maxProfit = premiumCollected;
+            maxLoss = (occ.strike * MULT * numContracts) - premiumCollected;
+            assignmentNote =
+                'If ' + esc(occ.underlying) + ' closes <strong>below $' + occ.strike.toFixed(2) + '</strong> on ' + esc(occ.expiryLabel) + ', you\'re assigned ' + (100 * numContracts) + ' shares of ' + esc(occ.underlying) + ' at $' + occ.strike.toFixed(2) + ' each (' + fmtMoney(occ.strike * 100 * numContracts) + ' cash outlay).';
+        } else if (isShort && occ.type === 'call') {
+            breakeven = occ.strike + avgEntryNum;
+            maxProfit = premiumCollected;
+            maxLoss = Infinity;  // theoretically unlimited for naked call; for covered call it's capped
+            assignmentNote =
+                'If ' + esc(occ.underlying) + ' closes <strong>above $' + occ.strike.toFixed(2) + '</strong> on ' + esc(occ.expiryLabel) + ', your ' + (100 * numContracts) + ' shares of ' + esc(occ.underlying) + ' are called away at $' + occ.strike.toFixed(2) + ' each (locks in the sale).';
+        } else {
+            // Long option — less common in this bot. Show basic math.
+            breakeven = occ.type === 'call'
+                ? occ.strike + avgEntryNum
+                : occ.strike - avgEntryNum;
+            maxProfit = null;  // complex for long options
+            maxLoss = premiumCollected;  // premium paid
+            assignmentNote = 'Long option — on expiry, exercised if ITM or expires worthless if OTM.';
+        }
+        document.getElementById('closeModalTitle').textContent = action + ' ' + symbol;
+        document.getElementById('closeModalSubtitle').textContent =
+            (isShort ? 'Short ' : 'Long ') + numContracts + ' ' + occ.type + ' · ' + esc(occ.underlying) + ' $' + occ.strike.toFixed(2) + ' · exp ' + esc(occ.expiryLabel) + ' (' + occ.dte + ' DTE)';
+        var rows = '<div class="modal-detail-row"><span class="detail-label">Contract</span><span class="detail-value">' + esc(occ.underlying) + ' $' + occ.strike.toFixed(2) + ' ' + occ.type + ' ' + esc(occ.expiryLabel) + '</span></div>' +
+            '<div class="modal-detail-row"><span class="detail-label">Position</span><span class="detail-value">' + (isShort ? 'Short' : 'Long') + ' ' + numContracts + ' contract' + (numContracts > 1 ? 's' : '') + ' (' + (100 * numContracts) + ' shares notional)</span></div>' +
+            '<div class="modal-detail-row"><span class="detail-label">' + (isShort ? 'Premium collected' : 'Premium paid') + '</span><span class="detail-value">' + fmtMoney(premiumCollected) + ' <em style="opacity:0.7">($' + avgEntryNum.toFixed(2) + ' × 100)</em></span></div>' +
+            '<div class="modal-detail-row"><span class="detail-label">Current mark</span><span class="detail-value">' + fmtMoney(costToCloseNow) + ' <em style="opacity:0.7">($' + currentPriceNum.toFixed(2) + ' × 100)</em></span></div>' +
+            '<div class="modal-detail-row"><span class="detail-label">Breakeven</span><span class="detail-value">$' + (breakeven != null ? breakeven.toFixed(2) : '—') + '</span></div>' +
+            '<div class="modal-detail-row"><span class="detail-label">Max profit</span><span class="detail-value" style="color:var(--green)">' + (maxProfit != null ? fmtMoney(maxProfit) : '—') + '</span></div>' +
+            '<div class="modal-detail-row"><span class="detail-label">Max loss</span><span class="detail-value" style="color:var(--red)">' + (maxLoss === Infinity ? 'Unlimited (naked call)' : (maxLoss != null ? fmtMoney(maxLoss) : '—')) + '</span></div>';
+        document.getElementById('closeModalDetails').innerHTML = rows;
+        document.getElementById('closeInfoContent').innerHTML =
+            'You will <strong>' + action + '</strong> ' + numContracts + ' contract' + (numContracts > 1 ? 's' : '') + ' at market<br>' +
+            (isShort ? 'Cost to close now: <strong>' + fmtMoney(costToCloseNow) + '</strong><br>' : 'Proceeds: <strong>' + fmtMoney(costToCloseNow) + '</strong><br>') +
+            'Realised P&amp;L on close: <strong style="color:' + pnlColor + '">' + fmtMoney(closedPnl) + '</strong> ' + pnlWord + '<br>' +
+            '<br><em style="font-size:12px;opacity:0.85">' + assignmentNote + '</em>';
+        var btn = document.getElementById('closeModalConfirm');
+        btn.onclick = function() { executeClosePosition(symbol); };
+        openModal('closeModal');
+        return;
+    }
+    // Equity position — original concise path.
     const proceeds = (currentPrice * qty).toFixed(2);
     document.getElementById('closeModalTitle').textContent = 'Close ' + symbol + ' Position';
     document.getElementById('closeModalSubtitle').textContent = '';
     document.getElementById('closeModalDetails').innerHTML =
         '<div class="modal-detail-row"><span class="detail-label">You own</span><span class="detail-value">' + qty + ' shares of ' + symbol + '</span></div>' +
         '<div class="modal-detail-row"><span class="detail-label">Bought at</span><span class="detail-value">' + fmtMoney(avgEntry) + '</span></div>' +
-        '<div class="modal-detail-row"><span class="detail-label">Current price</span><span class="detail-value">' + fmtMoney(currentPrice) + '</span></div>';
+        '<div class="modal-detail-row"><span class="detail-label">Current price</span><span class="detail-value">' + fmtMoney(currentPrice) + '</span></div>' +
+        '<div class="modal-detail-row"><span class="detail-label">Cost basis</span><span class="detail-value">' + fmtMoney(avgEntry * qty) + '</span></div>' +
+        '<div class="modal-detail-row"><span class="detail-label">Current value</span><span class="detail-value">' + fmtMoney(proceeds) + '</span></div>';
     const pnlNum = parseFloat(pnl) || 0;
     const pnlColor = pnlNum >= 0 ? 'var(--green)' : 'var(--red)';
     const pnlWord = pnlNum >= 0 ? 'gain' : 'loss';
@@ -5390,11 +5514,11 @@ function renderDashboard() {
         buildNextActionsPanel(d) +
         '</div>' +
         '<div id="section-picks">' +
-        '<div class="section-title">Top 3 Stock Picks <span class="subtitle">- Screened ' + (d.total_screened||0).toLocaleString() + ' stocks, scored ' + (d.total_passed||0).toLocaleString() + ' after filtering</span></div>' +
+        '<div class="section-title">Top 3 Stock Picks' + sectionHelpButton('top-picks') + ' <span class="subtitle">- Screened ' + (d.total_screened||0).toLocaleString() + ' stocks, scored ' + (d.total_passed||0).toLocaleString() + ' after filtering</span></div>' +
         '<div class="picks">' + picksHtml + '</div>' +
         '</div>' +
         '<div id="section-strategies">' +
-        '<div class="section-title">Active Strategies</div>' +
+        '<div class="section-title">Active Strategies' + sectionHelpButton('active-strategies') + '</div>' +
         '<div class="strategies">' +
             '<div class="strategy-card trailing">' +
                 '<h2>1. Trailing Stop <span style="font-size:11px;font-weight:500;color:var(--text-dim);text-transform:none;letter-spacing:0">— universal exit policy</span></h2>' +
@@ -5486,7 +5610,7 @@ function renderDashboard() {
         '<div class="tables">' +
             '<div class="table-card" aria-label="Open positions">' +
                 '<h3 style="display:flex;justify-content:space-between;align-items:center">' +
-                    '<span>Positions' + freshnessChip(d.updated_at, 'live') + '</span>' +
+                    '<span>Positions' + sectionHelpButton('positions') + freshnessChip(d.updated_at, 'live') + '</span>' +
                     '<a class="btn-ghost btn-sm" href="/api/export/positions.csv" download="positions.csv" style="text-decoration:none" title="Download positions as CSV">⬇ CSV</a>' +
                 '</h3>' +
                 posSummaryHtml +
@@ -5520,7 +5644,7 @@ function renderDashboard() {
         '<section id="section-screener" aria-label="Full stock screener">' +
         '<div class="screener">' +
             '<h3 style="display:flex;justify-content:space-between;align-items:center">' +
-                '<span>Full Stock Screener - Top 50' + freshnessChip(d.updated_at) + '</span>' +
+                '<span>Full Stock Screener - Top 50' + sectionHelpButton('screener') + freshnessChip(d.updated_at) + '</span>' +
                 '<a class="btn-ghost btn-sm" href="/api/export/picks.csv" download="picks.csv" style="text-decoration:none" title="Download screener top 50 as CSV">⬇ CSV</a>' +
             '</h3>' +
             '<div class="screener-stats">' +
@@ -5618,7 +5742,7 @@ function renderDashboard() {
         '<section id="section-heatmap" class="heatmap-section" aria-label="Trade heatmap">' +
             '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:12px">' +
                 '<div>' +
-                    '<h3 style="margin:0">Trade Heatmap</h3>' +
+                    '<h3 style="margin:0">Trade Heatmap' + sectionHelpButton('heatmap') + '</h3>' +
                     '<div style="font-size:12px;color:var(--text-dim);margin-top:4px">Daily P&L over time — spot patterns to improve your trading</div>' +
                 '</div>' +
                 '<button class="btn-ghost btn-sm" onclick="loadHeatmap()" aria-label="Refresh heatmap data">Refresh</button>' +
@@ -6649,6 +6773,164 @@ async function adminResetPassword(userId, username) {
 /* ---- README / Help Modal ---- */
 var _readmeLoaded = false;
 var _readmeRawMarkdown = '';
+
+// Round-27: inline section guides. Each main dashboard section gets
+// a small ⓘ button that opens a focused modal with the relevant
+// guide snippet (not the full README — saves scrolling). "Open Full
+// Guide" button jumps to the README modal for more detail.
+var SECTION_GUIDES = {
+    'top-picks': {
+        title: 'Top Picks',
+        html:
+            '<p>The top 3 cards are the highest-scoring stocks across the 6 strategies after the screener runs. Each card shows:</p>' +
+            '<ul>' +
+                '<li><strong>Daily Change / Volatility / Volume / Vol Surge</strong> — basic market data for the day.</li>' +
+                '<li><strong>Strategy score bars</strong> — how well this ticker fits each strategy. The highest bar is usually the recommended strategy in the badge.</li>' +
+                '<li><strong>RSI / MACD / BIAS</strong> — technical indicators. RSI &gt;70 = overbought, &lt;30 = oversold.</li>' +
+                '<li><strong>Social / 🤖 AI / 📰 News / 🔵 Insider</strong> — sentiment sources. Insider cluster buys are the strongest signal.</li>' +
+                '<li><strong>🚨 BREAKING</strong> — if Alpaca just streamed high-impact news for this symbol in the last 60 min.</li>' +
+                '<li><strong>Backtest</strong> — 30-day simulated return if you had deployed this strategy. Negative / "stopped out" backtests are common and don\'t disqualify a pick.</li>' +
+                '<li><strong>Deploy button</strong> — opens the trade with the calculated share count and attaches a stop-loss automatically.</li>' +
+            '</ul>' +
+            '<p><em>Picks refresh every 30 min during market hours. The scoring model weights each strategy by current market regime (e.g. Breakout ×1.4 in bull, Mean Reversion ×0.6).</em></p>'
+    },
+    'positions': {
+        title: 'Open Positions',
+        html:
+            '<p>Every position currently held in the Alpaca account, with live marks and P&amp;L. Per-row actions:</p>' +
+            '<ul>' +
+                '<li><strong>Close</strong> — market-sell the entire position (buy-to-close for short options).</li>' +
+                '<li><strong>Sell 50% / Sell 25%</strong> — partial profit-taking. Keeps the remainder under the existing trailing stop.</li>' +
+                '<li><strong>🚨 BULL / BEAR</strong> badge — breaking news alert on this symbol from the real-time Alpaca news stream.</li>' +
+            '</ul>' +
+            '<p>The top summary bar shows Market Value, Cost Basis, Unrealized P&amp;L, Today\'s P&amp;L, and Option Risk (collateral locked by short puts × 100).</p>' +
+            '<p><strong>For wheel options</strong>: the row shows the OCC symbol + a plain-English decode. Clicking Close opens a modal that explains the trade in wheel terms (premium collected, breakeven, what happens if assigned).</p>'
+    },
+    'screener': {
+        title: 'Top 50 Screener',
+        html:
+            '<p>The full list of stocks that passed all screener gates this cycle. Each row is the ticker + each strategy\'s score + current price + daily change. Click a row to see the detailed backtest and deploy.</p>' +
+            '<p><strong>Gates applied before a ticker even shows up here</strong>:</p>' +
+            '<ul>' +
+                '<li>Daily volume &gt; 200k (liquidity)</li>' +
+                '<li>Market cap &gt; $100M (not penny stocks)</li>' +
+                '<li>Price &gt; $3 (not sub-penny)</li>' +
+                '<li>Volatility &lt; 25% (round-20 cap — excludes hype-tier names)</li>' +
+                '<li>Daily change &lt; 8% for Breakout / PEAD (don\'t-chase gate)</li>' +
+            '</ul>' +
+            '<p>Sortable by clicking any column header. Export to CSV via the link at the top.</p>'
+    },
+    'heatmap': {
+        title: 'Trade Heatmap',
+        html:
+            '<p>Daily P&amp;L across your trading history — green = win, red = loss. Each cell is one trading day. Helps spot patterns (e.g. "I lose money every Monday", "wins cluster around earnings weeks").</p>' +
+            '<p><strong>Stats at the top</strong>:</p>' +
+            '<ul>' +
+                '<li><strong>Trading Days</strong> — total days with at least one closed trade.</li>' +
+                '<li><strong>Win / Loss Days</strong> — count of positive vs negative P&amp;L days.</li>' +
+                '<li><strong>Total P&amp;L</strong> — sum of all daily P&amp;L.</li>' +
+                '<li><strong>Best / Worst Day</strong> — only shown once you have at least one winning / losing day respectively.</li>' +
+            '</ul>' +
+            '<p><strong>By Day of Week</strong> — averages by weekday so you can spot whether Mondays are dead-money or Fridays run hot.</p>'
+    },
+    'active-strategies': {
+        title: 'Active Strategies',
+        html:
+            '<p>All 6 strategies the auto-deployer can run, with current status (active / paused / stopped) and per-strategy rules:</p>' +
+            '<ul>' +
+                '<li><strong>Trailing Stop</strong> — universal exit policy. Attached to every Breakout / PEAD entry. Trails 5% below the high-water mark once price runs +10% past entry.</li>' +
+                '<li><strong>Wheel Strategy</strong> — sells cash-secured puts, rolls on assignment, sells covered calls, repeats. Target +50% of premium to close early.</li>' +
+                '<li><strong>Mean Reversion</strong> — buys oversold dips (RSI &lt;30, MACD flipping bullish). +15% take-profit target.</li>' +
+                '<li><strong>Breakout</strong> — buys on high-volume breaks of 20-day highs. Tight 12% stop (round-21 default).</li>' +
+                '<li><strong>PEAD</strong> — Post-Earnings Announcement Drift. Buys 2-3 days after a big EPS beat with &gt;5% surprise. 30-60d hold.</li>' +
+                '<li><strong>Copy Trading</strong> — follows high-conviction Senate / House trades (Capitol Trades feed). Currently low-signal in paper mode.</li>' +
+            '</ul>' +
+            '<p>Use the Settings → Strategies tab to pause individual strategies without killing the whole auto-deployer.</p>'
+    },
+    'comparison': {
+        title: 'Paper vs Live',
+        html:
+            '<p>Side-by-side of your paper-trading performance vs a (currently-disabled) live account. The readiness score on the right is a 0-100 gauge of whether you\'re ready to flip 🔴 Live Trading on.</p>' +
+            '<p><strong>Readiness criteria</strong> (all must pass for ready-for-live = true):</p>' +
+            '<ul>' +
+                '<li>&ge; 30 days of paper trading history</li>' +
+                '<li>&ge; 30 closed trades</li>' +
+                '<li>Win rate &gt;= 50%</li>' +
+                '<li>Profit factor &gt;= 1.5 (total wins / total losses)</li>' +
+                '<li>Max drawdown &lt; 15%</li>' +
+            '</ul>' +
+            '<p><strong>Live trading path</strong>: generate dedicated LIVE Alpaca keys (not paper keys), paste them in Settings → Alpaca API (Live), then toggle Settings → 🔴 Live Trading ON. Paper mode stays available — you can toggle back.</p>'
+    },
+    'short-candidates': {
+        title: 'Short Candidates',
+        html:
+            '<p>Stocks the bot identifies as potential short-sell candidates — strong downtrends + negative sentiment + high-volume selling. Currently shown for reference only; the auto-deployer does NOT automatically short.</p>' +
+            '<p>If you want to manually short one of these:</p>' +
+            '<ol>' +
+                '<li>Verify shares are borrowable (your Alpaca account → position menu).</li>' +
+                '<li>Deploy via the Deploy button if visible, or manually via Alpaca.</li>' +
+                '<li>The bot will attach a buy-to-cover stop at entry × 1.08 (8% cap-loss).</li>' +
+            '</ol>' +
+            '<p><em>Shorting 3x leveraged ETFs (SOXS, etc.) is especially tempting when they\'re trending down but carries unlimited upside risk — size conservatively.</em></p>'
+    },
+    'options': {
+        title: 'Options / Wheel Analysis',
+        html:
+            '<p>For the current wheel target, shows the top candidate contracts ranked by a composite score (strike distance, premium, days-to-expiry, open interest). The best put is automatically selected when the wheel deployer fires.</p>' +
+            '<p><strong>Scoring factors</strong>:</p>' +
+            '<ul>' +
+                '<li><strong>Strike distance</strong> — how far OTM the strike is (closer = higher premium but higher assignment risk).</li>' +
+                '<li><strong>DTE</strong> — days to expiration. Bot prefers 15-30 days (sweet spot for theta decay).</li>' +
+                '<li><strong>Premium</strong> — collected credit as a % of strike × 100.</li>' +
+                '<li><strong>Open interest</strong> — liquidity check; avoids contracts that are hard to close.</li>' +
+            '</ul>' +
+            '<p><strong>Estimated annual return</strong> assumes you cycle the position monthly and collect similar premium each time. Real returns vary with IV and underlying price action.</p>'
+    },
+    'economic-calendar': {
+        title: 'Economic Calendar',
+        html:
+            '<p>Upcoming events that could whipsaw the market — FOMC, CPI, NFP, earnings clusters. The bot uses this to set a <strong>position-size multiplier</strong>: high-impact days reduce new deploys by 50%.</p>' +
+            '<p><strong>Impact levels</strong>:</p>' +
+            '<ul>' +
+                '<li><strong>High</strong> — FOMC decisions, CPI, Powell speeches. New deploys blocked that day.</li>' +
+                '<li><strong>Medium</strong> — NFP, retail sales, GDP. Position size ×0.75.</li>' +
+                '<li><strong>Low / news</strong> — earnings calendar clusters, Fed speakers. No size change.</li>' +
+            '</ul>' +
+            '<p>Dates in the past are auto-filtered out client-side so you don\'t see "0d away" for events that already happened.</p>'
+    },
+    'settings': {
+        title: 'Settings',
+        html:
+            '<p>Six tabs:</p>' +
+            '<ul>' +
+                '<li><strong>Guardrails</strong> — max position % (default 7%), max concurrent positions (5), per-day loss cutoff (-3%). Breach = auto kill-switch.</li>' +
+                '<li><strong>Presets</strong> — Conservative / Moderate / Aggressive / Custom. Moderate is the default and is what the paper-validation window is running.</li>' +
+                '<li><strong>Strategies</strong> — per-strategy on/off + individual rule overrides.</li>' +
+                '<li><strong>Alpaca API</strong> — rotate your paper and/or live API keys. Keys are stored encrypted with your password.</li>' +
+                '<li><strong>Notifications</strong> — ntfy push topic, notification email override, scorecard email toggle.</li>' +
+                '<li><strong>Account</strong> — change password, export data, delete account, toggle live trading.</li>' +
+            '</ul>'
+    }
+};
+
+function openSectionGuide(sectionId) {
+    var guide = SECTION_GUIDES[sectionId];
+    if (!guide) {
+        // Unknown section — fall back to the full README
+        openReadme();
+        return;
+    }
+    var titleEl = document.getElementById('sectionGuideTitle');
+    var bodyEl = document.getElementById('sectionGuideBody');
+    if (titleEl) titleEl.textContent = 'ⓘ ' + guide.title;
+    if (bodyEl) bodyEl.innerHTML = guide.html;
+    openModal('sectionGuideModal');
+}
+
+// Small inline ⓘ button to stick next to section headings.
+function sectionHelpButton(sectionId) {
+    return '<button class="section-help-btn" title="Explain this section" aria-label="Help for ' + esc(sectionId) + '" onclick="openSectionGuide(\'' + esc(sectionId) + '\')">&#9432;</button>';
+}
 
 function openReadme() {
     var modal = document.getElementById('readmeModal');
