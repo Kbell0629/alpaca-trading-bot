@@ -4,6 +4,47 @@
 
 ---
 
+## 🆕 What's New (2026-04-21 evening — Round 36)
+
+**Admin-panel overhaul + weekly-learning bug fix.**
+
+**1. New invite signup flow — friend-friendly, no secrets shared.**
+The admin panel's *Invites* tab now generates a one-time signup URL
+that your friend clicks to land on the signup form with the invite
+code auto-filled. Key properties:
+- **Single-use**: once a friend signs up, the invite can't be reused
+- **7-day default expiry** (customizable 1-30 days)
+- **Hash-only storage**: plaintext token shown ONCE at creation, never
+  stored. If your DB dump leaks, nobody can redeem outstanding invites
+- **Friends sign up as regular users** — never as admins (backend
+  hardcodes `is_admin=False` on signup)
+
+**2. Admin panel — new abilities.**
+- **Revoke Invite**: button on active invites in the Invites tab.
+  Sets `expires_at` to the past so the URL stops working immediately.
+  Used / expired invites show no button (revoking them is a no-op).
+- **Make / Revoke Admin**: toggle admin rights on any user from the
+  Users tab. Server-side guard rail blocks demoting the last active
+  admin (so you can't accidentally lock yourself out).
+- **Audit log sizing fix**: the Admin modal had no height constraint,
+  so a long audit log rendered past the viewport bottom — hiding the
+  Close button and forcing a page refresh to dismiss. Now the modal
+  caps at `88vh`, tabs + Close stay pinned, and the content area
+  scrolls internally.
+
+**3. Weekly-learning engine — actually wired to the screener now.**
+Found while auditing "is learning really happening?" — YES, the
+Friday 5:00 PM ET engine runs and writes per-user weights to
+`/data/users/<id>/learned_weights.json`, but the screener was reading
+from the SHARED `/data/learned_weights.json` path and never picking
+them up. The screener now honors the same `LEARNED_WEIGHTS_PATH` env
+var `learn.py` uses, and `cloud_scheduler.run_screener_for_user`
+sets it to the per-user file. So once you have a handful of closed
+trades, the screener will start scaling strategy multipliers toward
+what's actually working for YOUR account.
+
+---
+
 ## 🆕 What's New (2026-04-21 afternoon — Rounds 31-35)
 
 **Rounds 31-32 — Sticky nav polish.** Nav tabs (Overview / Picks /

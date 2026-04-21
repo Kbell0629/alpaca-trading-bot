@@ -1646,7 +1646,16 @@ def fetch_all_data():
             pick.setdefault("meme_note", "")
 
     # --- Apply learned weights from self-learning engine ---
-    learned = load_json(os.path.join(DATA_DIR, "learned_weights.json"))
+    # Round-36 fix: learn.py writes to LEARNED_WEIGHTS_PATH (per-user
+    # path), but this code was reading from DATA_DIR/learned_weights.json
+    # (the shared path). End result: the screener NEVER saw the per-user
+    # weekly-learning output. Honor the same env-var override learn.py
+    # uses so the read + write paths match.
+    _learned_path = os.environ.get(
+        "LEARNED_WEIGHTS_PATH",
+        os.path.join(DATA_DIR, "learned_weights.json"),
+    )
+    learned = load_json(_learned_path)
     if learned:
         multipliers = learned.get("strategy_multipliers", {})
         boost_signals = learned.get("boost_signals", [])

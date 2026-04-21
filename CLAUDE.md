@@ -721,6 +721,66 @@ Dashboard JS validated via `node --check` after extraction
 (round-27 lesson from PR #61: always check extracted JS when
 editing the inline script blocks).
 
+### Round 36 (2026-04-21 evening, in flight on `claude/admin-panel-improvements`)
+
+User asked three things after round-35 shipped:
+1. Verify friends who signup via invite get regular-user (not admin)
+2. Audit the "Manage Users" admin panel for missing functions
+3. Fix the Audit Log tab which renders past the viewport bottom and
+   hides the Close button, forcing a page refresh to dismiss
+Plus: "check if the weekly learning is actually happening."
+
+**What shipped:**
+
+* **Signup creates regular user — verified.** `handle_signup` in
+  `handlers/auth_mixin.py` calls `auth.create_user()` WITHOUT an
+  `is_admin` arg. auth.py defaults `is_admin=False`. Only the FIRST
+  user ever created auto-promotes (line 511-512 of auth.py). Friends
+  who sign up via invite always get `is_admin=0`.
+
+* **`auth.revoke_invite(token_hash)`** — atomic UPDATE that sets
+  `expires_at` to one second in the past on any UNUSED invite.
+  `check_invite` then returns "expired" on any subsequent attempt.
+  Used / missing hashes are left alone (returns False).
+
+* **`auth.set_user_admin(user_id, is_admin)`** — promote or demote.
+  DB-layer guard rail: counts other active admins; if zero, refuses
+  to demote. Inactive admins don't count (so a paused admin can't
+  "save" you from locking yourself out).
+
+* **`handle_admin_revoke_invite` + `handle_admin_set_admin`** in
+  `handlers/admin_mixin.py`. Both gated on `is_admin` check, both
+  emit admin-audit-log entries with actor + target + detail. Routed
+  as `/api/admin/revoke-invite` and `/api/admin/set-admin`.
+
+* **Dashboard Invites tab**: added Actions column with a "Revoke"
+  button shown only for `status === 'active'` invites. `token_hash`
+  now included in the list response (admin has rights anyway; hash
+  alone can't redeem, only the plaintext can).
+
+* **Dashboard Users tab**: added "Make Admin" / "Revoke Admin"
+  buttons alongside Deactivate + Reset Password. Server-side guard
+  rail prevents the "demote the last admin" footgun; UI confirms
+  before sending.
+
+* **Admin modal sizing fix**: wrapped `#adminPanelModal .modal` in a
+  flex column (header / scrollable content / footer) with
+  `max-height:88vh`. Audit log content now scrolls INSIDE the
+  modal instead of pushing the Close button past viewport bottom.
+
+* **Weekly learning path bug**: `update_dashboard.py:1649` read from
+  `DATA_DIR/learned_weights.json` (shared path), but
+  `cloud_scheduler.run_weekly_learning` passed per-user
+  `LEARNED_WEIGHTS_PATH` to `learn.py`. So learn.py wrote weights
+  per-user that the screener never read back. Fixed:
+  - `update_dashboard.py` now honors `LEARNED_WEIGHTS_PATH` env var
+  - `cloud_scheduler.run_screener_for_user` now sets the env var
+  Tests added (grep-level + functional).
+
+12 new tests across `test_admin_invite_revoke.py` (10) and
+`test_learned_weights_path_wiring.py` (2). 532 passing locally.
+Ruff clean on all touched files.
+
 ### Rounds 31-35 (2026-04-21 afternoon, all merged or in flight)
 
 After round-30 shipped, the paper-trading window surfaced a stream

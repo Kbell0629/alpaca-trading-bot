@@ -198,6 +198,7 @@ class AdminHandlerMixin:
                 status = "used" if r.get("used_at") else (
                     "expired" if r["expires_at"] < now_iso else "active")
                 out.append({
+                    "token_hash": r["token_hash"],
                     "created_at": r["created_at"],
                     "expires_at": r["expires_at"],
                     "used_at": r.get("used_at"),
@@ -208,3 +209,62 @@ class AdminHandlerMixin:
             self.send_json({"invites": out})
         except Exception as e:
             self._send_error_safe(e, 500, "list-invites")
+
+    def handle_admin_revoke_invite(self, body):
+        """Round-36: admin-only revoke of an UNUSED invite.
+
+        Body: {"token_hash": "<hash-from-list>"}
+
+        Backed by auth.revoke_invite which sets expires_at in the past.
+        Already-used invites are left alone (revoking a consumed invite
+        has no effect and would obscure the audit trail). Writes an
+        admin audit log entry."""
+        if not self.current_user or not self.current_user.get("is_admin"):
+            return self.send_json({"error": "Admin only"}, 403)
+        token_hash = (body.get("token_hash") or "").strip()
+        if not token_hash or len(token_hash) > 128:
+            return self.send_json({"error": "Missing or invalid token_hash"}, 400)
+        try:
+            ok = auth.revoke_invite(token_hash)
+            if not ok:
+                return self.send_json(
+                    {"error": "No matching unused invite (already used or not found)"},
+                    404)
+            auth.log_admin_action(
+                "revoke_invite",
+                actor=self.current_user,
+                ip_address=self.client_address[0] if self.client_address else None,
+                detail={"token_hash_prefix": token_hash[:12] + "..."})
+            return self.send_json({"success": True})
+        except Exception as e:
+            self._send_error_safe(e, 500, "revoke-invite")
+
+    def handle_admin_set_admin(self, body):
+        """Round-36: admin-only promote/demote of another user's
+        `is_admin` flag. Guards against demoting the last active admin.
+
+        Body: {"user_id": 12, "is_admin": true}"""
+        if not self.current_user or not self.current_user.get("is_admin"):
+            return self.send_json({"error": "Admin only"}, 403)
+        target_id = body.get("user_id")
+        want_admin = bool(body.get("is_admin"))
+        try:
+            target_id = int(target_id)
+        except (TypeError, ValueError):
+            return self.send_json({"error": "Missing or invalid user_id"}, 400)
+        if target_id <= 0:
+            return self.send_json({"error": "Invalid user_id"}, 400)
+        try:
+            ok, err = auth.set_user_admin(target_id, want_admin)
+            if not ok:
+                return self.send_json(
+                    {"error": err or "Update failed"}, 400)
+            auth.log_admin_action(
+                "set_admin" if want_admin else "revoke_admin",
+                actor=self.current_user,
+                target_user_id=target_id,
+                ip_address=self.client_address[0] if self.client_address else None,
+                detail={"is_admin": want_admin})
+            return self.send_json({"success": True})
+        except Exception as e:
+            self._send_error_safe(e, 500, "set-admin")

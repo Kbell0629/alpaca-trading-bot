@@ -697,6 +697,10 @@ def run_screener(user, max_age_seconds=0):
     # Pass preferred output paths; update_dashboard.py may or may not honor them.
     env["DASHBOARD_DATA_PATH"] = user_file(user, "dashboard_data.json")
     env["DASHBOARD_HTML_PATH"] = user_file(user, "dashboard.html")
+    # Round-36: pin LEARNED_WEIGHTS_PATH to the per-user file. learn.py
+    # writes there every Friday; update_dashboard.py was reading from
+    # the shared DATA_DIR path and never seeing per-user weights.
+    env["LEARNED_WEIGHTS_PATH"] = user_file(user, "learned_weights.json")
     # Timeout: 600s (10 min) — Railway containers have slower network than local.
     # Screening 10k+ stocks in 22 batches of 500 can take 3-8 min on Railway vs ~60s local.
     # Round-11: run as Popen and poll in a small wait loop so the main
