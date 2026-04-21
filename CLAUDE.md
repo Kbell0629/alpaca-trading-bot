@@ -930,60 +930,130 @@ Ruff clean on touched files.
 
 ---
 
-## Last session state (2026-04-21 — END OF SESSION, after round-29)
+## Last session state (2026-04-21 late night — END OF SESSION, after round-39 + docs split)
 
-**63 PRs total merged** across rounds 11-28. Paper-trading 30-day
+**76 PRs total merged** across rounds 11-39. Paper-trading 30-day
 validation window ongoing (started 2026-04-15, ends ~2026-05-15).
-PR for round-29 is drafted on branch
-`claude/round29-earnings-exit-all-strategies` — awaiting merge.
+Docs cleanup (CHANGELOG.md split) is drafted on branch
+`claude/docs-cleanup-changelog-split` — awaiting merge.
 
-**Current `main` HEAD:** `fa0799f` (PR #63 round-28 exception
-handling — merged this morning). `c92ed41` (PR #62 sticky nav)
-merged just before.
+**Current `main` HEAD:** `c16ccfd` (PR #75 round-39 privacy leak
+fix + Tier B native charts). `a6f0b18` (PR #74 round-37 admin edit
+user), `e196caa` (PR #73 round-36 admin overhaul), `092887e` (PR #72
+round-35 correlation redesign), `4f50f32` (PR #71 round-34 today's
+closes) all merged this afternoon/evening.
 
 **All code-side pre-live items shipped.** Only remaining:
   1. Finish 30-day paper validation window (~2026-05-15).
   2. Generate dedicated live Alpaca keys.
   3. Flip Settings → 🔴 Live Trading.
 
-**Test suite:** **496 passing** locally (480 baseline + 16 round-29
-earnings-exit tests) minus the two documented sandbox-only failures.
-Ruff clean on all files touched this session.
+**Test suite:** **552 passing** locally (baseline 520 + 7 sched-log
+filter tests + 13 admin update-user tests + 12 admin invite/revoke
+tests — latest rounds) minus the two documented sandbox-only
+failures. Ruff clean on all files touched this session.
+
+**Docs structure (new this session):**
+  * `README.md` (893 lines) — pure operator manual. Starts with 12-
+    line header, then `👋 Welcome` → guide body. No changelog.
+  * `CHANGELOG.md` (521 lines) — reverse-chronological release
+    history, rounds 11-39. New rounds prepend at top.
+  * Convention: round summaries go in CHANGELOG.md; README changes
+    only when operator content (how something WORKS) needs update.
+  * CLAUDE.md (this file) remains the Claude-facing context.
 
 **User's open positions as of end of session:**
-  * SOXL 117 shares @ $85.11 entry. Stop trailing at $91.42 (raised
-    overnight from $90.76, locking ~$738 min profit above cost).
-  * INTC 63 shares @ $66.66. Stop at $61.34. **Earnings April 23** —
-    round-29 will auto-close April 22 once deployed.
-  * HIMS 260508P00027000 (-1 short put). Stop $2.25. Current $1.26.
-    +$79 P&L. Wheel — stays through earnings by design.
-  * CHWY 260515P00025000 (-1 short put). Stop $0.35. Current $0.32.
-    $0 P&L. Wheel — stays through earnings by design.
-  * Portfolio: $101,678 on $100k seed, +1.68% since 2026-04-15.
+  * SOXL 117 shares @ $85.11 entry. Stop at $94.83 (raised
+    intraday 2026-04-21 from $91.42; ~$1,140 profit locked above
+    cost).
+  * INTC 63 shares @ $66.66 — **AUTO-CLOSES 2026-04-22** via round-29
+    earnings-exit (INTC earnings 2026-04-23, 1-day buffer). Stop
+    $62.04.
+  * HIMS 260508P00027000 (-1 short put). Stop $2.25. Wheel —
+    through earnings by design.
+  * CHWY 260515P00025000 (-1 short put). Stop $0.35. Wheel.
+  * USAR 145 shares — auto-deployed breakout 2026-04-21 10:27 AM ET.
+    Stop $22.35. Day-1 -1.85%.
+  * Portfolio: ~$101,242 on $100k seed as of 11:51 AM snapshot.
+
+### Key behaviour changes rounds 31-39
+
+1. **Privacy**: `/api/scheduler-status` now filters the activity log
+   + user roster by `current_user.username` for non-admins.  Admin
+   sees everything.  `_has_user_tag()` distinguishes `[username]`
+   from task tags like `[scheduler]` / `[monitor]`.
+
+2. **Native price charts** (Tier B): `/api/chart-bars` endpoint
+   returns Alpaca bars + overlay (user's entry + stop).  Rendered in
+   a canvas modal (`openChartModal`) with purple=entry,
+   orange=stop dashed lines.  30d/60d/90d/6M toggle.  OCC option
+   symbols resolve to underlying (HIMS put → HIMS bars).
+
+3. **Admin panel now full-function**: Make/Revoke Admin, Revoke
+   Invite, Edit User (username + email with uniqueness check) on
+   top of the existing Deactivate / Reset Password / Create Invite /
+   Audit Log / Backups tabs.  Modal capped at `min(1280px, 95vw) ×
+   92vh` with scrolling inner content.
+
+4. **Weekly learning path bug fixed** (round-36): `update_dashboard.py`
+   now reads `LEARNED_WEIGHTS_PATH` env var matching `learn.py`'s
+   per-user write.  Previously screener read from shared
+   `/data/learned_weights.json` and ignored weekly output.
+
+5. **Invite revoke** (round-36): `auth.revoke_invite(token_hash)`
+   sets expires_at to the past. Used/unknown invites return False.
+
+6. **Last-admin guard rail** (round-36): `auth.set_user_admin` refuses
+   to demote the only active admin.  Inactive admins don't count.
+
+7. **Today's Closes** (round-34): new Overview panel shows every
+   position closed today with time/symbol/strategy/reason/P&L.
+
+8. **Orphan-close safety net** (round-34): `record_trade_close` now
+   appends a synthetic entry (flagged `orphan_close:true`) when no
+   matching open exists, instead of silently returning False.
+
+9. **Sector correlation rebuilt** (round-35): new
+   `position_sector.annotate_sector` helper + dashboard shows
+   $-weighted breakdown by sector with red/orange/green concentration
+   thresholds at 60%/40%.
+
+10. **CI timeout bumped** (round-38): e2e test `_POST_TIMEOUT` /
+    `_GET_TIMEOUT` are 15s instead of 5s — zxcvbn's first-call lazy
+    load + bcrypt + Alpaca verify occasionally crossed 5s on CI
+    runners.
 
 ### Picking this up from a new session
 
-1. `git pull --ff-only` on `main`. HEAD should be at `fa0799f` or
-   later. Round-29 PR is in flight on
-   `claude/round29-earnings-exit-all-strategies`.
-2. `MASTER_ENCRYPTION_KEY=<64hex> python3 -m pytest tests/ --ignore=tests/test_auth.py --ignore=tests/test_dashboard_data.py` — expect **496 passing** (480 if round-29 not merged).
-3. `ruff check .` — still ~109 known findings (mostly F401 unused
-   imports). None in critical modules.
-4. Read this file + `README.md` + `GO_LIVE_CHECKLIST.md`.
+1. `git pull --ff-only` on `main`. HEAD should be at `c16ccfd` or
+   later.  Docs-cleanup PR is in flight on
+   `claude/docs-cleanup-changelog-split`.
+2. `MASTER_ENCRYPTION_KEY=<64hex> python3 -m pytest tests/ --ignore=tests/test_auth.py --ignore=tests/test_dashboard_data.py` — expect **552 passing**.
+3. `ruff check .` — clean on current main (coverage floor 20%,
+   measured ~29%).
+4. Read this file + `README.md` (now ~900 lines, operator-focused)
+   + `CHANGELOG.md` (release history) + `GO_LIVE_CHECKLIST.md`.
 5. If the user says "audit again", follow the playbook (5-8 parallel
    Explore agents, triage into fix/deferred/false-positive, verify
    trading-logic claims against actual code — that agent has a
-   history of false-positives, see PR #51 body for examples).
+   history of false-positives, see CHANGELOG round-22 for examples).
 6. **Known open questions** (user-flagged, not yet decided):
    - Why does the Anthropic MCP OAuth redirect include Gmail/Drive
-     scopes? User noticed `googleapis.com/auth/drive.readonly` in the
-     callback URL despite only wanting GitHub access. Answer: OAuth
-     flow routes through Google as Anthropic's identity provider,
-     not direct GitHub OAuth — not asking for Gmail content, just
-     identity. GitHub access token lives server-side at Anthropic.
-   - **SOXL sector misclassification** (cosmetic, deferred): SOXL is
-     bucketed as `"Other"` in correlation warnings instead of
-     `"Technology"`. Causes false "3+ positions in same sector"
-     warnings. Low priority — fix is a sector-ETF map entry.
+     scopes?  Answer (stored for the record): OAuth flow routes
+     through Google as Anthropic's identity provider, not direct
+     GitHub OAuth — not asking for Gmail content, just identity.
+     GitHub access token lives server-side at Anthropic.
+   - **GitHub MCP stays disconnected** every session so far.  User
+     opens PRs + merges manually via the web UI.  Re-auth attempts
+     via `/mcp` haven't stuck.  Document + move on.
+
+### Likely next-session topics
+
+Based on unmerged branches + open threads:
+- **Docs-cleanup PR merge** (trivial, no code).
+- **INTC April 22 auto-close verification** — user should see a
+  ntfy push and an entry in the Today's Closes panel.
+- User may ask about a **new feature** (chart export?  alert
+  webhook?  Discord integration?) — no blocking work queued.
 
 See `GO_LIVE_CHECKLIST.md` for the pre-flip-to-live gating list.
