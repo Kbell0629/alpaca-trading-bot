@@ -32,6 +32,7 @@ except Exception as _obs_err:
 import base64
 import glob
 import hmac
+import html as _html
 import json
 import os
 import re
@@ -1270,8 +1271,11 @@ class DashboardHandler(
             observability.capture_exception(e, source="track_record.pnl_cls")
             pnl_cls = "neutral"
         ret_cls = "positive" if total_return_pct > 0 else "negative" if total_return_pct < 0 else "neutral"
+        # Round-41 XSS hardening: track_record.html is public (shareable URL).
+        # Escape username before interpolating — usernames are validated at
+        # signup but defense-in-depth matters when rendering into HTML.
         rendered = (tpl
-            .replace("{{USERNAME}}", user.get("username", "User"))
+            .replace("{{USERNAME}}", _html.escape(user.get("username", "User")))
             .replace("{{MODE_BADGE}}", mode_badge)
             .replace("{{STARTED_DATE}}", started)
             .replace("{{TOTAL_RETURN_PCT}}", f"{total_return_pct:+.2f}%")
@@ -2529,7 +2533,17 @@ def _graceful_shutdown(httpd, reason="signal"):
 
 
 def main():
-    port = int(os.environ.get("PORT", 8888))
+    # Round-41 hardening: guard against a malformed PORT env var (non-numeric
+    # or negative). Previously a typo like PORT=abc on Railway would crash
+    # the process on boot with a bare ValueError and no helpful log.
+    _port_env = os.environ.get("PORT", "8888")
+    try:
+        port = int(_port_env)
+        if port <= 0 or port > 65535:
+            raise ValueError(f"out of range: {port}")
+    except (TypeError, ValueError) as e:
+        log.warning(f"invalid PORT env var {_port_env!r} ({e}); falling back to 8888")
+        port = 8888
 
     # Secure the SQLite DB file: 0o600 so nothing else on the container
     # (or on a misconfigured shared volume) can read the encrypted Alpaca

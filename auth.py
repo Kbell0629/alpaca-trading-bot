@@ -505,6 +505,12 @@ def create_user(email, username, password, alpaca_key, alpaca_secret,
     try:
         conn = _get_db()
         cur = conn.cursor()
+        # Round-41 security fix: TOCTOU — two concurrent signups hitting
+        # an empty users table could both see count==0 and both become
+        # admin. BEGIN IMMEDIATE grabs a write lock before the count so
+        # the second signup waits until the first is committed, seeing
+        # the now-non-zero count. SQLite serializes this automatically.
+        cur.execute("BEGIN IMMEDIATE")
         # Check if this will be the first user (auto-admin)
         cur.execute("SELECT COUNT(*) FROM users")
         is_first = cur.fetchone()[0] == 0
@@ -561,36 +567,47 @@ def create_user(email, username, password, alpaca_key, alpaca_secret,
 
 def get_user_by_id(user_id):
     conn = _get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE id = ? AND is_active = 1", (user_id,))
-    row = cur.fetchone()
-    conn.close()
-    return dict(row) if row else None
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM users WHERE id = ? AND is_active = 1", (user_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        try: conn.close()
+        except (sqlite3.Error, OSError): pass
 
 def get_user_by_username(username):
     conn = _get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE LOWER(username) = LOWER(?) AND is_active = 1", (username,))
-    row = cur.fetchone()
-    conn.close()
-    return dict(row) if row else None
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM users WHERE LOWER(username) = LOWER(?) AND is_active = 1", (username,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        try: conn.close()
+        except (sqlite3.Error, OSError): pass
 
 def get_user_by_email(email):
     conn = _get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE LOWER(email) = LOWER(?) AND is_active = 1", (email,))
-    row = cur.fetchone()
-    conn.close()
-    return dict(row) if row else None
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM users WHERE LOWER(email) = LOWER(?) AND is_active = 1", (email,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        try: conn.close()
+        except (sqlite3.Error, OSError): pass
 
 def list_active_users():
     """Return all active users (for cloud scheduler iteration)."""
     conn = _get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE is_active = 1")
-    rows = [dict(r) for r in cur.fetchall()]
-    conn.close()
-    return rows
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM users WHERE is_active = 1")
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        try: conn.close()
+        except (sqlite3.Error, OSError): pass
 
 def update_user_credentials(user_id, alpaca_key=None, alpaca_secret=None,
                             alpaca_endpoint=None, alpaca_data_endpoint=None,
@@ -832,39 +849,42 @@ def validate_session(token):
     if not token:
         return None
     conn = _get_db()
-    cur = conn.cursor()
-    now = now_et()
-    idle_cutoff = (now - timedelta(hours=SESSION_IDLE_HOURS)).isoformat()
-    cur.execute("""
-        SELECT u.*, s.last_activity_at FROM sessions s
-        JOIN users u ON s.user_id = u.id
-        WHERE s.token = ?
-          AND s.expires_at > ?
-          AND u.is_active = 1
-          AND (s.last_activity_at IS NULL OR s.last_activity_at > ?)
-    """, (token, now.isoformat(), idle_cutoff))
-    row = cur.fetchone()
-    if row:
-        # Bump last_activity_at so the idle window slides forward on
-        # each validated request. Tolerate a stale read by doing a
-        # best-effort UPDATE — if it fails we just don't slide the
-        # window this tick (worst case: user has to re-auth earlier
-        # than they otherwise would).
-        try:
-            cur.execute(
-                "UPDATE sessions SET last_activity_at = ? WHERE token = ?",
-                (now.isoformat(), token))
-            conn.commit()
-        except Exception as e:
-            log.warning("session activity bump failed", extra={"error": str(e)})
-    conn.close()
-    if not row:
-        return None
-    # Strip the last_activity_at column that was just used for the check —
-    # callers expect user fields only.
-    d = dict(row)
-    d.pop("last_activity_at", None)
-    return d
+    try:
+        cur = conn.cursor()
+        now = now_et()
+        idle_cutoff = (now - timedelta(hours=SESSION_IDLE_HOURS)).isoformat()
+        cur.execute("""
+            SELECT u.*, s.last_activity_at FROM sessions s
+            JOIN users u ON s.user_id = u.id
+            WHERE s.token = ?
+              AND s.expires_at > ?
+              AND u.is_active = 1
+              AND (s.last_activity_at IS NULL OR s.last_activity_at > ?)
+        """, (token, now.isoformat(), idle_cutoff))
+        row = cur.fetchone()
+        if row:
+            # Bump last_activity_at so the idle window slides forward on
+            # each validated request. Tolerate a stale read by doing a
+            # best-effort UPDATE — if it fails we just don't slide the
+            # window this tick (worst case: user has to re-auth earlier
+            # than they otherwise would).
+            try:
+                cur.execute(
+                    "UPDATE sessions SET last_activity_at = ? WHERE token = ?",
+                    (now.isoformat(), token))
+                conn.commit()
+            except Exception as e:
+                log.warning("session activity bump failed", extra={"error": str(e)})
+        if not row:
+            return None
+        # Strip the last_activity_at column that was just used for the check —
+        # callers expect user fields only.
+        d = dict(row)
+        d.pop("last_activity_at", None)
+        return d
+    finally:
+        try: conn.close()
+        except (sqlite3.Error, OSError): pass
 
 def delete_session(token):
     conn = _get_db()

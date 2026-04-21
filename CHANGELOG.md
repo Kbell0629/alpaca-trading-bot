@@ -8,6 +8,64 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-41 — Full tech-stack audit (2026-04-21 late night)
+
+Five parallel Explore agents swept security, concurrency, trading
+logic, UI/UX, and ops. Trading-logic came back CLEAN — every claim
+was verified against actual code. Eight real bugs across four
+other areas were shipped in one PR.
+
+**Security / Concurrency:**
+* **`auth.py` connection leaks** — `get_user_by_id`,
+  `get_user_by_username`, `get_user_by_email`, `list_active_users`,
+  `validate_session` all returned early without closing the sqlite
+  connection. On hot paths (session validation fires on every HTTP
+  request) this was accumulating open file handles. Wrapped in
+  try-finally.
+* **First-user auto-admin TOCTOU** — two concurrent signups on an
+  empty `users` table could both see `count==0` and both insert
+  with `is_admin=1`. Fixed by acquiring a write lock with
+  `BEGIN IMMEDIATE` before the count query so SQLite serializes
+  the second signup behind the first commit.
+* **`journal_backfill.py` race** — read-modify-write on
+  `trade_journal.json` was unlocked. A concurrent `record_trade_open`
+  from the scheduler or a manual deploy could silently overwrite
+  entries. Wrapped in `strategy_file_lock` (the flock helper used
+  by every other journal writer).
+
+**Ops hardening:**
+* **`server.main` PORT guard** — a typo like `PORT=abc` on Railway
+  would crash the process with a bare `ValueError` and no helpful
+  log. Now validates + logs + falls back to 8888.
+* **`track_record.html` username XSS** — public shareable URL
+  interpolated `{{USERNAME}}` without escaping. Usernames are
+  validated at signup but defense-in-depth matters on reflected
+  output. Now routes through `html.escape()`.
+
+**UI / UX:**
+* **Modal height cap** — Close Position (with P&L detail box),
+  Cancel Order (with explanation panel), and Settings (with
+  multi-row Danger Zone) were pushing confirm/cancel buttons past
+  viewport bottom on short screens. Added `max-height: 92vh;
+  overflow-y: auto` to the base `.modal` class.
+* **Double-submit guards** — `executeClosePosition`,
+  `executeSellFraction`, `executeCancelOrder` now check an
+  in-flight set before firing. Fast double-click on Confirm Sell
+  was firing two POSTs before the modal dismiss animation
+  finished. Same pattern as round-11's `_deployInFlight`.
+* **Notification email autocomplete** — `<input type="email">`
+  for notifications now has `autocomplete="email"` +
+  `inputmode="email"` so iOS/Android keyboard offers the saved
+  address instead of making the user type it again.
+
+**Tests:** 9 new cases in `tests/test_round41_audit_fixes.py`
+covering every fix (conn leak, TOCTOU race, journal lock,
+PORT guard, XSS escape). Full suite: **603 passing** (baseline
+583 + 9 new + 11 auth-on-sandbox when MASTER_KEY is set). Ruff
+clean.
+
+---
+
 ## 🆕 What's New (2026-04-21 night — Rounds 38-39)
 
 **Round-38 — CI timeout fix + Deploy modal scroll containment.**
