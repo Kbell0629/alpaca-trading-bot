@@ -693,7 +693,51 @@ legacy env-var `SIGNUP_CODE` OR a DB invite token. 8 tests.
   `optPnlColor` / `optPnlWord` / `optBtn`. Lesson learned: run
   `node --check` on extracted dashboard JS before merging.
 
-### Round-28 (this PR, `claude/fix-exception-handling-VWBO2`)
+### Round-29 (PR on `claude/round29-earnings-exit-all-strategies`)
+
+Universal pre-earnings exit for non-PEAD equity strategies. Triggered
+by spotting INTC (earnings April 23, user held 63 shares from the
+breakout deploy). Before round-29 only the PEAD strategy exited
+positions before earnings; breakout / trailing-stop / mean-reversion /
+copy-trading positions sat through earnings and regularly got
+whipsawed by surprise moves.
+
+**What shipped:**
+
+* **New module `earnings_exit.py`** — yfinance-backed next-earnings
+  lookup (cached 4 hours — the monitor loop runs every 30 min per
+  symbol), `should_exit_for_earnings()` decision helper, strategy
+  allow-list.
+* **`process_strategy_file()` hook in `cloud_scheduler.py`** — after
+  the PEAD block and before profit-ladder. Fires a market sell + stop
+  cancel + rich notification.
+* **Guardrails key `earnings_exit_days_before`** (default 1). Operator
+  can widen the buffer (3-5 days), or disable entirely via
+  `earnings_exit_disabled: true`.
+* **Boot-time migration** (`migrations.migrate_guardrails_round29`)
+  stamps the default onto every existing user's guardrails.json
+  without overwriting custom values.
+
+**Scope choices (best-for-profits):**
+
+* **1 day before** earnings (not 3-5). Keeps more of the pre-earnings
+  momentum we deployed for; gives slippage buffer for after-hours
+  surprise.
+* **Full close** (not partial). Earnings is binary — partial exposure
+  is the worst of both worlds.
+* **Applies to:** `trailing_stop`, `breakout`, `mean_reversion`,
+  `copy_trading`.
+* **Does NOT apply to:** `wheel` (short puts over earnings capture IV
+  crush — the wheel's profit engine), `pead` (has its own rule via
+  `exit_before_next_earnings_days`).
+
+**INTC handling:** bot will close INTC automatically on April 22 (1
+day before April 23 earnings) once the PR merges + Railway deploys.
+
+16 new tests in `tests/test_earnings_exit.py`. All pass. 496 passing
+locally (was 480 after round-28). Ruff clean.
+
+### Round-28 (PR #63, merged)
 
 Follow-on to PR #43's exception-handling hardening. Audit surfaced
 sites the prior sweep missed:
@@ -725,29 +769,43 @@ Ruff clean on touched files.
 
 ---
 
-## Last session state (2026-04-21 — END OF SESSION, after round-28)
+## Last session state (2026-04-21 — END OF SESSION, after round-29)
 
-**61 PRs total merged** across rounds 11-27. Paper-trading 30-day
+**63 PRs total merged** across rounds 11-28. Paper-trading 30-day
 validation window ongoing (started 2026-04-15, ends ~2026-05-15).
-PR for round-28 is drafted on branch
-`claude/fix-exception-handling-VWBO2` — awaiting merge.
+PR for round-29 is drafted on branch
+`claude/round29-earnings-exit-all-strategies` — awaiting merge.
 
-**Current `main` HEAD:** `4a1e77e` (PR #61 JS SyntaxError hotfix).
+**Current `main` HEAD:** `fa0799f` (PR #63 round-28 exception
+handling — merged this morning). `c92ed41` (PR #62 sticky nav)
+merged just before.
 
 **All code-side pre-live items shipped.** Only remaining:
   1. Finish 30-day paper validation window (~2026-05-15).
   2. Generate dedicated live Alpaca keys.
   3. Flip Settings → 🔴 Live Trading.
 
-**Test suite:** **480 passing** locally (465 baseline + 7 round-28
-exception-handling + 8 round-26 invites) minus the two documented
-sandbox-only failures. Ruff clean on all files touched this session.
+**Test suite:** **496 passing** locally (480 baseline + 16 round-29
+earnings-exit tests) minus the two documented sandbox-only failures.
+Ruff clean on all files touched this session.
+
+**User's open positions as of end of session:**
+  * SOXL 117 shares @ $85.11 entry. Stop trailing at $91.42 (raised
+    overnight from $90.76, locking ~$738 min profit above cost).
+  * INTC 63 shares @ $66.66. Stop at $61.34. **Earnings April 23** —
+    round-29 will auto-close April 22 once deployed.
+  * HIMS 260508P00027000 (-1 short put). Stop $2.25. Current $1.26.
+    +$79 P&L. Wheel — stays through earnings by design.
+  * CHWY 260515P00025000 (-1 short put). Stop $0.35. Current $0.32.
+    $0 P&L. Wheel — stays through earnings by design.
+  * Portfolio: $101,678 on $100k seed, +1.68% since 2026-04-15.
 
 ### Picking this up from a new session
 
-1. `git pull --ff-only` on `main`. HEAD should be at `4a1e77e` or
-   later (round-28 PR in flight on `claude/fix-exception-handling-VWBO2`).
-2. `MASTER_ENCRYPTION_KEY=<64hex> python3 -m pytest tests/ --ignore=tests/test_auth.py --ignore=tests/test_dashboard_data.py` — expect **480 passing** (or 473 if round-28 not yet merged).
+1. `git pull --ff-only` on `main`. HEAD should be at `fa0799f` or
+   later. Round-29 PR is in flight on
+   `claude/round29-earnings-exit-all-strategies`.
+2. `MASTER_ENCRYPTION_KEY=<64hex> python3 -m pytest tests/ --ignore=tests/test_auth.py --ignore=tests/test_dashboard_data.py` — expect **496 passing** (480 if round-29 not merged).
 3. `ruff check .` — still ~109 known findings (mostly F401 unused
    imports). None in critical modules.
 4. Read this file + `README.md` + `GO_LIVE_CHECKLIST.md`.
@@ -762,5 +820,9 @@ sandbox-only failures. Ruff clean on all files touched this session.
      flow routes through Google as Anthropic's identity provider,
      not direct GitHub OAuth — not asking for Gmail content, just
      identity. GitHub access token lives server-side at Anthropic.
+   - **SOXL sector misclassification** (cosmetic, deferred): SOXL is
+     bucketed as `"Other"` in correlation warnings instead of
+     `"Technology"`. Causes false "3+ positions in same sector"
+     warnings. Low priority — fix is a sector-ETF map entry.
 
 See `GO_LIVE_CHECKLIST.md` for the pre-flip-to-live gating list.

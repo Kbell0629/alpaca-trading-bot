@@ -39,6 +39,7 @@ log = logging.getLogger(__name__)
 
 MIGRATION_ROUND20_POSITION_CAP = "round20_position_cap_0.07"
 MIGRATION_ROUND21_BREAKOUT_STOP = "round21_breakout_stop_0.12"
+MIGRATION_ROUND29_EARNINGS_EXIT = "round29_earnings_exit_days_before_1"
 
 
 def _load_json(path):
@@ -144,6 +145,36 @@ def migrate_auto_deployer_config_round21(config_path):
     return "user_customised" if user_customised else "migrated"
 
 
+def migrate_guardrails_round29(guardrails_path):
+    """Round-29: add `earnings_exit_days_before: 1` default to per-user
+    guardrails so the new pre-earnings exit rule fires for trailing_stop
+    / breakout / mean_reversion / copy_trading positions without the
+    user having to touch Settings.
+
+    Idempotent via `_migrations_applied` list. Safe if
+    `earnings_exit_days_before` is already set — stamps the migration
+    as applied without overwriting.
+
+    Returns: "migrated" | "already_applied" | "user_customised" |
+    "no_file".
+    """
+    if not os.path.exists(guardrails_path):
+        return "no_file"
+    g = _load_json(guardrails_path)
+    if not isinstance(g, dict):
+        return "no_file"
+    applied = g.get("_migrations_applied") or []
+    if MIGRATION_ROUND29_EARNINGS_EXIT in applied:
+        return "already_applied"
+    existing = g.get("earnings_exit_days_before")
+    user_customised = existing is not None
+    if not user_customised:
+        g["earnings_exit_days_before"] = 1
+    g["_migrations_applied"] = applied + [MIGRATION_ROUND29_EARNINGS_EXIT]
+    _save_json_atomic(guardrails_path, g)
+    return "user_customised" if user_customised else "migrated"
+
+
 def run_all_migrations(users, user_file_fn):
     """Apply every idempotent migration to every user.
 
@@ -170,5 +201,13 @@ def run_all_migrations(users, user_file_fn):
         except Exception as e:
             user_result["round21_breakout_stop"] = f"error: {type(e).__name__}"
             log.warning(f"migration round21 failed for {uid}: {e}")
+        try:
+            gpath29 = user_file_fn(u, "guardrails.json")
+            user_result["round29_earnings_exit"] = (
+                migrate_guardrails_round29(gpath29)
+            )
+        except Exception as e:
+            user_result["round29_earnings_exit"] = f"error: {type(e).__name__}"
+            log.warning(f"migration round29 failed for {uid}: {e}")
         summary[uid] = user_result
     return summary
