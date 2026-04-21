@@ -71,8 +71,14 @@ class StrategyHandlerMixin:
                         return self.send_json({
                             "error": f"In loss cooldown ({cooldown_min} min) — can't deploy new positions yet.",
                         }, 403)
-                except Exception:
-                    pass  # malformed timestamp; fail open rather than block
+                except (ValueError, TypeError) as _cd_e:
+                    # Malformed timestamp or bad cooldown_after_loss_min —
+                    # fail open (allow deploy) but surface the corruption
+                    # so the operator knows the cooldown gate was bypassed.
+                    log.warning(
+                        "deploy: cooldown timestamp malformed, bypassing cooldown gate",
+                        extra={"last_loss_iso": last_loss_iso, "error": str(_cd_e)},
+                    )
         except Exception as e:
             log.warning("deploy: guardrails pre-check failed", extra={"error": str(e)})
 
@@ -86,8 +92,15 @@ class StrategyHandlerMixin:
                 target_user_id=self.current_user.get("id") if self.current_user else None,
                 ip_address=ip,
             )
-        except Exception:
-            pass
+        except Exception as _audit_e:
+            # Audit-log failure must not block the deploy, but the
+            # operator needs to know compliance / trace lookup is
+            # broken. Log at warning — a DB lock or permission
+            # regression would otherwise go silent for weeks.
+            log.warning(
+                "deploy: admin audit log write failed",
+                extra={"strategy": strategy, "error": str(_audit_e)},
+            )
 
         if strategy == "trailing_stop":
             self.deploy_trailing_stop(symbol, qty)
@@ -469,8 +482,18 @@ class StrategyHandlerMixin:
         try:
             import pead_strategy
             _score, pead_signal = pead_strategy.score_symbol(symbol)
-        except Exception:
+        except ImportError:
+            # Optional module — fine if absent in slim deploys.
             pass
+        except Exception as _pead_e:
+            # pead_strategy is present but raised — the deploy still
+            # proceeds without the earnings exit signal, but we want
+            # this surfaced so a broken scorer doesn't silently strand
+            # every PEAD deploy without an earnings exit trigger.
+            log.warning(
+                "deploy: pead_strategy.score_symbol failed",
+                extra={"symbol": symbol, "error": str(_pead_e)},
+            )
 
         buy_order = self.user_api_post(f"{self.user_api_endpoint}/orders", {
             "symbol": symbol,

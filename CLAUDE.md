@@ -668,43 +668,99 @@ selected both. Cosmetic only; the data was always correct.
 
 ---
 
-## Last session state (2026-04-20 — END OF SESSION, after round-25 followups)
+## Rounds 26-28 (2026-04-20 night → 2026-04-21)
 
-**58 PRs total merged** across rounds 11-25 (including rounds 23-24 +
-the round-25 sweep + PRs #55 / #56 follow-up fixes). Paper-trading
-validation window still active (started 2026-04-15, ends ~2026-05-15).
+Three more rounds landed after round-25 followups:
 
-**Current `main` HEAD:** `c00442d` (PR #56 heatmap legend fix).
+### Round-26 (PR #58) — single-use signup invites
 
-**All code-side pre-live items are shipped.** Only remaining items
-are operational:
+Admin-generated, DB-backed. Plaintext token shown once; only SHA-256
+hash stored. `auth.create_invite` / `check_invite` / `consume_invite`
+/ `list_invites` helpers; atomic `UPDATE ... WHERE used_at IS NULL`
+prevents double-use under races. Signup flow accepts either the
+legacy env-var `SIGNUP_CODE` OR a DB invite token. 8 tests.
+
+### Round-27 (PRs #59, #60, #61) — mobile + UX polish
+
+* **PR #59**: mobile horizontal-scroll — `html { overflow-x: hidden }`
+  + `body { overflow-x: clip }` clamps overflow at viewport level.
+* **PR #60**: per-section ⓘ help buttons + wheel-aware Close modal
+  (show realized put premium / option P&L breakdown before confirming)
+  + README sync.
+* **PR #61**: JS SyntaxError hotfix — `const`/`var` identifier
+  collisions in the close-modal option branch broke the dashboard's
+  initial render with "Loading...". Renamed collisions to
+  `optPnlColor` / `optPnlWord` / `optBtn`. Lesson learned: run
+  `node --check` on extracted dashboard JS before merging.
+
+### Round-28 (this PR, `claude/fix-exception-handling-VWBO2`)
+
+Follow-on to PR #43's exception-handling hardening. Audit surfaced
+sites the prior sweep missed:
+
+* **safe_save_json narrowings**: three sibling copies of the same
+  atomic-write helper (`error_recovery.py`, `learn.py`,
+  `update_dashboard.py`) still had bare `except:` on the outer
+  clause. Signals (KeyboardInterrupt / SystemExit) used to get
+  caught, passed through the tmp-unlink cleanup, then re-raised —
+  blocking graceful shutdown for a few ms. Narrowed to
+  `except Exception:` + inner cleanup to `except OSError:`. Also
+  `update_dashboard.py:2470` inline HTML-tmp cleanup.
+* **auth.py:557 conn.close bare except** narrowed to
+  `(sqlite3.Error, OSError)`. DB-close failures still absorbed, but
+  KeyboardInterrupt during finally now propagates.
+* **handlers/strategy_mixin.py three silent swallows → log.warning**:
+  - Line 74 (cooldown timestamp malformed): bypassing the loss-cooldown
+    gate now surfaces at WARN so a corrupted `guardrails.json` doesn't
+    silently disable the gate.
+  - Line 89 (admin audit-log failure): audit trail breakage now
+    visible — was silent for any compliance / trace regression.
+  - Line 472 (pead_strategy scorer fails): split into `ImportError`
+    (stays silent — slim deploys) and `Exception` (WARN). A broken
+    scorer was silently stranding every PEAD deploy with no
+    earnings-exit signal.
+
+7 new tests in `tests/test_exception_handling_round28.py`. All pass.
+Ruff clean on touched files.
+
+---
+
+## Last session state (2026-04-21 — END OF SESSION, after round-28)
+
+**61 PRs total merged** across rounds 11-27. Paper-trading 30-day
+validation window ongoing (started 2026-04-15, ends ~2026-05-15).
+PR for round-28 is drafted on branch
+`claude/fix-exception-handling-VWBO2` — awaiting merge.
+
+**Current `main` HEAD:** `4a1e77e` (PR #61 JS SyntaxError hotfix).
+
+**All code-side pre-live items shipped.** Only remaining:
   1. Finish 30-day paper validation window (~2026-05-15).
   2. Generate dedicated live Alpaca keys.
   3. Flip Settings → 🔴 Live Trading.
 
-**Test suite:** 465 passing locally (455 baseline + 6 round-25
-session-idle/news-alerts/watchdog tests + 4 OCC-option tests). Ruff
-clean on all Python files touched this session.
-
-**User's open positions as of end of session:**
-  * SOXL 117 shares @ $85.11 entry. Stop trailing at $90.76, locking in
-    ~$660 minimum profit. Trailing strategy working as designed.
-  * INTC 63 shares @ $66.66. Stop at $61.34.
-  * HIMS 260508P00027000 (-1 short put).
-  * CHWY 260515P00025000 (-1 short put).
-  * Portfolio: ~$101k on $100k seed, +1.1% since 2026-04-15 start.
-  * Trade Heatmap: 3 trading days, 3 wins, $1,226.65 total P&L.
+**Test suite:** **480 passing** locally (465 baseline + 7 round-28
+exception-handling + 8 round-26 invites) minus the two documented
+sandbox-only failures. Ruff clean on all files touched this session.
 
 ### Picking this up from a new session
 
-1. `git pull --ff-only` on `main`. HEAD should be at `c00442d` or later.
-2. `MASTER_ENCRYPTION_KEY=<64hex> python3 -m pytest tests/ --ignore=tests/test_auth.py --ignore=tests/test_dashboard_data.py` — expect **465 passing**.
-3. `ruff check .` — expect ~109 known findings (mostly F401 unused
-   imports, low priority). None in critical modules.
+1. `git pull --ff-only` on `main`. HEAD should be at `4a1e77e` or
+   later (round-28 PR in flight on `claude/fix-exception-handling-VWBO2`).
+2. `MASTER_ENCRYPTION_KEY=<64hex> python3 -m pytest tests/ --ignore=tests/test_auth.py --ignore=tests/test_dashboard_data.py` — expect **480 passing** (or 473 if round-28 not yet merged).
+3. `ruff check .` — still ~109 known findings (mostly F401 unused
+   imports). None in critical modules.
 4. Read this file + `README.md` + `GO_LIVE_CHECKLIST.md`.
-6. If the user says "audit again", follow the playbook (5-8 parallel
+5. If the user says "audit again", follow the playbook (5-8 parallel
    Explore agents, triage into fix/deferred/false-positive, verify
    trading-logic claims against actual code — that agent has a
    history of false-positives, see PR #51 body for examples).
+6. **Known open questions** (user-flagged, not yet decided):
+   - Why does the Anthropic MCP OAuth redirect include Gmail/Drive
+     scopes? User noticed `googleapis.com/auth/drive.readonly` in the
+     callback URL despite only wanting GitHub access. Answer: OAuth
+     flow routes through Google as Anthropic's identity provider,
+     not direct GitHub OAuth — not asking for Gmail content, just
+     identity. GitHub access token lives server-side at Anthropic.
 
 See `GO_LIVE_CHECKLIST.md` for the pre-flip-to-live gating list.
