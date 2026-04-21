@@ -1484,6 +1484,64 @@ def process_strategy_file(user, filepath, strat):
         except Exception as _e:
             log(f"[{user['username']}] {symbol}: PEAD timer check failed: {_e}", "monitor")
 
+    # Round-29: universal pre-earnings exit for non-PEAD equity strategies.
+    # PEAD has its own rule above (uses deploy-time pead_signal). Wheel
+    # is deliberately excluded — short puts through earnings capture IV
+    # crush, which is the wheel's profit engine. Trailing / breakout /
+    # mean-reversion / copy are momentum plays where earnings is a
+    # random-walk shock; we sidestep it.
+    if strategy_type in ("trailing_stop", "breakout", "mean_reversion", "copy_trading"):
+        try:
+            gpath = user_file(user, "guardrails.json")
+            _gr = load_json(gpath) or {}
+            if not _gr.get("earnings_exit_disabled", False):
+                days_before = int(_gr.get("earnings_exit_days_before", 1))
+                import earnings_exit
+                should_exit, reason, days_to = earnings_exit.should_exit_for_earnings(
+                    symbol, strategy_type, days_before=days_before,
+                )
+                if should_exit and strat.get("status") != "closed":
+                    old_stop_id = state.get("stop_order_id")
+                    if old_stop_id:
+                        user_api_delete(user, f"/orders/{old_stop_id}")
+                        state["stop_order_id"] = None
+                    order = user_api_post(user, "/orders", {
+                        "symbol": symbol, "qty": str(shares), "side": "sell",
+                        "type": "market", "time_in_force": "day",
+                    })
+                    if isinstance(order, dict) and "id" in order:
+                        strat["status"] = "closed"
+                        state["exit_reason"] = reason
+                        state["exit_price"] = price
+                        pnl = (price - entry) * shares
+                        pnl_pct = ((price / entry - 1) * 100) if entry else 0
+                        log(f"[{user['username']}] {symbol}: pre-earnings exit "
+                            f"({reason}). P&L ${pnl:.2f} ({pnl_pct:+.1f}%)", "monitor")
+                        notify_rich(
+                            user,
+                            f"Pre-earnings exit on {symbol}: sold at ${price:.2f} "
+                            f"(${pnl:+.2f}, {pnl_pct:+.1f}%, {days_to}d to earnings)",
+                            "exit",
+                            rich_subject=f"Pre-earnings exit: {symbol}",
+                            rich_body=(
+                                f"Strategy {strategy_type} auto-closed {symbol} "
+                                f"{days_to} day(s) before earnings to sidestep "
+                                f"event risk.\n\n"
+                                f"Entry: ${entry:.2f}\nExit: ${price:.2f}\n"
+                                f"P&L: ${pnl:+.2f} ({pnl_pct:+.1f}%)\n\n"
+                                f"Configure via guardrails.json:\n"
+                                f"  earnings_exit_days_before (default 1)\n"
+                                f"  earnings_exit_disabled (default false)"
+                            ),
+                        )
+                        record_trade_close(user, symbol, strategy_type, price,
+                                            pnl, reason, qty=shares, side="sell")
+                    else:
+                        log(f"[{user['username']}] {symbol}: WARN pre-earnings "
+                            f"exit order failed: {order}", "monitor")
+        except Exception as _e:
+            log(f"[{user['username']}] {symbol}: earnings-exit check failed: {_e}", "monitor")
+
     # Feature 8: Partial profit taking
     check_profit_ladder(user, filepath, strat, price, entry, shares)
     # Refresh shares count in case profit ladder sold some
