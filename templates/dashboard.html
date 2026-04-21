@@ -1398,26 +1398,15 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
        measured at runtime). */
     .nav-tabs { gap: 2px; padding: 3px; }
     .nav-tab { padding: 8px 12px; font-size: 12px; }
-    /* Scroll hint — tabs overflow off-screen (Screener, Short Sells,
-       Tax Harvest, Backtest, etc.) but the scrollbar is hidden so
-       users don't know. Fade the right edge + show a chevron to cue
-       horizontal swipe. */
-    .nav-tabs::after {
-        content: '\203A';  /* › single right-angle quote */
-        position: absolute; top: 0; bottom: 0; right: 0;
-        width: 36px;
-        display: flex; align-items: center; justify-content: flex-end;
-        padding-right: 8px;
-        background: linear-gradient(to right, transparent, var(--card) 55%);
-        color: var(--text-dim); font-size: 18px; font-weight: 800;
-        pointer-events: none;
-        border-radius: 0 var(--radius) var(--radius) 0;
-        animation: navScrollHint 1.8s ease-in-out infinite;
-    }
-    @keyframes navScrollHint {
-        0%, 100% { transform: translateX(0); opacity: 0.85; }
-        50% { transform: translateX(-3px); opacity: 1; }
-    }
+    /* Round-32: removed the animated '›' scroll-hint pseudo-element.
+       It was positioned absolute/right:0 inside the overflow-x scroll
+       container, so as users scrolled horizontally the chevron moved
+       with the content instead of pinning to the viewport edge —
+       which made it appear in the MIDDLE of the tab list (between
+       "Screener" and "Short Sells"), looking like a broken divider.
+       The visible pill density already signals swipability; a fragile
+       chevron that misbehaves under horizontal scroll is worse than
+       none. */
     .readiness-metrics { grid-template-columns: 1fr 1fr; }
     .pick-indicators { gap: 4px; }
     .screener table { font-size: 11px; }
@@ -5500,7 +5489,7 @@ function renderDashboard() {
         '<div class="readiness-progress"><div class="readiness-progress-fill" style="width:' + readinessScore + '%;background:' + readBarColor + '"></div></div>' +
         '<div class="readiness-metrics">' +
             '<div class="readiness-metric"><div class="rm-label">Days Tracked</div><div class="rm-value">' + scDays + '</div><div class="rm-target">Target: ' + (criteria.min_days||30) + '</div></div>' +
-            '<div class="readiness-metric"><div class="rm-label">Total Trades</div><div class="rm-value">' + (sc.total_trades||0) + '</div><div class="rm-target">Target: ' + (criteria.min_trades||20) + '</div></div>' +
+            '<div class="readiness-metric"><div class="rm-label">Total Trades</div><div class="rm-value">' + (sc.total_trades||0) + '</div><div class="rm-target" title="Total trades are informational only — they do not affect the readiness score. Scored metrics are Days, Win Rate, Max Drawdown, Profit Factor, Sharpe.">Informational</div></div>' +
             '<div class="readiness-metric"><div class="rm-label">Win Rate</div><div class="rm-value">' + (sc.win_rate_pct||0) + '%</div><div class="rm-target">Target: ' + (criteria.min_win_rate||50) + '%</div></div>' +
             '<div class="readiness-metric"><div class="rm-label">Max Drawdown</div><div class="rm-value">' + (sc.max_drawdown_pct||0).toFixed(1) + '%</div><div class="rm-target">Max: ' + (criteria.max_drawdown||10) + '%</div></div>' +
             '<div class="readiness-metric"><div class="rm-label">Profit Factor</div><div class="rm-value">' + (sc.profit_factor||0).toFixed(2) + '</div><div class="rm-target">Target: ' + (criteria.min_profit_factor||1.5) + '</div></div>' +
@@ -6956,13 +6945,13 @@ var SECTION_GUIDES = {
         title: 'Paper vs Live',
         html:
             '<p>Side-by-side of your paper-trading performance vs a (currently-disabled) live account. The readiness score on the right is a 0-100 gauge of whether you\'re ready to flip 🔴 Live Trading on.</p>' +
-            '<p><strong>Readiness criteria</strong> (all must pass for ready-for-live = true):</p>' +
+            '<p><strong>Readiness criteria</strong> (each scored criterion is worth 20 points; need &ge; 80/100 for ready-for-live = true):</p>' +
             '<ul>' +
-                '<li>&ge; 30 days of paper trading history</li>' +
-                '<li>&ge; 30 closed trades</li>' +
-                '<li>Win rate &gt;= 50%</li>' +
-                '<li>Profit factor &gt;= 1.5 (total wins / total losses)</li>' +
-                '<li>Max drawdown &lt; 15%</li>' +
+                '<li>Days tracked &ge; 30</li>' +
+                '<li>Win rate &ge; 50%</li>' +
+                '<li>Max drawdown &lt; 10%</li>' +
+                '<li>Profit factor &ge; 1.5 (total $ wins &divide; total $ losses)</li>' +
+                '<li>Sharpe ratio &ge; 0.5 (risk-adjusted return)</li>' +
             '</ul>' +
             '<p><strong>Live trading path</strong>: generate dedicated LIVE Alpaca keys (not paper keys), paste them in Settings → Alpaca API (Live), then toggle Settings → 🔴 Live Trading ON. Paper mode stays available — you can toggle back.</p>'
     },
@@ -7027,15 +7016,16 @@ var SECTION_GUIDES = {
     'paper-progress': {
         title: 'Paper Trading Progress',
         html:
-            '<p>A live gauge of how close you are to flipping live. Five criteria must all pass (see the readiness card on the right):</p>' +
+            '<p>A live gauge of how close you are to flipping live. <strong>Five scored criteria</strong>, each worth 20 points (100 total). You need &ge; 80/100 to flip live:</p>' +
             '<ul>' +
-                '<li><strong>30+ days</strong> of paper trading history</li>' +
-                '<li><strong>30+ closed trades</strong> (not open positions — actually realized)</li>' +
-                '<li><strong>Win rate &ge; 50%</strong></li>' +
-                '<li><strong>Profit factor &ge; 1.5</strong> (total wins &divide; total losses)</li>' +
-                '<li><strong>Max drawdown &lt; 15%</strong> from peak portfolio value</li>' +
+                '<li><strong>Days tracked &ge; 30</strong> of paper trading history</li>' +
+                '<li><strong>Win rate &ge; 50%</strong> (closed trades only)</li>' +
+                '<li><strong>Max drawdown &lt; 10%</strong> from peak portfolio value</li>' +
+                '<li><strong>Profit factor &ge; 1.5</strong> (total $ wins &divide; total $ losses)</li>' +
+                '<li><strong>Sharpe ratio &ge; 0.5</strong> (risk-adjusted return)</li>' +
             '</ul>' +
-            '<p>Current paper validation window started 2026-04-15 and runs through ~2026-05-15. Only after you hit all five should you generate live Alpaca keys and flip Settings → \u{1F534} Live Trading.</p>'
+            '<p><strong>Total Trades</strong> is shown for context but does NOT affect the readiness score.</p>' +
+            '<p>Current paper validation window started 2026-04-15 and runs through ~2026-05-15. Only after you hit 80/100 should you generate live Alpaca keys and flip Settings → \u{1F534} Live Trading.</p>'
     },
     'tax-loss': {
         title: 'Tax-Loss Harvesting',
