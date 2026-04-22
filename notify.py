@@ -52,7 +52,16 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "alpaca-bot-" + os.environ.get("USER", "default"))
 NTFY_URL = f"https://ntfy.sh/{NTFY_TOPIC}"
-EMAIL_RECIPIENT = "se2login@gmail.com"
+# Round-48 PRIVACY FIX: the recipient email was previously hardcoded to
+# "se2login@gmail.com" (Kbell0629's address). In multi-user mode, every
+# user's notify.py subprocess wrote to that address, so ALL users' trade
+# alerts / kill-switch pings / daily summaries flowed into one inbox.
+#
+# Now we read NOTIFICATION_EMAIL from the env (cloud_scheduler.notify_user
+# sets it per-user). Missing env var → we refuse to queue an email (better
+# to drop the notification than silently misroute it). The ntfy push still
+# fires because ntfy topics are already per-user via NTFY_TOPIC.
+EMAIL_RECIPIENT = os.environ.get("NOTIFICATION_EMAIL", "").strip()
 
 # Emoji/priority mapping
 TYPE_CONFIG = {
@@ -103,7 +112,16 @@ def send_notification(message, notify_type="info", push_only=False):
 
 
 def queue_email(subject, body, notify_type="info"):
-    """Queue an email notification with file locking for concurrency safety."""
+    """Queue an email notification with file locking for concurrency safety.
+
+    Round-48 privacy fix: refuse to queue when NOTIFICATION_EMAIL isn't
+    set — without a recipient, the email would land in the shared root
+    queue which the drain ships to whatever hardcoded address is left
+    (cross-user leak). We'd rather drop the email than misroute it.
+    """
+    if not EMAIL_RECIPIENT:
+        print(f"Email skipped (no NOTIFICATION_EMAIL in env): {subject}")
+        return
     queue_file = os.path.join(DATA_DIR, "email_queue.json")
     lock_file = queue_file + ".lock"
     lock_fd = None

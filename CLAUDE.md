@@ -930,7 +930,87 @@ Ruff clean on touched files.
 
 ---
 
-## Last session state (2026-04-22 very late night — END OF SESSION, after user-guide docs refresh)
+## Last session state (2026-04-23 early morning — END OF SESSION, after round-48 cross-user privacy fix)
+
+**86 PRs merged + round-48 in flight.** Paper-trading 30-day
+validation window ongoing.
+
+**Current `main` HEAD:** `41dfe1e` (PR #87 docs refresh round-43-46 +
+midnight test fix — merged earlier this session). Round-48 branch
+`claude/round48-privacy-fixes-scroll-jitter` — awaiting manual PR
+merge via web UI.
+
+Also pending: `claude/docs-toc-fix-going-live` (tiny 1-line ToC
+link fix — can merge anytime) and `claude/round47-mobile-scroll-jitter`
+(the sync scroll restore — superseded by round-48's broader jitter
+fixes but still useful if user merges in order).
+
+### Round-48 (this round) — CRITICAL cross-user privacy bugs
+
+User reported two SERIOUS privacy issues + ongoing dashboard jitter:
+*"I am getting emails for my friends trades and I still see him in
+my log... make sure there is 100% data security for users between
+users and no risk of PII exposure externally or between users."*
+
+**Root causes found + fixed:**
+
+1. **Hardcoded email recipient in `notify.py`.** `EMAIL_RECIPIENT =
+   "se2login@gmail.com"` (bootstrap admin's address) was hardcoded.
+   Every user's subprocess call to notify.py wrote to this address,
+   so ALL users' trade alerts / kill-switch pings / daily summaries
+   flowed to Kbell0629's inbox. Fixed: read from `NOTIFICATION_EMAIL`
+   env var, refuse to enqueue if unset (better to drop than misroute).
+2. **Shared root email queue.** `DATA_DIR/email_queue.json` was
+   shared across users. `cloud_scheduler.notify_user` now sets
+   `env["NOTIFICATION_EMAIL"]` + `env["DATA_DIR"]` per-user before
+   `subprocess.Popen(notify.py)`, so each user's queue lands in
+   their own `users/<id>/email_queue.json`.
+3. **Drainer flushed the shared queue.** `email_sender.drain_all`
+   now quarantines the legacy shared queue to `.pre-round48.dead`
+   instead of draining it — prevents historical cross-user backlog
+   from shipping after deploy.
+4. **Admins saw unfiltered activity log.** Round-39's filter
+   exempted admins. Privacy-by-default: admins are now filtered
+   too; explicit opt-in via `?all=1` for future drill-down.
+
+**Dashboard jitter fixes (user flagged desktop still jumping +
+badge flicker):**
+
+* Removed cascading re-renders from the 10s tick. Previously a single
+  refresh fired up to 3 wholesale `renderDashboard()` calls (main +
+  wheel-status callback + news-alerts callback) within ~300ms. Now
+  enrichment fetches store data silently; next tick renders.
+* Throttled `/api/scheduler-status` badge fetch to 30s cadence
+  (was every 10s inside renderDashboard — killed the "24/7 LIVE"
+  pulse flicker). Also only touches badge DOM when state changes.
+
+**Tests:** 7 new in `tests/test_round48_privacy_fixes.py` pinning
+every privacy fix. 1 existing test updated (`test_round14` setup).
+Suite: **647 passed, 1 deselected** (CI invocation).
+Ruff + node --check clean.
+
+### Invariants to preserve post-round-48
+
+* `notify.py` MUST read `NOTIFICATION_EMAIL` from env, never
+  hardcode a recipient. The grep-level test
+  (`test_notify_no_longer_has_hardcoded_recipient`) will fire if
+  someone re-introduces the old string.
+* `cloud_scheduler.notify_user` MUST pass BOTH `NOTIFICATION_EMAIL`
+  and `DATA_DIR` in the subprocess env (per-user). Pop
+  `NOTIFICATION_EMAIL` from env if the user has none configured so
+  a stale parent value doesn't leak.
+* `email_sender.drain_all` MUST NOT drain the shared root queue.
+  Quarantine-only on first contact.
+* `/api/scheduler-status` with `is_admin=True` only returns
+  unfiltered if `?all=1`. Default filtered.
+* Round-47's sync scroll restore stays — round-48 didn't touch it.
+* Enrichment fetches (wheel-status, news-alerts) MUST NOT call
+  `renderDashboard()` from their .then() callbacks. Store data,
+  let next tick render.
+
+---
+
+## Prior session state (2026-04-22 very late night — after user-guide docs refresh)
 
 **84 PRs merged + 1 docs PR in flight.** Paper-trading 30-day
 validation window ongoing.
