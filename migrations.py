@@ -40,6 +40,7 @@ log = logging.getLogger(__name__)
 MIGRATION_ROUND20_POSITION_CAP = "round20_position_cap_0.07"
 MIGRATION_ROUND21_BREAKOUT_STOP = "round21_breakout_stop_0.12"
 MIGRATION_ROUND29_EARNINGS_EXIT = "round29_earnings_exit_days_before_1"
+MIGRATION_ROUND51_CALIBRATION_ADOPT = "round51_calibration_adopted"
 
 
 def _load_json(path):
@@ -175,12 +176,85 @@ def migrate_guardrails_round29(guardrails_path):
     return "user_customised" if user_customised else "migrated"
 
 
-def run_all_migrations(users, user_file_fn):
+def migrate_guardrails_round51(guardrails_path, user, account_fetcher):
+    """Round-51: adopt portfolio-auto-calibration defaults for EXISTING
+    users. One-time; idempotent via `_migrations_applied` stamp.
+
+    Backs up the existing guardrails.json to
+    `guardrails.json.pre-round51.backup` before overwriting so the user
+    can revert if they dislike the new defaults.
+
+    `account_fetcher(user)` is a callable that returns Alpaca's
+    /v2/account response for the user. Factored out so tests can stub
+    without mocking HTTP.
+
+    Returns one of:
+      * "migrated"        — calibration adopted; backup written
+      * "already_applied" — stamp present; no-op
+      * "no_file"         — guardrails.json doesn't exist yet (new user,
+                            nothing to migrate; tier defaults apply on
+                            first deploy)
+      * "no_tier"         — Alpaca /account unavailable or equity < $500;
+                            stamp NOT written so we retry next boot
+      * "error:<type>"    — exception; stamp NOT written
+    """
+    if not os.path.exists(guardrails_path):
+        # Fresh user — no migration needed. Tier defaults will apply on
+        # first run_auto_deployer call (round-50 already handles this).
+        return "no_file"
+    g = _load_json(guardrails_path)
+    if not isinstance(g, dict):
+        return "no_file"
+    applied = g.get("_migrations_applied") or []
+    if MIGRATION_ROUND51_CALIBRATION_ADOPT in applied:
+        return "already_applied"
+    try:
+        import portfolio_calibration as pc
+        account = account_fetcher(user) if account_fetcher else None
+        tier = pc.detect_tier(account) if account else None
+        if not tier:
+            return "no_tier"  # retry next boot
+        # Backup the pre-migration guardrails so user can revert
+        backup_path = guardrails_path + ".pre-round51.backup"
+        if not os.path.exists(backup_path):
+            try:
+                with open(guardrails_path) as _orig, open(backup_path, "w") as _bak:
+                    _bak.write(_orig.read())
+            except OSError as _e:
+                return f"error:backup_{type(_e).__name__}"
+        # Merge tier defaults. User overrides that pre-date round-51 get
+        # preserved for risk-preference keys (daily_loss_limit_pct,
+        # earnings_exit_*, kill_switch_*, etc.). Tier defaults are
+        # applied for sizing/fractional/strategy keys.
+        TIER_ADOPTED_KEYS = (
+            "max_positions", "max_position_pct", "min_stock_price",
+            "fractional_enabled", "wheel_enabled", "short_enabled",
+            "strategies_enabled",
+        )
+        for key in TIER_ADOPTED_KEYS:
+            if key == "fractional_enabled":
+                g[key] = bool(tier.get("fractional_default", False))
+            elif key in tier:
+                g[key] = tier[key]
+        # Record which tier was adopted (useful for debugging)
+        g["_round51_tier_adopted"] = tier.get("name")
+        g["_migrations_applied"] = applied + [MIGRATION_ROUND51_CALIBRATION_ADOPT]
+        _save_json_atomic(guardrails_path, g)
+        return "migrated"
+    except Exception as e:
+        log.warning(f"round51 calibration migration failed: {e}")
+        return f"error:{type(e).__name__}"
+
+
+def run_all_migrations(users, user_file_fn, account_fetcher=None):
     """Apply every idempotent migration to every user.
 
     `users` is the list of user dicts from get_all_users_for_scheduling.
     `user_file_fn(user, filename)` is the path resolver from
     cloud_scheduler (avoids circular import).
+    `account_fetcher(user)` returns Alpaca /v2/account for round-51
+    calibration adoption. Optional — if None, round-51 skips until
+    next boot.
 
     Returns summary dict {user_id: {migration: action, ...}}."""
     summary = {}
@@ -209,5 +283,18 @@ def run_all_migrations(users, user_file_fn):
         except Exception as e:
             user_result["round29_earnings_exit"] = f"error: {type(e).__name__}"
             log.warning(f"migration round29 failed for {uid}: {e}")
+        # Round-51: adopt portfolio-auto-calibration defaults for
+        # existing users. Needs Alpaca /account to know tier. Only
+        # runs if account_fetcher is provided and returns a valid
+        # account (equity ≥ $500).
+        if account_fetcher is not None:
+            try:
+                gpath51 = user_file_fn(u, "guardrails.json")
+                user_result["round51_calibration_adopt"] = (
+                    migrate_guardrails_round51(gpath51, u, account_fetcher)
+                )
+            except Exception as e:
+                user_result["round51_calibration_adopt"] = f"error: {type(e).__name__}"
+                log.warning(f"migration round51 failed for {uid}: {e}")
         summary[uid] = user_result
     return summary

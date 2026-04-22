@@ -930,7 +930,61 @@ Ruff clean on touched files.
 
 ---
 
-## Last session state (2026-04-23 — END OF SESSION, after round-50 portfolio auto-calibration)
+## Last session state (2026-04-23 — END OF SESSION, after round-51 activation)
+
+**Rounds 48, 49, 50, 51 all shipped this session.** Round-51 is the
+activation layer that turns round-50's modules into real behavior
+for existing users.
+
+**Round-51 (this round) — activate calibration for existing users**
+
+User asked "can you just enable it for us now" after round-50. Five
+wire-ups shipped:
+
+1. **`migrate_guardrails_round51`** — one-time per user/mode. Detects
+   tier from Alpaca /account, adopts defaults into guardrails.json
+   for sizing/fractional/strategy keys, preserves risk-preference
+   keys (daily_loss_limit_pct, earnings_exit, kill_switch), backs
+   up to `.pre-round51.backup`. Idempotent.
+2. **Settled-funds gate** in `run_auto_deployer` before each buy.
+   Cash accounts: blocks if `desired_spend > settled_cash × 95%`.
+3. **Fractional routing** in `run_auto_deployer`. When tier enables
+   fractional + symbol in `/assets?fractionable=true` cache, uses
+   sub-share qty + market order.
+4. **PDT guard** in `check_profit_ladder`. For margin <$25k, holds
+   same-day intraday sell overnight when day_trades_remaining ≤ buffer.
+5. **Sell-side settled-funds ledger** in `record_trade_close`. Every
+   `side="sell"` records proceeds + T+1 settlement date.
+
+**Tier stashed on `user["_tier_cfg"]`** in monitor_strategies so all
+exit paths can read it.
+
+**Migration wiring:** `run_all_migrations(users, user_file_fn,
+account_fetcher=...)` — new kwarg. Cloud_scheduler passes a
+`_fetch_account(u)` closure that calls `user_api_get(u, "/account")`.
+
+**Tests:** 15 new in `tests/test_round51_activation.py`. Suite: 710
+passed, 1 deselected (was 697+13). Ruff clean.
+
+### Invariants to preserve post-round-51
+
+* `migrate_guardrails_round51` MUST write the backup before overwriting
+  and MUST NOT overwrite an existing backup file.
+* Migration must return "no_tier" (not stamp) when Alpaca /account
+  is unavailable — so retry next boot.
+* `record_trade_close` MUST only record proceeds when `side="sell"`
+  (long close). Short covers (`side="buy"`) do NOT generate settled
+  cash.
+* `run_auto_deployer` fractional routing MUST pass `fractional=True`
+  to `smart_orders.place_smart_buy` (which routes to market).
+* PDT guard in `check_profit_ladder` MUST use buffer=1 (preserves
+  emergency slot).
+* All round-51 hooks MUST fail OPEN on exception — advisory code
+  never blocks trading.
+
+---
+
+## Prior session state (2026-04-23 — after round-50 portfolio auto-calibration)
 
 **Rounds 48, 49, 50 all merged to main during this session.** Round-50
 is a MAJOR feature drop — the bot now auto-calibrates for any account

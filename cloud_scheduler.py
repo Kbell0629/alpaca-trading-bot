@@ -933,7 +933,24 @@ def record_trade_close(user, symbol, strategy, exit_price, pnl, exit_reason,
     daily_snapshots into the same file. Two near-simultaneous exits
     without the lock silently drop one of the close writebacks —
     same class of bug the round-7 writeback fix was meant to prevent.
+
+    Round-51: on the sell side (side=='sell' long close), also record
+    the proceeds in the settled-funds ledger so cash accounts respect
+    the T+1 rule on their next deploy. Best-effort — never raises.
     """
+    # Round-51: per-sell settled-funds ledger entry (cash accounts only)
+    # Short covers (side='buy') don't generate settled-funds proceeds.
+    if side == "sell" and exit_price and qty:
+        try:
+            import settled_funds as _sf
+            try:
+                _proceeds = float(exit_price) * abs(float(qty))
+            except (TypeError, ValueError):
+                _proceeds = 0
+            if _proceeds > 0:
+                _sf.record_sale(user, symbol, _proceeds)
+        except Exception:
+            pass  # best-effort — ledger failure must not break trade close
     journal_path = user_file(user, "trade_journal.json")
     try:
         with strategy_file_lock(journal_path):
@@ -1036,6 +1053,17 @@ def monitor_strategies(user):
 
         # Daily loss check
         account = user_api_get(user, "/account")
+        # Round-51: detect portfolio tier once per monitor tick so all
+        # downstream exit decisions (profit ladder, stop, target) can
+        # consult it. Stashed on `user` dict as `_tier_cfg`; cleared
+        # before return so it doesn't leak across ticks.
+        try:
+            import portfolio_calibration as _pc
+            _tier = _pc.detect_tier(account) if isinstance(account, dict) else None
+            if _tier:
+                user["_tier_cfg"] = _pc.apply_user_overrides(_tier, guardrails)
+        except Exception:
+            pass  # calibration is advisory; never block the monitor
         if isinstance(account, dict) and "error" not in account:
             current_val = float(account.get("portfolio_value", 0))
             daily_start = guardrails.get("daily_starting_value")
@@ -1201,6 +1229,29 @@ def check_profit_ladder(user, filepath, strat, price, entry, shares):
 
         if sell_qty < 1:
             continue
+
+        # Round-51: PDT guard — if user is on margin <$25k (PDT rules
+        # apply) AND this would be a same-day entry-and-exit trade AND
+        # day_trades_remaining is at/below the buffer, HOLD the
+        # position overnight instead of firing the intraday sell. Saves
+        # the emergency day-trade slot for kill-switch scenarios.
+        _tier = (strat.get("_user_ref") or {}).get("_tier_cfg") if isinstance(strat, dict) else None
+        # We don't have user on `strat`; fall back to local user binding
+        _tier = user.get("_tier_cfg") if isinstance(user, dict) else None
+        if _tier and _tier.get("pdt_applies"):
+            try:
+                import pdt_tracker as _pdt
+                _opened = (strat.get("entered_at") or strat.get("opened_at")
+                           or strat.get("deployed_at") or "")
+                _is_same_day = _pdt.is_day_trade(_opened, now_et().isoformat())
+                if _is_same_day:
+                    _allow, _reason, _rem = _pdt.can_day_trade(_tier, buffer=1)
+                    if not _allow:
+                        log(f"[{user['username']}] {symbol}: profit-take "
+                            f"skipped — {_reason}", "monitor")
+                        continue
+            except Exception:
+                pass  # PDT check never blocks on error
 
         # Idempotency: client_order_id lets Alpaca reject duplicate orders if
         # a prior attempt hit the server but the response was lost (timeout /
@@ -2329,6 +2380,49 @@ def run_auto_deployer(user):
                 f"({_gr_now.get('kill_switch_reason','?')}) — aborting deployer", "deployer")
             return
 
+        # Round-51: settled-funds gate for cash accounts. Block deploys
+        # that would exhaust settled cash → Good Faith Violation risk.
+        # Skipped for margin accounts (no T+1 constraint).
+        _pick_price = float(pick.get("current_price") or pick.get("price") or 0)
+        _desired_spend = _pick_price * qty if _pick_price > 0 else 0
+        if TIER_CFG and _desired_spend > 0 and TIER_CFG.get("settled_funds_required"):
+            try:
+                import settled_funds as _sf
+                _total_cash = float(TIER_CFG.get("_detected_cash") or 0)
+                _ok, _usable, _reason = _sf.can_deploy(
+                    user, _desired_spend, _total_cash, tier_cfg=TIER_CFG)
+                if not _ok:
+                    log(f"[{user['username']}] {symbol}: Skipped — "
+                        f"{_reason}", "deployer")
+                    skip_reasons.append(f"{symbol}: settled-funds insufficient")
+                    continue
+            except Exception as _sf_e:
+                log(f"[{user['username']}] settled-funds check error "
+                    f"({_sf_e}) — allowing deploy", "deployer")
+
+        # Round-51: fractional routing. When the calibrated tier enables
+        # fractional AND the symbol is fractionable, re-size the position
+        # as a fractional qty (e.g. 0.1234 shares) so small accounts can
+        # participate in any stock regardless of price.
+        _use_fractional = False
+        if TIER_CFG and TIER_CFG.get("fractional_default") and _pick_price > 0:
+            try:
+                import fractional as _fr
+                _target = _pick_price * qty
+                _size_result = _fr.size_position(
+                    symbol, target_dollars=_target, price=_pick_price,
+                    user=user, tier_cfg=TIER_CFG,
+                    api_get_fn=lambda _u, _p: user_api_get(_u, _p))
+                if _size_result.get("qty", 0) > 0 and _size_result.get("fractional"):
+                    qty = _size_result["qty"]
+                    _use_fractional = True
+                    log(f"[{user['username']}] {symbol}: fractional sizing "
+                        f"{qty} shares (${_size_result['notional']:.2f})",
+                        "deployer")
+            except Exception as _fr_e:
+                log(f"[{user['username']}] fractional routing error "
+                    f"({_fr_e}) — falling back to whole shares", "deployer")
+
         # Round-11: smart limit-at-mid order with 90s timeout + market
         # fallback. Saves 0.1-0.5% slippage per round-trip when going
         # live. Set SMART_ORDERS=0 in Railway env to disable (defaults
@@ -2349,6 +2443,7 @@ def run_auto_deployer(user):
                     timeout_sec=int(os.environ.get("SMART_ORDER_TIMEOUT", "90")),
                     max_spread_pct=float(os.environ.get("SMART_MAX_SPREAD", "0.005")),
                     client_order_id=f"deploy-{symbol}-{now_et().strftime('%Y%m%d%H%M%S')}",
+                    fractional=_use_fractional,  # round-51: market-only for fractional
                 )
             except Exception as _smart_err:
                 log(f"[{user['username']}] {symbol}: smart-order failed ({_smart_err}) — market fallback", "deployer")
@@ -4125,12 +4220,27 @@ def _run_state_reconcile_safely():
         # `_migrations_applied` so re-runs are no-ops.
         try:
             import migrations
-            summary = migrations.run_all_migrations(users, user_file)
+            # Round-51: account_fetcher enables calibration-adopt
+            # migration to query Alpaca /account per user.
+            def _fetch_account(_u):
+                try:
+                    return user_api_get(_u, "/account")
+                except Exception:
+                    return None
+            summary = migrations.run_all_migrations(
+                users, user_file, account_fetcher=_fetch_account)
             for uid, actions in (summary or {}).items():
                 action = actions.get("round20_position_cap")
                 if action and action not in ("already_applied", "no_file"):
                     log(f"[user_id={uid}] migration round20_position_cap: "
                         f"{action}", "scheduler")
+                # Round-51: log calibration-adopt outcomes so the user
+                # sees in the activity log when their tier was detected
+                # and defaults were applied.
+                action51 = actions.get("round51_calibration_adopt")
+                if action51 and action51 not in ("already_applied", "no_file"):
+                    log(f"[user_id={uid}] migration round51_calibration_adopt: "
+                        f"{action51}", "scheduler")
         except Exception as _me:
             log(f"migration sweep failed: {type(_me).__name__}: {_me}",
                 "scheduler")
