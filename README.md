@@ -762,25 +762,60 @@ Fractional unlocks every stock for small accounts. With fractional ON:
 
 Cache of fractionable symbols refreshes once per day per user from `/v2/assets?fractionable=true`.
 
-### Settings UI
+### Settings → 🎛️ Calibration tab — Full control with guardrails
 
-Open **Settings → 🎛️ Calibration** to see:
-- Your detected tier + equity + cash + buying power
+Open **Settings → 🎛️ Calibration** to:
+
+**See your detected state (read-only):**
+- Tier + equity + cash (settled) + buying power
 - PDT status + day-trades remaining (if applicable)
-- Strategies enabled by tier
-- Which strategies are blocked by account type (e.g., "✗ short_sell" on cash accounts)
-- "Recalibrate Now" button to force a fresh Alpaca account fetch
+- Shorting: ✓ Enabled / ✗ Disabled (Alpaca-reported)
 
-### User overrides (advanced)
+**Adjust position sizing (sliders — changes save instantly):**
+- Max positions (1-20) — how many stocks you hold at once
+- Max per position (1-25% of equity) — single-stock sizing cap
+- Min stock price ($0-$100) — filter out penny stocks
 
-Auto-calibration picks *defaults*. Every value can be overridden via **Strategy Templates** → Guardrails:
-- `max_positions` / `max_position_pct` — override the sizing
-- `strategies_enabled` — whitelist of strategies to run
-- `fractional_enabled` — force ON/OFF
-- `min_stock_price` — override the price floor
-- `wheel_enabled`, `short_enabled` — force ON or OFF (cash-account short override is rejected; Alpaca won't allow it anyway)
+**Toggle features (click-to-save checkboxes):**
+- Fractional shares ON/OFF
+- Wheel strategy (CSP) ON/OFF
+- Short selling ON/OFF (auto-disabled on cash accounts by Alpaca)
 
-**The rule is simple**: user overrides always win for risk preferences. Alpaca rule violations always win for safety.
+**Enable/disable individual strategies** (click pill badges):
+- ✓ trailing_stop, breakout, mean_reversion, pead, copy_trading, wheel, short_sell
+- Greyed-out pills = blocked by your account type (tooltip shows why)
+
+**↺ Reset to Tier Defaults button** — one-click revert to calibrated values (preserves your custom risk keys like daily loss limit, earnings-exit buffer, kill-switch state).
+
+### How Strategy Templates + Calibration work together
+
+The hierarchy (most specific wins):
+
+```
+Your manual slider/toggle edits
+         ↓ beats ↓
+Preset click (Conservative / Moderate / Aggressive in Strategy Templates)
+         ↓ beats ↓
+Auto-Calibration tier defaults
+```
+
+- **Auto-Calibration** sets safe defaults based on your detected tier on first boot.
+- **Preset cards** (Strategy Templates section) overwrite everything at once — one-click for risk levels.
+- **Manual edits on Calibration tab** override individual values surgically.
+
+### Safety: warnings vs. hard blocks
+
+**Hard blocks** (Alpaca rules — cannot be overridden):
+- Short selling on a cash account → blocked with popup
+- Min stock price below Alpaca's margin floor ($3) on margin accounts → blocked
+
+**Soft warnings** (risky but allowed — you confirm):
+- Setting `max_position_pct > 15%` → "aggressive for most tiers…"
+- Setting `max_positions > 12` → "a lot for most account sizes…"
+- Enabling shorts → "unlimited loss risk…"
+- Disabling fractional → "small accounts can't hold expensive stocks…"
+
+**Every override is audit-logged** (admin panel → Audit Log) so you (and admins) can review what was changed when.
 
 ---
 

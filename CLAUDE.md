@@ -930,7 +930,25 @@ Ruff clean on touched files.
 
 ---
 
-## Last session state (2026-04-23 — END OF SESSION, after round-52 audit fixes)
+## Last session state (2026-04-23 — after round-54 calibration overrides + jitter fix)
+
+**Round-54 (this round):** user-friendly override UI for all calibration knobs + Alpaca-rule-aware warnings + hash-skip jitter fix. Also answered the "how do Strategy Templates + Calibration interact?" question with an inline UI note.
+
+**Endpoints:**
+* `POST /api/calibration/override` — single-key write to guardrails.json with server-side validation
+* `POST /api/calibration/reset` — revert tier-adopted keys to calibrated defaults (preserves user risk keys)
+
+**UI:** sliders for max_positions / max_position_pct / min_stock_price, toggles for fractional / wheel / shorts, strategy pills. Warnings for risky values + hard-block popup for Alpaca-rule violations.
+
+**Jitter fix:** `window._lastAppHtml` cache — skip `app.innerHTML = ...` when identical to previous render. Zero repaint on quiet ticks.
+
+Tests: 11 new in `test_round54_calibration_overrides.py`. Suite 745 passed.
+
+Next: round-55 — after-hours trailing stops. User reported losing money when stocks pop post-market then drop overnight without the stop tightening.
+
+---
+
+## Prior session state (2026-04-23 — END OF SESSION, after round-52 audit fixes)
 
 **Round-52 (this round) — full tech-stack audit + 11 fixes**
 

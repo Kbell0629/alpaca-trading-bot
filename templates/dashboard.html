@@ -6066,7 +6066,17 @@ function renderDashboard() {
         '<button class="nav-tab" onclick="openSettingsModal()">\u2699\ufe0f Account</button>' +
     '</div></div>';
 
-    document.getElementById('app').innerHTML =
+    // Round-54: build the HTML into a variable + hash-skip the DOM
+    // replacement when the output is identical to the last render.
+    // Previous rounds (47, 48) tried to mitigate render-jitter via
+    // sync scroll restore + removing cascading re-renders, but every
+    // 10s tick still wholesale-replaces 30KB of DOM even when nothing
+    // actually changed. That repaint alone is what the user sees as
+    // "desktop still jumping around". Skipping identical renders
+    // eliminates the jitter on quiet ticks; during active market
+    // movement the render still happens (with round-47's sync scroll
+    // restore handling the rare genuine DOM change cleanly).
+    var _appHtml =
         '<div class="header header-v2">' +
             '<div class="header-row-1">' +
                 '<div class="header-brand">' +
@@ -6391,16 +6401,22 @@ function renderDashboard() {
         '</section>' +
         '<div class="footer">Stock Trading Bot - Strategies: Trailing Stop (exit) | Wheel | Mean Reversion | Breakout | PEAD | Short Selling - Full market screener across NYSE, NASDAQ, ARCA</div>';
 
-    // Round-47: SYNCHRONOUS scroll restore right after the wholesale
-    // innerHTML replacement above. The browser bundles this scrollTo
-    // into the same paint as the new DOM, so the user never sees the
-    // intermediate "scroll=0 with new DOM" state. Round-44's rAF restore
-    // ran AFTER the paint, so on mobile the user briefly saw the page
-    // jump to top, then jump back — the "jumping" the user reported.
-    // The rAF backup further down still fires for safety in case some
-    // browser path doesn't honor sync scroll across innerHTML.
-    if (_preRenderScrollY > 0) {
-        try { window.scrollTo(0, _preRenderScrollY); } catch(_) {}
+    // Round-54: hash-skip — only touch the DOM if the HTML actually
+    // changed since the last render. On a typical 10-second quiet tick
+    // (no new positions, no price ticks that matter, etc.) the string
+    // is identical and we can skip the innerHTML assignment entirely →
+    // zero repaint, zero jitter. On "active" ticks (price changes that
+    // render different text) the assignment fires but round-47's sync
+    // scroll restore handles the reflow cleanly.
+    if (_appHtml !== window._lastAppHtml) {
+        document.getElementById('app').innerHTML = _appHtml;
+        window._lastAppHtml = _appHtml;
+        // Round-47: SYNCHRONOUS scroll restore immediately after the
+        // innerHTML assignment so the browser bundles this scrollTo
+        // into the same paint as the new DOM.
+        if (_preRenderScrollY > 0) {
+            try { window.scrollTo(0, _preRenderScrollY); } catch(_) {}
+        }
     }
 
     renderLog();
@@ -6832,7 +6848,28 @@ async function loadCalibration() {
         var disabledRows = disabled.map(function(s) {
             return '<span style="display:inline-block;padding:2px 8px;margin:2px;background:rgba(239,68,68,0.1);border-radius:10px;font-size:11px;color:var(--text-dim)">✗ ' + esc(s) + '</span>';
         }).join('');
+        // Round-54: editable override inputs. User can drag sliders /
+        // toggle switches and click Save on each row; the change is
+        // sent to /api/calibration/override which validates against
+        // Alpaca rules before writing to guardrails.json.
+        var maxPosPct = (d.max_position_pct || 0) * 100;
+        var ALL_STRATS = ["trailing_stop","breakout","mean_reversion","pead","copy_trading","wheel","short_sell"];
+        var stratPills = ALL_STRATS.map(function(s) {
+            var enabled = (d.strategies_enabled || []).indexOf(s) >= 0;
+            var blockedByAccount = (s === "short_sell" && !d.short_enabled) ||
+                                    (s === "wheel" && !d.wheel_enabled);
+            var disabledAttr = blockedByAccount ? 'disabled title="Blocked by account type — '+ (s==='short_sell' ? 'Alpaca requires margin + $2k equity for shorts' : 'wheel CSP needs $25k+ cash') + '"' : '';
+            var bg = enabled ? 'rgba(34,197,94,0.18)' :
+                               (blockedByAccount ? 'rgba(239,68,68,0.08)' : 'rgba(100,116,139,0.15)');
+            var color = enabled ? 'var(--green)' :
+                                  (blockedByAccount ? 'var(--text-dim)' : 'var(--text)');
+            return '<label style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;margin:3px;background:'+bg+';border-radius:12px;font-size:11px;color:'+color+';cursor:'+(blockedByAccount?'not-allowed':'pointer')+';">' +
+                     '<input type="checkbox" ' + (enabled?'checked':'') + ' ' + disabledAttr + ' data-strat="' + esc(s) + '" onchange="toggleStrategy(this)"> ' + esc(s) +
+                   '</label>';
+        }).join('');
+
         box.innerHTML =
+            // --- Tier detection readout (read-only) ---
             '<div style="padding:14px;background:var(--bg);border-radius:8px;margin-bottom:12px">' +
               '<div style="font-size:15px;font-weight:700;margin-bottom:6px">' + esc(d.tier_display || 'Unknown') + ' ' + pdtBadge + '</div>' +
               '<div style="color:var(--text-dim);font-size:12px;margin-bottom:10px">' + esc(d.description || '') + '</div>' +
@@ -6844,19 +6881,83 @@ async function loadCalibration() {
                 (d.day_trades_remaining !== null && d.day_trades_remaining !== undefined
                   ? '<div><div style="color:var(--text-dim);font-size:11px">Day trades remaining</div><div><strong>' + d.day_trades_remaining + '/3</strong></div></div>'
                   : '') +
-                '<div><div style="color:var(--text-dim);font-size:11px">Shorting</div><div><strong>' + (d.shorting_enabled ? '✓ Enabled' : '✗ Disabled') + '</strong></div></div>' +
+                '<div><div style="color:var(--text-dim);font-size:11px">Shorting (Alpaca)</div><div><strong>' + (d.shorting_enabled ? '✓ Enabled' : '✗ Disabled') + '</strong></div></div>' +
               '</div>' +
             '</div>' +
-            '<div style="padding:12px;background:var(--bg);border-radius:8px;margin-bottom:12px">' +
-              '<div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">Calibrated Position Sizing</div>' +
-              '<div>Max positions: <strong>' + (d.max_positions||'–') + '</strong> · Max per position: <strong>' + ((d.max_position_pct||0)*100).toFixed(1) + '%</strong> · Min stock price: <strong>$' + (d.min_stock_price||0) + '</strong> · Fractional: <strong>' + (d.fractional_default ? '✓ ON' : '✗ OFF') + '</strong></div>' +
+            // --- Editable sizing ---
+            '<div style="padding:14px;background:var(--bg);border-radius:8px;margin-bottom:12px">' +
+              '<div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;display:flex;justify-content:space-between;align-items:center">' +
+                '<span>Position Sizing <span style="color:var(--text-dim);font-size:10px">(drag sliders; Alpaca rules still apply)</span></span>' +
+                '<button type="button" class="btn-ghost btn-sm" onclick="resetCalibrationToDefaults()" title="Revert sizing + strategies to the calibrated defaults for your tier">↺ Reset to Tier Defaults</button>' +
+              '</div>' +
+              // Max positions
+              '<div style="margin-bottom:12px">' +
+                '<label style="display:flex;justify-content:space-between;font-size:12px">' +
+                  '<span>Max positions</span>' +
+                  '<strong id="cal_maxPosLabel">' + (d.max_positions || 0) + '</strong>' +
+                '</label>' +
+                '<input type="range" id="cal_maxPos" min="1" max="20" value="' + (d.max_positions || 5) + '" ' +
+                  'style="width:100%" oninput="document.getElementById(\'cal_maxPosLabel\').textContent = this.value" ' +
+                  'onchange="saveCalibrationOverride(\'max_positions\', parseInt(this.value), ' + (d.max_positions || 5) + ')">' +
+              '</div>' +
+              // Max position %
+              '<div style="margin-bottom:12px">' +
+                '<label style="display:flex;justify-content:space-between;font-size:12px">' +
+                  '<span>Max per position (% of equity)</span>' +
+                  '<strong id="cal_maxPctLabel">' + maxPosPct.toFixed(1) + '%</strong>' +
+                '</label>' +
+                '<input type="range" id="cal_maxPct" min="1" max="25" step="0.5" value="' + maxPosPct.toFixed(1) + '" ' +
+                  'style="width:100%" oninput="document.getElementById(\'cal_maxPctLabel\').textContent = this.value + \'%\'" ' +
+                  'onchange="saveCalibrationOverride(\'max_position_pct\', this.value/100, ' + (d.max_position_pct || 0.07) + ')">' +
+              '</div>' +
+              // Min stock price
+              '<div style="margin-bottom:12px">' +
+                '<label style="display:flex;justify-content:space-between;font-size:12px">' +
+                  '<span>Min stock price (filter out cheap stocks)</span>' +
+                  '<strong id="cal_minPxLabel">$' + (d.min_stock_price || 0) + '</strong>' +
+                '</label>' +
+                '<input type="range" id="cal_minPx" min="0" max="100" step="1" value="' + (d.min_stock_price || 0) + '" ' +
+                  'style="width:100%" oninput="document.getElementById(\'cal_minPxLabel\').textContent = \'$\' + this.value" ' +
+                  'onchange="saveCalibrationOverride(\'min_stock_price\', parseFloat(this.value), ' + (d.min_stock_price || 0) + ')">' +
+              '</div>' +
+              // Fractional toggle
+              '<div style="display:flex;align-items:center;gap:12px;padding:8px 0;border-top:1px solid var(--border)">' +
+                '<label style="font-size:12px;display:flex;align-items:center;gap:8px;cursor:pointer">' +
+                  '<input type="checkbox" ' + (d.fractional_default ? 'checked' : '') + ' ' +
+                    'onchange="saveCalibrationOverride(\'fractional_enabled\', this.checked, ' + (d.fractional_default ? 'true' : 'false') + ')">' +
+                  '<span>Fractional shares <span style="color:var(--text-dim);font-size:10px">(turns any stock into a fractional $ purchase)</span></span>' +
+                '</label>' +
+              '</div>' +
+              // Wheel toggle (only visible if tier allows wheel)
+              (d.wheel_enabled !== undefined
+                ? '<div style="display:flex;align-items:center;gap:12px;padding:8px 0;border-top:1px solid var(--border)">' +
+                    '<label style="font-size:12px;display:flex;align-items:center;gap:8px;cursor:pointer">' +
+                      '<input type="checkbox" ' + (d.wheel_enabled ? 'checked' : '') + ' ' +
+                        'onchange="saveCalibrationOverride(\'wheel_enabled\', this.checked, ' + (d.wheel_enabled ? 'true' : 'false') + ')">' +
+                      '<span>Wheel strategy (CSP)<span style="color:var(--text-dim);font-size:10px"> — needs $25k+ cash for 1 contract at $250 strike</span></span>' +
+                    '</label>' +
+                  '</div>'
+                : '') +
+              // Short toggle (only interactive if Alpaca allows shorts)
+              '<div style="display:flex;align-items:center;gap:12px;padding:8px 0;border-top:1px solid var(--border)">' +
+                '<label style="font-size:12px;display:flex;align-items:center;gap:8px;cursor:' + (d.shorting_enabled ? 'pointer' : 'not-allowed') + '">' +
+                  '<input type="checkbox" ' + (d.short_enabled ? 'checked' : '') + ' ' +
+                    (d.shorting_enabled ? '' : 'disabled') + ' ' +
+                    'onchange="saveCalibrationOverride(\'short_enabled\', this.checked, ' + (d.short_enabled ? 'true' : 'false') + ')">' +
+                  '<span>Short selling ' + (d.shorting_enabled
+                    ? '<span style="color:var(--text-dim);font-size:10px">(ETB stocks only)</span>'
+                    : '<span style="color:var(--red);font-size:10px">— Alpaca doesn\'t permit shorts on this account</span>') + '</span>' +
+                '</label>' +
+              '</div>' +
             '</div>' +
-            '<div style="padding:12px;background:var(--bg);border-radius:8px">' +
-              '<div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">Strategies Enabled</div>' +
-              stratRows +
-              (disabledRows ? '<div style="margin-top:8px;font-size:11px;color:var(--text-dim)">Blocked by account type:</div>' + disabledRows : '') +
+            // --- Editable strategy list ---
+            '<div style="padding:14px;background:var(--bg);border-radius:8px;margin-bottom:12px">' +
+              '<div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">Strategies <span style="color:var(--text-dim);font-size:10px">(click to toggle; greyed-out ones blocked by account type)</span></div>' +
+              stratPills +
             '</div>' +
-            '<div style="margin-top:10px;font-size:11px;color:var(--text-dim)">Overrides: edit Guardrails in the Strategy Templates section. User settings always win over auto-calibration.</div>';
+            '<div style="font-size:11px;color:var(--text-dim);line-height:1.5">' +
+              '<strong>How this works:</strong> Auto-calibration sets defaults based on your detected tier. Preset cards in the <strong>Strategy Templates</strong> section (Conservative/Moderate/Aggressive) overwrite all of these at once. Manual edits here override individual values. Hierarchy: <strong>your edits → preset click → calibration defaults</strong>. Alpaca-rule violations (shorts on cash, etc.) are blocked with a popup.' +
+            '</div>';
     } catch (e) {
         box.innerHTML = '<div style="color:var(--red)">Failed: ' + esc(e.message) + '</div>';
     } finally {
@@ -6864,6 +6965,112 @@ async function loadCalibration() {
         _calibrationInFlight = false;
         var _btns = document.querySelectorAll('#settingsPanel-calibration button[onclick*="loadCalibration"]');
         for (var _i = 0; _i < _btns.length; _i++) _btns[_i].disabled = false;
+    }
+}
+
+// Round-54: per-key override with validation + warnings. Sends the
+// change to /api/calibration/override. If server rejects (Alpaca rule
+// violation), re-loads calibration to revert the UI control.
+async function saveCalibrationOverride(key, newValue, oldValue) {
+    // Warn on risky risk-level changes (local client-side check)
+    if (key === 'max_position_pct' && newValue > 0.15 && newValue > oldValue) {
+        if (!confirm('⚠️ You\'re setting max position to ' + (newValue*100).toFixed(1) + '% of equity — that\'s aggressive for most tiers. A single trade going against you would hurt. Continue?')) {
+            loadCalibration(); // revert UI
+            return;
+        }
+    }
+    if (key === 'max_positions' && newValue > 12 && newValue > oldValue) {
+        if (!confirm('⚠️ ' + newValue + ' positions is a lot for most account sizes. Diversification is good, but you may run out of capital for new picks. Continue?')) {
+            loadCalibration();
+            return;
+        }
+    }
+    if (key === 'short_enabled' && newValue === true && oldValue === false) {
+        if (!confirm('⚠️ Short selling carries unlimited loss risk. Alpaca will still enforce its rules (margin + ETB-only). Are you sure?')) {
+            loadCalibration();
+            return;
+        }
+    }
+    if (key === 'fractional_enabled' && newValue === false && oldValue === true) {
+        if (!confirm('Fractional off means small accounts can\'t hold expensive stocks (>1 share costs > max position $). Continue?')) {
+            loadCalibration();
+            return;
+        }
+    }
+    try {
+        var resp = await fetch(API_BASE + '/api/calibration/override', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: JSON.stringify({key: key, value: newValue})
+        });
+        var r = await resp.json();
+        if (!resp.ok || r.error) {
+            if (r.blocked_by_alpaca_rule) {
+                alert('❌ Blocked by Alpaca rule:\n\n' + r.error);
+            } else {
+                toast('Override failed: ' + (r.error || resp.status), 'error');
+            }
+            loadCalibration(); // revert UI to reflect server state
+            return;
+        }
+        toast('Saved: ' + key + ' = ' + JSON.stringify(newValue), 'success');
+    } catch (e) {
+        toast('Network error: ' + e.message, 'error');
+        loadCalibration();
+    }
+}
+
+// Round-54: toggle a single strategy on/off via the pill checkbox.
+async function toggleStrategy(checkbox) {
+    var strat = checkbox.getAttribute('data-strat');
+    // Build the new strategies_enabled list from ALL checkboxes in the grid
+    var boxes = document.querySelectorAll('input[data-strat]');
+    var enabled = [];
+    for (var i = 0; i < boxes.length; i++) {
+        if (boxes[i].checked && !boxes[i].disabled) {
+            enabled.push(boxes[i].getAttribute('data-strat'));
+        }
+    }
+    try {
+        var resp = await fetch(API_BASE + '/api/calibration/override', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: JSON.stringify({key: 'strategies_enabled', value: enabled})
+        });
+        var r = await resp.json();
+        if (!resp.ok || r.error) {
+            toast('Toggle failed: ' + (r.error || resp.status), 'error');
+            loadCalibration();
+            return;
+        }
+        toast((checkbox.checked ? 'Enabled ' : 'Disabled ') + strat, 'success');
+    } catch (e) {
+        toast('Network error: ' + e.message, 'error');
+        loadCalibration();
+    }
+}
+
+// Round-54: revert all tier-adopted keys back to calibrated defaults.
+async function resetCalibrationToDefaults() {
+    if (!confirm('Reset calibration to tier defaults?\n\nThis restores max_positions, max_position_pct, min_stock_price, fractional, wheel, shorts, and strategies to the auto-detected values for your tier.\n\nYour risk keys (daily loss limit, earnings exit, kill switch) are NOT touched.\n\nContinue?')) return;
+    try {
+        var resp = await fetch(API_BASE + '/api/calibration/reset', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: '{}'
+        });
+        var r = await resp.json();
+        if (!resp.ok || r.error) {
+            toast('Reset failed: ' + (r.error || resp.status), 'error');
+            return;
+        }
+        toast('Reset to ' + (r.reset_to_tier || 'tier defaults'), 'success');
+        loadCalibration();
+    } catch (e) {
+        toast('Network error: ' + e.message, 'error');
     }
 }
 

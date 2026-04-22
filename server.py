@@ -2582,6 +2582,161 @@ class DashboardHandler(
             self.handle_admin_backfill_journal(body)
             return
 
+        if path == "/api/calibration/override":
+            # Round-54: per-key overrides on the calibration settings.
+            # Body: {"key": "max_position_pct", "value": 0.10} — writes
+            # the key to guardrails.json, honoring Alpaca-rule blocks
+            # (e.g., short_enabled=True on cash accounts is rejected).
+            # Returns the updated guardrails subset + any warnings the
+            # UI should surface.
+            if not self.current_user:
+                return self.send_json({"error": "Not authenticated"}, 401)
+            _key = (body.get("key") or "").strip()
+            _value = body.get("value")
+            ALLOWED_KEYS = {
+                "max_positions", "max_position_pct", "min_stock_price",
+                "fractional_enabled", "wheel_enabled", "short_enabled",
+                "strategies_enabled",
+            }
+            if _key not in ALLOWED_KEYS:
+                return self.send_json({
+                    "error": f"Key '{_key}' not allowed. Must be one of: "
+                             + ", ".join(sorted(ALLOWED_KEYS))}, 400)
+            # Alpaca-rule validation: block impossible combinations
+            try:
+                import portfolio_calibration as pc
+                account = self.user_api_get(f"{self.user_api_endpoint}/account")
+                tier = pc.detect_tier(account)
+            except Exception:
+                tier = None
+            if tier and _key == "short_enabled" and bool(_value):
+                if not tier.get("short_enabled", False):
+                    return self.send_json({
+                        "error": "Short selling not allowed on this account — "
+                                 "Alpaca requires a margin account with ≥$2k equity. "
+                                 "Upgrade your Alpaca account to margin first.",
+                        "blocked_by_alpaca_rule": True,
+                    }, 400)
+            # Range validation
+            if _key == "max_position_pct":
+                try:
+                    v = float(_value)
+                    if v <= 0 or v > 0.50:
+                        return self.send_json({
+                            "error": "max_position_pct must be 0-0.50 (0-50%)"}, 400)
+                except (TypeError, ValueError):
+                    return self.send_json({"error": "max_position_pct must be a number"}, 400)
+            elif _key == "max_positions":
+                try:
+                    v = int(_value)
+                    if v < 1 or v > 50:
+                        return self.send_json({"error": "max_positions must be 1-50"}, 400)
+                except (TypeError, ValueError):
+                    return self.send_json({"error": "max_positions must be an integer"}, 400)
+            elif _key == "min_stock_price":
+                try:
+                    v = float(_value)
+                    if v < 0 or v > 10000:
+                        return self.send_json({"error": "min_stock_price must be 0-10000"}, 400)
+                except (TypeError, ValueError):
+                    return self.send_json({"error": "min_stock_price must be a number"}, 400)
+            elif _key in ("fractional_enabled", "wheel_enabled", "short_enabled"):
+                _value = bool(_value)
+            elif _key == "strategies_enabled":
+                if not isinstance(_value, list):
+                    return self.send_json({"error": "strategies_enabled must be a list"}, 400)
+                ALLOWED_STRATS = {"trailing_stop", "breakout", "mean_reversion",
+                                  "pead", "copy_trading", "wheel", "short_sell"}
+                _value = [s for s in _value if s in ALLOWED_STRATS]
+            # Write to guardrails.json (per-user, per-mode)
+            import json as _json
+            gr_path = os.path.join(self._user_dir(), "guardrails.json")
+            guardrails = {}
+            if os.path.exists(gr_path):
+                try:
+                    with open(gr_path) as f:
+                        guardrails = _json.load(f) or {}
+                except (OSError, ValueError):
+                    guardrails = {}
+            guardrails[_key] = _value
+            try:
+                import tempfile as _tf
+                fd, tmp = _tf.mkstemp(dir=os.path.dirname(gr_path) or ".",
+                                        suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "w") as f:
+                        _json.dump(guardrails, f, indent=2, default=str)
+                    os.replace(tmp, gr_path)
+                except Exception:
+                    try: os.unlink(tmp)
+                    except OSError: pass
+                    raise
+            except Exception as e:
+                return self._send_error_safe(e, 500, "calibration-override-write")
+            auth.log_admin_action(
+                "calibration_override",
+                actor=self.current_user,
+                target_user_id=self.current_user.get("id"),
+                ip_address=self.client_address[0] if self.client_address else None,
+                detail={"key": _key, "value": _value,
+                        "mode": self.session_mode or "paper"})
+            return self.send_json({"success": True, "key": _key, "value": _value})
+
+        if path == "/api/calibration/reset":
+            # Round-54: revert all round-50 tier-adopted keys to the
+            # calibrated defaults. Doesn't touch non-tier keys like
+            # daily_loss_limit_pct, earnings_exit_*, kill_switch_*.
+            if not self.current_user:
+                return self.send_json({"error": "Not authenticated"}, 401)
+            import json as _json
+            gr_path = os.path.join(self._user_dir(), "guardrails.json")
+            guardrails = {}
+            if os.path.exists(gr_path):
+                try:
+                    with open(gr_path) as f:
+                        guardrails = _json.load(f) or {}
+                except (OSError, ValueError):
+                    pass
+            # Fetch tier
+            try:
+                import portfolio_calibration as pc
+                account = self.user_api_get(f"{self.user_api_endpoint}/account")
+                tier = pc.detect_tier(account)
+                if not tier:
+                    return self.send_json({"error": "Could not detect tier"}, 400)
+            except Exception as e:
+                return self._send_error_safe(e, 500, "calibration-reset-detect")
+            # Reset the tier-adopted keys
+            for k in ("max_positions", "max_position_pct", "min_stock_price",
+                      "fractional_enabled", "wheel_enabled", "short_enabled",
+                      "strategies_enabled"):
+                if k == "fractional_enabled":
+                    guardrails[k] = bool(tier.get("fractional_default", False))
+                elif k in tier:
+                    guardrails[k] = tier[k]
+            try:
+                import tempfile as _tf
+                fd, tmp = _tf.mkstemp(dir=os.path.dirname(gr_path) or ".",
+                                        suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "w") as f:
+                        _json.dump(guardrails, f, indent=2, default=str)
+                    os.replace(tmp, gr_path)
+                except Exception:
+                    try: os.unlink(tmp)
+                    except OSError: pass
+                    raise
+            except Exception as e:
+                return self._send_error_safe(e, 500, "calibration-reset-write")
+            auth.log_admin_action(
+                "calibration_reset",
+                actor=self.current_user,
+                target_user_id=self.current_user.get("id"),
+                ip_address=self.client_address[0] if self.client_address else None,
+                detail={"tier": tier.get("name"),
+                        "mode": self.session_mode or "paper"})
+            return self.send_json({"success": True, "reset_to_tier": tier.get("name")})
+
         if path == "/api/set-live-parallel":
             # Round-45: toggle the user's live_parallel_enabled flag.
             # When true + live keys present, the scheduler runs both
