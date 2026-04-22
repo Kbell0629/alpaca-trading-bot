@@ -930,7 +930,70 @@ Ruff clean on touched files.
 
 ---
 
-## Last session state (2026-04-22 late evening — END OF SESSION, after round-44 auto-orphan-fix + scroll jitter)
+## Last session state (2026-04-22 very late night — END OF SESSION, after round-45 dual-mode paper+live)
+
+**82 PRs merged + round-45 in flight.** Paper-trading 30-day
+validation window ongoing.
+
+**Current `main` HEAD:** `1d21337` (PR #82 round-44 auto-orphan-fix +
+scroll jitter — merged during this session). Round-45 branch
+`claude/round45-dual-mode-paper-live` — awaiting manual PR merge.
+
+### Round-45 (this round) — paper + live parallel
+
+User asked: *"when I switch to real money and I want to run in parallel
+with paper the bot on both how do I switch back and forth."* Shipped
+Option 2 from the design discussion (see message log).
+
+**Architecture:** NO migration. `users/<id>/` stays paper (unchanged
+behavior). `users/<id>/live/` is new, lazily created. Each mode has
+fully isolated state (wheel files, strategies, journal, scorecard,
+guardrails, email queue — everything).
+
+**Key bits:**
+* `auth.user_data_dir(user_id, mode)` — mode-aware path. Default
+  'paper' = pre-round-45 path.
+* New `sessions.mode` column + `auth.set_session_mode()` + validate
+  returns `session_mode`. Legacy NULL rows normalized to 'paper'.
+* New `users.live_parallel_enabled` column. Scheduler
+  `_build_user_dict_for_mode()` + `get_all_users_for_scheduling()`
+  expands a user into ONE entry (paper) or TWO (paper + live) based
+  on this flag.
+* Scheduler dedup keys include mode for live (`"1:live"`) — paper
+  keeps the old stamp format for back-compat.
+* `notify_user()` prefixes live-mode messages with `[LIVE]` so
+  ntfy/email separates real-money from paper.
+* Handler: `self.session_mode` + `self.build_scoped_user_dict(mode)` —
+  everywhere handlers build user dicts now route through this.
+* Dashboard header: clickable mode toggle button (📝 PAPER orange /
+  🔴 LIVE red glow). Click cycles modes via POST `/api/switch-mode`.
+  If no live keys set, opens Settings → Live tab.
+* Settings → Live Trading tab: new "Parallel Mode" section with
+  Enable/Disable buttons wired to POST `/api/set-live-parallel`.
+* `/api/data` response exposes `session_mode`, `has_live_keys`,
+  `live_parallel_enabled` for dashboard rendering.
+
+**Operator flow for going live:**
+1. Save live keys (Settings → Alpaca API tab).
+2. Click "Enable Parallel Paper + Live" (Settings → Live Trading).
+3. Scheduler runs both modes on next tick.
+4. Click 📝 PAPER badge in header to flip to 🔴 LIVE view (or back).
+
+**Safety rails:**
+* Default paper-only. Existing users see ZERO behavior change.
+* Saving live keys alone doesn't trigger live trading — user must
+  explicitly enable parallel mode.
+* Live scheduler entry only appears when BOTH live keys present AND
+  parallel flag on.
+* State trees fully isolated: a paper strategy bug can't touch live
+  positions.
+
+**Tests:** 13 new in `tests/test_round45_dual_mode.py`. 629 passing
+total (616 + 13). Ruff clean. Node --check clean on dashboard JS.
+
+---
+
+## Last session state (2026-04-22 late evening — before round-45, after round-44)
 
 **81 PRs merged + round-44 in flight** (round-43 superseded by
 round-44 — see notes below).

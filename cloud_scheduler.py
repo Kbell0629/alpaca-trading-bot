@@ -278,10 +278,54 @@ def _save_recent_logs():
 # ============================================================================
 # MULTI-USER CONTEXT HELPERS
 # ============================================================================
+def _build_user_dict_for_mode(u, mode):
+    """Round-45: construct a scheduler-shaped user dict for a specific
+    mode ('paper' or 'live'). Returns None if the user doesn't have
+    keys configured for that mode.
+    """
+    try:
+        creds = auth.get_user_alpaca_creds(u["id"], mode=mode)
+    except Exception as e:
+        log(f"get_user_alpaca_creds({mode}) failed for user {u.get('id')}: {e}", "scheduler")
+        return None
+    if not creds or not creds.get("key") or not creds.get("secret"):
+        return None
+    user_dir = auth.user_data_dir(u["id"], mode=mode)
+    return {
+        "id": u["id"],
+        "username": u["username"] + (" [live]" if mode == "live" else ""),
+        "_raw_username": u["username"],
+        "email": u.get("email"),
+        "_mode": mode,
+        "_api_key": creds["key"],
+        "_api_secret": creds["secret"],
+        "_api_endpoint": creds.get("endpoint") or (
+            "https://api.alpaca.markets/v2" if mode == "live"
+            else "https://paper-api.alpaca.markets/v2"),
+        "_data_endpoint": creds.get("data_endpoint") or "https://data.alpaca.markets/v2",
+        "_ntfy_topic": creds.get("ntfy_topic") or f"alpaca-bot-{u['username'].lower()}",
+        "_notification_email": creds.get("notification_email") or u.get("email"),
+        "_data_dir": user_dir,
+        "_strategies_dir": os.path.join(user_dir, "strategies"),
+        # Round-11 live-trading: propagate the mode + per-trade cap so
+        # run_auto_deployer can enforce the live-mode max_position_dollars.
+        "_live_mode": (mode == "live"),
+        "_live_max_position_dollars": float(creds.get("live_max_position_dollars") or 500),
+        "live_mode": (mode == "live"),
+        "live_max_position_dollars": float(creds.get("live_max_position_dollars") or 500),
+    }
+
+
 def get_all_users_for_scheduling():
     """Return all active users with valid Alpaca credentials.
     Falls back to env var single-user mode if auth not available or no users.
     Each user dict has the private keys we need to run tasks on their behalf.
+
+    Round-45 dual-mode: each user expands into ONE entry (paper) by default,
+    or TWO entries (paper + live) if the user has `live_parallel_enabled=1`
+    and live keys configured. The scheduler tasks loop `for user in users`
+    and run once per mode per user — paper and live are fully isolated
+    (separate state trees, separate Alpaca keys, separate journals).
     """
     if AUTH_AVAILABLE:
         try:
@@ -291,34 +335,18 @@ def get_all_users_for_scheduling():
             users = []
         result = []
         for u in users:
-            try:
-                creds = auth.get_user_alpaca_creds(u["id"])
-            except Exception as e:
-                log(f"get_user_alpaca_creds failed for user {u.get('id')}: {e}", "scheduler")
-                continue
-            if not creds or not creds.get("key") or not creds.get("secret"):
-                continue
-            user_dir = auth.user_data_dir(u["id"])
-            result.append({
-                "id": u["id"],
-                "username": u["username"],
-                "email": u.get("email"),
-                "_api_key": creds["key"],
-                "_api_secret": creds["secret"],
-                "_api_endpoint": creds.get("endpoint") or "https://paper-api.alpaca.markets/v2",
-                "_data_endpoint": creds.get("data_endpoint") or "https://data.alpaca.markets/v2",
-                "_ntfy_topic": creds.get("ntfy_topic") or f"alpaca-bot-{u['username'].lower()}",
-                "_notification_email": creds.get("notification_email") or u.get("email"),
-                "_data_dir": user_dir,
-                "_strategies_dir": os.path.join(user_dir, "strategies"),
-                # Round-11 live-trading: propagate the mode + per-trade cap so
-                # run_auto_deployer can enforce the live-mode max_position_dollars.
-                "_live_mode": bool(creds.get("live_mode")),
-                "_live_max_position_dollars": float(creds.get("live_max_position_dollars") or 500),
-                # Legacy field name used by auto-deployer scorecard code path
-                "live_mode": bool(creds.get("live_mode")),
-                "live_max_position_dollars": float(creds.get("live_max_position_dollars") or 500),
-            })
+            paper_entry = _build_user_dict_for_mode(u, "paper")
+            if paper_entry:
+                result.append(paper_entry)
+            # Round-45: only run the live tree if the user explicitly
+            # opted in via Settings → Live Trading → Enable Live Parallel.
+            # A user with live keys but no opt-in stays paper-only (so
+            # you can configure live keys well ahead of actually running
+            # live, then flip the switch when ready).
+            if u.get("live_parallel_enabled"):
+                live_entry = _build_user_dict_for_mode(u, "live")
+                if live_entry:
+                    result.append(live_entry)
         if result:
             return result
 
@@ -539,11 +567,18 @@ def _check_task_staleness(users):
 # NOTIFICATIONS
 # ============================================================================
 def notify_user(user, message, notify_type="info"):
-    """Send a notification tagged with the user's ntfy topic."""
+    """Send a notification tagged with the user's ntfy topic.
+
+    Round-45: live-mode trades get a [LIVE] prefix so the user can
+    distinguish paper-account activity from real-money activity at a
+    glance in ntfy / email. Paper mode (default) is unprefixed.
+    """
     try:
         env = os.environ.copy()
         if user.get("_ntfy_topic"):
             env["NTFY_TOPIC"] = user["_ntfy_topic"]
+        if user.get("_mode") == "live" and not message.startswith("[LIVE]"):
+            message = "[LIVE] " + message
         p = subprocess.Popen(
             [sys.executable, os.path.join(BASE_DIR, "notify.py"),
              "--type", notify_type, message],
@@ -3518,7 +3553,13 @@ def scheduler_loop():
 
             for user in users:
                 try:
-                    uid = user["id"]
+                    # Round-45 dual-mode: make the dedup key include the
+                    # trading mode so paper and live don't stomp each
+                    # other's daily-stamps / interval caches. For users
+                    # who only run paper (default), uid == str(id)
+                    # unchanged, so existing stamps remain compatible.
+                    _mode = user.get("_mode", "paper")
+                    uid = f"{user['id']}:{_mode}" if _mode == "live" else user["id"]
 
                     # Round-11 expansion item 6: Pre-market scanner.
                     # Weekdays at 8:30 AM ET — scans top-100 by liquidity

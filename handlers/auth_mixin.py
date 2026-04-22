@@ -387,7 +387,11 @@ class AuthHandlerMixin:
             import tempfile as _tempfile
             try:
                 import auth as _auth
-                _uqdir = _auth.user_data_dir(user["id"])
+                # Round-45: scope to session mode so paper/live don't
+                # share an email queue (emails reference trades that
+                # only exist in one tree).
+                _uqdir = _auth.user_data_dir(user["id"],
+                                              mode=getattr(self, "session_mode", "paper") or "paper")
             except Exception:
                 _uqdir = server.DATA_DIR
             email_queue_path = os.path.join(_uqdir, "email_queue.json")

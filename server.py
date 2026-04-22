@@ -715,6 +715,13 @@ class DashboardHandler(
     user_api_secret = ""
     user_api_endpoint = ""
     user_data_endpoint = ""
+    # Round-45 dual-mode: which state tree this request is reading from.
+    # Defaults to 'paper' (unchanged behavior for everyone pre-round-45).
+    # Set to 'live' if the session has opted into the live view.
+    session_mode = "paper"
+    # Session token for this request (populated by get_current_user) — used
+    # by the /api/switch-mode endpoint to update mode without re-auth.
+    _session_token = None
 
     def get_current_user(self):
         """Return current logged-in user dict, or None.
@@ -734,6 +741,9 @@ class DashboardHandler(
         if session_token:
             user = auth.validate_session(session_token)
             if user:
+                # Round-45: stash the token so the mode-switch endpoint
+                # can update the session without another cookie round-trip
+                self._session_token = session_token
                 return user
         # Optional Basic Auth (disabled by default)
         if os.environ.get("ENABLE_BASIC_AUTH") == "1":
@@ -762,8 +772,21 @@ class DashboardHandler(
         user = self.get_current_user()
         if user:
             self.current_user = user
-            # Load per-user Alpaca credentials (decrypted) for this request
-            creds = auth.get_user_alpaca_creds(user["id"])
+            # Round-45: honor the session's view mode when loading creds +
+            # data dir. If the session is paper (default) this matches
+            # pre-round-45 behavior exactly. If live, we load live keys +
+            # scope subsequent data-dir lookups to users/<id>/live/.
+            self.session_mode = user.get("session_mode") or "paper"
+            # If the session is 'live' but the user hasn't configured live
+            # keys yet, fall back to paper silently so the dashboard still
+            # loads (Settings tab lets them add live keys from there).
+            if self.session_mode == "live" and not (
+                user.get("alpaca_live_key_encrypted")
+                and user.get("alpaca_live_secret_encrypted")
+            ):
+                self.session_mode = "paper"
+            # Load per-user Alpaca credentials (decrypted) for this mode.
+            creds = auth.get_user_alpaca_creds(user["id"], mode=self.session_mode)
             self.user_api_key = creds["key"] if creds else ""
             self.user_api_secret = creds["secret"] if creds else ""
             self.user_api_endpoint = (creds.get("endpoint") if creds else None) or API_ENDPOINT
@@ -791,6 +814,34 @@ class DashboardHandler(
             "APCA-API-SECRET-KEY": self.user_api_secret or API_SECRET,
         }
 
+    def build_scoped_user_dict(self, mode=None):
+        """Round-45: build a cloud_scheduler-compatible user dict scoped
+        to a specific trading mode. Use this instead of inline dict
+        literals throughout the handlers. Defaults to the request's
+        session_mode so existing code paths get the right tree
+        automatically.
+
+        Returns a dict with `_mode`, `_data_dir`, `_strategies_dir`,
+        `_api_key`, `_api_secret`, `_api_endpoint`, `_data_endpoint`,
+        plus `id` and `username` for downstream logging.
+        """
+        mode = mode or self.session_mode or "paper"
+        creds = auth.get_user_alpaca_creds(self.current_user["id"], mode=mode) or {}
+        udir = auth.user_data_dir(self.current_user["id"], mode=mode)
+        return {
+            "id": self.current_user["id"],
+            "username": self.current_user["username"],
+            "_mode": mode,
+            "_api_key": creds.get("key", ""),
+            "_api_secret": creds.get("secret", ""),
+            "_api_endpoint": creds.get("endpoint") or API_ENDPOINT,
+            "_data_endpoint": creds.get("data_endpoint") or DATA_ENDPOINT,
+            "_ntfy_topic": self.current_user.get("ntfy_topic", "")
+                           or f"alpaca-bot-{self.current_user['username'].lower()}",
+            "_data_dir": udir,
+            "_strategies_dir": os.path.join(udir, "strategies"),
+        }
+
     # ========================================================================
     # Per-user file isolation helpers
     #
@@ -803,10 +854,15 @@ class DashboardHandler(
     # for the env-var legacy mode where there's no SQLite user.
     # ========================================================================
     def _user_dir(self):
-        """Return the per-user data directory, or DATA_DIR for legacy env-mode."""
+        """Return the per-user data directory, or DATA_DIR for legacy env-mode.
+
+        Round-45: respects the session's current view mode, so a request
+        that sets session_mode='live' reads/writes under users/<id>/live/.
+        """
         if self.current_user and self.current_user.get("id") is not None:
             try:
-                return auth.user_data_dir(self.current_user["id"])
+                return auth.user_data_dir(self.current_user["id"],
+                                           mode=self.session_mode or "paper")
             except Exception:
                 pass
         return DATA_DIR
@@ -1621,6 +1677,17 @@ class DashboardHandler(
                 api_headers=self.user_headers(),
                 user_id=self.current_user.get("id") if self.current_user else None,
             )
+            # Round-45: expose the session's current mode + whether the
+            # user has live keys configured so the dashboard can render
+            # the mode-toggle button with the correct state.
+            if isinstance(data, dict) and self.current_user:
+                data["session_mode"] = self.session_mode or "paper"
+                data["has_live_keys"] = bool(
+                    self.current_user.get("alpaca_live_key_encrypted")
+                    and self.current_user.get("alpaca_live_secret_encrypted")
+                )
+                data["live_parallel_enabled"] = bool(
+                    self.current_user.get("live_parallel_enabled"))
             self.send_json(data)
 
         elif path == "/api/chart-bars":
@@ -2155,17 +2222,15 @@ class DashboardHandler(
             # enough state detail for the dashboard wheel card to render.
             try:
                 import wheel_strategy as ws
-                user = {
-                    "_api_key": self.user_api_key,
-                    "_api_secret": self.user_api_secret,
-                    "_api_endpoint": self.user_api_endpoint,
-                    "_data_endpoint": self.user_data_endpoint,
-                    "_data_dir": auth.user_data_dir(self.current_user["id"]) if self.current_user else DATA_DIR,
-                    "_strategies_dir": os.path.join(
-                        auth.user_data_dir(self.current_user["id"]) if self.current_user else DATA_DIR,
-                        "strategies"
-                    ),
-                }
+                # Round-45: respects session mode so live-view users see
+                # live wheels, paper-view users see paper wheels.
+                if self.current_user:
+                    user = self.build_scoped_user_dict()
+                else:
+                    user = {"_data_dir": DATA_DIR,
+                            "_strategies_dir": os.path.join(DATA_DIR, "strategies"),
+                            "_api_key": "", "_api_secret": "",
+                            "_api_endpoint": API_ENDPOINT, "_data_endpoint": DATA_ENDPOINT}
                 wheels = ws.list_wheel_files(user)
                 result = []
                 total_premium = 0
@@ -2218,7 +2283,9 @@ class DashboardHandler(
                 return self.send_json({"error": "Not authenticated"}, 401)
             try:
                 import news_websocket
-                udir = auth.user_data_dir(self.current_user["id"])
+                # Round-45: scope to the session's view mode
+                udir = auth.user_data_dir(self.current_user["id"],
+                                            mode=self.session_mode or "paper")
                 minutes = 60
                 try:
                     qs = urllib.parse.urlparse(self.path).query or ""
@@ -2446,6 +2513,46 @@ class DashboardHandler(
             # Round-40: one-shot backfill of the caller's trade journal.
             self.handle_admin_backfill_journal(body)
             return
+
+        if path == "/api/set-live-parallel":
+            # Round-45: toggle the user's live_parallel_enabled flag.
+            # When true + live keys present, the scheduler runs both
+            # paper + live trees on each tick.
+            if not self.current_user:
+                return self.send_json({"error": "Not authenticated"}, 401)
+            enabled = bool(body.get("enabled"))
+            if enabled and not (
+                self.current_user.get("alpaca_live_key_encrypted")
+                and self.current_user.get("alpaca_live_secret_encrypted")
+            ):
+                return self.send_json({
+                    "error": "Live keys not configured. Save them on Settings → Alpaca API first."
+                }, 400)
+            if not auth.set_live_parallel_enabled(self.current_user["id"], enabled):
+                return self.send_json({"error": "Failed to update"}, 500)
+            return self.send_json({"success": True, "enabled": enabled})
+
+        if path == "/api/switch-mode":
+            # Round-45 dual-mode: change which state tree the dashboard
+            # reads from. Paper or live only. Updates the session row so
+            # the mode persists across page reloads / auto-refresh ticks.
+            new_mode = (body.get("mode") or "").lower()
+            if new_mode not in ("paper", "live"):
+                return self.send_json({"error": "mode must be 'paper' or 'live'"}, 400)
+            if new_mode == "live":
+                # Require live keys to be configured before allowing the
+                # switch. Otherwise the dashboard would load an empty
+                # live tree and the user would think something's broken.
+                if not (self.current_user.get("alpaca_live_key_encrypted") and
+                        self.current_user.get("alpaca_live_secret_encrypted")):
+                    return self.send_json({
+                        "error": "Live keys not configured. Settings → Live Trading tab."
+                    }, 400)
+            if not self._session_token:
+                return self.send_json({"error": "Session missing"}, 400)
+            if not auth.set_session_mode(self._session_token, new_mode):
+                return self.send_json({"error": "Failed to update session"}, 500)
+            return self.send_json({"success": True, "mode": new_mode})
 
         if path == "/api/refresh":
             self.handle_refresh()
