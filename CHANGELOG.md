@@ -8,6 +8,96 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-56 — Daily-close email option/short display
+
+User forwarded a screenshot of their end-of-day email:
+> `HIMS260508P00027000  +28.29%  +$58.00  (-1 sh)`
+
+Three readability bugs, zero math bugs:
+1. **"sh" label on an option contract** — OCC symbols (`HIMS260508P00027000`) are contracts, not shares.
+2. **`{sym:<6}` column width** — OCC symbols are 17-18 chars. Fixed-width email clients truncated them visually.
+3. **`(-1 sh)` for a short put** — negative magnitude reads like bad data; "short 1 contract" is clearer.
+
+**Fix:** new `_display_label(sym, qty)` closure in `_build_daily_close_report` that:
+* Detects OCC symbols via `error_recovery._is_occ_option_symbol`
+* Parses OCC → `HIMS put 260508 $27` (underlying + right + expiry + strike)
+* Labels contracts: `short 1 contract` / `5 contracts` (singular/plural aware)
+* Prefixes shorts with "short" + absolute qty (instead of negative magnitude)
+* Preserves equity output: `SOXL  +27.35%  +$2,723.76  (117 sh)` unchanged
+
+**Before → After** for the HIMS row:
+```
+ • HIMS260508P00027000 +28.29%  +$58.00  (-1 sh)           ← old (truncated, wrong noun)
+ • HIMS put 260508 $27    +28.29%  +$58.00  (short 1 contract)  ← new
+```
+
+Math (% + $ P&L + total unrealized + winners/losers sort) untouched — display-only.
+
+**Tests:** 11 new cases in `tests/test_round56_daily_close_email.py` covering OCC labelling, short-prefix for equity and options, plural vs singular contract noun, strike + expiry render, long-symbol OCC edge case, and a grep-level regression guard that the `{sym:<6}` format string never returns to the positions block.
+
+---
+
+## 🆕 Round-55 — After-hours trailing-stop tightening
+
+User: *"how do we get this bot to work in after hours too — right now I have some [stocks] I could have the stops raised and if they go back down before morning we are leaving money on the table."*
+
+**Problem:** The bot was only tightening trailing stops during regular market hours (9:30 AM - 4:00 PM ET). If a position ran up $4 post-market then faded overnight, the stop stayed at the pre-pop level → gains lost.
+
+**Fix:** Monitor runs in **stops-only mode** during pre-market (4:00-9:30 AM ET) + after-hours (4:00-8:00 PM ET).
+
+**AH mode does:**
+* 5-min cadence (regular hours still 60s — unchanged)
+* Fetches latest trade (Alpaca returns extended-hours quotes)
+* Updates `highest_price_seen` when AH beats prior high
+* Runs trailing-stop raise (PATCH or cancel+replace) so stop is tighter before next open
+* Stop stays `time_in_force: gtc` — triggers on next regular-hours price cross
+
+**AH mode SKIPS (thin-book protection):**
+* Daily-loss kill-switch, initial stop placement, profit-take ladder, mean-reversion target, PEAD 60-day, earnings-exit, short positions, wheel option closes
+
+**Opt-out:** `extended_hours_trailing: false` in guardrails.json (default ON).
+
+**Tests:** 10 new in `test_round55_after_hours_trailing.py`. Suite: 755 passed, 1 deselected (734 main + 11 round-54 + 10 round-55). Ruff clean.
+
+**Operator impact:** once Railway deploys, post-market pops on your holdings will raise the trailing stop within 5 min. The stop fires at next market open if price crosses — locking in the new high instead of letting it fade overnight.
+
+---
+
+## 🆕 Round-54 — Calibration per-key overrides + desktop jitter fix
+
+User asked: *"we were going to give the user the ability to adjust any of the auto calibration levers if they want with pop-ups and warnings as needed... make this user friendly but give the trader control as well. Also the desktop version is still jumping around when it refreshes makes it hard to use."*
+
+**Calibration-override UI (new):**
+
+* **POST `/api/calibration/override`** — writes one key at a time to `guardrails.json` with server-side validation:
+  - Whitelist of editable keys: `max_positions`, `max_position_pct`, `min_stock_price`, `fractional_enabled`, `wheel_enabled`, `short_enabled`, `strategies_enabled`
+  - Range checks: `max_position_pct` 0-50%, `max_positions` 1-50, `min_stock_price` 0-10000
+  - **Alpaca-rule hard blocks**: `short_enabled=True` on a cash account returns `blocked_by_alpaca_rule=True` → UI shows a red `alert()` popup instead of saving
+  - Audit log entry for every override
+
+* **POST `/api/calibration/reset`** — reverts the tier-adopted keys back to calibrated defaults. Preserves user-customized risk keys (`daily_loss_limit_pct`, `earnings_exit_*`, `kill_switch_*`).
+
+* **Settings → Calibration tab** got editable controls: sliders for `max_positions` / `max_position_pct` / `min_stock_price`, toggles for fractional / wheel / shorts, strategy pills, ↺ Reset to Tier Defaults button.
+
+* **Client-side warnings** for risky overrides: `max_position_pct > 15%`, `max_positions > 12`, `short_enabled` going ON, `fractional_enabled` going OFF.
+
+**How Templates + Calibration interact** (inline UI explainer):
+
+```
+Your manual edits  →  Preset click  →  Calibration defaults
+   (most specific wins; each successive layer gets overridden)
+```
+
+**Jitter fix (desktop + mobile):**
+
+Previous rounds (47, 48) tried scroll preservation + fewer cascading re-renders. User still reported jitter. Root cause: every 10-second tick wholesale-replaced ~30KB of DOM even when nothing meaningfully changed.
+
+* **Hash-skip**: renderDashboard builds HTML into a variable, compares to `window._lastAppHtml`. If identical, skip the innerHTML assignment entirely → zero repaint, zero jitter on quiet ticks.
+
+**Tests:** 11 new cases in `tests/test_round54_calibration_overrides.py`. Ruff clean. Node `--check` clean. server.py LOC cap raised 2850 → 3000 for the new endpoints.
+
+---
+
 ## 🆕 Round-52 — Full tech-stack audit + fixes
 
 User asked for a comprehensive audit after merging rounds 50 + 51. Five parallel Explore agents swept security, concurrency, trading-logic, UI, and ops/tests. Surfaced **11 real bugs** across all layers; also verified **8 false positives** (wheel options proceeds math, tier boundaries, tier-stash race, mode isolation, atomic writes, ledger pruning, XSS, JS syntax).

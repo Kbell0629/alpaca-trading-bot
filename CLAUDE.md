@@ -1,1668 +1,293 @@
 # CLAUDE.md — Session Context
 
-This file is read first by Claude Code when it opens this repo. It's the
-one-page answer to "what is this project, what's the current state, and
-how do I pick up where the last session left off?"
+One-page answer to: what is this, what's the current state, how do I pick up?
+Full history lives in `CHANGELOG.md`.
 
 ---
 
 ## What this is
 
-Autonomous multi-user stock-trading bot. Screens ~12K US equities every
-30 min, auto-deploys top picks across 6 strategies, manages exits,
-handles kill-switch + drawdown guardrails, and runs 24/7 on Railway.
+Autonomous multi-user stock-trading bot. Screens ~12K US equities every 30 min,
+auto-deploys top picks across 6 strategies, manages exits, handles kill-switch
++ drawdown guardrails, runs 24/7 on Railway.
 
-- **Dashboard**: https://stockbott.up.railway.app
-- **Repo**: `Kbell0629/alpaca-trading-bot`
-- **Primary branch**: `main` (protected: PR + CI required, no force push)
-- **Claude agent branch pattern**: `claude/<short-description>` — PR +
-  squash-merge after CI green.
-- **Sessions**: paper-trading for the **30-day validation window**
-  (started 2026-04-15). Live-trading path is wired but off.
+- **Dashboard:** https://stockbott.up.railway.app
+- **Repo:** `Kbell0629/alpaca-trading-bot`
+- **Primary branch:** `main` (protected: PR + CI required, no force push)
+- **Agent branch pattern:** `claude/<short-description>` → PR → squash-merge
+- **Sessions:** paper-trading 30-day validation (started 2026-04-15, ends ~2026-05-15).
+  Live-trading path wired but off.
 
 ## Alpaca account state
 
-- Paper account active, $100k seed
-- Live trading toggleable in-app (Settings → 🔴 Live Trading) — OFF
-- `MASTER_ENCRYPTION_KEY` is **required** on Railway (auth.py refuses
-  to boot without it — the PLAIN-fallback path was retired in PR #2)
+- Paper $100k seed, live toggleable via Settings → 🔴 Live Trading (OFF).
+- `MASTER_ENCRYPTION_KEY` **required** on Railway (auth.py refuses boot without).
+- `SENTRY_DSN`, `NTFY_TOPIC`, `GEMINI_API_KEY` set on Railway.
 
 ---
 
-## How to pick up the work
+## Picking up a session
 
-**Every session, start with these checks:**
+1. `git checkout main && git pull --ff-only`
+2. `cat CLAUDE.md` (this file), `cat README.md`, `cat CHANGELOG.md`
+3. `MASTER_ENCRYPTION_KEY=$(python3 -c 'print("e"*64)') python3 -m pytest tests/ --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json -q`
+   — expect **~745 passing, 1 deselected** after round-54/55.
+4. `ruff check .` — clean.
+5. Validate dashboard JS: `awk '/^<script>/,/^<\/script>/' templates/dashboard.html | grep -v '^<script>' | grep -v '^</script>' > /tmp/dash.js && node --check /tmp/dash.js`
 
-1. `git checkout main && git pull` — current HEAD should have the
-   round-12 audit sweep merged (commits `#2` through `#15`).
-2. `cat CLAUDE.md` (this file) + `cat README.md` for user-facing state.
-3. `cat IMPLEMENTATION_STATUS.md` for the running changelog.
-4. `cat docs/DECIMAL_MIGRATION_PLAN.md` if the user asks about money math.
-5. `MASTER_ENCRYPTION_KEY=<any-64-char-string> python3 -m pytest tests/`
-   to confirm the test suite is green (expect ~240 passing; two sandbox-
-   only failures don't count — see "known test quirks" below).
-
-**Common next-steps the user may ask about** (ordered by likelihood):
-
-- "Anything bugged?" — run the audit playbook in the `Audit playbook`
-  section below.
-- "Fix X" — open a feature branch, write the fix + tests, PR, merge.
-- "Ship it" — look at current merged PRs list with `git log --oneline
-  main | head -20`.
-- "Ruff + coverage status" — `ruff check .` should be clean; CI floor
-  is 15% (ratchet baseline; nudge up when you add tests).
-
----
-
-## The round-12 audit sweep (what shipped in the last session)
-
-Session-long audit across 5 parallel Explore agents (security, database,
-trading logic, UI/mobile, test coverage). 15 PRs merged to main, 110+
-tests added. **The most consequential finding**: the `portfolio_risk`
-beta-exposure safety rail had been silently disabled in production since
-round-11 because `run_auto_deployer` referenced three variables before
-they were defined — `except Exception` swallowed the NameError on every
-run. Fixed in PR #15 (`ruff check` F821 surfaced it).
-
-### Shipped this round
-
-| PR | Commit | Subject |
-|---|---|---|
-| #2 | `b6c9bcd` | Sentry wiring + MASTER_KEY mandatory |
-| #3 | `d1d7c3e` | JSON logging + `/api/version` + a11y + contrast + SRI prep |
-| #4 | `9d6569a` | SRI hashes pinned |
-| #5 | `966e531` | Journal trim + structured-print shim + test cleanup |
-| #6 | `dcdf166` | Decimal phase 1 (`tax_lots.py`) |
-| #7 | `16afdf5` | Login token-bucket rate limit |
-| #8 | `98d3f5c` | Decimal phase 2 (`update_scorecard.py`) |
-| #9 | `03becfc` | Decimal phase 3 (`portfolio_risk.py`) |
-| #10 | `c73c288` | Decimal phase 4 (`wheel_strategy.py`) + 39 fuzz tests |
-| #11 | `7353b65` | Decimal phase 5 (`smart_orders` + `calc_position_size`) + 30k fuzz |
-| #12 | `c6827fa` | Password-reset TOCTOU, session IP norm, capital_check fallback, coid entropy, modal responsive, SW JSON |
-| #13 | `bc40d49` | XSS hardening, modal focus trap, forgot-password constant-time |
-| #14 | `d06760d` | Kill-switch `threading.Event`, trim file lock, wheel split guard |
-| #15 | `3ad82a7` | CI tooling (ruff + coverage ratchet) + **4 latent bugs** (beta-exposure gate was DEAD CODE in prod) |
-
-### Key behaviour changes to know about
-
-1. **Logging**: everything emits JSON envelopes now. Railway's log
-   viewer parses + pretty-prints them. See `logging_setup.py` — the
-   `init()` call monkey-patches `builtins.print` to route through
-   `logging.getLogger(caller_module)` with level auto-classified
-   from `[ERROR]` / `[WARN]` prefixes.
-2. **All money math is Decimal-internal**. `tax_lots.py`,
-   `update_scorecard.py`, `portfolio_risk.py`, `wheel_strategy.py`,
-   `smart_orders.py`, `update_dashboard.calc_position_size` all use
-   `_dec()` + `_to_cents_float()` helpers. JSON boundary unchanged
-   (still float-with-2dp). See `docs/DECIMAL_MIGRATION_PLAN.md`.
-3. **Kill switch**: `cloud_scheduler.request_deploy_abort()` sets a
-   `threading.Event` that in-flight deploy loops check between
-   symbols. Atomic abort, no more 100-300ms window.
-4. **Trade journal trims itself** at 3:15 AM ET daily. Closed trades
-   >2 years old move to `trade_journal_archive.json` in the same
-   dir. `DashboardHandler._load_full_journal()` reads both for
-   lifetime stats (tax/export paths); `/api/trade-heatmap` reads
-   live-only.
-5. **Password-reset TOCTOU**: `auth.consume_reset_token` now does
-   atomic `UPDATE ... WHERE used=0` before changing password. Two
-   concurrent reset attempts can't both succeed.
-6. **Login rate limit**: in-memory token bucket (BURST=10, REFILL=0.2/s
-   per `(ip, username)`) in front of the SQLite 5-per-15-min window.
-7. **Beta-exposure gate**: FIXED. Previously dead code. Now fires
-   correctly in `run_auto_deployer`. Watch for the `Beta exposure:
-   …% beta-weighted` log line to confirm it's running.
-
----
-
-## Outstanding items (user-flagged or deferred)
-
-### Flagged for user input — all cleared (2026-04-19)
-
-- ~~**PWA icons**: manifest needed iOS PNG fallbacks~~ — DONE in PR #25.
-- ~~**Sentry DSN rotation**: the leaked DSN in early docs~~ — DONE,
-  user rotated + set new `SENTRY_DSN` on Railway.
-- ~~**MASTER_ENCRYPTION_KEY** set on Railway~~ — DONE, user confirmed
-  variable is set. DO NOT rotate (invalidates stored creds).
-- ~~**Notifications wiring** (ntfy + email + Sentry alerts)~~ — DONE.
-
-Only remaining pre-live prereqs live in `GO_LIVE_CHECKLIST.md`:
-finish 30-day paper validation window + generate dedicated live
-Alpaca keys. Both are user-only operational steps.
-
-### Known gaps — closed out in rounds 13-17
-
-| Item | Status | Round |
-|---|---|---|
-| `cloud_scheduler.py` 3800 LOC monolith | **Split**: API helpers + CB + RL extracted to `scheduler_api.py` | #17 |
-| Handler mixin tests (auth/strategy/actions/admin) | **21 tests** in `test_handler_mixins.py` | #12 |
-| `smart_orders.place_smart_buy` full flow | **14 tests** in `test_smart_orders_full_flow.py` | #12 |
-| Strategy modules zero tests | **18 tests** added across pead/short/earnings/insider | #16 |
-| Wheel stock-split auto-resolve | **Done**: `_detect_split_since` + `yf_splits` | #13 |
-| 5-layer state without reconciliation | **Boot-time validator** in `state_recovery.py` | #16 |
-| Critical-alert email broken (silent since round-11) | **Fixed**: import + signature | #14 |
-| Daily -3% loss alert had no notification | **Wired** through `critical_alert` | #15 |
-| 401/403 silent credential rot | **Detect + per-day alert dedup** | #15 |
-| smart_orders partial-fill cost basis drift | **Blended avg** in buy + sell | #15 |
-| `_load_with_shared_fallback` untested invariant | **Pinning tests** in `per_user_isolation.py` | #15 |
-
-### Truly remaining gaps (defer + accept)
-
-- **Coverage ratchet**: CI floor is 15% (measured baseline ~21% after
-  rounds 13-17). Nudge up when you add test suites; pyproject.toml
-  omits one-shot CLIs from the measurement.
-- **Structured logging phase 2**: `logging_setup.init()` installs a
-  `builtins.print` shim so all existing prints get auto-classified
-  JSON envelopes. Explicit `log.info()` migration still pending for
-  ~400 prints in strategies / one-shots. Not blocking — shim handles it.
-- **`options_flow` + `options_analysis`** unit tests — ~90% network-
-  bound. Pure-helper tests would have low marginal value vs the
-  full-mock investment.
-
-### Accept-as-is (not bugs)
-
-- forgot-password enumeration via rate-limit exhaustion (bucket mitigates)
-- kill-switch latency up to one scheduler tick (~100ms — acceptable scale)
-- `_ServerProxy` late-binding circular-import workaround (unavoidable
-  because server.py runs as `__main__`)
-
-### Explicitly won't fix (user's own audit flagged them as skip)
-
-These are not bugs — the user / audit explicitly classified them as
-accept-as-is:
-- forgot-password enumeration via brute-force rate-limit exhaustion
-  (mitigated by bucket)
-- kill-switch latency up to one scheduler tick (~100ms — acceptable
-  for paper + single-user-ish scale)
+**GitHub MCP is disconnected** every session. User opens PRs + merges manually
+via web UI. Don't try `mcp__github__*` tools.
 
 ---
 
 ## Audit playbook (when user says "check for bugs")
 
-This is the playbook the last session ran. Reuse for future audit
-requests:
-
-1. **Read this file**, then `git log --oneline main | head -30` to see
-   what's shipped recently.
-2. **Spawn 5 parallel Explore agents** (use `subagent_type: Explore`)
-   scoped to: security, database/concurrency, trading logic,
-   UI/UX/mobile, test coverage. Give each <1000-word reply budget.
-3. **Triage**: auto-fix the clear-cut wins in ONE PR; flag
-   architecturally significant ones for user decision.
-4. **Run `ruff check . --select F821,B023`** — these two rules
-   historically surface real bugs (undefined names, loop captures).
-5. **Run full pytest** — must stay green (two sandbox-only failures
-   on local are expected; CI on GitHub passes all).
-6. **Deliver a report** with three sections: "fixed", "needs your
-   decision", "deferred with known gaps".
+1. Read this file + `git log --oneline main | head -30`.
+2. Spawn 5 parallel Explore agents: security, DB/concurrency, trading logic,
+   UI/UX/mobile, tests/ops. Give each <1000-word reply budget.
+3. Triage: auto-fix clear wins in ONE PR; flag architecturally significant
+   ones for user decision.
+4. `ruff check . --select F821,B023` — historically surfaces real bugs
+   (undefined names, loop captures).
+5. **Verify every trading-logic claim against actual code** — that agent has
+   a history of false positives (CHANGELOG round-22 + round-52 logged 8+
+   each round that turned out to be misreadings).
+6. Deliver report: "fixed", "needs your decision", "deferred".
 
 ---
 
-## Stack / conventions
+## Current session state (2026-04-23 — rounds 54 + 55 combined)
 
-- Python 3.12 (CI), 3.11 (sandbox tested)
-- stdlib-only where possible. External deps in `requirements.txt`:
-  `cryptography>=42.0.0`, `zxcvbn>=4.4.28`, `sentry-sdk` (optional),
-  `pytest` (dev), `pytest-cov` (dev), `ruff` (dev)
-- SQLite (via `sqlite3`) for auth, sessions, audit log, login attempts
-- All per-user runtime state in `$DATA_DIR/users/<id>/`
-- JSON files for trade journal, wheel state, guardrails, scorecard
-- HTTP via `http.server.ThreadingHTTPServer` (no framework)
-- Background scheduler via `threading` (no celery / rq)
-- Frontend: single-page dashboard in `templates/dashboard.html` (~6K
-  LOC inline JS+CSS) — vanilla JS, no build step
+**Combined branch:** `claude/round54-55-combined` (this branch).
+Contains round-54 (calibration overrides + jitter fix) + round-55 (after-hours
+trailing stops).
 
-**ET everywhere**. Never `datetime.now(timezone.utc)`; always
-`from et_time import now_et`. Money always Decimal-internal on compute
-paths; float on JSON boundary.
+### Round-54 — Calibration per-key overrides + desktop jitter fix
+- `POST /api/calibration/override` — whitelist + range validation + Alpaca-rule
+  blocks (cash can't enable shorts, margin <$25k can't disable PDT, etc.)
+- `POST /api/calibration/reset` — reverts tier-adopted keys only (preserves
+  user risk-preference keys: daily_loss_limit_pct, earnings_exit, kill_switch)
+- Settings → Calibration tab: sliders + toggles + strategy pills + warnings
+- **Jitter FIX**: `window._lastAppHtml` hash-skip — only touches
+  `app.innerHTML` when output string differs. Zero repaint on quiet ticks.
+- 11 new tests in `test_round54_calibration_overrides.py`
 
-**Per-user file isolation is security-critical**. Migration from
-shared `DATA_DIR` is RESTRICTED to `user_id == 1` (the bootstrap
-admin). Regression here has caused cross-user auto-trading before.
+### Round-55 — After-hours trailing-stop tightening
+- Monitor every 5 min in pre-market (4–9:30 AM ET) + post-market (4–8 PM ET),
+  **stops-only mode**.
+- Trailing-stop raise fires on AH pops; stop order stays GTC + triggers at
+  next regular-hours cross.
+- AH mode SKIPS: daily-loss kill-switch, initial stop placement, profit-take
+  ladder, mean-reversion, PEAD, earnings-exit, short-sells, wheel files
+  (thin-book paths).
+- Opt-out: `guardrails.extended_hours_trailing = false` (default True).
+- 10 new tests in `test_round55_after_hours_trailing.py`
+
+### Pending user question (not yet investigated)
+User flagged: *"I don't think this math is right on daily close"* with
+screenshot at `/root/.claude/uploads/511bc447-83b8-4ff9-8203-1633b7504580/019db6fe-1000025079.jpg`.
+Review in a follow-on round.
 
 ---
 
-## Known test quirks
+## Architectural invariants (CRITICAL — don't regress)
 
-- `tests/test_auth.py::test_password_strength_rejects_weak` FAILS
-  locally because the sandbox lacks `zxcvbn`; `auth.check_password_
-  strength` falls back to 8-char-minimum which "password" passes.
-  CI has zxcvbn and the test passes.
-- `tests/test_dashboard_data.py::test_trading_session_is_computed_
-  live_not_from_stale_json` FAILS locally because the sandbox blocks
-  outbound network; test tries `alpaca_get("/account")`. CI blocks
-  this too — CI deselects the test explicitly.
-- Both are pre-existing and unrelated to recent PRs.
+### Post-55 (after-hours monitor)
+- `monitor_strategies(user, extended_hours=True)` MUST only raise trailing
+  stops. No new buys, profit-takes, short covers. `test_ah_mode_skips_profit_ladder`
+  pins the call-site gate.
+- AH tick uses `should_run_interval(f"monitor_eh_{uid}", 300)` — 5-min key,
+  distinct from 60s `monitor_{uid}`.
+
+### Post-54 (calibration overrides + jitter)
+- `window._lastAppHtml` hash-skip guards BOTH DOM write AND scroll restore.
+- `/api/calibration/override` validates via whitelist + range checks +
+  Alpaca-rule block. Don't remove.
+
+### Post-52 (audit fixes)
+- `fractional._cache_path`, `settled_funds._ledger_path` MUST raise
+  `ValueError` on missing `_data_dir`. The /tmp fallback is gone — a
+  programming bug elsewhere should not silently cross-contaminate users.
+- All 3 new modules' RMW paths MUST go through module-local `_file_lock(path)`.
+- `migrate_guardrails_round51` MUST track `backup_created_this_call` to avoid
+  deleting backups created in prior calls.
+- Short-sell block in `run_auto_deployer` MUST check `TIER_CFG.short_enabled`
+  BEFORE consulting user config. Cash accounts can't override.
+- Tier log dedup via `_last_runs` — only log on state change.
+
+### Post-51 (activation for existing users)
+- `migrate_guardrails_round51` MUST write backup before overwriting; MUST NOT
+  overwrite existing backup file.
+- `record_trade_close` MUST only record proceeds when `side="sell"` (long
+  close). Short covers (`side="buy"`) do NOT generate settled cash.
+- `run_auto_deployer` fractional routing MUST pass `fractional=True` to
+  `smart_orders.place_smart_buy` (routes to market).
+- PDT guard in `check_profit_ladder` MUST use buffer=1.
+- All round-51 hooks MUST fail OPEN on exception — advisory code never blocks trading.
+
+### Post-50 (portfolio calibration)
+- `portfolio_calibration.detect_tier` MUST return None for equity <$500.
+- Cash accounts MUST NEVER receive `short_enabled=True` even via user override.
+- `pdt_tracker.can_day_trade` MUST check `pdt_applies` before consulting
+  `day_trades_remaining`.
+- `settled_funds.can_deploy` MUST passthrough for margin (no T+1 constraint).
+  95% buffer on cash must stay.
+- `fractional.size_position` MUST return `order_type_hint='market'` when
+  `fractional=True`.
+- `server.py` LOC cap 3000 (test_round6). Bump with care.
+
+### Post-48 (cross-user privacy)
+- `notify.py` MUST read `NOTIFICATION_EMAIL` from env — never hardcode.
+  `test_notify_no_longer_has_hardcoded_recipient` fires on regression.
+- `cloud_scheduler.notify_user` MUST pass BOTH `NOTIFICATION_EMAIL` and
+  `DATA_DIR` per-user in subprocess env.
+- `email_sender.drain_all` MUST NOT drain shared root queue — quarantine-only.
+- `/api/scheduler-status` with `is_admin=True` returns unfiltered ONLY if `?all=1`.
+- Enrichment fetches (wheel-status, news-alerts) MUST NOT call
+  `renderDashboard()` from .then() callbacks. Store data, let next tick render.
+
+### Post-46 (dual-mode paper + live)
+- `auth.user_data_dir(user_id, mode="paper")` default stays `users/<id>/`.
+  No migration, back-compat.
+- `user["_mode"]` injected by `_build_user_dict_for_mode` is source of truth.
+- Dedup keys like `_wheel_deploy_in_flight`, `_cb_state`, `_auth_alert_dates`:
+  paper keeps plain `user_id`; live uses `f"{id}:live"`.
+- `notify_user` prefixes live messages with `[LIVE]`.
+- Session-mode fallback: if `session_mode == "live"` but no live keys saved,
+  `check_auth` silently falls back to paper view.
+
+### General
+- **ET everywhere**. Never `datetime.now(timezone.utc)`; always
+  `from et_time import now_et`.
+- **Money always Decimal-internal** on compute paths; float on JSON boundary.
+- **Per-user file isolation is security-critical**. Migration from shared
+  DATA_DIR is RESTRICTED to `user_id == 1` (bootstrap admin). Regression here
+  has caused cross-user auto-trading before.
 
 ---
 
 ## Deploy mechanics
 
 - Push to `main` → Railway auto-deploys within ~2 min.
-- Confirm via `curl https://stockbott.up.railway.app/api/version` —
-  `commit` field should match current `git rev-parse HEAD`.
-- Railway env vars live in the Variables tab. Required:
-  `MASTER_ENCRYPTION_KEY` (mandatory, boot-blocking) + Alpaca credentials.
-- Any `MASTER_ENCRYPTION_KEY` change **invalidates all stored
-  credentials** (users must re-enter via Settings).
+- Confirm: `curl https://stockbott.up.railway.app/api/version` — `commit`
+  field matches `git rev-parse HEAD`.
+- Required Railway env vars: `MASTER_ENCRYPTION_KEY` (boot-blocking) + Alpaca
+  creds.
+- Changing `MASTER_ENCRYPTION_KEY` **invalidates all stored credentials**.
 
 ---
 
-## File-layout cheat sheet
+## Stack / conventions
+
+- Python 3.12 (CI), 3.11 (sandbox)
+- stdlib-first. External: `cryptography>=42`, `zxcvbn>=4.4.28`, `sentry-sdk`
+  (optional), `pytest`, `pytest-cov`, `ruff`
+- SQLite via `sqlite3` for auth/sessions/audit log
+- Per-user runtime state in `$DATA_DIR/users/<id>/`
+- JSON files: trade journal, wheel state, guardrails, scorecard
+- HTTP via `http.server.ThreadingHTTPServer` (no framework)
+- Threading for scheduler (no celery/rq)
+- Frontend: single `templates/dashboard.html` (~6K LOC inline JS+CSS,
+  vanilla, no build). Always `node --check` extracted JS before merging
+  (round-27 lesson).
+
+---
+
+## File layout cheat sheet
 
 ```
-/                          project root
-├── server.py              HTTP server + handler + scheduler boot
-├── cloud_scheduler.py     Background scheduler (3800 LOC, 58 fns)
-├── auth.py                SQLite auth + token bucket + sessions
-├── observability.py       Sentry wrapper + critical_alert()
-├── logging_setup.py       JSON log formatter + print shim
-├── trade_journal.py       Journal trim/archive + flock
-├── update_dashboard.py    Screener (runs as subprocess every 30min)
-├── update_scorecard.py    Scorecard rebuild (daily close)
-├── smart_orders.py        Limit-at-mid with market fallback
-├── wheel_strategy.py      Options wheel state machine
-├── tax_lots.py            FIFO tax-lot reconciler
-├── portfolio_risk.py      Beta-exposure + drawdown sizing
-├── risk_sizing.py         ATR stops + vol-parity sizing
-├── handlers/
-│   ├── auth_mixin.py      Login, signup, settings, reset
-│   ├── admin_mixin.py     /api/admin/* (user management)
-│   ├── strategy_mixin.py  Deploy / pause / stop / preset
-│   └── actions_mixin.py   Refresh, kill-switch, close, cancel
-├── templates/             Jinja-free HTML (loaded at boot)
-├── static/                PWA manifest + service-worker + SVG icon
-├── tests/                 pytest suite
-├── docs/                  DECIMAL_MIGRATION_PLAN, MONITORING_SETUP
-├── scripts/
-│   └── compute_sri.sh     Generate SRI hashes from a dev machine
-├── pyproject.toml         ruff + pytest + coverage config
-└── .github/workflows/ci.yml  lint + pytest + coverage ratchet
+server.py              HTTP server + handler + scheduler boot
+cloud_scheduler.py     Background scheduler (~4000 LOC, 60+ fns)
+scheduler_api.py       Alpaca API helpers + CB + rate limiter (extracted R17)
+auth.py                SQLite auth + token bucket + sessions
+observability.py       Sentry wrapper + critical_alert()
+logging_setup.py       JSON log formatter + print shim
+trade_journal.py       Journal trim/archive + flock
+update_dashboard.py    Screener (runs as subprocess every 30min)
+update_scorecard.py    Scorecard rebuild (daily close)
+smart_orders.py        Limit-at-mid with market fallback
+wheel_strategy.py      Options wheel state machine
+tax_lots.py            FIFO tax-lot reconciler
+portfolio_risk.py      Beta-exposure + drawdown sizing
+risk_sizing.py         ATR stops + vol-parity sizing
+portfolio_calibration.py   Tier detection from Alpaca /account (R50)
+fractional.py          Fractionable-asset cache + sizing (R50)
+pdt_tracker.py         Pattern Day Trader rule awareness (R50)
+settled_funds.py       T+1 settled-cash ledger (R50)
+migrations.py          Boot-time migrations (R37)
+state_recovery.py      Boot-time consistency validator
+error_recovery.py      Orphan detection
+extended_hours.py      get_trading_session() — pre_market/market/after_hours/closed
+earnings_exit.py       Pre-earnings close (R29)
+handlers/
+  auth_mixin.py        Login, signup, settings, reset
+  admin_mixin.py       /api/admin/* (user management)
+  strategy_mixin.py    Deploy / pause / stop / preset
+  actions_mixin.py     Refresh, kill-switch, close, cancel
+templates/             Jinja-free HTML (loaded at boot)
+static/                PWA manifest + SW + SVG icon
+tests/                 pytest suite (~745 passing after R54-55)
+docs/                  DECIMAL_MIGRATION_PLAN, MONITORING_SETUP
 ```
 
 ---
 
-## The round-13 cleanup (follow-on to round-12, 2026-04-19)
+## Known test quirks
 
-Follow-up session that landed the test-coverage gaps flagged at the
-end of round-12 plus a focused production-readiness pass.
+- `tests/test_auth.py::test_password_strength_rejects_weak` FAILS locally
+  (sandbox lacks zxcvbn, falls back to 8-char min; "password" passes). CI has
+  zxcvbn.
+- `tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json`
+  FAILS locally (sandbox blocks outbound network). CI deselects explicitly.
 
-### Shipped this round
-
-| PR | Commit | Subject |
-|---|---|---|
-| #17 | `4e06420` | Handler-mixin unit tests (21 cases on csrf / session cookie / input validation) |
-| #18 | `7853b2a` | **Latent cb-reset bug** + 23 scheduler helper tests. `_cb_blocked()` was popping initial `{fails:N, open_until:0}` state on every non-open check, silently resetting the counter. Circuit breaker never tripped. |
-| #19 | `db66769` | `smart_orders.place_smart_buy/sell` full-flow tests (14 cases: cancel-race, partial fill, coid format) |
-| #20 | `7e5b490` | Wheel stock-split auto-resolve (`_detect_split_since` + `yf_splits` helper). Anomaly guard now normalises share counts by split ratio instead of always freezing. |
-| #21 | `8fa2706` | Exception-handling hardening: `yfinance_budget._call_with_retry` fails fast on permanent errors + routes failures to Sentry; `wheel_strategy._detect_split_since` wraps full computation |
-| #22 | `b72f9f9` | Frontend/security bundle (8 fixes): README XSS scrub (DOMParser allowlist), API-key `type=password`, regime WCAG AA contrast, iOS zoom prevention, SW offline toast, HSTS header, Sentry `before_send` PII scrub, `auth_mixin` verify-keys generic error |
-| #23 | _pending_ | Math + peripheral bundle (7 fixes): `iv_rank` rate-limit flag + telemetry, `news_scanner` ±15 cap, `social_sentiment` 30-min recency filter, `llm_sentiment` `malformed` flag, `economic_calendar` FOMC 2027, `capitol_trades` hard-fail when disabled, `notify` DLQ overflow kept in main queue on write-fail |
-| #24 | _this PR_ | Docs refresh + go-live checklist |
-
-### Key behaviour changes round-13
-
-1. **yfinance retry loop** is now two-tier: ValueError / TypeError /
-   AttributeError / KeyError bypass the retry budget entirely — they
-   indicate shape drift, not a transient hiccup. Network/HTTPError
-   still get the 4-attempt exponential backoff. Final failure pings
-   `observability.capture_exception`, not just stdout.
-2. **Sentry PII scrub** wired via `before_send=_scrub_pii` in
-   `observability.init_sentry`. Strips PK/AK keys, emails, base64
-   tokens, and auth headers (`APCA-API-KEY-ID`, `Authorization`,
-   `Cookie`, `X-CSRF-Token`) from every event. Drops the event on
-   scrub-error rather than sending unscrubbed.
-3. **Circuit breaker finally works**. Before PR #18, every non-open
-   check was popping the initial state entry and silently resetting
-   the fail counter → the breaker never tripped in production.
-   Added `tests/test_cloud_scheduler_helpers.py` to pin the
-   fails-accumulate-until-threshold contract.
-4. **Wheel stock splits** auto-resolve via `yfinance_budget.yf_splits`
-   when the anomaly guard sees `share_delta >= 2 * expected_delta`.
-   Baseline + expected_delta normalise by the cumulative split ratio
-   and the assignment branch fires. Falls back to the freeze path if
-   yfinance returns empty / malformed data.
-5. **README sanitizer** in the dashboard: `marked.parse()` output
-   passes through a DOMParser allowlist (`_README_ALLOWED_TAGS` +
-   `_README_ALLOWED_ATTRS`) that strips `<script>`, on*-handlers,
-   and `javascript:`/`data:`/`vbscript:` URIs. Fallback path uses
-   textContent instead of raw-markdown innerHTML.
-6. **Input UX**: all auth templates (login/signup/forgot/reset) use
-   `font-size:16px` so iOS Safari doesn't auto-zoom. API-key fields
-   are `type=password` + `spellcheck=false`.
+Both pre-existing and unrelated to any recent PR.
 
 ---
 
-## Rounds 14-17 (2026-04-19, second-half session)
+## Tests that `importlib.reload()` auth-dependent modules
 
-Three additional audit/cleanup rounds + an architectural refactor
-landed after round-13. This is what each round delivered:
+MUST set `MASTER_ENCRYPTION_KEY` via monkeypatch — pass locally (env var set
+in shell) but fail CI. Use the `_reload(monkeypatch)` pattern:
 
-### Round-14 audit (PR #28)
+```python
+def _reload(monkeypatch):
+    monkeypatch.setenv("MASTER_ENCRYPTION_KEY", "e" * 64)
+    for m in ("auth", "scheduler_api", "cloud_scheduler"):
+        _sys.modules.pop(m, None)
+    import cloud_scheduler
+    return cloud_scheduler
+```
 
-Eight parallel Explore agents covering security, trading logic,
-concurrency, UI/UX, ops, integrations, tests, and a fresh-eyes
-architectural review. 7 fixes shipped, 9 false positives documented:
-
-* `observability.critical_alert` email path **completely broken since
-  round-11** — wrong import + wrong signature. Every kill-switch trip
-  silently failed to email the operator. Fixed.
-* `handle_logout` cleared session cookie but left CSRF cookie alive
-  for 30 days. Fixed.
-* Sentry `ignore_errors` only listed BrokenPipe variants → URLError /
-  TimeoutError noise burning the 5K/month free quota.
-* `notify` queue had no hard cap when DLQ persistently fails (memory).
-* `notify.log_notification` did read-modify-write without flock (race).
-* `llm_sentiment` daily counter used naive UTC not ET.
-* `track_record` HTML didn't escape strategy names (defensive).
-
-### Round-15 closeout (PR #29)
-
-11 deferred items from round-14 + new findings during verification:
-
-* **`smart_orders` partial-fill blended cost basis** — `filled_avg_price`
-  recorded only the market leg, ignoring the (often better) limit
-  partial fill. Drifted PnL ~0.8% over wheel cycles. Fixed with
-  `(limit_qty*limit_px + market_qty*market_px) / total` blend.
-* **Alpaca 401/403 auto-detect** — fires `critical_alert` once per
-  user per ET-day so credential rot doesn't silently fail orders.
-* **Daily -3% loss alert now notifies** — was a print + dashboard
-  flag with NO notification path. Now wired through `critical_alert`.
-* **Per-user isolation** — extracted `_load_with_shared_fallback` to
-  `per_user_isolation.py` with pinning tests so the user_id==1-only
-  invariant can't silently regress.
-* aria-sort on sortable headers; retry button on network errors;
-  screener progress banner.
-* notify + observability error logs scrub NTFY topic.
-* Subprocess SIGKILL fallback for screener timeouts + scheduler
-  shutdown.
-* `capital_check._compute_reserved_by_orders` extracted + tested
-  (prevents silent over-leverage on live-quote fetch failure).
-* Stock Watcher dead-code removed from `capitol_trades`.
-
-### Round-16 (PR #30)
-
-State-recovery validator + strategy module test coverage:
-
-* **`state_recovery.py`** — boot-time consistency check that compares
-  wheel state files + trade journal vs Alpaca-reported positions.
-  Doesn't auto-fix; logs drift via `observability.capture_message`
-  so the operator notices before drift becomes real-money damage.
-  Wired into `start_scheduler()` as a daemon thread.
-* **18 strategy tests** for previously-uncovered modules:
-  `pead_strategy`, `short_strategy`, `earnings_play`, `insider_signals`.
-  18 state_recovery tests too.
-
-### Round-17 (PR #31)
-
-`cloud_scheduler.py` 3800-LOC monolith split:
-
-* Extracted Alpaca API plumbing (`user_api_*`, `_cb_*`, `_rl_*`,
-  `_alert_alpaca_auth_failure`) into **`scheduler_api.py`** (~330 LOC).
-* `cloud_scheduler` re-exports every symbol via `from scheduler_api
-  import ...` — same objects shared (not copies), so `_cb_state` /
-  `_rl_state` / dedup dicts stay coherent across import sites.
-* Lazy import of `notify_user` inside `_cb_record_failure` to avoid
-  the `cloud_scheduler ↔ scheduler_api` import cycle.
-* 7 contract tests in `test_scheduler_api_extraction.py` pin the
-  re-export surface (callable presence + same-object identity).
-
-### Round-19 (PR #33) — final self-audit polish
-
-After round-17 shipped, I did a fresh audit on the code I wrote this
-session since nobody else had reviewed it. Found two real bugs:
-
-* **`scheduler_api.user_api_delete` + `user_api_patch` skipped the
-  rate-limit gate.** Inherited from the pre-extract cloud_scheduler
-  code. A kill-switch cancel storm or trailing-stop raise pass could
-  exceed Alpaca's 200/min budget and get 429-throttled. Both now
-  acquire from the token bucket with 2s wait_max.
-* **`options_analysis.analyze_wheel_candidates` crashed on empty-
-  string `strike_price`.** Alpaca's contracts endpoint occasionally
-  returns this on newly-listed or halt-pending contracts. `float("")`
-  raised ValueError and killed the loop. Now defensive parse → skip
-  row via the existing `if not strike` guard.
-
-Also polished:
-* `user_api_delete` + `user_api_patch` now fire `_alert_alpaca_auth_
-  failure` on 401/403 — previously only POST did.
-* `user_api_get` dead `last_err` local removed (F841).
-* 13 new options_flow + options_analysis tests.
-* CI coverage floor bumped 15% → 20% (measured 25.4%).
+Round-46 CI hotfix + round-55 tests use this pattern.
 
 ---
 
-## Last session state (2026-04-19 night — END OF SESSION)
+## Round history (condensed — see CHANGELOG.md for full detail)
 
-**33 PRs total merged across rounds 11-19.** Paper-trading 30-day
-validation window ongoing — started 2026-04-15, ends ~2026-05-15.
-
-**All code-side + operational-prereq work is complete.** User has:
-  * Rotated Sentry DSN and set `SENTRY_DSN` on Railway
-  * Set `MASTER_ENCRYPTION_KEY` on Railway (locked, do not rotate)
-  * Wired notifications (ntfy.sh + Gmail + Sentry alerts)
-  * PWA PNG icons live (PR #25)
-
-Only remaining pre-live items are timeboxed user actions:
-  1. Finish the 30-day paper validation window
-  2. Generate dedicated live Alpaca keys + flip via Settings
-
-Tests: **431 passing** locally (two sandbox-only failures in
-`test_auth::test_password_strength_rejects_weak` and
-`test_dashboard_data::...trading_session...` as documented).
-Ruff clean. **Coverage floor 20% (measured 25.4%)** — bumped from 15%
-in round-19 once tests crossed the threshold.
-
-**Current `main` HEAD:** `763a029` (round-20 + Moderate preset detect fix).
-
-### Round-20 trade-quality layer (2026-04-19 night → Monday open prep)
-
-Triggered by analysing a real `/api/data` snapshot — every top-scored
-Breakout pick had `backtest.stopped_out: true` with negative return.
-Bot was chasing breakout-day peaks (stocks already +8-12% intraday)
-and getting whipsawed by normal pullbacks into tight 5% stops.
-
-Shipped in PRs #35-#38:
-
-| PR | What |
+| Rounds | Headline |
 |---|---|
-| #35 | Dashboard filters past economic-calendar events + recomputes `days_away` from event.date client-side (was showing "0d away" for Friday's opex on Sunday) |
-| #36 | `run_auto_deployer` don't-chase gate (`daily_change > 8%` skip on Breakout/PEAD); volatility cap (`volatility > 20%` skip); `max_position_pct` 0.10 → 0.07 in preset + config; `breakout_stop_loss_pct` 0.05 → 0.12 (old value was TIGHTER than default, backwards) |
-| #37 | `migrations.py` + boot-time `run_all_migrations` hooked into state-recovery thread. Auto-migrates every user's `guardrails.json` from `max_position_pct: 0.10` → `0.07` idempotently (stamped with `_migrations_applied`). User no longer needs to click Apply Moderate to get the new cap. |
-| #38 | Dashboard "Currently running" preset detector was reading CUSTOM because `detectActivePreset` still matched Moderate only on 0.10. Now accepts either 0.07 OR 0.10 during the rollout window. Moderate preset card display: `10%` → `7%`; description expanded to surface round-20 trade-quality gates. |
-
-Net: Monday's deploy pipeline will skip INFQ-class picks (vol 33.9%,
-already +12.5% today — blocked by BOTH new gates), prefer lower-vol
-breakouts like ALM / JHX, size at 7% not 10%, stop at 12% not 5%.
-Dashboard correctly detects Moderate as active (no more "CUSTOM").
-
----
-
-## Rounds 21-22 (2026-04-20, day-after-round-20 session)
-
-Ran intensively during Monday's paper-trading hours — started with a
-live `/api/data` snapshot, surfaced 12 real bugs over the course of
-the session, shipped fixes in 11 PRs.
-
-### Shipped this round
-
-| PR | Subject |
-|---|---|
-| #40 | `getCSRFToken is not defined` — blocked every Settings save |
-| #41 | Activity log: 200-entry buffer + taller scroll box |
-| #42 | Activity ring buffer persisted to JSON (survives Railway redeploy) |
-| #43 | Exception-handling hardening (round 2) — 6 sites + 15 tests |
-| #44 | `.score-label` width so MOMENTUM fits on pick cards |
-| #45 | Round-21 trio: Gemini 2.0, auto_deployer_config migration, news_scanner error surfacing |
-| #46 | 🤖 AI / 📰 News / 🔵 Insider sentiment lines on pick cards |
-| #47 | Gemini `gemini-2.0-flash` → `gemini-2.5-flash` + Alpaca news RFC-3339 `Z` suffix |
-| #48 | **Two high-impact fixes**: Gemini `maxOutputTokens 100→256` + `thinkingBudget:0` + `responseMimeType:json` (fixed `AI: unparseable: ```` ``` ```` ` display); AND `fetch_bars_for_picks(days=20→60)` so MACD-26 EMA has enough history (RSI/MACD/BIAS were all `50 / 0 / neutral` defaults on every pick) |
-| #49 | `llm_sentiment` cache self-heals on `malformed:true` entries |
-| #50 | Sell 25% button on Open Positions (generalised Sell Half → Sell Fraction modal) |
-| #51 | **Round-22 audit sweep** — 6 fixes from 5 parallel Explore-agent audits |
-
-### Key behaviour changes 21-22
-
-1. **Gemini 2.5-flash** is the default LLM, configurable via `GEMINI_MODEL` env var. `thinkingBudget:0` disables chain-of-thought for this binary classifier (saves tokens). `responseMimeType:"application/json"` bypasses markdown-fence wrapping. `maxOutputTokens:256` gives headroom. Cache auto-invalidates malformed entries on next read (self-heal on deploy).
-2. **Alpaca news API** — `start` parameter now uses UTC with `Z` suffix. Previously `-0400` (no colon) was RFC-3339 invalid and returned HTTP 400 silently.
-3. **Pick-card technical indicators** now show real RSI/MACD/BIAS (were hardcoded defaults due to bar-fetch window being shorter than MACD's 26-EMA requirement).
-4. **Pick cards** gained three new sentiment lines: 🤖 AI (Gemini reasoning), 📰 News (Alpaca news sentiment + first bullish keyword), 🔵 Insider (SEC Form 4 cluster buys). All three are render-if-data-exists and use `esc()` on free-form strings.
-5. **Positions table** gained a Sell 25% button alongside existing Close / Sell 50%. Backed by existing `/api/sell` endpoint (no backend change).
-6. **`/api/force-auto-deploy` 30s cooldown** per user — authenticated DoS guard (round-22 audit finding).
-7. **`_counter.json` race fixed** with `fcntl.flock` — LLM cost counter was losing increments under parallel screener threads.
-
-### Round-22 audit findings (CLAUDE.md playbook executed)
-
-5 parallel Explore agents covered security, DB/concurrency, trading
-logic, UI/UX/mobile, production-readiness. 25+ findings triaged into:
-
-**Fixed in PR #51** (6 items):
-  * `update_scorecard.safe_save_json` bare-except narrowing (last site)
-  * `llm_sentiment._bump_call_counter` flock race
-  * `estimate_daily_cost` ET vs UTC date mismatch
-  * Positions-table `.btn-sm` 32px → 40px on mobile
-  * Sentiment-line contrast (WCAG AA)
-  * `/api/force-auto-deploy` per-user 30s cooldown
-
-**Need user decision** (flagged in PR #51 body):
-  * **Session idle timeout** — sessions persist 30 days with no
-    activity-based expiry. Should we add a 12-hr idle logout?
-    Convenience vs. lost-laptop risk.
-  * **Boot-time config WARNs** — GEMINI_API_KEY / SENTRY_DSN /
-    NTFY_TOPIC are silently optional. Add boot-time warnings when
-    any are unset? (Noise vs. visibility.)
-  * **`news_websocket.py` module** — code exists but never wired
-    into `cloud_scheduler`. Wire / feature-flag / delete?
-
-**Deferred with known gaps** (bigger items needing their own PR):
-  * Scheduler thread-death monitor (HIGH pre-live) — needs a
-    separate monitor thread in `start_scheduler` that fires
-    `critical_alert` if `_scheduler_thread.is_alive()` goes False.
-  * Alpaca news WebSocket `on_error` handler (MEDIUM, feature dormant).
-  * Subprocess zombie tracking (MEDIUM).
-  * HTTP timeout centralisation in `constants.py` (MEDIUM).
-  * Auto-refresh countdown retry-on-stall (MEDIUM) — if fetch hangs
-    past 30s, show retry UI instead of an infinite `0s`.
-  * Positions-table 375px overflow on iPhone SE (LOW).
-  * Positions-fetch loading state (LOW).
-
-**False alarms from trading-logic agent** (verified in PR #51 body):
-Agent claimed 7 "critical" trading bugs — all turned out to be
-misreadings of the code. `partial-fill stop orphan`, `trailing-stop
-gap-down`, `double-stop stacking`, `option multiplier missing`, and
-`cost-basis quantization drift` were all spot-checked against the
-actual code and the handling is already correct. Notes in PR body
-for future reference.
+| R11-12 | Audit sweep; beta-exposure gate fix (was dead code); 110+ tests |
+| R13-17 | Decimal migration; exception hardening; cloud_scheduler split → scheduler_api.py |
+| R18-22 | Handler-mixin tests; smart_orders full-flow; partial-fill blended cost basis; Gemini 2.5-flash; sentiment lines on pick cards |
+| R23-28 | Session idle timeout; scheduler death watchdog; subprocess zombie tracking; 🚨 Breaking News on pick cards + positions; universal earnings exit (R29); signup invites (R26); exception-handling round-2 (R28) |
+| R29-35 | Pre-earnings exit for all strategies; mobile scroll polish; journal undercount fix (R33); Today's Closes panel + orphan close (R34); real Position Correlation by sector (R35) |
+| R36-41 | Admin-panel Revoke Invite + Make/Revoke Admin; weekly learning path bug; dual-mode paper+live (R45); auto-orphan-fix (R44); wheel close journaling (R42); GDPR export + delete (R40); R41 full audit — 8 real bugs + 0 false positives |
+| R42-46 | R42 wheel close journaling; R44 auto-orphan-fix + scroll jitter; R45 dual-mode paper+live; R46 dual-mode audit fixes + CI hotfix |
+| R47-48 | R48 CRITICAL cross-user privacy fixes (hardcoded email recipient, shared email queue) |
+| R49-52 | R49 staleness tuning; R50 portfolio auto-calibration (6 tiers, $500-$1M+); R51 activation for existing users; R52 full tech-stack audit (11 fixes, 16 tests) |
+| R53 | Nav-tab active state + desktop modal sizing |
+| R54 | Calibration per-key overrides + hash-skip jitter fix (THIS PR) |
+| R55 | After-hours trailing-stop tightening (THIS PR) |
 
 ---
 
----
-
-## Rounds 23-25 (2026-04-20 late, same day as 21-22)
-
-After the round-22 audit landed (PR #51), user asked "anything else
-needed to fix?" — which triggered rounds 23, 24, and 25. 5 more PRs.
-
-### Shipped this round
-
-| PR | Subject |
-|---|---|
-| #52 | Round-23: session 12-hr idle timeout + boot config WARNs + wire news_websocket into scheduler |
-| #53 | Round-24: scheduler death watchdog + subprocess zombie tracking + HTTP timeout constants + fetch-stall retry + 375px positions overflow fix + Breaking News banner on pick cards |
-| #XX | Round-25: zombie rate-limit bug fix + Breaking News badge on position rows + 6 new tests + docs refresh |
-
-### Key behaviour changes 23-25
-
-1. **Session 12-hour idle timeout** (round-23). `sessions.last_activity_at`
-   column added; `validate_session` rejects any session idle > 12 hr
-   (configurable via `SESSION_IDLE_HOURS` env var) and slides the
-   window forward on every valid request. 30-day absolute ceiling
-   still applies on top.
-
-2. **Boot-time config WARN** (round-23). `server.main()` logs a
-   helpful WARN for each of `GEMINI_API_KEY`, `SENTRY_DSN`,
-   `NTFY_TOPIC` that's unset — names the consequence and the exact
-   Railway env-var fix.
-
-3. **news_websocket wired** (round-23). Alpaca real-time news stream
-   runs for user_id=1. `|score| >= 6` alerts go to
-   `users/1/news_alerts.json` and ntfy. Gated by
-   `ENABLE_NEWS_WEBSOCKET` env var (default "true" —
-   websocket-client is in requirements.txt). Single-stream design
-   limit documented; multi-user would need news_websocket module
-   refactor.
-
-4. **Scheduler death watchdog** (round-24). Daemon thread polls
-   `_scheduler_thread.is_alive()` every 60s and fires `critical_alert`
-   (ntfy + Sentry + email) once per process if the thread dies.
-   Previously a silent scheduler death left the HTTP server up but
-   the bot had stopped trading — operator wouldn't know.
-
-5. **Subprocess zombie tracking** (round-24, bug-fixed in round-25).
-   Piggy-backs on the watchdog tick. Reaps via `waitpid(-1, WNOHANG)`,
-   counts Z-state children via `/proc` (Linux-only; silent skip
-   elsewhere), alerts hourly when count > 5. Round-24 first cut had
-   a rate-limit bug — passed `_last_zombie_alert_ts` by value so the
-   1-hour limit never engaged. Round-25 refactored to return the
-   updated timestamp so the watchdog's local advances correctly.
-
-6. **Dashboard fetch 30s timeout** (round-24). `refreshData` wraps
-   the `/api/data` fetch in an `AbortController`; on stall the toast
-   says "Dashboard fetch stalled (>30s). Network issue?" with a
-   Retry action, and `_refreshInFlight` is cleared so the next tick
-   fires cleanly. No more infinite "Next refresh: 0s" hang.
-
-7. **iPhone SE positions table fix** (round-24). `.table-card` at
-   ≤380px viewports gets `overflow-x: auto` + `min-width: 520px`,
-   and `.btn-sm` shrinks to 36px min-height with tighter padding.
-   Close / Sell 50% / Sell 25% all fit on one row + horizontal
-   scroll handles the remaining overflow.
-
-8. **🚨 Breaking News on pick cards AND position rows** (round-24 + 25).
-   - New `GET /api/news-alerts?minutes=60` returns the user's recent
-     websocket-scored alerts.
-   - `refreshData` fetches in parallel, populates
-     `window._newsAlertsBySymbol`.
-   - `buildBreakingNews(p)` adds a 🚨 BREAKING BULLISH/BEARISH banner
-     to any TOP pick whose symbol has a `|score| >= 6` alert in the
-     last 60 min.
-   - Round-25: same lookup is also used in the positions-row renderer
-     — a held position like SOXL / INTC now shows a 🚨 BULL / 🚨 BEAR
-     badge next to the symbol when fresh news arrives. For option
-     positions the badge is keyed off the underlying (HIMS put shows
-     HIMS news).
-
-### Round-25 test coverage additions
-
-New file `tests/test_round25_followups.py` pins:
-  * Session idle timeout rejects stale sessions (last_activity_at >
-    SESSION_IDLE_HOURS ago) even if expires_at is still in the future.
-  * Session validation SLIDES the window forward (timestamp advances
-    on each successful check).
-  * `news_websocket.get_recent_alerts` returns [] on empty dir, filters
-    by max_age_minutes, tolerates malformed `received_at` entries.
-  * `_check_subprocess_zombies` returns a float timestamp in all paths
-    — prevents the round-24 rate-limit regression from recurring.
-
-461 passing locally (was 455 before round-25).
-
-### Round-25 follow-on fixes (same day, after PR #54 merged)
-
-| PR | Subject |
-|---|---|
-| #55 | `error_recovery.py` OCC option false-positive orphan alerts |
-| #56 | Heatmap legend row renders blank (color-class scoping bug) |
-
-PR #55: The orphan-position check in `error_recovery.py` compared
-positions' raw Alpaca symbols against strategy-file underlying
-symbols. For options, Alpaca returns OCC-format (`CHWY260515P00025000`)
-while wheel files key off the underlying (`CHWY`). Every active wheel
-put/call was flagged and emailed as an orphan every run. Added
-`_is_occ_option_symbol` + `_occ_underlying` helpers and 4 tests.
-
-PR #56: Heatmap Loss/Win legend rendered as blank space because the
-color classes (`.loss-big`, `.win-big` etc.) were scoped only to
-`.heatmap-cell` — the legend uses `.heatmap-legend-box`. Double-
-selected both. Cosmetic only; the data was always correct.
-
-465 passing locally (461 + 4 OCC option tests).
-
----
-
-## Rounds 26-28 (2026-04-20 night → 2026-04-21)
-
-Three more rounds landed after round-25 followups:
-
-### Round-26 (PR #58) — single-use signup invites
-
-Admin-generated, DB-backed. Plaintext token shown once; only SHA-256
-hash stored. `auth.create_invite` / `check_invite` / `consume_invite`
-/ `list_invites` helpers; atomic `UPDATE ... WHERE used_at IS NULL`
-prevents double-use under races. Signup flow accepts either the
-legacy env-var `SIGNUP_CODE` OR a DB invite token. 8 tests.
-
-### Round-27 (PRs #59, #60, #61) — mobile + UX polish
-
-* **PR #59**: mobile horizontal-scroll — `html { overflow-x: hidden }`
-  + `body { overflow-x: clip }` clamps overflow at viewport level.
-* **PR #60**: per-section ⓘ help buttons + wheel-aware Close modal
-  (show realized put premium / option P&L breakdown before confirming)
-  + README sync.
-* **PR #61**: JS SyntaxError hotfix — `const`/`var` identifier
-  collisions in the close-modal option branch broke the dashboard's
-  initial render with "Loading...". Renamed collisions to
-  `optPnlColor` / `optPnlWord` / `optBtn`. Lesson learned: run
-  `node --check` on extracted dashboard JS before merging.
-
-### Round-30 (in flight on `claude/round29-earnings-exit-all-strategies`, appended after merge)
-
-UX polish + correlation-warning accuracy fix. Triggered by a mobile
-screenshot showing the FULL STOCK SCREENER section had an ⓘ info
-button but the Position Correlation warning above it did not —
-inconsistent ⓘ coverage across sections.
-
-**What shipped:**
-
-* **ⓘ on every dashboard section.** Previously only Top Picks /
-  Active Strategies / Positions / Screener / Heatmap had the guide
-  button. Now added: Position Correlation, Paper Trading Progress,
-  Tax-Loss Harvesting, Short Candidates, Visual Backtest, Cloud
-  Scheduler, Performance Attribution, Tax Report, Factor Health,
-  Paper vs Live Comparison, Activity Log. 11 new SECTION_GUIDES
-  entries.
-* **SOXL / SOXS / SOXX sector map fix** — these were bucketed as
-  "Other" in correlation warnings instead of "Tech". 80+ ticker
-  entries added to `constants.SECTOR_MAP` covering the full
-  screener output: leveraged semi ETFs, crypto miners (bucketed
-  under Finance), quantum / nuclear / satellite plays, and 2026
-  IPO names. Eliminates the false "3+ positions in same sector"
-  warning where the sector was actually just "Other → unknown".
-
-Dashboard JS validated via `node --check` after extraction
-(round-27 lesson from PR #61: always check extracted JS when
-editing the inline script blocks).
-
-### Round 36 (2026-04-21 evening, in flight on `claude/admin-panel-improvements`)
-
-User asked three things after round-35 shipped:
-1. Verify friends who signup via invite get regular-user (not admin)
-2. Audit the "Manage Users" admin panel for missing functions
-3. Fix the Audit Log tab which renders past the viewport bottom and
-   hides the Close button, forcing a page refresh to dismiss
-Plus: "check if the weekly learning is actually happening."
-
-**What shipped:**
-
-* **Signup creates regular user — verified.** `handle_signup` in
-  `handlers/auth_mixin.py` calls `auth.create_user()` WITHOUT an
-  `is_admin` arg. auth.py defaults `is_admin=False`. Only the FIRST
-  user ever created auto-promotes (line 511-512 of auth.py). Friends
-  who sign up via invite always get `is_admin=0`.
-
-* **`auth.revoke_invite(token_hash)`** — atomic UPDATE that sets
-  `expires_at` to one second in the past on any UNUSED invite.
-  `check_invite` then returns "expired" on any subsequent attempt.
-  Used / missing hashes are left alone (returns False).
-
-* **`auth.set_user_admin(user_id, is_admin)`** — promote or demote.
-  DB-layer guard rail: counts other active admins; if zero, refuses
-  to demote. Inactive admins don't count (so a paused admin can't
-  "save" you from locking yourself out).
-
-* **`handle_admin_revoke_invite` + `handle_admin_set_admin`** in
-  `handlers/admin_mixin.py`. Both gated on `is_admin` check, both
-  emit admin-audit-log entries with actor + target + detail. Routed
-  as `/api/admin/revoke-invite` and `/api/admin/set-admin`.
-
-* **Dashboard Invites tab**: added Actions column with a "Revoke"
-  button shown only for `status === 'active'` invites. `token_hash`
-  now included in the list response (admin has rights anyway; hash
-  alone can't redeem, only the plaintext can).
-
-* **Dashboard Users tab**: added "Make Admin" / "Revoke Admin"
-  buttons alongside Deactivate + Reset Password. Server-side guard
-  rail prevents the "demote the last admin" footgun; UI confirms
-  before sending.
-
-* **Admin modal sizing fix**: wrapped `#adminPanelModal .modal` in a
-  flex column (header / scrollable content / footer) with
-  `max-height:88vh`. Audit log content now scrolls INSIDE the
-  modal instead of pushing the Close button past viewport bottom.
-
-* **Weekly learning path bug**: `update_dashboard.py:1649` read from
-  `DATA_DIR/learned_weights.json` (shared path), but
-  `cloud_scheduler.run_weekly_learning` passed per-user
-  `LEARNED_WEIGHTS_PATH` to `learn.py`. So learn.py wrote weights
-  per-user that the screener never read back. Fixed:
-  - `update_dashboard.py` now honors `LEARNED_WEIGHTS_PATH` env var
-  - `cloud_scheduler.run_screener_for_user` now sets the env var
-  Tests added (grep-level + functional).
-
-12 new tests across `test_admin_invite_revoke.py` (10) and
-`test_learned_weights_path_wiring.py` (2). 532 passing locally.
-Ruff clean on all touched files.
-
-### Rounds 31-35 (2026-04-21 afternoon, all merged or in flight)
-
-After round-30 shipped, the paper-trading window surfaced a stream
-of small-but-real UX + data-integrity bugs during Tuesday's
-live-session. Five more rounds fixed them:
-
-**Round-31 (PR #66) — sticky nav-tabs overlapped sticky header +
-broke on mobile.** `.nav-tabs { top: 0 }` collided with `.header-v2
-{ top: 0 }`, so the tabs hid behind the header. Mobile override
-forced `position: relative` which undid the sticky entirely. Fixed:
-tabs now stick at `top: var(--sticky-header-height)` which a runtime
-ResizeObserver keeps updated as the header wraps / banners appear.
-
-**Round-32 (PRs #67-68) — nav chevron drift + readiness label
-mismatch.** The `›` scroll hint was an `::after` on the scroller
-with `right: 0` — so it drifted into the middle of the tab list on
-swipe. Removed, then re-added properly in round-33 (below) wrapped
-in a sticky non-scrolling container. Also: the "Total Trades /
-Target: 20" label didn't match the backend scoring (backend checks
-5 criteria not including trade count). Changed to "Informational"
-with a tooltip. Fixed the `paper-progress` and `comparison` section
-guides to list the 5 real criteria with correct thresholds.
-
-**Round-33 (same PR as round-32 continuations) — journal undercount
-+ scroll-hint wrapper.** Only `run_auto_deployer`'s main equity path
-wrote `trade_journal.json` open-entries. Wheel `open_put` and
-dashboard manual deploys never journaled, so closes had nothing to
-match and the scorecard undercount. New `record_trade_open()`
-helper in `cloud_scheduler.py`; wired into `wheel_strategy.open_put`
-and a `_record_manual_deploy()` method on `StrategyHandlerMixin`
-that each of the 4 real-position deploy paths calls. Plus a new
-`.nav-tabs-wrap` sticky parent with a proper right-edge gradient +
-animated chevron that fades out when the user scrolls to end.
-
-**Round-34 (PRs #69, #70/#71) — positions-table overscroll + Today's
-Closes panel + orphan close.** Three fixes landed across two PRs:
-
-* PR #69: `.table-card { overscroll-behavior-x: contain }` so a
-  horizontal swipe on Positions/Orders tables doesn't drag the
-  whole viewport sideways on iOS/Android.
-* PR #70/71: New "Today's Closes" panel in Overview, fed by a new
-  `todays_closes.py` scanner and an `_scan_todays_closes` helper in
-  `server.py`. Shows every close that happened today with time /
-  symbol / strategy / reason / exit / P&L + net P&L summary. Panel
-  auto-hides when zero closes today.
-* Same PR: `record_trade_close` hardened to append a synthetic
-  orphan entry (flagged `orphan_close: true`) when no matching open
-  exists, instead of silently returning False. Orange `[orphan]`
-  tag in the dashboard warns that the entry price is missing. This
-  is the exact gap that was hiding the 10:59 AM 2026-04-21 close
-  from the scorecard.
-
-**Round-35 (PR in flight on `claude/position-correlation-redesign`)
-— real Position Correlation + action-button alignment.** Two user-
-flagged UX issues:
-
-* Correlation section was printing "Sectors: <list of position
-  SYMBOLS>" — not sectors at all, just symbols. New panel groups by
-  real sector with bars, $ allocation, and % per sector. Fires a
-  warning only when top sector ≥ 40% (orange) or ≥ 60% (red).
-  Options route via underlying for sector lookup (HIMS put →
-  Healthcare, CHWY put → Consumer). Backed by a new
-  `position_sector.annotate_sector` helper that reuses
-  `constants.SECTOR_MAP` (which round-30 populated).
-* Positions-table action buttons (Close / Sell 50% / Sell 25%)
-  were stacking vertically on narrow screens, which made the
-  Actions column grow tall and misalign the header. Wrapped in a
-  `.pos-action-btns` flex-nowrap container so they stay on one row.
-
-11 new tests in `test_position_sector_annotation.py` pin the sector
-lookup + option underlying resolution + "Other" fallback. 520
-passing locally (was 509 after round-34). Ruff clean.
-
-### Round-29 (merged as PR after round-28)
-
-Universal pre-earnings exit for non-PEAD equity strategies. Triggered
-by spotting INTC (earnings April 23, user held 63 shares from the
-breakout deploy). Before round-29 only the PEAD strategy exited
-positions before earnings; breakout / trailing-stop / mean-reversion /
-copy-trading positions sat through earnings and regularly got
-whipsawed by surprise moves.
-
-**What shipped:**
-
-* **New module `earnings_exit.py`** — yfinance-backed next-earnings
-  lookup (cached 4 hours — the monitor loop runs every 30 min per
-  symbol), `should_exit_for_earnings()` decision helper, strategy
-  allow-list.
-* **`process_strategy_file()` hook in `cloud_scheduler.py`** — after
-  the PEAD block and before profit-ladder. Fires a market sell + stop
-  cancel + rich notification.
-* **Guardrails key `earnings_exit_days_before`** (default 1). Operator
-  can widen the buffer (3-5 days), or disable entirely via
-  `earnings_exit_disabled: true`.
-* **Boot-time migration** (`migrations.migrate_guardrails_round29`)
-  stamps the default onto every existing user's guardrails.json
-  without overwriting custom values.
-
-**Scope choices (best-for-profits):**
-
-* **1 day before** earnings (not 3-5). Keeps more of the pre-earnings
-  momentum we deployed for; gives slippage buffer for after-hours
-  surprise.
-* **Full close** (not partial). Earnings is binary — partial exposure
-  is the worst of both worlds.
-* **Applies to:** `trailing_stop`, `breakout`, `mean_reversion`,
-  `copy_trading`.
-* **Does NOT apply to:** `wheel` (short puts over earnings capture IV
-  crush — the wheel's profit engine), `pead` (has its own rule via
-  `exit_before_next_earnings_days`).
-
-**INTC handling:** bot will close INTC automatically on April 22 (1
-day before April 23 earnings) once the PR merges + Railway deploys.
-
-16 new tests in `tests/test_earnings_exit.py`. All pass. 496 passing
-locally (was 480 after round-28). Ruff clean.
-
-### Round-28 (PR #63, merged)
-
-Follow-on to PR #43's exception-handling hardening. Audit surfaced
-sites the prior sweep missed:
-
-* **safe_save_json narrowings**: three sibling copies of the same
-  atomic-write helper (`error_recovery.py`, `learn.py`,
-  `update_dashboard.py`) still had bare `except:` on the outer
-  clause. Signals (KeyboardInterrupt / SystemExit) used to get
-  caught, passed through the tmp-unlink cleanup, then re-raised —
-  blocking graceful shutdown for a few ms. Narrowed to
-  `except Exception:` + inner cleanup to `except OSError:`. Also
-  `update_dashboard.py:2470` inline HTML-tmp cleanup.
-* **auth.py:557 conn.close bare except** narrowed to
-  `(sqlite3.Error, OSError)`. DB-close failures still absorbed, but
-  KeyboardInterrupt during finally now propagates.
-* **handlers/strategy_mixin.py three silent swallows → log.warning**:
-  - Line 74 (cooldown timestamp malformed): bypassing the loss-cooldown
-    gate now surfaces at WARN so a corrupted `guardrails.json` doesn't
-    silently disable the gate.
-  - Line 89 (admin audit-log failure): audit trail breakage now
-    visible — was silent for any compliance / trace regression.
-  - Line 472 (pead_strategy scorer fails): split into `ImportError`
-    (stays silent — slim deploys) and `Exception` (WARN). A broken
-    scorer was silently stranding every PEAD deploy with no
-    earnings-exit signal.
-
-7 new tests in `tests/test_exception_handling_round28.py`. All pass.
-Ruff clean on touched files.
-
----
-
-## Last session state (2026-04-23 — END OF SESSION, after round-52 audit fixes)
-
-**Round-52 (this round) — full tech-stack audit + 11 fixes**
-
-User merged rounds 50 + 51 and asked for a comprehensive audit: "do a
-full tech stack audit front to back and make sure you haven't missed
-anything or there are no bugs. please fix everything you find no matter
-how big or small to 100% clean it up."
-
-Ran 5 parallel Explore agents (security, concurrency, trading-logic,
-UI, ops/tests). Surfaced 11 real bugs + 8 false positives (verified
-each claim against actual code before fixing).
-
-**All 11 fixed + tested:**
-
-| # | Sev | File | Fix |
-|---|---|---|---|
-| 1 | CRITICAL | cloud_scheduler.py:2611 | Added `TIER_CFG.short_enabled` gate before short-sell block |
-| 2 | HIGH | fractional/pdt_tracker/settled_funds.py | Added `_file_lock` helper; wrapped RMW in each module |
-| 3 | HIGH | migrations.py | Backup rollback on main-write failure |
-| 4 | HIGH | fractional/settled_funds | `observability.capture_exception` on IO/API errors |
-| 5 | HIGH | tests | Added /api/calibration + migration edge cases |
-| 6 | MEDIUM | fractional.py | Sub-$1 target → whole-share fallback if 1 share affordable |
-| 7 | MEDIUM | cloud_scheduler.py:1922 | Log tier only on state change (720 logs/day → ~1/day/user) |
-| 8 | MEDIUM | README.md | Added Auto-Migration section |
-| 9 | LOW | fractional/settled_funds | Removed `/tmp` fallback — raise if `_data_dir` missing |
-| 10 | MINOR | dashboard.html | Recalibrate button debounce |
-| 11 | MINOR | new modules | Kept broad except for best-effort paths; added Sentry (real fix) |
-
-**16 new tests** in `test_round52_audit_fixes.py`. Highlights:
-* 20-thread concurrent-write race tests for `settled_funds.record_sale`
-  + `pdt_tracker.log_day_trade` (would have lost entries pre-round-52)
-* Migration rollback test (simulates main-write failure, verifies
-  backup is removed so next boot retries)
-* Fractional sub-$1 fallback test
-* API calibration endpoint + auth-gate position grep
-
-**Suite: 728 passed, 1 deselected.** Ruff clean. Node --check clean.
-
-**Invariants to preserve post-round-52:**
-* `fractional._cache_path`, `settled_funds._ledger_path` MUST raise
-  ValueError on missing `_data_dir`. The /tmp fallback is gone — a
-  programming bug elsewhere should not silently cross-contaminate
-  users.
-* All 3 new modules' RMW paths MUST go through their module-local
-  `_file_lock(path)` helper. Direct `open()+write()` on the ledger
-  files bypasses the serialization guarantee.
-* `migrate_guardrails_round51` MUST track whether the backup was
-  created in this call (the `backup_created_this_call` flag). Never
-  delete a backup created in a prior call.
-* Short-sell block in `run_auto_deployer` MUST check
-  `TIER_CFG.short_enabled` BEFORE consulting user config. Cash
-  accounts can't override this.
-* Tier log dedup via `_last_runs` — only log calibration on state
-  change. Don't re-spam the activity log.
-
-**False positives verified (intentionally NOT fixed):**
-* Options proceeds: wheel closes use `side="buy"`, correctly skip ledger
-* Tier boundaries: no gaps or overlaps
-* Tier-stash race: single-threaded scheduler per user
-* Mode isolation: correct `_data_dir` scoping
-* Atomic writes: all use tempfile+rename
-* Ledger pruning: correct `settles_on` cutoff (not `sold_on`)
-* XSS: `loadCalibration` escapes all user strings
-* JS syntax: node --check passes
-
----
-
-## Prior session state (2026-04-23 — END OF SESSION, after round-51 activation)
-
-**Rounds 48, 49, 50, 51 all shipped this session.** Round-51 is the
-activation layer that turns round-50's modules into real behavior
-for existing users.
-
-**Round-51 (this round) — activate calibration for existing users**
-
-User asked "can you just enable it for us now" after round-50. Five
-wire-ups shipped:
-
-1. **`migrate_guardrails_round51`** — one-time per user/mode. Detects
-   tier from Alpaca /account, adopts defaults into guardrails.json
-   for sizing/fractional/strategy keys, preserves risk-preference
-   keys (daily_loss_limit_pct, earnings_exit, kill_switch), backs
-   up to `.pre-round51.backup`. Idempotent.
-2. **Settled-funds gate** in `run_auto_deployer` before each buy.
-   Cash accounts: blocks if `desired_spend > settled_cash × 95%`.
-3. **Fractional routing** in `run_auto_deployer`. When tier enables
-   fractional + symbol in `/assets?fractionable=true` cache, uses
-   sub-share qty + market order.
-4. **PDT guard** in `check_profit_ladder`. For margin <$25k, holds
-   same-day intraday sell overnight when day_trades_remaining ≤ buffer.
-5. **Sell-side settled-funds ledger** in `record_trade_close`. Every
-   `side="sell"` records proceeds + T+1 settlement date.
-
-**Tier stashed on `user["_tier_cfg"]`** in monitor_strategies so all
-exit paths can read it.
-
-**Migration wiring:** `run_all_migrations(users, user_file_fn,
-account_fetcher=...)` — new kwarg. Cloud_scheduler passes a
-`_fetch_account(u)` closure that calls `user_api_get(u, "/account")`.
-
-**Tests:** 15 new in `tests/test_round51_activation.py`. Suite: 710
-passed, 1 deselected (was 697+13). Ruff clean.
-
-### Invariants to preserve post-round-51
-
-* `migrate_guardrails_round51` MUST write the backup before overwriting
-  and MUST NOT overwrite an existing backup file.
-* Migration must return "no_tier" (not stamp) when Alpaca /account
-  is unavailable — so retry next boot.
-* `record_trade_close` MUST only record proceeds when `side="sell"`
-  (long close). Short covers (`side="buy"`) do NOT generate settled
-  cash.
-* `run_auto_deployer` fractional routing MUST pass `fractional=True`
-  to `smart_orders.place_smart_buy` (which routes to market).
-* PDT guard in `check_profit_ladder` MUST use buffer=1 (preserves
-  emergency slot).
-* All round-51 hooks MUST fail OPEN on exception — advisory code
-  never blocks trading.
-
----
-
-## Prior session state (2026-04-23 — after round-50 portfolio auto-calibration)
-
-**Rounds 48, 49, 50 all merged to main during this session.** Round-50
-is a MAJOR feature drop — the bot now auto-calibrates for any account
-size from $500 to $1M+ based on Alpaca's /v2/account response.
-
-**Current `main` HEAD:** `6c9fd6e` (PR #92 round-49 staleness tuning).
-Round-50 branch `claude/round50-portfolio-auto-calibration` — awaiting
-manual PR merge.
-
-### Round-50 (this round) — Portfolio auto-calibration
-
-**User ask:** "calibrate everything under the hood based on how much
-money is available... $500 cash account could still use this bot...
-$1M+ account could also still use this bot... it wouldn't matter how
-much they have little or big."
-
-**Four new modules:**
-* `portfolio_calibration.py` — tier detection from Alpaca /account
-* `fractional.py` — fractionable-asset cache + position sizing
-* `pdt_tracker.py` — Pattern Day Trader rule awareness
-* `settled_funds.py` — T+1 settled-cash ledger (Good Faith Violation prevention)
-
-**Six tiers:**
-  * 🌱 cash_micro ($500-$2k) — 2 positions × 15%, fractional ON, no shorts/wheel
-  * 🌿 cash_small ($2k-$25k) — 5 × 10%, fractional ON, no shorts/wheel
-  * 🌳 cash_standard ($25k+) — 8 × 7%, wheel ON, no shorts
-  * 📘 margin_small ($2k-$25k) — 6 × 8%, shorts ON, **PDT applies**
-  * 🏛️ margin_standard ($25k-$500k) — 10 × 6%, ALL 6 strategies
-  * 🐋 margin_whale ($500k+) — 15 × 4%, + single-ticker cap 8%
-
-**Alpaca rules baked in:**
-* Cash accounts → shorts BLOCKED (user override silently rejected)
-* Margin <$25k → PDT: tracks day_trades_remaining, holds exits overnight at buffer
-* Cash → T+1 settled-funds ledger, blocks overspend
-* Margin → min stock price $3 (sub-$3 not marginable)
-
-**Fractional:**
-* Default ON for micro/small/margin-small tiers
-* `smart_orders.place_smart_buy(fractional=True)` routes to market
-* Per-user daily cache of `/v2/assets?fractionable=true`
-
-**UI:**
-* New Settings → 🎛️ Calibration tab shows tier + equity + cash +
-  buying_power + PDT status + strategies + Alpaca-blocked items
-* /api/calibration endpoint returns the full summary
-
-**Integration so far:**
-* `run_auto_deployer` fetches /account, detects tier, fills MISSING
-  guardrails values with tier defaults. User overrides always win.
-* Deeper integration (force-disable strategies mid-deploy, auto-route
-  fractional per tier) deferred to round-51 to reduce risk.
-
-**Tests:** 41 new in `tests/test_round50_portfolio_calibration.py` —
-per-tier detection (6), invalid-input handling, override merge,
-Alpaca-rule rejection, wheel affordability, PDT allow/deny paths,
-settled-funds ledger, fractional sizing, parametrized end-to-end
-for all 6 tiers. Suite: **697 passed, 1 deselected** (CI
-invocation). Ruff + node --check clean.
-
-### Invariants to preserve post-round-50
-
-* `portfolio_calibration.detect_tier` MUST return None for equity <$500.
-* Cash accounts MUST NEVER receive `short_enabled=True` even when
-  the user tries to override — test `test_user_cannot_enable_shorts_on_cash_account`
-  will fire if someone regresses this.
-* `pdt_tracker.can_day_trade` MUST check `pdt_applies` before
-  consulting `day_trades_remaining`. Cash accounts never have PDT.
-* `settled_funds.can_deploy` MUST passthrough for margin accounts
-  (no T+1 constraint). The 95% buffer on cash must stay.
-* `fractional.size_position` MUST return `order_type_hint='market'`
-  when `fractional=True` (Alpaca constraint).
-* `server.py` LOC cap currently 2850 (test_round6). Bump with care.
-
----
-
-## Prior session state (2026-04-23 early morning — after round-48 cross-user privacy fix)
-
-**86 PRs merged + round-48 in flight.** Paper-trading 30-day
-validation window ongoing.
-
-**Current `main` HEAD:** `41dfe1e` (PR #87 docs refresh round-43-46 +
-midnight test fix — merged earlier this session). Round-48 branch
-`claude/round48-privacy-fixes-scroll-jitter` — awaiting manual PR
-merge via web UI.
-
-Also pending: `claude/docs-toc-fix-going-live` (tiny 1-line ToC
-link fix — can merge anytime) and `claude/round47-mobile-scroll-jitter`
-(the sync scroll restore — superseded by round-48's broader jitter
-fixes but still useful if user merges in order).
-
-### Round-48 (this round) — CRITICAL cross-user privacy bugs
-
-User reported two SERIOUS privacy issues + ongoing dashboard jitter:
-*"I am getting emails for my friends trades and I still see him in
-my log... make sure there is 100% data security for users between
-users and no risk of PII exposure externally or between users."*
-
-**Root causes found + fixed:**
-
-1. **Hardcoded email recipient in `notify.py`.** `EMAIL_RECIPIENT =
-   "se2login@gmail.com"` (bootstrap admin's address) was hardcoded.
-   Every user's subprocess call to notify.py wrote to this address,
-   so ALL users' trade alerts / kill-switch pings / daily summaries
-   flowed to Kbell0629's inbox. Fixed: read from `NOTIFICATION_EMAIL`
-   env var, refuse to enqueue if unset (better to drop than misroute).
-2. **Shared root email queue.** `DATA_DIR/email_queue.json` was
-   shared across users. `cloud_scheduler.notify_user` now sets
-   `env["NOTIFICATION_EMAIL"]` + `env["DATA_DIR"]` per-user before
-   `subprocess.Popen(notify.py)`, so each user's queue lands in
-   their own `users/<id>/email_queue.json`.
-3. **Drainer flushed the shared queue.** `email_sender.drain_all`
-   now quarantines the legacy shared queue to `.pre-round48.dead`
-   instead of draining it — prevents historical cross-user backlog
-   from shipping after deploy.
-4. **Admins saw unfiltered activity log.** Round-39's filter
-   exempted admins. Privacy-by-default: admins are now filtered
-   too; explicit opt-in via `?all=1` for future drill-down.
-
-**Dashboard jitter fixes (user flagged desktop still jumping +
-badge flicker):**
-
-* Removed cascading re-renders from the 10s tick. Previously a single
-  refresh fired up to 3 wholesale `renderDashboard()` calls (main +
-  wheel-status callback + news-alerts callback) within ~300ms. Now
-  enrichment fetches store data silently; next tick renders.
-* Throttled `/api/scheduler-status` badge fetch to 30s cadence
-  (was every 10s inside renderDashboard — killed the "24/7 LIVE"
-  pulse flicker). Also only touches badge DOM when state changes.
-
-**Tests:** 7 new in `tests/test_round48_privacy_fixes.py` pinning
-every privacy fix. 1 existing test updated (`test_round14` setup).
-Suite: **647 passed, 1 deselected** (CI invocation).
-Ruff + node --check clean.
-
-### Invariants to preserve post-round-48
-
-* `notify.py` MUST read `NOTIFICATION_EMAIL` from env, never
-  hardcode a recipient. The grep-level test
-  (`test_notify_no_longer_has_hardcoded_recipient`) will fire if
-  someone re-introduces the old string.
-* `cloud_scheduler.notify_user` MUST pass BOTH `NOTIFICATION_EMAIL`
-  and `DATA_DIR` in the subprocess env (per-user). Pop
-  `NOTIFICATION_EMAIL` from env if the user has none configured so
-  a stale parent value doesn't leak.
-* `email_sender.drain_all` MUST NOT drain the shared root queue.
-  Quarantine-only on first contact.
-* `/api/scheduler-status` with `is_admin=True` only returns
-  unfiltered if `?all=1`. Default filtered.
-* Round-47's sync scroll restore stays — round-48 didn't touch it.
-* Enrichment fetches (wheel-status, news-alerts) MUST NOT call
-  `renderDashboard()` from their .then() callbacks. Store data,
-  let next tick render.
-
----
-
-## Prior session state (2026-04-22 very late night — after user-guide docs refresh)
-
-**84 PRs merged + 1 docs PR in flight.** Paper-trading 30-day
-validation window ongoing.
-
-**Current `main` HEAD:** `7c72d44` (PR #84 round-46 audit fixes —
-merged during this session, squash of round-46 commits including
-the CI hotfix). Previous merges this session: `cb4ffef` (PR #83
-round-45 dual-mode paper+live).
-
-**Docs-only branch in flight:** `claude/docs-round46-test-count-update`
-— updates CLAUDE.md test count + adds round-43-to-46 user-guide
-refresh to README (dual-mode workflow, `[orphan]` tag explanation,
-10s refresh, positions-table buttons). No code changes; no CI risk.
-
-### Round-46 post-merge state
-
-Everything round-46 shipped made it to main:
-* `get_dashboard_data` / `_resolve_user_paths` now take `mode=`.
-* `_wheel_deploy_in_flight` dedup scoped by mode.
-* `scheduler_api._alert_alpaca_auth_failure` per-day dedup keyed by
-  `(id, mode)`.
-* `scheduler_api._cb_key` returns distinct keys for paper vs live.
-* Removed `(round-45)` text from Parallel Mode info box.
-* Dashboard refresh 60s → 10s.
-* CI hotfix (`_reload(monkeypatch)` sets MASTER_ENCRYPTION_KEY).
-
-### This docs refresh (in flight)
-
-**README.md:**
-* New "Going Live — Dual Mode (Paper + Live in Parallel)" section
-  replaces the old Railway-env-var flow. Step-by-step dual-mode
-  setup, per-mode isolation table, `[LIVE]` notification prefix
-  explanation, safety rails, disable-parallel workflow.
-* Header table: PAPER badge → `📝 PAPER / 🔴 LIVE clickable toggle`.
-  Kill switch note: per-mode isolation.
-* Refresh cadence: 60s → 10s (2 spots).
-* Positions table: added `🚨 BREAKING` badge + `Sell 25%/50%` +
-  `📈 Chart` button docs.
-* New "Today's Closes" subsection with `[orphan]` tag explanation
-  (orphan fix auto-runs in wheel monitor tick — round-44).
-* Open Orders section: clarified after-hours-queuing (AXTI/CORZ
-  pattern the user hit).
-* Quick Answers: added "How do I switch between paper and live views?"
-
-**CLAUDE.md (this file):** updated session-state to point at current
-main HEAD + describe what's in flight on the docs branch.
-
-### Picking this up from a new session (post-round-46)
-
-1. `git pull --ff-only` on `main`. HEAD should be at `7c72d44`
-   (PR #84 round-46 — dual-mode audit fixes). If the docs-only PR
-   has been merged, there will be one more commit on top.
-2. `MASTER_ENCRYPTION_KEY=<64hex> python3 -m pytest tests/
-   --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json -q`
-   — expect **640 passed, 1 deselected** (CI's exact invocation).
-3. `ruff check .` — clean.
-4. `awk '/^<script>/,/^<\/script>/' templates/dashboard.html | grep -v '^<script>' | grep -v '^</script>' > /tmp/dash.js && node --check /tmp/dash.js`
-   — extracted dashboard JS must pass `node --check` (round-27
-   lesson: JS errors in inline blocks break initial render).
-5. Read this file + `README.md` + `CHANGELOG.md` + `GO_LIVE_CHECKLIST.md`.
-6. **If user asks "audit again"**: follow playbook (5-8 parallel
-   Explore agents, triage into fix/deferred/false-positive, verify
-   trading-logic claims against actual code — that agent has a
-   history of false-positives, see CHANGELOG round-22 for examples).
-   Round-46 audit (this session) was a clean run — 1 finding (wheel
-   dedup), 0 false positives.
-7. **GitHub MCP stays disconnected** every session. User opens PRs
-   + merges manually via the web UI. Don't try `mcp__github__*`.
-8. **Tests that `importlib.reload()` auth-dependent modules MUST set
-   `MASTER_ENCRYPTION_KEY` via monkeypatch** — otherwise they pass
-   locally (when you set it in the shell) but fail CI. Use
-   `isolated_data_dir` fixture or the `_reload(monkeypatch)` pattern
-   from `tests/test_round46_dual_mode_fixes.py`. This is why round-46
-   needed a CI hotfix.
-
-### Dual-mode (round-45 + round-46) operational notes
-
-**Key concept:** every user can have both paper and live Alpaca
-accounts configured. Paper at `users/<id>/`, live at `users/<id>/live/`.
-Scheduler expands each user into 1 or 2 entries per tick depending
-on `live_parallel_enabled`. Session mode (`sessions.mode` column)
-controls which tree the dashboard VIEW reads from — orthogonal to
-which modes the scheduler is TRADING on.
-
-**Invariants to preserve in future rounds:**
-* `auth.user_data_dir(user_id, mode="paper")` default MUST stay
-  `users/<id>/` (no migration, back-compat).
-* `user["_mode"]` field injected by `_build_user_dict_for_mode` is
-  the source of truth for mode-aware code. Scheduler/handlers read it.
-* Dedup keys for dicts like `_wheel_deploy_in_flight`, `_cb_state`,
-  `_auth_alert_dates`: paper keeps plain user_id (back-compat);
-  live uses `f"{id}:live"`. Pattern: `_mode = user.get("_mode", "paper");
-  uid = f"{id}:{_mode}" if _mode == "live" else id`.
-* `notify_user` already prefixes live messages with `[LIVE]` —
-  preserve this when touching notification paths.
-* Session-mode fallback: if `session_mode == "live"` but no live keys
-  saved, `check_auth` silently falls back to paper view (see
-  server.py:774-784). Don't break this — it prevents broken-dashboard-
-  from-misconfigured-session failures.
-
-### Round-46 (this round) — round-45 audit fixes + UX polish
-
-User merged round-45 then asked for an audit ("really important, make
-sure you were perfect in execution"). Ran direct review + spawned a
-parallel audit Explore agent. Four real bugs surfaced — all
-mode-contamination risks that could cross-pollute paper + live
-state. Plus two UX tweaks.
-
-**Audit fixes:**
-* `get_dashboard_data` / `_resolve_user_paths` now take `mode=`.
-  Previously `/api/data` with session=live was reading paper's
-  dashboard_data.json + overlay files — dashboard showed live account
-  data paired with paper positions. Fixed by threading mode through
-  the call chain.
-* `_wheel_deploy_in_flight` dedup in `run_wheel_auto_deploy` now keys
-  by `f"{id}:{mode}"` for live (paper keeps plain id for back-compat
-  with the main scheduler loop's existing pattern). Before, scheduler
-  tick fired paper + live back-to-back and one would silently skip.
-* `scheduler_api._alert_alpaca_auth_failure` per-day dedup now
-  includes mode — a paper-creds-expired alert won't silence a
-  live-creds-expired alert for the same day.
-* `scheduler_api._cb_key` now returns distinct keys for paper vs
-  live. Paper and live hit different Alpaca backends with separate
-  200/min rate budgets — sharing the circuit-breaker + rate-limiter
-  buckets meant paper noise could throttle live and vice versa.
-
-**UX polish:**
-* Removed `(round-45)` text from the Parallel Mode info box — user
-  caught it on mobile. Dev-internal versioning shouldn't be in UX copy.
-* Dashboard auto-refresh 60s → **10s** (user wanted more real-time).
-  Under Alpaca 200/min rate limit; `_refreshInFlight` guard + token
-  bucket prevent stacking.
-
-**Tests:** 7 new in `tests/test_round46_dual_mode_fixes.py`. Suite:
-**640 passed, 1 deselected** under CI's invocation (`pytest tests/
---deselect tests/test_dashboard_data.py::test_trading_session_...`).
-Ruff clean. Node --check clean.
-
-**Audit agent performance:** one critical finding (wheel-deploy
-dedup), no false positives. Trading-logic false-positives history
-from round-22 didn't repeat here.
-
-**CI hotfix (round-46 commit `affbf65`):** first push reported 5
-failed tests on CI that passed locally. Root cause: my `_reload()`
-test helper didn't set `MASTER_ENCRYPTION_KEY` before the reload
-imports cloud_scheduler → auth, so auth.py's mandatory-key check
-raised at module load time. Locally I was running with the env var
-set in the shell so it carried through; CI's pytest invocation
-doesn't set it. Fix: `_reload(monkeypatch)` takes the fixture and
-sets the key via `monkeypatch.setenv`. Every caller updated.
-Verified with `unset MASTER_ENCRYPTION_KEY; pytest ...` locally.
-Lesson for future tests: anything that `importlib.reload()`s an
-auth-dependent module must explicitly set the env var, same pattern
-as the existing `isolated_data_dir` fixture.
-
----
-
-## Last session state (2026-04-22 very late night — after round-45, before round-46)
-
-**82 PRs merged + round-45 in flight.** Paper-trading 30-day
-validation window ongoing.
-
-**Current `main` HEAD:** `1d21337` (PR #82 round-44 auto-orphan-fix +
-scroll jitter — merged during this session). Round-45 branch
-`claude/round45-dual-mode-paper-live` — awaiting manual PR merge.
-
-### Round-45 (this round) — paper + live parallel
-
-User asked: *"when I switch to real money and I want to run in parallel
-with paper the bot on both how do I switch back and forth."* Shipped
-Option 2 from the design discussion (see message log).
-
-**Architecture:** NO migration. `users/<id>/` stays paper (unchanged
-behavior). `users/<id>/live/` is new, lazily created. Each mode has
-fully isolated state (wheel files, strategies, journal, scorecard,
-guardrails, email queue — everything).
-
-**Key bits:**
-* `auth.user_data_dir(user_id, mode)` — mode-aware path. Default
-  'paper' = pre-round-45 path.
-* New `sessions.mode` column + `auth.set_session_mode()` + validate
-  returns `session_mode`. Legacy NULL rows normalized to 'paper'.
-* New `users.live_parallel_enabled` column. Scheduler
-  `_build_user_dict_for_mode()` + `get_all_users_for_scheduling()`
-  expands a user into ONE entry (paper) or TWO (paper + live) based
-  on this flag.
-* Scheduler dedup keys include mode for live (`"1:live"`) — paper
-  keeps the old stamp format for back-compat.
-* `notify_user()` prefixes live-mode messages with `[LIVE]` so
-  ntfy/email separates real-money from paper.
-* Handler: `self.session_mode` + `self.build_scoped_user_dict(mode)` —
-  everywhere handlers build user dicts now route through this.
-* Dashboard header: clickable mode toggle button (📝 PAPER orange /
-  🔴 LIVE red glow). Click cycles modes via POST `/api/switch-mode`.
-  If no live keys set, opens Settings → Live tab.
-* Settings → Live Trading tab: new "Parallel Mode" section with
-  Enable/Disable buttons wired to POST `/api/set-live-parallel`.
-* `/api/data` response exposes `session_mode`, `has_live_keys`,
-  `live_parallel_enabled` for dashboard rendering.
-
-**Operator flow for going live:**
-1. Save live keys (Settings → Alpaca API tab).
-2. Click "Enable Parallel Paper + Live" (Settings → Live Trading).
-3. Scheduler runs both modes on next tick.
-4. Click 📝 PAPER badge in header to flip to 🔴 LIVE view (or back).
-
-**Safety rails:**
-* Default paper-only. Existing users see ZERO behavior change.
-* Saving live keys alone doesn't trigger live trading — user must
-  explicitly enable parallel mode.
-* Live scheduler entry only appears when BOTH live keys present AND
-  parallel flag on.
-* State trees fully isolated: a paper strategy bug can't touch live
-  positions.
-
-**Tests:** 13 new in `tests/test_round45_dual_mode.py`. 629 passing
-total (616 + 13). Ruff clean. Node --check clean on dashboard JS.
-
----
-
-## Last session state (2026-04-22 late evening — before round-45, after round-44)
-
-**81 PRs merged + round-44 in flight** (round-43 superseded by
-round-44 — see notes below).
-
-**Current `main` HEAD:** `4a9b2cb` (PR #81 round-42 wheel close
-journaling). Round-44 branch
-`claude/round44-auto-orphan-fix-scroll-jitter` — awaiting manual
-PR merge via web UI.
-
-### Round-44 (this round) — two user-requested UX fixes
-
-**1. Orphan wheel closes now auto-fix in every wheel monitor tick.**
-Round-43's first draft shipped a button + endpoint. User pushed back
-("I don't want a button just fix it"). Round-44 drops the button +
-endpoint and wires `wheel_open_backfill.backfill_wheel_opens(user)`
-into the TAIL of `run_wheel_monitor`. Idempotent + cheap (no Alpaca
-calls). New orphans get paired with their opens within one monitor
-cycle. **Important:** if round-43 is NOT merged, round-44 includes
-the `wheel_open_backfill.py` module + tests so it's standalone.
-If round-43 IS merged first, round-44 is a clean diff that drops
-the button + wires the auto-call. Either merge order is safe.
-
-**2. Dashboard stops "jumping around" during auto-refresh.**
-User noticed the 30s auto-refresh caused the viewport to shift.
-Root cause: `refreshData` fires, replaces section innerHTMLs, some
-grow/shrink in height, and the user's scroll position looks
-different. Fixed with:
-  * `overflow-anchor: auto` CSS on `<body>` — modern browsers
-    auto-compensate for above-viewport DOM height shifts.
-  * JS save/restore in `renderDashboard()` — captures
-    `window.scrollY` + `document.activeElement.id` + input
-    `selectionStart/End` at the top of render; restores all three
-    in a `requestAnimationFrame` after paint. Only restores if
-    drifted >10px so it doesn't fight scrollToTop / anchor scroll.
-
-Mid-typing cursor position is preserved too — no more losing focus
-every 30s while filling in the notification email field.
-
-### Round-43 status
-
-Round-43's PR (button + admin endpoint for manual orphan fix) was
-pushed but user wanted the automatic version instead. Round-44
-supersedes it. Either:
-  * **Close round-43 PR + merge round-44** (clean): recommended.
-  * **Merge round-43 then round-44**: button gets added then removed.
-    Net effect same; harmless.
-
-### Round-42 recap
-
-Wheel close journaling (5 exit paths + external-close detection for
-Alpaca native stop fires). Merged as PR #81, commit `4a9b2cb`.
-
----
-
-## Last session state (2026-04-22 evening — pre-44, pre-43, post-42)
-
-**79 PRs merged + round-42 in flight.** Paper-trading 30-day
-validation window ongoing (started 2026-04-15, ends ~2026-05-15).
-
-**Current `main` HEAD:** `c878929` (PR #79 round-41 full tech-stack
-audit — merged during this session). Round-42 branch
-`claude/round42-wheel-close-journaling` — awaiting manual PR merge
-via web UI (GitHub MCP still disconnected).
-
-### Round-42 (this round) — wheel closes now journal properly
-
-**Motivating bug (user-reported this session):** User noticed CHWY
-short put disappeared from Positions + wasn't in closed positions.
-Alpaca screenshots showed the `Stop @ $0.35 buy 1.00` order had
-filled — the protective stop correctly closed the short put. The
-bug was the *journal layer*: `wheel_strategy.py` updated its own
-state file on every exit path but **never called
-`record_trade_close`**. Asymmetric with round-33's
-`record_trade_open` wiring.
-
-**What shipped:**
-* `_journal_wheel_close()` helper in `wheel_strategy.py` — keys off
-  OCC contract symbol + strategy="wheel" + side="buy" (short cover).
-* 5 exit paths now journal: `put_assigned`, `put_expired_worthless`,
-  `call_assigned`, `call_expired_worthless`, `{type}_bought_to_close`.
-* **NEW** external-close detection. Pre-expiration, if the contract
-  is missing from `/positions` but wheel state says active, fetch
-  the fill price from `/account/activities/FILL?symbol=<OCC>` and
-  journal the close + reset stage. This is what catches the CHWY
-  case on the next scheduler tick.
-* Gated to pre-expiration only so it doesn't mis-journal an
-  assignment (post-expiry, the dedicated assignment branch handles
-  cost-basis + stage transition).
-* 6 new tests in `tests/test_round42_wheel_close_journaling.py`.
-  609 passing total (603 + 6). Ruff clean.
-
-**Operator impact:** Once Railway picks up this deploy, CHWY will
-journal on the next scheduler tick — expect to see the close in
-Today's Closes + Closed Positions within ~30 minutes of the deploy.
-
-**All code-side pre-live items shipped.** Only remaining:
-  1. Finish 30-day paper validation window (~2026-05-15).
-  2. Generate dedicated live Alpaca keys.
-  3. Flip Settings → 🔴 Live Trading.
-
-**Test suite:** **609 passing** locally (603 post-41 baseline + 6
-round-42 wheel close journaling) minus the two documented sandbox-
-only failures. Ruff clean. Coverage floor 20% (measured ~29%).
-
-### Round-40 (PR #78, merged) — deferred items + GDPR
-
-Closed out the 5 remaining deferred items + GDPR-style export:
-
-* **`auth.delete_user`** — cascades user row, data dir, invites,
-  sessions, audit log. Guard rails: refuses self-delete, refuses
-  last-active-admin.
-* **`auth.export_user_data`** — ZIP bundle (profile sanitized,
-  strategies, trade journal, audit log). GDPR-ready for when the
-  app ships as a subscription.
-* **`journal_backfill.py`** — one-shot synthesizer for "open"
-  entries missing from pre-round-33 deploys. Idempotent; uses
-  Alpaca `avg_entry_price` as authoritative entry. Integrated
-  with the admin panel and CLI path.
-* **Options flow + analysis test coverage** — 13 pure-logic tests
-  pinning the C/P ratio thresholds and wheel-candidate scoring
-  (previously network-bound ~0% coverage).
-* **Scheduler activity admin drill-down** — admin panel now shows
-  the full unfiltered activity log (per-user tab continues to
-  filter for non-admins — round-39 privacy fix respected).
-* **Coverage ratchet** bumped 20% → 25% (measured ~29.55%).
-
-### Round-41 (branch `claude/round41-full-audit`, commit 7f790c4) — full tech-stack audit
-
-5 parallel Explore agents swept security, concurrency, trading
-logic, UI/UX, ops. Trading-logic came back **CLEAN** (verified
-each claim against actual code — no false positives this time,
-unlike round-22). 8 real bugs across 4 other areas:
-
-**Security / concurrency:**
-* `auth.py` — 5 sqlite conn leaks (`get_user_by_id`,
-  `get_user_by_username`, `get_user_by_email`,
-  `list_active_users`, `validate_session`) wrapped in try-finally
-  with narrowed `(sqlite3.Error, OSError)` on close.
-* `create_user` first-user-admin TOCTOU — two concurrent signups
-  on an empty `users` table could both see `count==0` and both
-  become admin. Fixed via `cur.execute("BEGIN IMMEDIATE")` before
-  the count query. Test with 5 parallel threads confirms exactly 1
-  admin.
-* `journal_backfill.py` — RMW on `trade_journal.json` was
-  unlocked. Concurrent `record_trade_open` from scheduler / manual
-  deploy could drop entries. Wrapped in `strategy_file_lock`
-  (same flock helper every other journal writer uses). Network
-  I/O (Alpaca positions fetch) stays OUTSIDE the lock.
-
-**Ops hardening:**
-* `server.main` `PORT` env var guarded — was naked `int()` that
-  would crash on `PORT=abc` typo. Now validates range + logs +
-  falls back to 8888.
-* `track_record.html` `{{USERNAME}}` now `html.escape()`'d.
-  Public shareable URL — defense-in-depth XSS hardening.
-
-**UI / UX:**
-* Base `.modal` gains `max-height:92vh; overflow-y:auto` — Close
-  Position (with P&L detail), Cancel Order (with explanation),
-  Settings (with Danger Zone) were pushing buttons past viewport
-  bottom on short screens.
-* `executeClosePosition`, `executeSellFraction`,
-  `executeCancelOrder` gain in-flight sets — fast double-click was
-  firing 2 POSTs before modal dismiss animation finished. Same
-  pattern as round-11's `_deployInFlight`.
-* Notification email `<input>` gets `autocomplete="email"` +
-  `inputmode="email"` so mobile keyboards offer saved address.
-
-**Tests:** 9 new cases in `tests/test_round41_audit_fixes.py`
-covering every fix (conn-leak regression, TOCTOU race with 5
-parallel threads, journal-lock presence assertion, PORT guard,
-XSS-escape assertion, backfill functional contract).
-
-### Key behaviour changes this session (round 40-41)
-
-1. **Admin panel** now has Delete User + Export User Data buttons
-   (round-40). Deletes cascade through every per-user file; export
-   returns a sanitized ZIP bundle.
-2. **Concurrent signup now serializes** (round-41). If two people
-   hit `/signup` at the same moment on a fresh install, SQLite's
-   `BEGIN IMMEDIATE` lock ensures only the first one becomes
-   admin. Previously this was a theoretical race; likely never
-   triggered but now pinned.
-3. **Dashboard modals always fit the viewport** (round-41). No
-   more scrolling the whole page to reach a confirm button.
-4. **Dashboard action buttons can't double-fire** (round-41). Fast
-   double-clicks on Close / Sell / Cancel are idempotent.
-
-### Picking this up from a new session
-
-1. `git pull --ff-only` on `main`. HEAD should be at `3e40c67`
-   (PR #78 round-40). Round-41 branch is
-   `claude/round41-full-audit` at `7f790c4` — if not yet merged,
-   open https://github.com/Kbell0629/alpaca-trading-bot/pull/new/claude/round41-full-audit
-2. `MASTER_ENCRYPTION_KEY=<64hex> python3 -m pytest tests/ --ignore=tests/test_dashboard_data.py -q` — expect **609 passing**.
-   (If you drop `--ignore=tests/test_auth.py` the sandbox without
-   zxcvbn will fail 1 test — expected, see "known test quirks".)
-3. `ruff check .` — clean on current main + round-41 branch.
-4. Read this file + `README.md` + `CHANGELOG.md`
-   + `GO_LIVE_CHECKLIST.md`.
-5. If the user says "audit again", follow the playbook (5-8 parallel
-   Explore agents, triage into fix/deferred/false-positive, verify
-   trading-logic claims against actual code — that agent has a
-   history of false-positives, see CHANGELOG round-22 for examples).
-6. **GitHub MCP stays disconnected** every session. User opens PRs
-   + merges manually via the web UI. Don't try `mcp__github__*` —
-   they're not loaded. Document + move on.
-
-### Likely next-session topics
-
-Based on unmerged branches + open threads:
-- **Round-41 PR merge verification** (the CI run on `claude/round41-full-audit`).
-- **INTC April 22 auto-close verification** — user should see a
-  ntfy push + an entry in the Today's Closes panel.
-- User is running low on Claude tokens until Thursday 10pm —
-  plan work accordingly; a new session may start after refresh.
-- User may ask about a **new feature** (chart export? alert
-  webhook? Discord integration?) — no blocking work queued.
-
-See `GO_LIVE_CHECKLIST.md` for the pre-flip-to-live gating list.
-
-**User's open positions as of end of session (2026-04-21 late):**
-  * SOXL 117 shares @ $85.11 entry. Stop at $94.83 (raised
-    intraday from $91.42; ~$1,140 profit locked above cost).
-  * INTC 63 shares @ $66.66 — **AUTO-CLOSES 2026-04-22** via
-    round-29 earnings-exit (INTC earnings 2026-04-23, 1-day
-    buffer). Stop $62.04.
-  * HIMS 260508P00027000 (-1 short put). Stop $2.25. Wheel —
-    through earnings by design.
-  * CHWY 260515P00025000 — **STOPPED OUT 2026-04-22** at $0.35
-    (Alpaca native stop fired). Round-42 external-close detection
-    will journal it on next scheduler tick.
-  * USAR 145 shares — auto-deployed breakout 2026-04-21 10:27 AM
-    ET. Stop $22.35.
-  * Portfolio: ~$101,242 on $100k seed.
-
+## Likely next-session topics
+
+- User flagged daily-close math concern with screenshot — investigate.
+- R54-55 PR merge + Railway deploy verification.
+- Round-56 candidates: **daily close math fix** (user-flagged),
+  options after-hours handling (wheel currently skipped in R55).
+- User is running paper validation — no blocking work queued beyond that
+  + live-key rotation on 2026-05-15.
+
+See `GO_LIVE_CHECKLIST.md` for pre-flip-to-live gating list.
