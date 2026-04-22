@@ -8,6 +8,59 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-42 — Wheel close journaling (2026-04-22)
+
+**Motivating case:** CHWY short-put stopped out at $0.35 on Tuesday.
+Alpaca's native stop order fired correctly + bought-to-close the put.
+But the close never showed up in the dashboard's closed positions /
+Today's Closes / scorecard — and the CHWY 260515P position just quietly
+disappeared from the Positions table.
+
+**Root cause:** `wheel_strategy.py` updated its own state file + audit
+history on every exit path (assigned / expired / bought-to-close /
+closed-externally) but **never called `record_trade_close`**. Asymmetric
+with the round-33 fix that added `record_trade_open` to `open_short_put`.
+Journal ended up with an orphan "open" entry that went stale.
+
+**What shipped:**
+
+* **`_journal_wheel_close(user, contract_meta, exit_price, pnl, reason)`**
+  — new helper in `wheel_strategy.py` centralising the boilerplate.
+  Uses the OCC contract symbol + `strategy="wheel"` + `side="buy"`
+  (short-cover) so `record_trade_close`'s `pnl_pct` math lands in the
+  short-cover branch (entry/exit - 1).
+* **5 exit paths wired:**
+  - `put_assigned` → pnl = premium kept, exit_price = 0
+  - `put_expired_worthless` → pnl = premium kept, exit_price = 0
+  - `call_assigned` → pnl = option premium (stock P&L separately in
+    `total_realized_pnl`), exit_price = 0
+  - `call_expired_worthless` → pnl = premium kept, exit_price = 0
+  - `{type}_bought_to_close` (profit-target path) → pnl = net_premium,
+    exit_price = close_price
+* **NEW external-close detection** — the CHWY case. On each tick while
+  `status == "active"` and pre-expiration, fetch Alpaca `/positions`.
+  If the contract symbol is missing, an external event closed it (native
+  stop fired, manual close via Alpaca web UI). Pulls the buy-to-close
+  fill price from `/account/activities/FILL?symbol=<OCC>` when
+  available. Logs `{type}_closed_externally` audit event, journals the
+  close, resets the wheel stage, clears `active_contract`.
+* **Gated to pre-expiration only** so it doesn't mis-journal an
+  assignment (post-expiry, the option also disappears from positions
+  but the dedicated assignment branch handles cost-basis + stage
+  transition).
+
+**Once Railway picks up this deploy**, CHWY's wheel file will trigger
+the external-close detection on the next scheduler tick and the close
+will land in the journal + Today's Closes panel + scorecard.
+
+**Tests:** 6 new cases in `tests/test_round42_wheel_close_journaling.py`
+— helper contract, 3 edge cases (missing symbol, swallowed errors,
+grep-level exit-path pin), external-close detection fires, external-
+close skips when position still open. Suite: **609 passing**
+(603 baseline + 6 new). Ruff clean.
+
+---
+
 ## 🆕 Round-41 — Full tech-stack audit (2026-04-21 late night)
 
 Five parallel Explore agents swept security, concurrency, trading

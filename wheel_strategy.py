@@ -308,6 +308,41 @@ def log_history(state, event, detail=None):
         state["history"] = hist[-HISTORY_MAX:]
 
 
+# Round-42: wheel closes need to hit the trade journal so the scorecard /
+# dashboard "closed positions" / "Today's Closes" panel see them. Before
+# this round, wheel_strategy updated the wheel state file + audit history
+# on every exit path (assigned, expired, bought-to-close, externally
+# closed) but NEVER called record_trade_close — so the journal ended up
+# with orphan "open" entries that silently vanished when the option
+# disappeared from Alpaca.
+#
+# Helper centralises the boilerplate so all exit paths use the same
+# contract-symbol / strategy / side convention as the record_trade_open
+# call in open_short_put.
+def _journal_wheel_close(user, contract_meta, exit_price, pnl, exit_reason):
+    """Record a close for a wheel option leg in trade_journal.json.
+
+    Never blocks the state-machine — journal-write failure is logged but
+    swallowed (same pattern as the open-side record_trade_open in
+    open_short_put). Callers don't have to try/except.
+    """
+    try:
+        from cloud_scheduler import record_trade_close
+        contract_sym = contract_meta.get("contract_symbol") if isinstance(contract_meta, dict) else None
+        if not contract_sym:
+            return
+        record_trade_close(
+            user, contract_sym, "wheel",
+            exit_price=exit_price,
+            pnl=pnl,
+            exit_reason=exit_reason,
+            qty=-int(contract_meta.get("quantity", 1)),  # short: negative qty
+            side="buy",  # buy-to-close a short option
+        )
+    except Exception:
+        pass  # journaling is best-effort; don't break wheel state machine
+
+
 # ============================================================================
 # ALPACA API HELPERS (user-scoped)
 # ============================================================================
@@ -948,6 +983,83 @@ def _advance_wheel_state_locked(user, state, events):
 
     # --- If we have an active (filled) contract, check if we should buy-to-close or if assigned/expired ---
     if contract_meta.get("status") == "active":
+        # Round-42: external-close detection. If the option contract is
+        # NOT in Alpaca's positions but wheel_strategy still thinks it's
+        # active, an external event closed it — most commonly the
+        # protective native stop order firing (Alpaca-side fill), but
+        # also covers manual closes from the Alpaca web UI.
+        #
+        # Only runs PRE-expiration. After the expiry date, the dedicated
+        # assignment/expired-worthless branch below handles position
+        # disappearance (assignment produces underlying shares; worthless
+        # just leaves no trace). Running this check post-expiry would
+        # mis-journal an assignment as an "external close".
+        try:
+            _exp_date = datetime.strptime(contract_meta["expiration"], "%Y-%m-%d").date()
+        except Exception:
+            _exp_date = None
+        _pre_expiry = (_exp_date is None) or (date.today() <= _exp_date)
+        _positions_now = _api_get(user, "/positions") if _pre_expiry else None
+        if _pre_expiry and isinstance(_positions_now, list):
+            _still_open = any(
+                p.get("symbol") == contract_sym for p in _positions_now
+            )
+            if not _still_open:
+                # Try to find the most recent fill for this contract so the
+                # journal gets a real exit_price. Falls back to None if the
+                # activities endpoint doesn't return anything.
+                _exit_price = None
+                try:
+                    _acts = _api_get(
+                        user,
+                        f"/account/activities/FILL?symbol={contract_sym}",
+                    )
+                    if isinstance(_acts, list) and _acts:
+                        _buys = [a for a in _acts if (a.get("side") or "").lower() == "buy"]
+                        if _buys:
+                            _exit_price = float(_buys[0].get("price") or 0) or None
+                except Exception:
+                    pass
+                _prem_total = contract_meta.get("premium_received", 0)
+                _qty = contract_meta.get("quantity", 1)
+                if _exit_price is not None:
+                    _close_cost = _exit_price * 100 * _qty
+                    _net = _prem_total - _close_cost
+                else:
+                    _net = None
+                log_history(state, f"{contract_meta['type']}_closed_externally", {
+                    "exit_price": _exit_price,
+                    "premium_received": _prem_total,
+                    "net_premium": _net,
+                    "hint": "position missing from Alpaca /positions — likely native stop order filled",
+                })
+                _journal_wheel_close(
+                    user, contract_meta,
+                    exit_price=_exit_price if _exit_price is not None else 0.0,
+                    pnl=_net if _net is not None else 0,
+                    exit_reason=(
+                        f"{contract_meta['type']} closed externally "
+                        f"(Alpaca native stop / manual close). "
+                        f"Exit ~${_exit_price:.2f}" if _exit_price is not None
+                        else f"{contract_meta['type']} closed externally (Alpaca native stop / manual close)"
+                    ),
+                )
+                contract_meta["status"] = "closed_externally"
+                contract_meta["closed_at"] = now_et().isoformat()
+                if _exit_price is not None:
+                    contract_meta["external_close_price"] = _exit_price
+                if stage == "stage_1_put_active":
+                    state["stage"] = "stage_1_searching"
+                elif stage == "stage_2_call_active":
+                    state["stage"] = "stage_2_shares_owned"
+                state["active_contract"] = None
+                events.append(
+                    f"{symbol}: {contract_meta['type']} closed externally "
+                    f"(position missing from Alpaca) — journaled + state reset"
+                )
+                save_wheel_state(user, state)
+                return events
+
         # Check current mid-quote — can we buy-to-close at profit target?
         current_quote = get_option_quote(user, contract_sym)
         if current_quote:
@@ -1105,6 +1217,12 @@ def _advance_wheel_state_locked(user, state, events):
                         "cost_basis": state["cost_basis"],
                         "strike": contract_meta["strike"],
                     })
+                    _journal_wheel_close(
+                        user, contract_meta,
+                        exit_price=0.0,  # put settled via assignment, not traded back
+                        pnl=contract_meta.get("premium_received", 0),
+                        exit_reason=f"put assigned at strike ${contract_meta['strike']:.2f} — full premium kept",
+                    )
                     state["active_contract"] = None
                     events.append(f"{symbol}: put ASSIGNED — now own {expected_delta} new shares @ cost basis ${state['cost_basis']:.2f}")
                 else:
@@ -1112,6 +1230,12 @@ def _advance_wheel_state_locked(user, state, events):
                     contract_meta["status"] = "expired"
                     contract_meta["closed_at"] = now_et().isoformat()
                     log_history(state, "put_expired_worthless", {"premium_kept": contract_meta["premium_received"]})
+                    _journal_wheel_close(
+                        user, contract_meta,
+                        exit_price=0.0,
+                        pnl=contract_meta.get("premium_received", 0),
+                        exit_reason="put expired worthless — full premium kept",
+                    )
                     state["stage"] = "stage_1_searching"
                     state["active_contract"] = None
                     state["cycles_completed"] = state.get("cycles_completed", 0) + 1
@@ -1144,6 +1268,12 @@ def _advance_wheel_state_locked(user, state, events):
                         "shares_before": call_open_shares,
                         "shares_after": share_qty,
                     })
+                    _journal_wheel_close(
+                        user, contract_meta,
+                        exit_price=0.0,
+                        pnl=contract_meta.get("premium_received", 0),
+                        exit_reason=f"call assigned — shares called away at strike ${contract_meta['strike']:.2f}; stock P&L ${stock_pnl:.2f}",
+                    )
                     state["shares_owned"] = max(0, state.get("shares_owned", 0) - expected_called_away)
                     if state["shares_owned"] == 0:
                         state["cost_basis"] = None
@@ -1156,6 +1286,12 @@ def _advance_wheel_state_locked(user, state, events):
                     contract_meta["status"] = "expired"
                     contract_meta["closed_at"] = now_et().isoformat()
                     log_history(state, "call_expired_worthless", {"premium_kept": contract_meta["premium_received"]})
+                    _journal_wheel_close(
+                        user, contract_meta,
+                        exit_price=0.0,
+                        pnl=contract_meta.get("premium_received", 0),
+                        exit_reason="call expired worthless — full premium kept",
+                    )
                     state["stage"] = "stage_2_shares_owned"
                     state["active_contract"] = None
                     events.append(f"{symbol}: call expired worthless — kept ${contract_meta['premium_received']:.2f}, will sell another call")
@@ -1181,6 +1317,12 @@ def _advance_wheel_state_locked(user, state, events):
                 "close_cost": close_cost,
                 "net_premium": net_premium,
             })
+            _journal_wheel_close(
+                user, contract_meta,
+                exit_price=close_price,
+                pnl=net_premium,
+                exit_reason=f"{contract_meta['type']} bought-to-close @ ${close_price:.2f} (profit-target fill)",
+            )
             # Transition stages
             if stage == "stage_1_put_active":
                 state["stage"] = "stage_1_searching"
