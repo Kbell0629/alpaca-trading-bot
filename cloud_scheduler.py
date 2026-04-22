@@ -1039,7 +1039,18 @@ def record_trade_close(user, symbol, strategy, exit_price, pnl, exit_reason,
 # ============================================================================
 # TASK 2: STRATEGY MONITOR (per user)
 # ============================================================================
-def monitor_strategies(user):
+def monitor_strategies(user, extended_hours=False):
+    """Monitor + manage existing positions.
+
+    Round-55: `extended_hours=True` activates a stops-only mode for
+    pre-market + post-market ticks. In this mode the function ONLY
+    raises trailing stops based on after-hours price moves; it skips
+    the daily-loss kill-switch check, profit-take ladder, and
+    mean-reversion target fires (those exit decisions use regular-
+    hours liquidity and shouldn't fire against thin extended-hours
+    quotes). The raised stop prices take effect at next market open
+    — locking in any post-market pop before the next morning's drop.
+    """
     try:
         guardrails_path = user_file(user, "guardrails.json")
         # Round-10: hold the file lock across the read + subsequent
@@ -1051,6 +1062,52 @@ def monitor_strategies(user):
         if guardrails.get("kill_switch"):
             return
 
+        # Round-55: extended-hours opt-out. Default ON — users
+        # benefit from post-market pop preservation automatically.
+        # Set `extended_hours_trailing: false` in guardrails to
+        # disable (e.g., if user wants overnight positions to run
+        # at the prior day's stop level).
+        if extended_hours and guardrails.get("extended_hours_trailing", True) is False:
+            return
+
+        # Daily loss check — SKIP in extended-hours mode. daily loss
+        # math depends on portfolio_value which is unreliable in AH
+        # (thin trades skew valuations), and flattening in AH would
+        # get terrible fills.
+        if extended_hours:
+            account = user_api_get(user, "/account")
+            # Skip everything except trailing-stop tightening.
+            # Jump straight to per-strategy processing with a flag.
+            try:
+                import portfolio_calibration as _pc
+                _tier = _pc.detect_tier(account) if isinstance(account, dict) else None
+                if _tier:
+                    user["_tier_cfg"] = _pc.apply_user_overrides(_tier, guardrails)
+            except Exception:
+                pass
+            # Process strategy files in AH-only mode
+            sdir = user.get("_strategies_dir") or os.path.join(
+                user.get("_data_dir") or DATA_DIR, "strategies")
+            if os.path.isdir(sdir):
+                for fname in os.listdir(sdir):
+                    if not fname.endswith(".json") or fname.startswith("wheel_"):
+                        continue  # skip wheel files in AH; options too illiquid
+                    filepath = os.path.join(sdir, fname)
+                    try:
+                        with strategy_file_lock(filepath):
+                            strat = load_json(filepath)
+                            if not strat:
+                                continue
+                            if strat.get("paused") or strat.get("strategy") == "short_sell":
+                                continue  # no AH on shorts — cover would be brutal
+                            process_strategy_file(user, filepath, strat,
+                                                    extended_hours=True)
+                    except Exception as _e:
+                        log(f"[{user['username']}] AH monitor error on {fname}: {_e}",
+                            "monitor")
+            return
+
+        # --- Regular hours: full monitor (below) ---
         # Daily loss check
         account = user_api_get(user, "/account")
         # Round-51: detect portfolio tier once per monitor tick so all
@@ -1515,7 +1572,13 @@ def process_short_strategy(user, filepath, strat, state, rules):
     save_json(filepath, strat)
 
 
-def process_strategy_file(user, filepath, strat):
+def process_strategy_file(user, filepath, strat, extended_hours=False):
+    """Round-55: when extended_hours=True, only run the trailing-stop
+    raise path. Skip entry fill checks, profit-take ladder, mean-
+    reversion target, earnings exit — those all require regular-hours
+    liquidity. The trailing-stop raise just calls PATCH/POST on
+    Alpaca's stop order API; the order still fires at next market
+    open if the price crosses, locking in any after-hours pop."""
     symbol = strat["symbol"]
     state = strat.setdefault("state", {})  # ensure mutations persist in strat
     rules = strat.get("rules", {})
@@ -1523,12 +1586,14 @@ def process_strategy_file(user, filepath, strat):
 
     # Shorts have inverse logic — delegate to dedicated handler
     if strategy_type == "short_sell":
+        if extended_hours:
+            return  # shorts: don't touch in AH (cover fills would be brutal)
         process_short_strategy(user, filepath, strat, state, rules)
         return
 
-    # Check entry fill
+    # Check entry fill (skip in AH — new fills are regular-hours only)
     entry_order_id = state.get("entry_order_id")
-    if entry_order_id and not state.get("entry_fill_price"):
+    if not extended_hours and entry_order_id and not state.get("entry_fill_price"):
         order = user_api_get(user, f"/orders/{entry_order_id}")
         if isinstance(order, dict) and order.get("status") == "filled":
             state["entry_fill_price"] = float(order.get("filled_avg_price", 0))
@@ -1566,8 +1631,8 @@ def process_strategy_file(user, filepath, strat):
         save_json(filepath, strat)
         return
 
-    # Place initial stop
-    if not state.get("stop_order_id"):
+    # Place initial stop (regular-hours only — don't spam AH quotes)
+    if not extended_hours and not state.get("stop_order_id"):
         stop_pct = rules.get("stop_loss_pct", 0.10)
         stop_price = round(entry * (1 - stop_pct), 2)
         order = user_api_post(user, "/orders", {
@@ -1633,8 +1698,9 @@ def process_strategy_file(user, filepath, strat):
                 else:
                     log(f"[{user['username']}] {symbol}: WARN stop raise failed, keeping prior stop at ${current_stop:.2f}. Err: {new_order}", "monitor")
 
-    # Mean reversion target check
-    if strategy_type == "mean_reversion":
+    # Mean reversion target check (skip in AH — market-sell fills too
+    # thin overnight; the raised trailing stop will capture the exit)
+    if not extended_hours and strategy_type == "mean_reversion":
         if price >= entry * 1.15:
             # Round-10 audit: cancel the live GTC stop FIRST. If we post
             # the market sell while the stop is open, the stop remains
@@ -1681,7 +1747,7 @@ def process_strategy_file(user, filepath, strat):
     #   2. next earnings within exit_before_next_earnings_days (5d) →
     #      close to avoid event risk (signal recorded at deploy time
     #      from yfinance; refreshed on each PEAD scan)
-    if strategy_type == "pead":
+    if not extended_hours and strategy_type == "pead":
         try:
             created_str = strat.get("created") or ""
             # Created is "YYYY-MM-DD" (no tz). Compare to ET date.
@@ -1788,8 +1854,10 @@ def process_strategy_file(user, filepath, strat):
         except Exception as _e:
             log(f"[{user['username']}] {symbol}: earnings-exit check failed: {_e}", "monitor")
 
-    # Feature 8: Partial profit taking
-    check_profit_ladder(user, filepath, strat, price, entry, shares)
+    # Feature 8: Partial profit taking (skip in AH — market-sell
+    # rungs hit thin books, terrible fills)
+    if not extended_hours:
+        check_profit_ladder(user, filepath, strat, price, entry, shares)
     # Refresh shares count in case profit ladder sold some
     shares = strat.get("state", {}).get("total_shares_held", shares)
 
@@ -3881,6 +3949,24 @@ def scheduler_loop():
                     # Strategy monitor: every 60s during market hours
                     if market_open_flag and should_run_interval(f"monitor_{uid}", 60):
                         monitor_strategies(user)
+
+                    # Round-55: AFTER-HOURS trailing-stop monitor.
+                    # Runs every 5 min in pre-market (4-9:30 AM ET) +
+                    # post-market (4-8 PM ET) ONLY when regular market
+                    # is closed. Stops-only mode — doesn't fire new
+                    # buys or profit-take sells. Purpose: lock in any
+                    # after-hours pop before the overnight drop by
+                    # raising the trailing stop to the new high.
+                    # Opt-out via guardrails.extended_hours_trailing=false.
+                    if not market_open_flag:
+                        try:
+                            from extended_hours import get_trading_session
+                            _session = get_trading_session()
+                            if _session in ("pre_market", "after_hours"):
+                                if should_run_interval(f"monitor_eh_{uid}", 300):
+                                    monitor_strategies(user, extended_hours=True)
+                        except Exception as _eh_e:
+                            log(f"[{user['username']}] AH monitor error: {_eh_e}", "monitor")
 
                     # Daily close: weekdays 4:05 PM ET — check anywhere
                     # from 4:05 PM to 8:00 PM so a container restart
