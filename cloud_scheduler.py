@@ -3038,6 +3038,51 @@ def _build_daily_close_report(user, account, scorecard, guardrails,
     lines.append(f"POSITIONS HELD ({len(positions)})")
     lines.append(divider)
     if positions:
+        # Round-56: OCC option symbols ("HIMS260508P00027000") are 17-18
+        # chars. Previously `{sym:<6}` truncated visually + labelled them
+        # "sh" (shares) when they're actually contracts. And short positions
+        # printed with a bare negative qty ("-1 sh") which looks like bad
+        # data. Display the underlying + expiry + strike + right,
+        # label contracts correctly, and prefix shorts with "short".
+        from error_recovery import _is_occ_option_symbol, _occ_underlying
+        import re as _re_occ
+
+        def _display_label(sym, qty):
+            """Return (display_sym, qty_suffix).
+            Examples:
+              ("AAPL", 100)                → ("AAPL",                 "100 sh")
+              ("AAPL", -10)                → ("AAPL",                 "short 10 sh")
+              ("HIMS260508P00027000", -1)  → ("HIMS put 260508 $27", "short 1 contract")
+              ("SOXL", 117)                → ("SOXL",                 "117 sh")
+            """
+            try:
+                q = float(qty)
+            except (TypeError, ValueError):
+                q = 0
+            abs_q_int = abs(int(q)) if q == int(q) else abs(q)
+            if _is_occ_option_symbol(sym):
+                u = _occ_underlying(sym) or "?"
+                m = _re_occ.match(r"^([A-Z]{1,6})(\d{6})([CP])(\d{8})$",
+                                   sym or "")
+                if m:
+                    expiry = m.group(2)
+                    right = "call" if m.group(3) == "C" else "put"
+                    try:
+                        strike = int(m.group(4)) / 1000.0
+                        strike_s = f"${strike:g}"
+                    except ValueError:
+                        strike_s = "?"
+                    disp = f"{u} {right} {expiry} {strike_s}"
+                else:
+                    disp = u
+                noun = "contract" if abs_q_int == 1 else "contracts"
+                prefix = "short " if q < 0 else ""
+                return disp, f"{prefix}{abs_q_int} {noun}"
+            # Equity
+            noun = "sh"
+            prefix = "short " if q < 0 else ""
+            return sym, f"{prefix}{abs_q_int} {noun}"
+
         scored = []
         for p in positions:
             try:
@@ -3052,11 +3097,13 @@ def _build_daily_close_report(user, account, scorecard, guardrails,
         if winners:
             lines.append("Top winners:")
             for pct, abs_pnl, sym, qty in winners:
-                lines.append(f"  • {sym:<6} {_fmt_pct(pct)}  {_fmt_signed_money(abs_pnl)}  ({qty} sh)")
+                disp, qty_s = _display_label(sym, qty)
+                lines.append(f"  • {disp:<22} {_fmt_pct(pct)}  {_fmt_signed_money(abs_pnl)}  ({qty_s})")
         if losers:
             lines.append("Top losers:")
             for pct, abs_pnl, sym, qty in losers:
-                lines.append(f"  • {sym:<6} {_fmt_pct(pct)}  {_fmt_signed_money(abs_pnl)}  ({qty} sh)")
+                disp, qty_s = _display_label(sym, qty)
+                lines.append(f"  • {disp:<22} {_fmt_pct(pct)}  {_fmt_signed_money(abs_pnl)}  ({qty_s})")
         lines.append(f"Total unrealized:  {_fmt_signed_money(total_unrealized)}")
     else:
         lines.append("No open positions at close.")

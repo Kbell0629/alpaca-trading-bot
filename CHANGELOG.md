@@ -8,6 +8,35 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-56 — Daily-close email option/short display
+
+User forwarded a screenshot of their end-of-day email:
+> `HIMS260508P00027000  +28.29%  +$58.00  (-1 sh)`
+
+Three readability bugs, zero math bugs:
+1. **"sh" label on an option contract** — OCC symbols (`HIMS260508P00027000`) are contracts, not shares.
+2. **`{sym:<6}` column width** — OCC symbols are 17-18 chars. Fixed-width email clients truncated them visually.
+3. **`(-1 sh)` for a short put** — negative magnitude reads like bad data; "short 1 contract" is clearer.
+
+**Fix:** new `_display_label(sym, qty)` closure in `_build_daily_close_report` that:
+* Detects OCC symbols via `error_recovery._is_occ_option_symbol`
+* Parses OCC → `HIMS put 260508 $27` (underlying + right + expiry + strike)
+* Labels contracts: `short 1 contract` / `5 contracts` (singular/plural aware)
+* Prefixes shorts with "short" + absolute qty (instead of negative magnitude)
+* Preserves equity output: `SOXL  +27.35%  +$2,723.76  (117 sh)` unchanged
+
+**Before → After** for the HIMS row:
+```
+ • HIMS260508P00027000 +28.29%  +$58.00  (-1 sh)           ← old (truncated, wrong noun)
+ • HIMS put 260508 $27    +28.29%  +$58.00  (short 1 contract)  ← new
+```
+
+Math (% + $ P&L + total unrealized + winners/losers sort) untouched — display-only.
+
+**Tests:** 11 new cases in `tests/test_round56_daily_close_email.py` covering OCC labelling, short-prefix for equity and options, plural vs singular contract noun, strike + expiry render, long-symbol OCC edge case, and a grep-level regression guard that the `{sym:<6}` format string never returns to the positions block.
+
+---
+
 ## 🆕 Round-55 — After-hours trailing-stop tightening
 
 User: *"how do we get this bot to work in after hours too — right now I have some [stocks] I could have the stops raised and if they go back down before morning we are leaving money on the table."*
