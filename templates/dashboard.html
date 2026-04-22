@@ -6345,6 +6345,18 @@ function renderDashboard() {
         '</section>' +
         '<div class="footer">Stock Trading Bot - Strategies: Trailing Stop (exit) | Wheel | Mean Reversion | Breakout | PEAD | Short Selling - Full market screener across NYSE, NASDAQ, ARCA</div>';
 
+    // Round-47: SYNCHRONOUS scroll restore right after the wholesale
+    // innerHTML replacement above. The browser bundles this scrollTo
+    // into the same paint as the new DOM, so the user never sees the
+    // intermediate "scroll=0 with new DOM" state. Round-44's rAF restore
+    // ran AFTER the paint, so on mobile the user briefly saw the page
+    // jump to top, then jump back — the "jumping" the user reported.
+    // The rAF backup further down still fires for safety in case some
+    // browser path doesn't honor sync scroll across innerHTML.
+    if (_preRenderScrollY > 0) {
+        try { window.scrollTo(0, _preRenderScrollY); } catch(_) {}
+    }
+
     renderLog();
     refreshSchedulerStatus();
     refreshFactorHealth();  // Round-11: load the Factor Health panel
