@@ -1681,6 +1681,49 @@ class DashboardHandler(
                 "scorecard_email_enabled": bool(u.get("scorecard_email_enabled")),
             })
 
+        elif path == "/api/calibration":
+            # Round-50: portfolio auto-calibration summary. Fetches
+            # the caller's /v2/account, detects tier, merges user
+            # overrides from guardrails.json, returns a JSON summary
+            # the dashboard renders in the new Account Calibration tab.
+            try:
+                import portfolio_calibration as pc
+                # Fetch Alpaca /account for THIS user's mode
+                account = self.user_api_get(f"{self.user_api_endpoint}/account")
+                tier = pc.detect_tier(account)
+                if tier is None:
+                    return self.send_json({
+                        "detected": False,
+                        "reason": "Equity below $500 or Alpaca /account returned no data",
+                        "raw_account": account,
+                    })
+                # Pull the caller's guardrails overrides
+                import json as _json
+                gr_path = os.path.join(self._user_dir(), "guardrails.json")
+                guardrails = {}
+                if os.path.exists(gr_path):
+                    try:
+                        with open(gr_path) as f:
+                            guardrails = _json.load(f) or {}
+                    except (OSError, ValueError):
+                        guardrails = {}
+                merged = pc.apply_user_overrides(tier, guardrails)
+                summary = pc.calibration_summary(merged)
+                # Also include the detected state fields so the UI can show them
+                summary["raw"] = {
+                    "equity": merged.get("_detected_equity"),
+                    "cash": merged.get("_detected_cash"),
+                    "cash_withdrawable": merged.get("_detected_cash_withdrawable"),
+                    "buying_power": merged.get("_detected_buying_power"),
+                    "multiplier": merged.get("_detected_multiplier"),
+                    "pattern_day_trader": merged.get("_detected_pattern_day_trader"),
+                    "shorting_enabled": merged.get("_detected_shorting_enabled"),
+                    "day_trades_remaining": merged.get("_detected_day_trades_remaining"),
+                }
+                self.send_json(summary)
+            except Exception as e:
+                self._send_error_safe(e, 500, "calibration")
+
         elif path == "/api/data":
             data = get_dashboard_data(
                 api_endpoint=self.user_api_endpoint,

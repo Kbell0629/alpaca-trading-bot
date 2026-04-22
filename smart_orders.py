@@ -183,16 +183,27 @@ def place_smart_buy(api_get, api_post, api_delete,
                      api_endpoint, data_endpoint,
                      symbol, qty, headers=None,
                      timeout_sec=90, max_spread_pct=0.005,
-                     client_order_id=None):
+                     client_order_id=None, fractional=False):
     """Place a limit buy at bid+0.4×spread; if not filled in
     `timeout_sec`, cancel and fall back to a market order.
 
     Returns the FINAL order dict (filled limit OR market fallback).
     Raises ValueError on bad input. Logs decisions via print().
+
+    Round-50: when `fractional=True`, routes directly to a market
+    order. Alpaca requires fractional orders to be market (limit
+    support is spotty), and qty may be a float like 0.1234.
     """
     if qty <= 0:
         raise ValueError(f"qty must be > 0, got {qty}")
     coid = client_order_id or f"smart-buy-{symbol}-{int(time.time())}-{uuid.uuid4().hex[:12]}"
+
+    # Round-50: fractional orders skip the limit-then-market dance.
+    # Alpaca only accepts market orders (or notional orders) for
+    # fractional qty, so there's no point trying a limit first.
+    if fractional:
+        print(f"[smart_orders] {symbol}: fractional BUY {qty} → market order")
+        return _market_order(api_post, api_endpoint, symbol, qty, "buy", coid)
 
     # 1. Quote check
     quote = _get_quote(api_get, data_endpoint, symbol, headers)

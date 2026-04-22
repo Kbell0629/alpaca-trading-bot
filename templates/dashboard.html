@@ -2000,12 +2000,31 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
     <!-- Tabs -->
     <div class="settings-tabs">
       <button type="button" class="settings-tab active" data-tab="profile" onclick="switchSettingsTab('profile')">Profile</button>
+      <button type="button" class="settings-tab" data-tab="calibration" onclick="switchSettingsTab('calibration')">🎛️ Calibration</button>
       <button type="button" class="settings-tab" data-tab="alpaca" onclick="switchSettingsTab('alpaca')">Alpaca API</button>
       <button type="button" class="settings-tab" data-tab="live" onclick="switchSettingsTab('live')">🔴 Live Trading</button>
       <button type="button" class="settings-tab" data-tab="notify" onclick="switchSettingsTab('notify')">Notifications</button>
       <button type="button" class="settings-tab" data-tab="sharing" onclick="switchSettingsTab('sharing')">Sharing</button>
       <button type="button" class="settings-tab" data-tab="password" onclick="switchSettingsTab('password')">Password</button>
       <button type="button" class="settings-tab" data-tab="danger" onclick="switchSettingsTab('danger')">Danger Zone</button>
+    </div>
+
+    <!-- Round-50: Account Calibration tab -->
+    <div class="settings-panel" id="settingsPanel-calibration">
+      <div class="modal-info-box" style="margin-bottom:12px;background:rgba(59,130,246,0.05);border-color:rgba(59,130,246,0.3)">
+        <strong>🎛️ Auto-Calibration</strong> — the bot reads your Alpaca account and automatically picks sensible defaults for your size + account type.
+        <ul style="margin:8px 0 0 20px;font-size:13px">
+          <li>Detects <strong>cash vs margin</strong> accounts (short selling only on margin)</li>
+          <li>Detects <strong>PDT status</strong> (day-trade limits below $25k margin)</li>
+          <li>Enables <strong>fractional shares</strong> for small accounts (full stock access)</li>
+          <li>Scales <strong>position count + size</strong> to your equity</li>
+          <li>Respects Alpaca rules — won't let you do things your account can't</li>
+        </ul>
+      </div>
+      <div id="calibrationContent" style="font-size:13px">Loading calibration…</div>
+      <div class="settings-actions" style="margin-top:16px;flex-direction:column;align-items:stretch;gap:10px">
+        <button type="button" class="btn-ghost" onclick="loadCalibration()">🔄 Recalibrate Now</button>
+      </div>
     </div>
 
     <!-- Profile tab -->
@@ -6742,9 +6761,70 @@ function switchSettingsTab(name) {
     for (var j = 0; j < panels.length; j++) {
         panels[j].classList.toggle('active', panels[j].id === 'settingsPanel-' + name);
     }
-    // Disable the big Save button on password/danger tabs (they have their own buttons)
+    // Disable the big Save button on password/danger/calibration tabs (they have their own actions)
     var saveBtn = document.getElementById('settingsSaveBtn');
-    if (saveBtn) saveBtn.style.display = (name === 'password' || name === 'danger') ? 'none' : 'inline-block';
+    if (saveBtn) saveBtn.style.display = (name === 'password' || name === 'danger' || name === 'calibration') ? 'none' : 'inline-block';
+    // Round-50: load calibration data when the tab is opened
+    if (name === 'calibration') {
+        try { loadCalibration(); } catch (_) {}
+    }
+}
+
+// Round-50: fetch + render the portfolio calibration summary.
+async function loadCalibration() {
+    var box = document.getElementById('calibrationContent');
+    if (!box) return;
+    box.innerHTML = 'Loading calibration…';
+    try {
+        var resp = await fetch(API_BASE + '/api/calibration', {credentials: 'same-origin'});
+        var d = await resp.json();
+        if (!resp.ok || d.error) {
+            box.innerHTML = '<div style="color:var(--red)">Error: ' + esc(d.error || resp.status) + '</div>';
+            return;
+        }
+        if (!d.detected) {
+            box.innerHTML = '<div style="color:var(--orange)">⚠️ ' + esc(d.reason || 'Calibration not available') + '</div>';
+            return;
+        }
+        var acctEmoji = d.account_type === 'cash' ? '🏦' : '📘';
+        var pdtBadge = d.pdt_applies ? '<span style="color:var(--orange)">· PDT rules apply</span>' : '';
+        var stratRows = (d.strategies_enabled || []).map(function(s) {
+            return '<span style="display:inline-block;padding:2px 8px;margin:2px;background:rgba(34,197,94,0.15);border-radius:10px;font-size:11px;color:var(--green)">✓ ' + esc(s) + '</span>';
+        }).join('');
+        var disabled = [];
+        if (!d.wheel_enabled) disabled.push('wheel');
+        if (!d.short_enabled) disabled.push('short_sell');
+        var disabledRows = disabled.map(function(s) {
+            return '<span style="display:inline-block;padding:2px 8px;margin:2px;background:rgba(239,68,68,0.1);border-radius:10px;font-size:11px;color:var(--text-dim)">✗ ' + esc(s) + '</span>';
+        }).join('');
+        box.innerHTML =
+            '<div style="padding:14px;background:var(--bg);border-radius:8px;margin-bottom:12px">' +
+              '<div style="font-size:15px;font-weight:700;margin-bottom:6px">' + esc(d.tier_display || 'Unknown') + ' ' + pdtBadge + '</div>' +
+              '<div style="color:var(--text-dim);font-size:12px;margin-bottom:10px">' + esc(d.description || '') + '</div>' +
+              '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">' +
+                '<div><div style="color:var(--text-dim);font-size:11px">Account</div><div><strong>' + acctEmoji + ' ' + esc((d.account_type||'').toUpperCase()) + '</strong></div></div>' +
+                '<div><div style="color:var(--text-dim);font-size:11px">Equity</div><div><strong>$' + fmtMoney(d.equity||0).slice(1) + '</strong></div></div>' +
+                '<div><div style="color:var(--text-dim);font-size:11px">Cash (settled)</div><div><strong>$' + fmtMoney(d.cash_withdrawable||0).slice(1) + '</strong></div></div>' +
+                '<div><div style="color:var(--text-dim);font-size:11px">Buying Power</div><div><strong>$' + fmtMoney(d.buying_power||0).slice(1) + '</strong></div></div>' +
+                (d.day_trades_remaining !== null && d.day_trades_remaining !== undefined
+                  ? '<div><div style="color:var(--text-dim);font-size:11px">Day trades remaining</div><div><strong>' + d.day_trades_remaining + '/3</strong></div></div>'
+                  : '') +
+                '<div><div style="color:var(--text-dim);font-size:11px">Shorting</div><div><strong>' + (d.shorting_enabled ? '✓ Enabled' : '✗ Disabled') + '</strong></div></div>' +
+              '</div>' +
+            '</div>' +
+            '<div style="padding:12px;background:var(--bg);border-radius:8px;margin-bottom:12px">' +
+              '<div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">Calibrated Position Sizing</div>' +
+              '<div>Max positions: <strong>' + (d.max_positions||'–') + '</strong> · Max per position: <strong>' + ((d.max_position_pct||0)*100).toFixed(1) + '%</strong> · Min stock price: <strong>$' + (d.min_stock_price||0) + '</strong> · Fractional: <strong>' + (d.fractional_default ? '✓ ON' : '✗ OFF') + '</strong></div>' +
+            '</div>' +
+            '<div style="padding:12px;background:var(--bg);border-radius:8px">' +
+              '<div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">Strategies Enabled</div>' +
+              stratRows +
+              (disabledRows ? '<div style="margin-top:8px;font-size:11px;color:var(--text-dim)">Blocked by account type:</div>' + disabledRows : '') +
+            '</div>' +
+            '<div style="margin-top:10px;font-size:11px;color:var(--text-dim)">Overrides: edit Guardrails in the Strategy Templates section. User settings always win over auto-calibration.</div>';
+    } catch (e) {
+        box.innerHTML = '<div style="color:var(--red)">Failed: ' + esc(e.message) + '</div>';
+    }
 }
 
 async function loadSettingsData() {

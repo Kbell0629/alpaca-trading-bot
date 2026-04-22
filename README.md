@@ -67,7 +67,8 @@ Click the 📝 PAPER (orange) / 🔴 LIVE (red) badge in the top-left of the hea
 11. [Reading Your Performance — Scorecard & Heatmap](#-reading-your-performance)
 12. [Advanced Features — What Makes This Bot Smart](#-advanced-features)
 13. [When Things Go Wrong — Troubleshooting](#-when-things-go-wrong)
-14. [Going Live — Dual Mode (Paper + Live in Parallel)](#-going-live--dual-mode-paper--live-in-parallel)
+14. [Portfolio Auto-Calibration](#-portfolio-auto-calibration--works-at-any-account-size)
+15. [Going Live — Dual Mode (Paper + Live in Parallel)](#-going-live--dual-mode-paper--live-in-parallel)
 15. [Glossary — Trading Terms Explained](#-glossary)
 16. [Technical Reference](#-technical-reference)
 
@@ -680,6 +681,87 @@ Credentials are case-sensitive. If you've forgotten them or they've changed, che
 - Alpaca support: https://alpaca.markets/support
 - Dashboard status: https://stockbott.up.railway.app/api/scheduler-status
 - GitHub issues: https://github.com/<your-username>/alpaca-trading-bot/issues
+
+---
+
+## 🎛️ Portfolio Auto-Calibration — Works at any account size
+
+**The bot now calibrates itself to your account size + type automatically.** Whether you open a $500 cash account or a $1M margin account, the bot reads Alpaca's `/v2/account` and configures sensible defaults for strategies, position sizing, fractional shares, PDT rules, and settled-funds constraints.
+
+### How it detects your tier
+
+Alpaca's `/v2/account` tells the bot exactly what your account is:
+- `multiplier=1` → Cash account (no shorts, T+1 settlement applies)
+- `multiplier=2` → Margin under $25k (shorts allowed, **PDT rules apply**)
+- `multiplier=4` → Margin $25k+ (shorts allowed, no PDT limits)
+
+Combined with your `equity` it picks one of six tiers:
+
+| Tier | Equity | Strategies | Max positions | Max per position | Fractional | Shorts | Wheel |
+|---|---|---|---|---|---|---|---|
+| 🌱 **Cash Micro** | $500-$2k | TS + Breakout + MeanRev | 2 | 15% | ✅ ON | ❌ | ❌ |
+| 🌿 **Cash Small** | $2k-$25k | + PEAD + Copy trading | 5 | 10% | ✅ ON | ❌ | ❌ |
+| 🌳 **Cash Standard** | $25k+ | + **Wheel** | 8 | 7% | Optional | ❌ | ✅ |
+| 📘 **Margin Small** | $2k-$25k | + **Short selling** | 6 | 8% | ✅ ON | ✅ ETB | PDT |
+| 🏛️ **Margin Standard** | $25k-$500k | **All 6 strategies** | 10 | 6% | Optional | ✅ | ✅ |
+| 🐋 **Margin Whale** | $500k+ | All 6 + single-ticker cap | 15 | 4% | Optional | ✅ | ✅ |
+
+### What works out of the box for small accounts
+
+**$500 cash account example** (Jon's live-money account):
+- Tier: 🌱 Cash Micro
+- **Fractional shares ON** → can buy $75 of TSLA even at $250/share (0.3 shares)
+- 2 positions max × 15% each = ~$75 per position
+- Strategies: Trailing Stop, Breakout, Mean Reversion (3 of 6 enabled)
+- No wheel (needs $25k+ cash to cover CSPs)
+- No shorting (not allowed on cash accounts)
+- **Settled-funds tracking ON** — prevents Good Faith Violations by waiting T+1 before redeploying sold capital
+
+**$100k paper account example** (your main account):
+- Tier: 🌳 Cash Standard
+- All cash-compatible strategies including wheel
+- 8 positions × 7% = diversified
+- Whole shares default (cleaner tax lots)
+
+### Alpaca rules enforced automatically
+
+The bot never lets you do something Alpaca would reject:
+
+- ❌ **Cash account tries to short** → blocked silently in code + UI. Shorting needs a margin account with ≥ $2,000 equity per Alpaca.
+- ⚠️ **Margin account under $25k** → PDT rules active. The bot tracks `day_trades_remaining` and holds intraday exits overnight when only 1 slot remains (saves the emergency slot for kill-switch). You stay under the 3-in-5 limit without thinking about it.
+- ⚠️ **Cash account sells then tries to rebuy** → the bot checks settled cash (T+1 rule as of 2024-05-28). Deploys requiring unsettled funds are blocked. Good Faith Violations prevented.
+- ❌ **Margin tries to trade a sub-$3 stock** → skipped (Alpaca doesn't allow margin on low-priced stocks).
+- ❌ **Options wheel on $2k account** → disabled. Cash-secured puts need $100 × strike cash; a $5 strike needs $500+ available cash. The bot skips the wheel until you have it.
+
+### Fractional share integration
+
+Fractional unlocks every stock for small accounts. With fractional ON:
+- You can hold a 0.1234-share slice of any liquid US equity
+- Minimum $1 notional per order
+- Fractional orders route to market (Alpaca's rule — no limit support)
+- Stock-price filter relaxes (any price becomes affordable)
+
+Cache of fractionable symbols refreshes once per day per user from `/v2/assets?fractionable=true`.
+
+### Settings UI
+
+Open **Settings → 🎛️ Calibration** to see:
+- Your detected tier + equity + cash + buying power
+- PDT status + day-trades remaining (if applicable)
+- Strategies enabled by tier
+- Which strategies are blocked by account type (e.g., "✗ short_sell" on cash accounts)
+- "Recalibrate Now" button to force a fresh Alpaca account fetch
+
+### User overrides (advanced)
+
+Auto-calibration picks *defaults*. Every value can be overridden via **Strategy Templates** → Guardrails:
+- `max_positions` / `max_position_pct` — override the sizing
+- `strategies_enabled` — whitelist of strategies to run
+- `fractional_enabled` — force ON/OFF
+- `min_stock_price` — override the price floor
+- `wheel_enabled`, `short_enabled` — force ON or OFF (cash-account short override is rejected; Alpaca won't allow it anyway)
+
+**The rule is simple**: user overrides always win for risk preferences. Alpaca rule violations always win for safety.
 
 ---
 

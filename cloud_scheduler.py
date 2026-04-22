@@ -1855,6 +1855,40 @@ def run_auto_deployer(user):
         log(f"[{user['username']}] Auto-deployer disabled. Skipping.", "deployer")
         return
 
+    # Round-50: portfolio auto-calibration. Fetch Alpaca /account to
+    # detect the user's true account state (cash vs margin, equity
+    # tier, PDT flag, shorting enabled). Calibrates default
+    # max_positions / max_position_pct / strategy mix / fractional
+    # feature flags. User overrides in guardrails.json still win.
+    TIER_CFG = None
+    try:
+        import portfolio_calibration as pc
+        _acct = user_api_get(user, "/account")
+        if isinstance(_acct, dict) and "error" not in _acct:
+            _tier = pc.detect_tier(_acct)
+            if _tier:
+                TIER_CFG = pc.apply_user_overrides(_tier, guardrails)
+                log(f"[{user['username']}] Calibrated tier: "
+                    f"{TIER_CFG.get('display')} — equity ${TIER_CFG.get('_detected_equity', 0):.0f} "
+                    f"(strategies: {','.join(TIER_CFG.get('strategies_enabled', []))})",
+                    "deployer")
+            else:
+                log(f"[{user['username']}] Equity too small to auto-calibrate "
+                    f"(need ≥ $500). Falling back to config defaults.",
+                    "deployer")
+    except Exception as _e:
+        log(f"[{user['username']}] Calibration error ({_e}) — falling back to "
+            "config defaults. Trades unaffected.", "deployer")
+
+    # Round-50: fill in any MISSING guardrails values from the calibrated
+    # defaults. User overrides in guardrails.json ALWAYS win — we only
+    # populate keys the user hasn't explicitly set. This lets new users
+    # get sensible tier-appropriate sizing without any Settings config.
+    if TIER_CFG:
+        for _key in ("max_positions", "max_position_pct", "min_stock_price"):
+            if _key not in guardrails and _key in TIER_CFG:
+                guardrails[_key] = TIER_CFG[_key]
+
     # Cooldown check
     last_loss = guardrails.get("last_loss_time")
     if last_loss:
