@@ -8,6 +8,62 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-44 — Auto-fix orphan wheels + kill the refresh jitter (2026-04-22)
+
+Two user-requested UX fixes landed in one PR. Replaces the originally
+drafted round-43 button approach with something fully automatic.
+
+**1. Orphan wheel closes fix themselves now — no button.**
+
+Round-43's first draft shipped a `/api/admin/backfill-wheel-opens`
+endpoint + "🎡 Fix Orphan Wheel Closes" admin button. User feedback:
+*"I don't want a button for the orphan wheels just fix it please."*
+Agreed — this is plumbing, not a user decision.
+
+Round-44 drops the button + endpoint and wires
+`wheel_open_backfill.backfill_wheel_opens(user)` into the tail of
+`run_wheel_monitor`. The backfill is idempotent + cheap (no Alpaca
+calls, just reads local wheel files + journal), so it's safe to run
+every monitor tick. Any new orphan close that lands in the journal
+gets paired with its original sell-to-open entry price (recovered
+from the wheel state `history[]`) within one wheel monitor cycle.
+
+Clicking ⚡️ Force Deploy immediately triggers a tick — user's
+CHWY `[orphan]` tag resolves without manually visiting the admin panel.
+
+**2. Dashboard stops jumping around during auto-refresh.**
+
+Root cause: `refreshData` fires every 30s, replaces large section
+innerHTMLs, some sections' height changes (new positions, updated
+rows). With viewport-level content shifted, the user's scroll
+position now looks "different" — feels like the page is jumping.
+
+Two-layer fix:
+
+* **CSS `overflow-anchor: auto`** on `body` — modern browsers
+  auto-compensate for above-viewport DOM height changes (Chrome,
+  Firefox, Edge, Safari 18+). Free win for the common case.
+* **JS scroll + focus preservation in `renderDashboard()`** —
+  explicitly saves `window.scrollY` + `document.activeElement.id` +
+  input selection range at the TOP of the render, then restores
+  all three in a `requestAnimationFrame` after the browser paints.
+  Only restores if scrollY drifted by more than 10px (so this
+  doesn't fight `scrollToTop()` clicks or anchor scrolling).
+  Selection range preservation means if you're mid-typing in an
+  input when the 30s refresh fires, cursor stays in place + doesn't
+  lose focus.
+
+Net effect: the 30s auto-refresh becomes invisible to the user —
+cards re-render in place, viewport stays exactly where it was,
+in-progress typing isn't interrupted.
+
+**Tests:** Round-44 is UX plumbing (no new pure-logic tests
+needed); the 7 existing round-43 wheel_open_backfill tests still
+pass. Full suite: **616 passing**. Ruff clean. Dashboard JS
+`node --check` clean.
+
+---
+
 ## 🆕 Round-42 — Wheel close journaling (2026-04-22)
 
 **Motivating case:** CHWY short-put stopped out at $0.35 on Tuesday.

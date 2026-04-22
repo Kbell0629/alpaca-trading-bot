@@ -92,6 +92,10 @@ body {
     min-height: 100vh;
     max-width: 100vw;
     overflow-x: clip;
+    /* Round-44: browsers auto-adjust scroll when above-viewport DOM changes
+       height. Pairs with the explicit save/restore in renderDashboard()
+       for below-viewport changes the browser can't anchor on. */
+    overflow-anchor: auto;
 }
 a { color: var(--accent); text-decoration: none; }
 button {
@@ -4783,6 +4787,24 @@ function renderSectionToggleMenu() {
 }
 
 function renderDashboard() {
+    // Round-44: preserve scroll + input focus across render. The 30s auto-
+    // refresh rebuilds large section innerHTMLs; if a section's height
+    // changes, content below shifts under the user's scroll position —
+    // feels like the page is "jumping" every 30 seconds. Save the
+    // pre-render scrollY + focused-input id, restore after the browser
+    // paints. Only restore if actually drifted (>10px) so this doesn't
+    // fight deliberate scroll-to-top / smooth-scroll handlers.
+    const _preRenderScrollY = window.scrollY || document.documentElement.scrollTop || 0;
+    const _preRenderFocusId = (document.activeElement && document.activeElement.id) || null;
+    const _preRenderFocusTag = (document.activeElement && document.activeElement.tagName) || '';
+    var _preRenderSelStart = null, _preRenderSelEnd = null;
+    try {
+        if (_preRenderFocusId && /^(INPUT|TEXTAREA)$/.test(_preRenderFocusTag)) {
+            _preRenderSelStart = document.activeElement.selectionStart;
+            _preRenderSelEnd = document.activeElement.selectionEnd;
+        }
+    } catch(_) {}
+
     const d = dashboardData;
     if (!d) return;
     const acct = d.account || {};
@@ -6292,6 +6314,26 @@ function renderDashboard() {
             var el = document.getElementById('schedulerBadgeV2') || document.getElementById('schedulerBadge');
             if (el) { el.className = 'status-chip scheduler-off'; el.innerHTML = '—'; }
         });
+
+    // Round-44: restore scroll + focus after the browser paints.
+    requestAnimationFrame(function() {
+        try {
+            var nowY = window.scrollY || document.documentElement.scrollTop || 0;
+            if (Math.abs(nowY - _preRenderScrollY) > 10) {
+                window.scrollTo(0, _preRenderScrollY);
+            }
+            if (_preRenderFocusId) {
+                var el = document.getElementById(_preRenderFocusId);
+                if (el && document.activeElement !== el &&
+                    /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) {
+                    el.focus();
+                    if (_preRenderSelStart !== null && el.setSelectionRange) {
+                        try { el.setSelectionRange(_preRenderSelStart, _preRenderSelEnd); } catch(_) {}
+                    }
+                }
+            }
+        } catch(_) { /* never break rendering on a restore hiccup */ }
+    });
 }
 
 var _backtestChart = null;

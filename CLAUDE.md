@@ -930,7 +930,62 @@ Ruff clean on touched files.
 
 ---
 
-## Last session state (2026-04-22 evening — END OF SESSION, after round-42 wheel-close journaling)
+## Last session state (2026-04-22 late evening — END OF SESSION, after round-44 auto-orphan-fix + scroll jitter)
+
+**81 PRs merged + round-44 in flight** (round-43 superseded by
+round-44 — see notes below).
+
+**Current `main` HEAD:** `4a9b2cb` (PR #81 round-42 wheel close
+journaling). Round-44 branch
+`claude/round44-auto-orphan-fix-scroll-jitter` — awaiting manual
+PR merge via web UI.
+
+### Round-44 (this round) — two user-requested UX fixes
+
+**1. Orphan wheel closes now auto-fix in every wheel monitor tick.**
+Round-43's first draft shipped a button + endpoint. User pushed back
+("I don't want a button just fix it"). Round-44 drops the button +
+endpoint and wires `wheel_open_backfill.backfill_wheel_opens(user)`
+into the TAIL of `run_wheel_monitor`. Idempotent + cheap (no Alpaca
+calls). New orphans get paired with their opens within one monitor
+cycle. **Important:** if round-43 is NOT merged, round-44 includes
+the `wheel_open_backfill.py` module + tests so it's standalone.
+If round-43 IS merged first, round-44 is a clean diff that drops
+the button + wires the auto-call. Either merge order is safe.
+
+**2. Dashboard stops "jumping around" during auto-refresh.**
+User noticed the 30s auto-refresh caused the viewport to shift.
+Root cause: `refreshData` fires, replaces section innerHTMLs, some
+grow/shrink in height, and the user's scroll position looks
+different. Fixed with:
+  * `overflow-anchor: auto` CSS on `<body>` — modern browsers
+    auto-compensate for above-viewport DOM height shifts.
+  * JS save/restore in `renderDashboard()` — captures
+    `window.scrollY` + `document.activeElement.id` + input
+    `selectionStart/End` at the top of render; restores all three
+    in a `requestAnimationFrame` after paint. Only restores if
+    drifted >10px so it doesn't fight scrollToTop / anchor scroll.
+
+Mid-typing cursor position is preserved too — no more losing focus
+every 30s while filling in the notification email field.
+
+### Round-43 status
+
+Round-43's PR (button + admin endpoint for manual orphan fix) was
+pushed but user wanted the automatic version instead. Round-44
+supersedes it. Either:
+  * **Close round-43 PR + merge round-44** (clean): recommended.
+  * **Merge round-43 then round-44**: button gets added then removed.
+    Net effect same; harmless.
+
+### Round-42 recap
+
+Wheel close journaling (5 exit paths + external-close detection for
+Alpaca native stop fires). Merged as PR #81, commit `4a9b2cb`.
+
+---
+
+## Last session state (2026-04-22 evening — pre-44, pre-43, post-42)
 
 **79 PRs merged + round-42 in flight.** Paper-trading 30-day
 validation window ongoing (started 2026-04-15, ends ~2026-05-15).
