@@ -930,25 +930,55 @@ Ruff clean on touched files.
 
 ---
 
-## Last session state (2026-04-21 very late night — END OF SESSION, after round-41 full audit)
+## Last session state (2026-04-22 evening — END OF SESSION, after round-42 wheel-close journaling)
 
-**78 PRs merged + round-41 in flight.** Paper-trading 30-day
+**79 PRs merged + round-42 in flight.** Paper-trading 30-day
 validation window ongoing (started 2026-04-15, ends ~2026-05-15).
 
-**Current `main` HEAD:** `3e40c67` (PR #78 round-40 delete_user +
-GDPR export + journal_backfill). Round-41 audit branch
-`claude/round41-full-audit` pushed as commit `7f790c4` — awaiting
-manual PR merge via web UI (GitHub MCP still disconnected).
+**Current `main` HEAD:** `c878929` (PR #79 round-41 full tech-stack
+audit — merged during this session). Round-42 branch
+`claude/round42-wheel-close-journaling` — awaiting manual PR merge
+via web UI (GitHub MCP still disconnected).
+
+### Round-42 (this round) — wheel closes now journal properly
+
+**Motivating bug (user-reported this session):** User noticed CHWY
+short put disappeared from Positions + wasn't in closed positions.
+Alpaca screenshots showed the `Stop @ $0.35 buy 1.00` order had
+filled — the protective stop correctly closed the short put. The
+bug was the *journal layer*: `wheel_strategy.py` updated its own
+state file on every exit path but **never called
+`record_trade_close`**. Asymmetric with round-33's
+`record_trade_open` wiring.
+
+**What shipped:**
+* `_journal_wheel_close()` helper in `wheel_strategy.py` — keys off
+  OCC contract symbol + strategy="wheel" + side="buy" (short cover).
+* 5 exit paths now journal: `put_assigned`, `put_expired_worthless`,
+  `call_assigned`, `call_expired_worthless`, `{type}_bought_to_close`.
+* **NEW** external-close detection. Pre-expiration, if the contract
+  is missing from `/positions` but wheel state says active, fetch
+  the fill price from `/account/activities/FILL?symbol=<OCC>` and
+  journal the close + reset stage. This is what catches the CHWY
+  case on the next scheduler tick.
+* Gated to pre-expiration only so it doesn't mis-journal an
+  assignment (post-expiry, the dedicated assignment branch handles
+  cost-basis + stage transition).
+* 6 new tests in `tests/test_round42_wheel_close_journaling.py`.
+  609 passing total (603 + 6). Ruff clean.
+
+**Operator impact:** Once Railway picks up this deploy, CHWY will
+journal on the next scheduler tick — expect to see the close in
+Today's Closes + Closed Positions within ~30 minutes of the deploy.
 
 **All code-side pre-live items shipped.** Only remaining:
   1. Finish 30-day paper validation window (~2026-05-15).
   2. Generate dedicated live Alpaca keys.
   3. Flip Settings → 🔴 Live Trading.
 
-**Test suite:** **603 passing** locally (583 pre-41 baseline + 9
-round-41 + 11 auth-on-sandbox with MASTER_KEY set) minus the two
-documented sandbox-only failures. Ruff clean. Coverage floor 20%
-(measured ~29%).
+**Test suite:** **609 passing** locally (603 post-41 baseline + 6
+round-42 wheel close journaling) minus the two documented sandbox-
+only failures. Ruff clean. Coverage floor 20% (measured ~29%).
 
 ### Round-40 (PR #78, merged) — deferred items + GDPR
 
@@ -1040,7 +1070,7 @@ XSS-escape assertion, backfill functional contract).
    (PR #78 round-40). Round-41 branch is
    `claude/round41-full-audit` at `7f790c4` — if not yet merged,
    open https://github.com/Kbell0629/alpaca-trading-bot/pull/new/claude/round41-full-audit
-2. `MASTER_ENCRYPTION_KEY=<64hex> python3 -m pytest tests/ --ignore=tests/test_dashboard_data.py -q` — expect **603 passing**.
+2. `MASTER_ENCRYPTION_KEY=<64hex> python3 -m pytest tests/ --ignore=tests/test_dashboard_data.py -q` — expect **609 passing**.
    (If you drop `--ignore=tests/test_auth.py` the sandbox without
    zxcvbn will fail 1 test — expected, see "known test quirks".)
 3. `ruff check .` — clean on current main + round-41 branch.
@@ -1075,7 +1105,9 @@ See `GO_LIVE_CHECKLIST.md` for the pre-flip-to-live gating list.
     buffer). Stop $62.04.
   * HIMS 260508P00027000 (-1 short put). Stop $2.25. Wheel —
     through earnings by design.
-  * CHWY 260515P00025000 (-1 short put). Stop $0.35. Wheel.
+  * CHWY 260515P00025000 — **STOPPED OUT 2026-04-22** at $0.35
+    (Alpaca native stop fired). Round-42 external-close detection
+    will journal it on next scheduler tick.
   * USAR 145 shares — auto-deployed breakout 2026-04-21 10:27 AM
     ET. Stop $22.35.
   * Portfolio: ~$101,242 on $100k seed.
