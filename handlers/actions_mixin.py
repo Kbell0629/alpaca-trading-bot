@@ -71,7 +71,10 @@ class ActionsHandlerMixin:
         if user_id is not None:
             try:
                 import auth as _auth
-                udir = _auth.user_data_dir(user_id)
+                # Round-45: scope to the session mode so the screener
+                # subprocess reads/writes under the right state tree.
+                udir = _auth.user_data_dir(user_id,
+                                            mode=self.session_mode or "paper")
                 env["ALPACA_API_KEY"] = self.user_api_key
                 env["ALPACA_API_SECRET"] = self.user_api_secret
                 env["ALPACA_ENDPOINT"] = self.user_api_endpoint
@@ -412,18 +415,10 @@ class ActionsHandlerMixin:
             pass
         try:
             import cloud_scheduler as cs
-            # Build the user dict in the format cloud_scheduler expects
-            user = {
-                "id": self.current_user["id"],
-                "username": self.current_user["username"],
-                "_api_key": self.user_api_key,
-                "_api_secret": self.user_api_secret,
-                "_api_endpoint": self.user_api_endpoint,
-                "_data_endpoint": self.user_data_endpoint,
-                "_ntfy_topic": self.current_user.get("ntfy_topic", "") or f"alpaca-bot-{self.current_user['username'].lower()}",
-                "_data_dir": auth.user_data_dir(self.current_user["id"]),
-                "_strategies_dir": os.path.join(auth.user_data_dir(self.current_user["id"]), "strategies"),
-            }
+            # Round-45: build user dict scoped to the session's current
+            # trading mode (paper or live). Paper unchanged — live routes
+            # through users/<id>/live/ with live-keyed credentials.
+            user = self.build_scoped_user_dict()
             # DO NOT clear the daily lock. Previously we popped _last_runs
             # keys so force-deploy could re-run, but that caused the 9:35 AM
             # scheduler tick to ALSO fire (it sees no lock → runs again)
@@ -491,17 +486,8 @@ class ActionsHandlerMixin:
             return self.send_json({"error": "Not authenticated"}, 401)
         try:
             import cloud_scheduler as cs
-            user = {
-                "id": self.current_user["id"],
-                "username": self.current_user["username"],
-                "_api_key": self.user_api_key,
-                "_api_secret": self.user_api_secret,
-                "_api_endpoint": self.user_api_endpoint,
-                "_data_endpoint": self.user_data_endpoint,
-                "_ntfy_topic": self.current_user.get("ntfy_topic", "") or f"alpaca-bot-{self.current_user['username'].lower()}",
-                "_data_dir": auth.user_data_dir(self.current_user["id"]),
-                "_strategies_dir": os.path.join(auth.user_data_dir(self.current_user["id"]), "strategies"),
-            }
+            # Round-45: respects session mode (paper or live).
+            user = self.build_scoped_user_dict()
             # Run synchronously so the caller sees it completed and can
             # read fresh scorecard values. Daily close is fast (~1-3s).
             cs.run_daily_close(user)

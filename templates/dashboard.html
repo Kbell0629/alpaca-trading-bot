@@ -1180,6 +1180,17 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
     background: var(--orange); color: #000; padding: 3px 10px;
     border-radius: 12px; font-size: 10px; font-weight: 800; letter-spacing: 1px;
 }
+/* Round-45 dual-mode: clickable paper/live toggle in the header. */
+.mode-toggle-btn {
+    border: none; border-radius: 12px; padding: 4px 12px;
+    font-size: 11px; font-weight: 800; letter-spacing: 0.5px;
+    cursor: pointer; transition: all 0.15s;
+    display: inline-flex; align-items: center; gap: 4px;
+}
+.mode-toggle-btn.paper-mode { background: var(--orange); color: #000; }
+.mode-toggle-btn.paper-mode:hover { background: #fbbf24; transform: translateY(-1px); }
+.mode-toggle-btn.live-mode { background: var(--red); color: #fff; box-shadow: 0 0 10px rgba(239,68,68,0.4); }
+.mode-toggle-btn.live-mode:hover { background: #dc2626; transform: translateY(-1px); box-shadow: 0 0 14px rgba(239,68,68,0.7); }
 .header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .header-icon-btn {
     background: rgba(30,41,59,0.6); border: 1px solid var(--border);
@@ -2083,6 +2094,22 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
         <button type="button" class="btn-danger" onclick="openLiveModeConfirm(true)" id="enableLiveBtn">Enable Live Trading</button>
         <button type="button" class="btn-ghost" onclick="openLiveModeConfirm(false)" id="disableLiveBtn" style="display:none">Disable Live Trading (return to paper)</button>
         <span id="liveModeResult" style="font-size:12px;text-align:center"></span>
+      </div>
+
+      <!-- Round-45: parallel paper + live mode -->
+      <hr style="margin:20px 0;border:none;border-top:1px solid var(--border)">
+      <div class="modal-info-box" style="margin-bottom:12px;background:rgba(34,197,94,0.05);border-color:rgba(34,197,94,0.3)">
+        <strong>🆕 Parallel Mode (round-45)</strong> — the bot runs both paper AND live in parallel.
+        <ul style="margin:8px 0 0 20px;font-size:13px">
+          <li>Each mode has its own state tree (positions, strategies, journal, scorecard).</li>
+          <li>Click the 📝 PAPER / 🔴 LIVE badge in the header to switch the dashboard view.</li>
+          <li>Live keys must be saved on the Alpaca tab first.</li>
+        </ul>
+      </div>
+      <div class="settings-actions" style="flex-direction:column;align-items:stretch;gap:10px">
+        <button type="button" class="btn-success" onclick="enableLiveParallel(true)" id="enableParallelBtn">Enable Parallel Paper + Live</button>
+        <button type="button" class="btn-ghost" onclick="enableLiveParallel(false)" id="disableParallelBtn" style="display:none">Disable Parallel Mode (paper only)</button>
+        <span id="parallelResult" style="font-size:12px;text-align:center"></span>
       </div>
     </div>
 
@@ -3392,6 +3419,60 @@ async function loadAutoDeployerState() {
     } catch(e) {
         // default to off
         autoDeployerEnabled = false;
+    }
+}
+
+/* ---- Round-45 dual-mode: toggle parallel paper + live scheduler ---- */
+async function enableLiveParallel(enable) {
+    var verb = enable
+        ? 'Enable parallel mode? Every scheduler tick will run BOTH paper and live trades using each account\'s separate strategies + positions + journal.'
+        : 'Disable parallel mode? The scheduler will run paper only. Existing live positions/state are preserved in users/<id>/live/ but not actively managed.';
+    if (!confirm(verb)) return;
+    try {
+        var resp = await fetch(API_BASE + '/api/set-live-parallel', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: JSON.stringify({enabled: !!enable})
+        });
+        var d = await resp.json();
+        if (!resp.ok || d.error) {
+            toast(d.error || 'Toggle failed', 'error');
+            return;
+        }
+        toast('Parallel mode ' + (enable ? 'ENABLED' : 'DISABLED'), 'success');
+        document.getElementById('enableParallelBtn').style.display = enable ? 'none' : '';
+        document.getElementById('disableParallelBtn').style.display = enable ? '' : 'none';
+    } catch(e) {
+        toast('Error: ' + e.message, 'error');
+    }
+}
+
+/* ---- Round-45 dual-mode: switch between paper and live views ---- */
+async function switchMode(newMode) {
+    var verb = newMode === 'live'
+        ? 'Switch to LIVE trading view? You will see positions, scorecard, and activity from your live Alpaca account.'
+        : 'Switch to paper trading view?';
+    if (!confirm(verb)) return;
+    try {
+        var resp = await fetch(API_BASE + '/api/switch-mode', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: JSON.stringify({mode: newMode})
+        });
+        var d = await resp.json();
+        if (!resp.ok || d.error) {
+            toast(d.error || ('Switch failed (HTTP ' + resp.status + ')'), 'error');
+            return;
+        }
+        toast('Switched to ' + newMode.toUpperCase() + ' view', 'success');
+        // Full reload so every data fetch re-reads from the right tree.
+        // Avoids stale in-memory dashboardData showing paper numbers with
+        // a live badge (or vice versa).
+        setTimeout(function() { window.location.reload(); }, 400);
+    } catch(e) {
+        toast('Switch error: ' + e.message, 'error');
     }
 }
 
@@ -5939,7 +6020,18 @@ function renderDashboard() {
             '<div class="header-row-1">' +
                 '<div class="header-brand">' +
                     '<h1>\ud83d\udcc8 Stock Trading Bot</h1>' +
-                    '<span class="paper-badge">PAPER</span>' +
+                    /* Round-45 dual-mode: clickable mode toggle. */
+                    (function() {
+                        var m = (d && d.session_mode) || 'paper';
+                        var hasLive = !!(d && d.has_live_keys);
+                        if (m === 'live') {
+                            return '<button class="mode-toggle-btn live-mode" onclick="switchMode(\'paper\')" title="Currently LIVE — click to switch to paper view">🔴 LIVE</button>';
+                        }
+                        if (hasLive) {
+                            return '<button class="mode-toggle-btn paper-mode" onclick="switchMode(\'live\')" title="Currently PAPER — click to switch to live view">📝 PAPER</button>';
+                        }
+                        return '<button class="mode-toggle-btn paper-mode" onclick="openSettingsModal();setTimeout(function(){switchSettingsTab(\'live\');},100);" title="PAPER. Click to set up live trading.">📝 PAPER</button>';
+                    })() +
                 '</div>' +
                 '<div class="header-actions">' +
                     '<button class="header-icon-btn force-deploy-btn" onclick="forceAutoDeploy()" title="Force auto-deployer to run now" aria-label="Force auto-deployer to run now">\u26A1</button>' +

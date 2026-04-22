@@ -194,6 +194,30 @@ def init_db():
         except Exception as _e:
             log.warning("auth: DDL migration failed",
                         extra={"column": "last_activity_at", "error": str(_e)})
+    # Round-45 dual-mode: per-session trading mode. Defaults to 'paper' so
+    # existing sessions and anyone-not-opted-into-live keeps unchanged
+    # behavior. Switching to 'live' is a per-session decision — the user's
+    # paper session stays paper while a parallel live session can live at
+    # 'live'. Scheduler ignores this column (it runs BOTH modes for users
+    # with live-parallel enabled); this column only drives which mode the
+    # dashboard view currently shows.
+    if "mode" not in _sess_existing:
+        try:
+            cur.execute("ALTER TABLE sessions ADD COLUMN mode TEXT DEFAULT 'paper'")
+            cur.execute("UPDATE sessions SET mode = 'paper' WHERE mode IS NULL")
+        except Exception as _e:
+            log.warning("auth: DDL migration failed",
+                        extra={"column": "mode", "error": str(_e)})
+    # Round-45: users.live_parallel_enabled — when true, the scheduler
+    # ALSO runs live-keyed tasks (separate tree at users/<id>/live/) for
+    # this user in addition to paper. Default 0 so existing users see no
+    # behavior change until they opt in via Settings → Live Trading.
+    if "live_parallel_enabled" not in _existing:
+        try:
+            cur.execute("ALTER TABLE users ADD COLUMN live_parallel_enabled INTEGER DEFAULT 0")
+        except Exception as _e:
+            log.warning("auth: DDL migration failed",
+                        extra={"column": "live_parallel_enabled", "error": str(_e)})
     conn.commit()
     conn.close()
     os.makedirs(USERS_DIR, exist_ok=True)
@@ -739,18 +763,27 @@ def authenticate(username_or_email, password):
     conn.close()
     return user
 
-def get_user_alpaca_creds(user_id):
+def get_user_alpaca_creds(user_id, mode=None):
     """Return decrypted Alpaca credentials for a user.
 
-    Round-11 live-trading: returns LIVE creds when user.live_mode == 1,
-    else PAPER creds. Endpoint automatically switches between paper and
-    live Alpaca URLs. Callers don't need to know which mode is active —
-    they just use whatever this function returns.
+    Round-11 live-trading: originally, returned LIVE creds when
+    user.live_mode == 1, else PAPER creds — a single toggle.
+
+    Round-45 dual-mode: `mode` param now overrides. When passed, returns
+    the creds for THAT specific mode ('paper' or 'live') regardless of
+    the user's live_mode flag. This lets the scheduler fetch both sets
+    on the same tick. When `mode` is None, falls back to the round-11
+    behavior for backward compat with callers that haven't been updated.
     """
     user = get_user_by_id(user_id)
     if not user:
         return None
-    live = bool(user.get("live_mode"))
+    if mode == "live":
+        live = True
+    elif mode == "paper":
+        live = False
+    else:
+        live = bool(user.get("live_mode"))
     if live:
         key_col = "alpaca_live_key_encrypted"
         sec_col = "alpaca_live_secret_encrypted"
@@ -831,12 +864,47 @@ def create_session(user_id, ip_address=None):
     conn = _get_db()
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO sessions (token, user_id, created_at, expires_at, ip_address, last_activity_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO sessions (token, user_id, created_at, expires_at, ip_address, last_activity_at, mode)
+        VALUES (?, ?, ?, ?, ?, ?, 'paper')
     """, (token, user_id, now.isoformat(), expires.isoformat(), ip_str, now.isoformat()))
     conn.commit()
     conn.close()
     return token
+
+
+def set_session_mode(token, mode):
+    """Round-45: update a session's view mode ('paper' or 'live').
+    Returns True on success. No-op if the mode is invalid.
+    """
+    if mode not in ("paper", "live"):
+        return False
+    if not token:
+        return False
+    conn = _get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE sessions SET mode = ? WHERE token = ?", (mode, token))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        try: conn.close()
+        except (sqlite3.Error, OSError): pass
+
+
+def set_live_parallel_enabled(user_id, enabled):
+    """Round-45: toggle the `live_parallel_enabled` flag on a user.
+    When True + live keys are present, the scheduler will iterate BOTH
+    paper and live trees for this user on each tick."""
+    conn = _get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET live_parallel_enabled = ? WHERE id = ?",
+                    (1 if enabled else 0, user_id))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        try: conn.close()
+        except (sqlite3.Error, OSError): pass
 
 def validate_session(token):
     """Return user dict if session valid, None otherwise.
@@ -854,7 +922,7 @@ def validate_session(token):
         now = now_et()
         idle_cutoff = (now - timedelta(hours=SESSION_IDLE_HOURS)).isoformat()
         cur.execute("""
-            SELECT u.*, s.last_activity_at FROM sessions s
+            SELECT u.*, s.last_activity_at, s.mode AS session_mode FROM sessions s
             JOIN users u ON s.user_id = u.id
             WHERE s.token = ?
               AND s.expires_at > ?
@@ -877,10 +945,14 @@ def validate_session(token):
                 log.warning("session activity bump failed", extra={"error": str(e)})
         if not row:
             return None
-        # Strip the last_activity_at column that was just used for the check —
-        # callers expect user fields only.
+        # Strip columns that were just used for the checks — callers expect
+        # user fields + the session_mode for the dashboard view selector.
         d = dict(row)
         d.pop("last_activity_at", None)
+        # Round-45: expose session_mode so handlers can scope the user dict
+        # to the right state tree ('paper' or 'live'). Legacy sessions (pre-
+        # round-45) have mode=NULL which we normalize to 'paper'.
+        d["session_mode"] = (d.pop("session_mode", None) or "paper")
         return d
     finally:
         try: conn.close()
@@ -1539,8 +1611,15 @@ def count_legacy_encrypted_rows():
 
 
 # ===== Per-user paths =====
-def user_data_dir(user_id):
-    """Return the data directory for a user.
+def user_data_dir(user_id, mode="paper"):
+    """Return the data directory for a user, optionally scoped to a
+    trading mode.
+
+    Round-45: dual-mode support. Paper (default) returns the legacy
+    path `users/<id>/` for full backward compatibility — existing
+    state files stay where they are, no migration needed. Live mode
+    returns `users/<id>/live/` which is created lazily the first
+    time a user enables live-parallel.
 
     mode=0o700 means owner-only read/write/execute. On Railway (single
     container, single process user) this is belt-and-suspenders; on a
@@ -1548,7 +1627,11 @@ def user_data_dir(user_id):
     trader's strategies or journal. If the directory already exists with
     looser perms (from a pre-round-6 deploy), we tighten it on next call.
     """
-    d = os.path.join(USERS_DIR, str(user_id))
+    base = os.path.join(USERS_DIR, str(user_id))
+    if mode == "live":
+        d = os.path.join(base, "live")
+    else:
+        d = base
     os.makedirs(d, mode=0o700, exist_ok=True)
     os.makedirs(os.path.join(d, "strategies"), mode=0o700, exist_ok=True)
     # `exist_ok=True` skips mode on pre-existing dirs — enforce it
@@ -1560,9 +1643,9 @@ def user_data_dir(user_id):
         pass
     return d
 
-def user_file(user_id, filename):
+def user_file(user_id, filename, mode="paper"):
     """Return path to a user-scoped file."""
-    return os.path.join(user_data_dir(user_id), filename)
+    return os.path.join(user_data_dir(user_id, mode=mode), filename)
 
 # ===== Bootstrap =====
 def bootstrap_from_env():
