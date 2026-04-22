@@ -8,6 +8,62 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-59 — Final pre-live fixes
+
+User asked for everything we can fix tonight. Three real items remained after rounds 56-58, all shipped in this round.
+
+### Fix A — Form 4 XML parser → real `total_value_usd`
+
+Round-58 changed `insider_data.total_value_usd` from misleading `0` to honest `null`. That removed the bug but the underlying feature wasn't built. Now it is.
+
+* New `parse_form4_purchase_value(accession_with_doc)` fetches the primary doc XML from `https://www.sec.gov/Archives/edgar/data/...` and sums shares × price for transaction-code "P" (open-market purchase) only. Excludes A (grant), M (option exercise), G (gift), F (tax withholding), S (sale).
+* `_form4_archive_url` parses `0001628280-26-023978:wk-form4_1775526679.xml` into the canonical SEC URL.
+* Per-accession results cached **indefinitely** — Form 4s never change after submission. First screener run pays the cost; every subsequent one hits the cache.
+* `_FORM4_XML_BUDGET_PER_CALL = 5` per `fetch_insider_buys` call so the screener doesn't spend 8 minutes hitting SEC at 1 req/sec for 50 picks × 10 filings each.
+* Status enum: `parsed` (all filings parsed, ≥1 purchase), `partial` (budget exhausted), `no_purchase` (only sales/grants/exercises), `not_parsed` (no filings).
+* Parse errors + bad accessions ARE cached (won't fix themselves). Network errors are NOT cached (transient — let next run retry).
+
+Dashboard now shows real cluster-buy dollar value next to filer count instead of "—".
+
+### Fix B — Migrations multi-process flock
+
+Round-57 DB-agent flagged the migration race as MEDIUM theoretical (single Railway container = no concurrent boot). I'd skipped it then. Closing now in case Railway ever scales horizontally.
+
+* New `_user_migration_lock(user_dir)` context wraps each user's migration cycle with `fcntl.flock(LOCK_EX)` on `<user_dir>/.migrations.lock`.
+* POSIX-only — Windows degrades to a no-op (Linux containers always have fcntl).
+* Defends against the race where two processes both load guardrails, both decide round-51 hasn't been applied, both apply, second clobbers first's `_round51_tier_adopted` field.
+* Best-effort: if lock acquire fails (disk full, perms), yields anyway — better to migrate-twice than block boot.
+
+### Fix C — Coverage floor ratcheted 25 → 30
+
+Actual coverage measured at **34.36%** after rounds 54-58 added ~50 tests. Floor at 25% had 9 percentage points of cushion; we lock in most of that gain by raising to 30 (4% cushion). Future PRs that drop coverage will fail CI; future PRs that add tests should bump again.
+
+### Tests
+
+13 new in `tests/test_round59_final_fixes.py`:
+- Form 4 archive URL construction (good + bad input)
+- XML parser sums P transactions, ignores S/A/M/G/F
+- `no_purchase` status when only sales/grants
+- Cache hit on second call (no extra fetch)
+- Parse-error caching (cached); fetch-error NOT caching (transient)
+- Budget cap `_FORM4_XML_BUDGET_PER_CALL` enforced — `partial` status when exceeded
+- `_user_migration_lock` serialises concurrent threads (real flock test)
+- Lock degrades gracefully on missing dir
+- `run_all_migrations` calls the lock per user
+- CI coverage floor pinned to 30
+
+Full suite: **807 passing, 2 deselected** (sandbox-only). Ruff clean. Coverage: 34.36% (well above 30 floor).
+
+### Invariants to preserve post-round-59
+
+- `parse_form4_purchase_value` MUST cache parse errors + bad accessions but NOT cache network errors.
+- `_FORM4_XML_BUDGET_PER_CALL` (5) caps SEC fetches per `fetch_insider_buys`. Lowering it loses signal; raising it slows every screener run by 1s per extra fetch.
+- Only transaction code "P" counts toward `total_value_usd`. Adding A/M/G/F would inflate the number with non-conviction events.
+- `_user_migration_lock` MUST be acquired per user (not globally) so one user's slow round-51 fetch doesn't block other users' migrations.
+- CI `--cov-fail-under` MUST never decrease. Rounds that add tests should ratchet it up.
+
+---
+
 ## 🆕 Round-58 — Bugs surfaced by reviewing the live `/api/data`
 
 User forwarded their live `/api/data` dump at 2026-04-22 7 PM ET for review. Audit surfaced 8 real issues — all fixed.

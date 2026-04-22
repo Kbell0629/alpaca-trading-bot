@@ -159,16 +159,200 @@ def _fetch_edgar_form4(symbol, days=30):
     return parsed, None
 
 
+# Round-59: Form 4 XML parser.
+#
+# Form 4 is the SEC filing every insider must submit when they trade
+# their company's stock. The full-text search (above) only returns
+# filing metadata — the actual transaction details (purchase vs sale,
+# share count, price per share) live in the primary doc XML. Parsing
+# it lets us compute a real `total_value_usd` for "open-market
+# purchases" (transaction code P), the only insider buy that actually
+# signals conviction.
+#
+# Filing accession format we receive: "0001628280-26-023978:wk-form4_1775526679.xml"
+# (accession_id : primary_doc_filename). The accession's first 10 digits
+# are the filer's CIK (with leading zeros). EDGAR archive URL:
+#   https://www.sec.gov/Archives/edgar/data/{cik_int}/{accession_no_dashes}/{primary_doc}
+#
+# Budget: max 5 XML fetches per fetch_insider_buys() call (~5 sec at
+# 1 req/sec rate limit). Cached per accession indefinitely — Form 4s
+# don't change after filing — so the cost is amortised across all
+# subsequent screener runs.
+
+import xml.etree.ElementTree as _ET
+
+
+def _form4_xml_cache_path(accession_id):
+    """Cache parsed dollar value per accession (one-time fetch ever)."""
+    safe = accession_id.replace("/", "_").replace(":", "_").replace(" ", "_")
+    return os.path.join(_cache_dir(), f"_xml_{safe}.json")
+
+
+def _read_form4_xml_cache(accession_id):
+    path = _form4_xml_cache_path(accession_id)
+    try:
+        if not os.path.exists(path):
+            return None
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _write_form4_xml_cache(accession_id, data):
+    path = _form4_xml_cache_path(accession_id)
+    tmp = None
+    try:
+        d = os.path.dirname(path)
+        fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f)
+        os.rename(tmp, path)
+    except (OSError, TypeError, ValueError):
+        if tmp:
+            try: os.unlink(tmp)
+            except OSError: pass
+
+
+def _form4_archive_url(accession_with_doc):
+    """Build the SEC archive URL for a Form 4 primary doc.
+    Input: "0001628280-26-023978:wk-form4_1775526679.xml"
+    Output: full https URL or None on parse failure."""
+    if not accession_with_doc or ":" not in accession_with_doc:
+        return None
+    accession, primary_doc = accession_with_doc.split(":", 1)
+    # accession format: NNNNNNNNNN-YY-NNNNNN  (CIK-YY-Seq)
+    parts = accession.split("-")
+    if len(parts) != 3 or not parts[0].isdigit():
+        return None
+    filer_cik = parts[0].lstrip("0") or "0"  # strip leading zeros for URL
+    accession_no_dashes = "".join(parts)
+    return (f"https://www.sec.gov/Archives/edgar/data/"
+            f"{filer_cik}/{accession_no_dashes}/{primary_doc}")
+
+
+def parse_form4_purchase_value(accession_with_doc):
+    """Fetch + parse a single Form 4 XML, summing the dollar value of
+    open-market PURCHASE transactions only (transaction code "P").
+
+    Returns dict {usd: float | None, transactions: int, status: str}
+    where status ∈ {"parsed", "no_purchase", "fetch_error", "parse_error",
+    "bad_accession"}. None usd means "no purchase found" or "fetch failed".
+
+    Cached per accession indefinitely — Form 4 filings don't change
+    after submission."""
+    if not accession_with_doc:
+        return {"usd": None, "transactions": 0, "status": "bad_accession"}
+    cached = _read_form4_xml_cache(accession_with_doc)
+    if cached is not None:
+        return cached
+    url = _form4_archive_url(accession_with_doc)
+    if not url:
+        out = {"usd": None, "transactions": 0, "status": "bad_accession"}
+        _write_form4_xml_cache(accession_with_doc, out)
+        return out
+    _polite_sleep()
+    req = urllib.request.Request(url, headers={
+        "User-Agent": EDGAR_USER_AGENT,
+        "Accept": "application/xml",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            xml_bytes = resp.read()
+    except Exception:
+        # Don't cache fetch errors — transient — let the next screener
+        # run retry. (Bad accession + parse errors ARE cached because
+        # they won't fix themselves.)
+        return {"usd": None, "transactions": 0, "status": "fetch_error"}
+    try:
+        root = _ET.fromstring(xml_bytes)
+    except _ET.ParseError:
+        out = {"usd": None, "transactions": 0, "status": "parse_error"}
+        _write_form4_xml_cache(accession_with_doc, out)
+        return out
+    total_usd = 0.0
+    purchase_count = 0
+    # nonDerivativeTable holds direct equity transactions; derivative-
+    # Table holds options/warrants. We only care about direct purchases
+    # (D = direct, but also count I = indirect — both are real ownership
+    # changes). Filtering by transaction code "P" = open-market purchase
+    # excludes A (grant), M (option exercise), G (gift), F (tax
+    # withholding), S (sale), etc. Awards and exercises aren't bullish
+    # signals — they're compensation, not conviction.
+    for tx in root.iter():
+        # Tag namespaces vary across SEC schema versions. Match on local
+        # name only.
+        if not tx.tag.endswith("nonDerivativeTransaction"):
+            continue
+        code = None
+        shares = None
+        price = None
+        for child in tx.iter():
+            local = child.tag.split("}")[-1]  # strip namespace
+            if local == "transactionCode" and child.text:
+                code = child.text.strip()
+            elif local == "transactionShares":
+                # value is a child element <value>
+                v = child.find("./{*}value")
+                if v is None:
+                    # Try without namespace
+                    for sub in child.iter():
+                        if sub.tag.split("}")[-1] == "value" and sub.text:
+                            shares = sub.text.strip()
+                            break
+                elif v.text:
+                    shares = v.text.strip()
+            elif local == "transactionPricePerShare":
+                v = child.find("./{*}value")
+                if v is None:
+                    for sub in child.iter():
+                        if sub.tag.split("}")[-1] == "value" and sub.text:
+                            price = sub.text.strip()
+                            break
+                elif v.text:
+                    price = v.text.strip()
+        if code != "P":
+            continue
+        try:
+            sh_f = float(shares) if shares is not None else 0.0
+            px_f = float(price) if price is not None else 0.0
+        except (ValueError, TypeError):
+            continue
+        if sh_f > 0 and px_f > 0:
+            total_usd += sh_f * px_f
+            purchase_count += 1
+    if purchase_count == 0:
+        out = {"usd": None, "transactions": 0, "status": "no_purchase"}
+    else:
+        out = {"usd": round(total_usd, 2), "transactions": purchase_count,
+                "status": "parsed"}
+    _write_form4_xml_cache(accession_with_doc, out)
+    return out
+
+
+# Per-call XML fetch budget. Form 4 XMLs come from sec.gov — rate-
+# limited to 1 req/sec by SEC. With 10 filings per ticker × 50 picks
+# enriched, that's 500 sec = 8 min added per screener run if we
+# fetched everything. Cap at 5 fetches per fetch_insider_buys call —
+# subsequent calls hit the cache for free since Form 4s don't change.
+_FORM4_XML_BUDGET_PER_CALL = 5
+
+
 def fetch_insider_buys(symbol, days=30):
     """Returns dict with insider activity summary. 24h cache.
 
-    NOTE: EDGAR's full-text search returns Form 4 hits but doesn't
-    distinguish buy vs sell or extract dollar amounts in the search
-    layer (that's in the actual filing XML). For a free first pass
-    we count filings and assume the heuristic that an insider filing
-    Form 4 in the last 30d is interesting signal — clusters of
-    multiple insiders especially. Future work: parse the XML for
-    real buy/sell + dollar values."""
+    Round-59: `total_value_usd` is now the real summed dollar value of
+    open-market PURCHASE transactions (Form 4 transaction code "P")
+    parsed from each filing's primary XML. Budget-capped at 5 XML
+    fetches per call (~5 sec at SEC 1 req/sec rate limit); per-
+    accession results are cached indefinitely so subsequent screener
+    runs hit the cache for free.
+
+    `value_parse_status` ∈ {parsed, partial, no_purchase, not_parsed}
+    where partial means we hit the budget before processing all
+    filings. The cluster-buy boolean still drives `insider_bonus`
+    independently — dollar value enriches the dashboard surface but
+    doesn't gate the score."""
     cached = _read_cache(symbol)
     if cached is not None:
         return cached
@@ -178,11 +362,6 @@ def fetch_insider_buys(symbol, days=30):
             "ticker": symbol.upper(),
             "buy_count": 0,
             "buyer_count": 0,
-            # Round-58: `total_value_usd` stays null (not 0) — dashboards
-            # were rendering "$0" next to buy_count=12 which read as "$0
-            # of insider buying" when the truth was "we count filings but
-            # haven't parsed dollar volume yet". See value_parse_status
-            # for the real state of the signal.
             "total_value_usd": None,
             "value_parse_status": "not_parsed",
             "most_recent_date": None,
@@ -194,15 +373,64 @@ def fetch_insider_buys(symbol, days=30):
         unique_filers = set(f["filer"] for f in filings if f["filer"] != "?")
         most_recent = max((f["filed_date"] for f in filings if f["filed_date"]),
                            default=None)
+
+        # Round-59: parse Form 4 XMLs to compute real purchase dollar value.
+        # Budget-capped + per-accession cached. Walk the most recent
+        # filings first since old ones are less actionable.
+        sorted_filings = sorted(
+            filings,
+            key=lambda f: f.get("filed_date") or "",
+            reverse=True,
+        )
+        total_usd = 0.0
+        parsed_count = 0
+        purchases_found = 0
+        budget = _FORM4_XML_BUDGET_PER_CALL
+        for filing in sorted_filings:
+            if budget <= 0:
+                break
+            # Only count uncached fetches against the budget — cached
+            # accessions are free.
+            cached_xml = _read_form4_xml_cache(filing.get("accession", ""))
+            if cached_xml is None:
+                budget -= 1
+            xml_result = parse_form4_purchase_value(filing.get("accession", ""))
+            parsed_count += 1
+            if xml_result.get("usd") is not None:
+                total_usd += xml_result["usd"]
+                purchases_found += xml_result.get("transactions", 0)
+            # Annotate the filing with its parse status for downstream
+            # transparency on the dashboard.
+            filing["purchase_usd"] = xml_result.get("usd")
+            filing["purchase_status"] = xml_result.get("status")
+
+        # Status enum:
+        #   parsed       — all filings parsed AND at least one purchase
+        #   no_purchase  — all filings parsed but none were open-market buys
+        #   partial      — budget exhausted before processing every filing
+        #   not_parsed   — no filings parsed (none in the search hits)
+        if parsed_count == 0:
+            value_status = "not_parsed"
+            value = None
+        elif parsed_count < len(sorted_filings):
+            value_status = "partial"
+            value = round(total_usd, 2) if purchases_found > 0 else None
+        elif purchases_found == 0:
+            value_status = "no_purchase"
+            value = None
+        else:
+            value_status = "parsed"
+            value = round(total_usd, 2)
+
         result = {
             "ticker": symbol.upper(),
             "buy_count": len(filings),
             "buyer_count": len(unique_filers),
-            "total_value_usd": None,  # Round-58: see note above
-            "value_parse_status": "not_parsed",  # enum: not_parsed|parsed|unavailable
+            "total_value_usd": value,
+            "value_parse_status": value_status,
             "most_recent_date": most_recent,
             "has_cluster_buy": len(unique_filers) >= 3,
-            "raw_filings": filings[:10],  # cap stored to 10
+            "raw_filings": sorted_filings[:10],  # cap stored to 10
             "computed_at": now_et().isoformat(),
         }
     _write_cache(symbol, result)
