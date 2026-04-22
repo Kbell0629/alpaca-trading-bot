@@ -186,6 +186,15 @@ HEADERS = {
 }
 
 
+# Round-57: in-memory per-user rate limit for /api/calibration/override.
+# Single Railway instance so no cross-instance coordination needed. Key:
+# (user_id, session_mode) → last write monotonic timestamp. 3s cooldown
+# enforced in the handler. Prevents scripted DoS of the guardrails.json
+# writer + disk churn. Cleared on process restart (fine — no persistence
+# requirement).
+_CALIBRATION_OVERRIDE_LAST_WRITE: dict = {}
+
+
 def alpaca_request(method, url, body=None, timeout=15):
     """Make an authenticated request to Alpaca API."""
     headers = dict(HEADERS)
@@ -1744,6 +1753,22 @@ class DashboardHandler(
                 )
                 data["live_parallel_enabled"] = bool(
                     self.current_user.get("live_parallel_enabled"))
+                # Round-57: expose guardrails.extended_hours_trailing so the
+                # dashboard can render the ⚡ AH TRAILING indicator during
+                # pre/post-market sessions. Defaults to True; only False
+                # if the user explicitly opted out via override.
+                try:
+                    import json as _json
+                    _gr_path = os.path.join(self._user_dir(), "guardrails.json")
+                    if os.path.exists(_gr_path):
+                        with open(_gr_path) as _gr_f:
+                            _gr = _json.load(_gr_f) or {}
+                        data["extended_hours_trailing"] = (
+                            _gr.get("extended_hours_trailing", True) is not False)
+                    else:
+                        data["extended_hours_trailing"] = True
+                except (OSError, ValueError):
+                    data["extended_hours_trailing"] = True
             self.send_json(data)
 
         elif path == "/api/chart-bars":
@@ -2648,29 +2673,49 @@ class DashboardHandler(
                 ALLOWED_STRATS = {"trailing_stop", "breakout", "mean_reversion",
                                   "pead", "copy_trading", "wheel", "short_sell"}
                 _value = [s for s in _value if s in ALLOWED_STRATS]
-            # Write to guardrails.json (per-user, per-mode)
+            # Round-57: rate-limit to 1 write / 3s per (user, mode). Before
+            # this a scripted loop or fast-double-click could overwrite
+            # guardrails.json dozens of times a second. Not a security
+            # issue (auth + CSRF), but disk churn + flock contention.
+            _rl_key = (self.current_user.get("id"), self.session_mode or "paper")
+            _now = time.monotonic()
+            _last = _CALIBRATION_OVERRIDE_LAST_WRITE.get(_rl_key, 0)
+            if _now - _last < 3.0:
+                return self.send_json({
+                    "error": f"Too many override updates. Wait "
+                             f"{3.0 - (_now - _last):.1f}s before the next change.",
+                    "rate_limited": True,
+                }, 429)
+            _CALIBRATION_OVERRIDE_LAST_WRITE[_rl_key] = _now
+
+            # Round-57: hold the strategy_file_lock across RMW so a
+            # concurrent scheduler tick (e.g. monitor writing daily_start
+            # or kill_switch flip) can't clobber this override, and
+            # vice-versa.
             import json as _json
+            import cloud_scheduler as _cs_lock
             gr_path = os.path.join(self._user_dir(), "guardrails.json")
-            guardrails = {}
-            if os.path.exists(gr_path):
-                try:
-                    with open(gr_path) as f:
-                        guardrails = _json.load(f) or {}
-                except (OSError, ValueError):
-                    guardrails = {}
-            guardrails[_key] = _value
             try:
-                import tempfile as _tf
-                fd, tmp = _tf.mkstemp(dir=os.path.dirname(gr_path) or ".",
-                                        suffix=".tmp")
-                try:
-                    with os.fdopen(fd, "w") as f:
-                        _json.dump(guardrails, f, indent=2, default=str)
-                    os.replace(tmp, gr_path)
-                except Exception:
-                    try: os.unlink(tmp)
-                    except OSError: pass
-                    raise
+                with _cs_lock.strategy_file_lock(gr_path):
+                    guardrails = {}
+                    if os.path.exists(gr_path):
+                        try:
+                            with open(gr_path) as f:
+                                guardrails = _json.load(f) or {}
+                        except (OSError, ValueError):
+                            guardrails = {}
+                    guardrails[_key] = _value
+                    import tempfile as _tf
+                    fd, tmp = _tf.mkstemp(dir=os.path.dirname(gr_path) or ".",
+                                            suffix=".tmp")
+                    try:
+                        with os.fdopen(fd, "w") as f:
+                            _json.dump(guardrails, f, indent=2, default=str)
+                        os.replace(tmp, gr_path)
+                    except Exception:
+                        try: os.unlink(tmp)
+                        except OSError: pass
+                        raise
             except Exception as e:
                 return self._send_error_safe(e, 500, "calibration-override-write")
             auth.log_admin_action(
@@ -2689,15 +2734,13 @@ class DashboardHandler(
             if not self.current_user:
                 return self.send_json({"error": "Not authenticated"}, 401)
             import json as _json
+            import cloud_scheduler as _cs_lock
             gr_path = os.path.join(self._user_dir(), "guardrails.json")
-            guardrails = {}
-            if os.path.exists(gr_path):
-                try:
-                    with open(gr_path) as f:
-                        guardrails = _json.load(f) or {}
-                except (OSError, ValueError):
-                    pass
-            # Fetch tier
+            # Round-57: fetch /account + detect tier OUTSIDE the lock —
+            # slow network call; holding a flock that long blocks the
+            # scheduler + concurrent handler writes. Then do the
+            # guardrails RMW under the lock so scheduler / other handler
+            # writes can't race with the reset.
             try:
                 import portfolio_calibration as pc
                 account = self.user_api_get(f"{self.user_api_endpoint}/account")
@@ -2706,26 +2749,36 @@ class DashboardHandler(
                     return self.send_json({"error": "Could not detect tier"}, 400)
             except Exception as e:
                 return self._send_error_safe(e, 500, "calibration-reset-detect")
-            # Reset the tier-adopted keys
-            for k in ("max_positions", "max_position_pct", "min_stock_price",
-                      "fractional_enabled", "wheel_enabled", "short_enabled",
-                      "strategies_enabled"):
-                if k == "fractional_enabled":
-                    guardrails[k] = bool(tier.get("fractional_default", False))
-                elif k in tier:
-                    guardrails[k] = tier[k]
             try:
-                import tempfile as _tf
-                fd, tmp = _tf.mkstemp(dir=os.path.dirname(gr_path) or ".",
-                                        suffix=".tmp")
-                try:
-                    with os.fdopen(fd, "w") as f:
-                        _json.dump(guardrails, f, indent=2, default=str)
-                    os.replace(tmp, gr_path)
-                except Exception:
-                    try: os.unlink(tmp)
-                    except OSError: pass
-                    raise
+                with _cs_lock.strategy_file_lock(gr_path):
+                    guardrails = {}
+                    if os.path.exists(gr_path):
+                        try:
+                            with open(gr_path) as f:
+                                guardrails = _json.load(f) or {}
+                        except (OSError, ValueError):
+                            pass
+                    # Reset the tier-adopted keys
+                    for k in ("max_positions", "max_position_pct",
+                              "min_stock_price", "fractional_enabled",
+                              "wheel_enabled", "short_enabled",
+                              "strategies_enabled"):
+                        if k == "fractional_enabled":
+                            guardrails[k] = bool(tier.get("fractional_default",
+                                                           False))
+                        elif k in tier:
+                            guardrails[k] = tier[k]
+                    import tempfile as _tf
+                    fd, tmp = _tf.mkstemp(dir=os.path.dirname(gr_path) or ".",
+                                            suffix=".tmp")
+                    try:
+                        with os.fdopen(fd, "w") as f:
+                            _json.dump(guardrails, f, indent=2, default=str)
+                        os.replace(tmp, gr_path)
+                    except Exception:
+                        try: os.unlink(tmp)
+                        except OSError: pass
+                        raise
             except Exception as e:
                 return self._send_error_safe(e, 500, "calibration-reset-write")
             auth.log_admin_action(

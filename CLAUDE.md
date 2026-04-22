@@ -30,8 +30,8 @@ auto-deploys top picks across 6 strategies, manages exits, handles kill-switch
 
 1. `git checkout main && git pull --ff-only`
 2. `cat CLAUDE.md` (this file), `cat README.md`, `cat CHANGELOG.md`
-3. `MASTER_ENCRYPTION_KEY=$(python3 -c 'print("e"*64)') python3 -m pytest tests/ --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json -q`
-   — expect **~745 passing, 1 deselected** after round-54/55.
+3. `MASTER_ENCRYPTION_KEY=$(python3 -c 'print("e"*64)') python3 -m pytest tests/ --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json --deselect tests/test_auth.py::test_password_strength_rejects_weak -q`
+   — expect **779 passing, 2 deselected** after round-57.
 4. `ruff check .` — clean.
 5. Validate dashboard JS: `awk '/^<script>/,/^<\/script>/' templates/dashboard.html | grep -v '^<script>' | grep -v '^</script>' > /tmp/dash.js && node --check /tmp/dash.js`
 
@@ -56,11 +56,58 @@ via web UI. Don't try `mcp__github__*` tools.
 
 ---
 
-## Current session state (2026-04-23 — rounds 54 + 55 combined)
+## Current session state (2026-04-22 night — round 57 audit sweep)
 
-**Combined branch:** `claude/round54-55-combined` (this branch).
-Contains round-54 (calibration overrides + jitter fix) + round-55 (after-hours
-trailing stops).
+**Branch:** `claude/round57-audit`. Round-54 + 55 + 56 all merged to main
+(PR #97, commit `a10d00b`). Round-57 is a follow-on audit sweep that
+landed 11 fixes across concurrency, observability, UX, a11y, and edge
+cases — see below.
+
+### Round-57 — Full tech-stack audit fixes
+5 parallel Explore agents ran. 13 real bugs triaged, 3 false positives verified.
+
+**Concurrency (4 unlocked `guardrails.json` RMW sites fixed):**
+- `cloud_scheduler.py:1891` — stop-triggered `last_loss_time` write now
+  inside `strategy_file_lock(gpath)`.
+- `cloud_scheduler.py:2857` — `run_daily_close` `daily_starting_value` +
+  `peak_portfolio_value` update now locked. Fetches `/account` OUTSIDE
+  the lock (100-500ms network call would block the monitor otherwise).
+- `server.py` `/api/calibration/override` + `/api/calibration/reset` —
+  both handlers now wrap RMW in `strategy_file_lock`. Tier detection
+  runs OUTSIDE the lock for same reason.
+
+**Rate limit:** `/api/calibration/override` per-user cooldown = 3s
+(`_CALIBRATION_OVERRIDE_LAST_WRITE` module dict). Scripted loops / double-
+clicks return HTTP 429 + `rate_limited:true`.
+
+**Observability:** Failed trailing-stop raises now call
+`observability.capture_message("trailing_stop_raise_failed", ...)` with
+`session` (AH vs market) + `symbol` + attempted new_stop. Operator can
+debug in Sentry UI instead of scrolling logs.
+
+**UX:**
+- `<input type="range">` CSS: 32px container height, 22px custom thumb
+  with `accent-color: var(--blue)` + WCAG-AA contrast on dark bg.
+  iOS users can actually drag them now.
+- Dashboard header: `⚡ AH TRAILING` chip renders during pre/post-market
+  when `guardrails.extended_hours_trailing != false`. User can see the
+  bot is actively watching, not sleeping.
+- Calibration hierarchy text wrapper: `role="note" aria-live="polite"
+  aria-atomic="true"` so screen readers announce it.
+
+**Data exposure:** `/api/data` now returns `extended_hours_trailing`
+(defaults True) so the dashboard can render the AH chip.
+
+**Tests:** 14 new in `tests/test_round57_audit_fixes.py` — lock presence
+grep-level pins, 429 response pin, Sentry breadcrumb pin, daily-close
+`portfolio_value=None/0` runtime edge cases, slider touch-height CSS,
+AH chip HTML. 779 passing total (was 765 pre-round-57), 2 deselected.
+Ruff clean. Dashboard JS `node --check` clean.
+
+### Previously in-flight (now merged)
+Round-54 (calibration overrides + jitter fix) + round-55 (AH trailing)
++ round-56 (daily-close email OCC option labeling) all merged via
+PR #97, commit `a10d00b`, 2026-04-22.
 
 ### Round-54 — Calibration per-key overrides + desktop jitter fix
 - `POST /api/calibration/override` — whitelist + range validation + Alpaca-rule
@@ -83,14 +130,29 @@ trailing stops).
 - Opt-out: `guardrails.extended_hours_trailing = false` (default True).
 - 10 new tests in `test_round55_after_hours_trailing.py`
 
-### Pending user question (not yet investigated)
-User flagged: *"I don't think this math is right on daily close"* with
-screenshot at `/root/.claude/uploads/511bc447-83b8-4ff9-8203-1633b7504580/019db6fe-1000025079.jpg`.
-Review in a follow-on round.
+### Round-56 daily-close email (merged as part of PR #97)
+User forwarded an email screenshot showing `HIMS260508P00027000 ... (-1 sh)`
+which should have read as `HIMS put 260508 $27 ... (short 1 contract)`.
+New `_display_label(sym, qty)` closure in `_build_daily_close_report`
+detects OCC format and renders underlying + expiry + strike + right +
+singular/plural contract noun. 11 tests. Math (%, $, sort) untouched.
 
 ---
 
 ## Architectural invariants (CRITICAL — don't regress)
+
+### Post-57 (audit fixes)
+- Every `guardrails.json` RMW MUST hold `strategy_file_lock(gpath)` across
+  read + write. Slow ops (Alpaca `/account` fetches, tier detection) MUST
+  happen OUTSIDE the lock.
+- `/api/calibration/override` MUST rate-limit at 3s per user/mode (bucket
+  in `_CALIBRATION_OVERRIDE_LAST_WRITE`). Don't remove — cheap DoS mitigation.
+- Failed trailing-stop raises MUST fire `observability.capture_message`
+  with `event=trailing_stop_raise_failed` + `session` tag.
+- `/api/data` MUST expose `extended_hours_trailing` (default True) so the
+  dashboard AH chip renders correctly.
+- `input[type=range]` CSS MUST keep `height: 32px` + `accent-color` +
+  custom webkit/moz thumb styling. Browser default is unusable on iOS.
 
 ### Post-55 (after-hours monitor)
 - `monitor_strategies(user, extended_hours=True)` MUST only raise trailing

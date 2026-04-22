@@ -351,10 +351,12 @@ def test_dashboard_handler_mixin_decomposition(isolated_data_dir):
     # in mixins, because several are pre-auth public routes).
     # Was: 2000 (round-6), 2500 (round-11 factors), 2800 (LIVE batches),
     # 2850 (round-50 portfolio auto-calibration endpoint),
-    # now 3000 (round-54 override + reset endpoints with Alpaca-rule validation).
+    # 3000 (round-54 override + reset endpoints with Alpaca-rule validation),
+    # now 3100 (round-57 flock-guarded RMW + per-user rate limit +
+    # extended_hours_trailing exposure on /api/data).
     import os
     server_lines = sum(1 for _ in open(server.__file__))
-    assert server_lines < 3000, \
+    assert server_lines < 3100, \
         f"server.py too large ({server_lines} lines) — handler methods leaked back in"
 
 

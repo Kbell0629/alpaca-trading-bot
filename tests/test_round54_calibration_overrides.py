@@ -74,10 +74,14 @@ def test_override_endpoint_logs_audit():
     can review what risk changes happened when."""
     with open("server.py") as f:
         src = f.read()
-    # The override handler logs via auth.log_admin_action
+    # The override handler logs via auth.log_admin_action. Bound the
+    # window by the next endpoint header so the test is robust to handler
+    # body length changes (round-57 added ~500 chars of flock + rate limit).
     idx_override = src.find('path == "/api/calibration/override"')
     assert idx_override > 0
-    assert 'log_admin_action' in src[idx_override:idx_override+6000]
+    idx_next = src.find('path == "/api/calibration/reset"', idx_override)
+    assert idx_next > idx_override
+    assert 'log_admin_action' in src[idx_override:idx_next]
 
 
 # ========== Reset endpoint ==========
