@@ -8,6 +8,55 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-54 — Calibration per-key overrides + desktop jitter fix
+
+User asked: *"we were going to give the user the ability to adjust any of the auto calibration levers if they want with pop-ups and warnings as needed... make this user friendly but give the trader control as well. Also the desktop version is still jumping around when it refreshes makes it hard to use."*
+
+**Calibration-override UI (new):**
+
+* **POST `/api/calibration/override`** — writes one key at a time to `guardrails.json` with server-side validation:
+  - Whitelist of editable keys: `max_positions`, `max_position_pct`, `min_stock_price`, `fractional_enabled`, `wheel_enabled`, `short_enabled`, `strategies_enabled`
+  - Range checks: `max_position_pct` 0-50%, `max_positions` 1-50, `min_stock_price` 0-10000
+  - **Alpaca-rule hard blocks**: `short_enabled=True` on a cash account returns `blocked_by_alpaca_rule=True` → UI shows a red `alert()` popup instead of saving
+  - Audit log entry for every override
+
+* **POST `/api/calibration/reset`** — reverts the tier-adopted keys back to calibrated defaults. Preserves user-customized risk keys (`daily_loss_limit_pct`, `earnings_exit_*`, `kill_switch_*`).
+
+* **Settings → Calibration tab** got editable controls:
+  - **Sliders** for `max_positions` (1-20), `max_position_pct` (1-25%), `min_stock_price` ($0-100) with live value labels
+  - **Toggles** for fractional, wheel, short selling (short toggle auto-disables on cash accounts)
+  - **Strategy pills** — click to enable/disable individual strategies; blocked-by-account ones render greyed out with tooltip
+  - **↺ Reset to Tier Defaults** button
+  - **Client-side warning popups** for risky overrides:
+    - `max_position_pct > 15%` → "that's aggressive for most tiers…"
+    - `max_positions > 12` → "a lot for most account sizes…"
+    - `short_enabled` going ON → "short selling carries unlimited loss risk…"
+    - `fractional_enabled` going OFF → "small accounts can't hold expensive stocks…"
+
+**How Templates + Calibration now interact** (documented inline in the UI):
+
+```
+Your manual edits  →  Preset click  →  Calibration defaults
+   (most specific wins; each successive layer gets overridden)
+```
+
+**Jitter fix (desktop + mobile):**
+
+Previous rounds (47, 48) tried scroll preservation + fewer cascading re-renders. User still reported jitter on desktop. Root cause: every 10-second tick wholesale-replaced ~30KB of DOM **even when nothing meaningfully changed** (e.g., no new positions, no price changes visible at 2dp).
+
+* **Round-54 hash-skip**: renderDashboard now builds the HTML into a variable, compares to `window._lastAppHtml`. If identical, **skip the innerHTML assignment entirely** → zero repaint, zero jitter on quiet ticks. On active ticks (prices actually changed) the assignment fires but round-47's sync scroll restore handles it cleanly.
+
+**Tests:** 11 new cases in `tests/test_round54_calibration_overrides.py`:
+  * Override endpoint registered, validates key whitelist, Alpaca-rule blocks, range checks, audit log
+  * Reset endpoint preserves risk keys
+  * UI has all slider/toggle/pill controls
+  * UI has risk-warning dialogs for risky overrides
+  * Hash-skip pattern present + scroll restore still inside the changed-branch
+
+Suite: **745 passed, 1 deselected** (was 734 + 11 new). Ruff clean. Node `--check` clean. server.py LOC cap raised 2850 → 3000 for the new endpoints.
+
+---
+
 ## 🆕 Round-52 — Full tech-stack audit + fixes
 
 User asked for a comprehensive audit after merging rounds 50 + 51. Five parallel Explore agents swept security, concurrency, trading-logic, UI, and ops/tests. Surfaced **11 real bugs** across all layers; also verified **8 false positives** (wheel options proceeds math, tier boundaries, tier-stash race, mode isolation, atomic writes, ledger pruning, XSS, JS syntax).
