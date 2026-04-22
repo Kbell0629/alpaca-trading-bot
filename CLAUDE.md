@@ -930,14 +930,106 @@ Ruff clean on touched files.
 
 ---
 
-## Last session state (2026-04-22 very late night — END OF SESSION, after round-46 dual-mode audit fixes)
+## Last session state (2026-04-22 very late night — END OF SESSION, after user-guide docs refresh)
 
-**83 PRs merged + round-46 in flight.** Paper-trading 30-day
+**84 PRs merged + 1 docs PR in flight.** Paper-trading 30-day
 validation window ongoing.
 
-**Current `main` HEAD:** `cb4ffef` (PR #83 round-45 dual-mode paper+live
-— merged during this session). Round-46 branch
-`claude/round46-dual-mode-fixes` — awaiting manual PR merge.
+**Current `main` HEAD:** `7c72d44` (PR #84 round-46 audit fixes —
+merged during this session, squash of round-46 commits including
+the CI hotfix). Previous merges this session: `cb4ffef` (PR #83
+round-45 dual-mode paper+live).
+
+**Docs-only branch in flight:** `claude/docs-round46-test-count-update`
+— updates CLAUDE.md test count + adds round-43-to-46 user-guide
+refresh to README (dual-mode workflow, `[orphan]` tag explanation,
+10s refresh, positions-table buttons). No code changes; no CI risk.
+
+### Round-46 post-merge state
+
+Everything round-46 shipped made it to main:
+* `get_dashboard_data` / `_resolve_user_paths` now take `mode=`.
+* `_wheel_deploy_in_flight` dedup scoped by mode.
+* `scheduler_api._alert_alpaca_auth_failure` per-day dedup keyed by
+  `(id, mode)`.
+* `scheduler_api._cb_key` returns distinct keys for paper vs live.
+* Removed `(round-45)` text from Parallel Mode info box.
+* Dashboard refresh 60s → 10s.
+* CI hotfix (`_reload(monkeypatch)` sets MASTER_ENCRYPTION_KEY).
+
+### This docs refresh (in flight)
+
+**README.md:**
+* New "Going Live — Dual Mode (Paper + Live in Parallel)" section
+  replaces the old Railway-env-var flow. Step-by-step dual-mode
+  setup, per-mode isolation table, `[LIVE]` notification prefix
+  explanation, safety rails, disable-parallel workflow.
+* Header table: PAPER badge → `📝 PAPER / 🔴 LIVE clickable toggle`.
+  Kill switch note: per-mode isolation.
+* Refresh cadence: 60s → 10s (2 spots).
+* Positions table: added `🚨 BREAKING` badge + `Sell 25%/50%` +
+  `📈 Chart` button docs.
+* New "Today's Closes" subsection with `[orphan]` tag explanation
+  (orphan fix auto-runs in wheel monitor tick — round-44).
+* Open Orders section: clarified after-hours-queuing (AXTI/CORZ
+  pattern the user hit).
+* Quick Answers: added "How do I switch between paper and live views?"
+
+**CLAUDE.md (this file):** updated session-state to point at current
+main HEAD + describe what's in flight on the docs branch.
+
+### Picking this up from a new session (post-round-46)
+
+1. `git pull --ff-only` on `main`. HEAD should be at `7c72d44`
+   (PR #84 round-46 — dual-mode audit fixes). If the docs-only PR
+   has been merged, there will be one more commit on top.
+2. `MASTER_ENCRYPTION_KEY=<64hex> python3 -m pytest tests/
+   --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json -q`
+   — expect **640 passed, 1 deselected** (CI's exact invocation).
+3. `ruff check .` — clean.
+4. `awk '/^<script>/,/^<\/script>/' templates/dashboard.html | grep -v '^<script>' | grep -v '^</script>' > /tmp/dash.js && node --check /tmp/dash.js`
+   — extracted dashboard JS must pass `node --check` (round-27
+   lesson: JS errors in inline blocks break initial render).
+5. Read this file + `README.md` + `CHANGELOG.md` + `GO_LIVE_CHECKLIST.md`.
+6. **If user asks "audit again"**: follow playbook (5-8 parallel
+   Explore agents, triage into fix/deferred/false-positive, verify
+   trading-logic claims against actual code — that agent has a
+   history of false-positives, see CHANGELOG round-22 for examples).
+   Round-46 audit (this session) was a clean run — 1 finding (wheel
+   dedup), 0 false positives.
+7. **GitHub MCP stays disconnected** every session. User opens PRs
+   + merges manually via the web UI. Don't try `mcp__github__*`.
+8. **Tests that `importlib.reload()` auth-dependent modules MUST set
+   `MASTER_ENCRYPTION_KEY` via monkeypatch** — otherwise they pass
+   locally (when you set it in the shell) but fail CI. Use
+   `isolated_data_dir` fixture or the `_reload(monkeypatch)` pattern
+   from `tests/test_round46_dual_mode_fixes.py`. This is why round-46
+   needed a CI hotfix.
+
+### Dual-mode (round-45 + round-46) operational notes
+
+**Key concept:** every user can have both paper and live Alpaca
+accounts configured. Paper at `users/<id>/`, live at `users/<id>/live/`.
+Scheduler expands each user into 1 or 2 entries per tick depending
+on `live_parallel_enabled`. Session mode (`sessions.mode` column)
+controls which tree the dashboard VIEW reads from — orthogonal to
+which modes the scheduler is TRADING on.
+
+**Invariants to preserve in future rounds:**
+* `auth.user_data_dir(user_id, mode="paper")` default MUST stay
+  `users/<id>/` (no migration, back-compat).
+* `user["_mode"]` field injected by `_build_user_dict_for_mode` is
+  the source of truth for mode-aware code. Scheduler/handlers read it.
+* Dedup keys for dicts like `_wheel_deploy_in_flight`, `_cb_state`,
+  `_auth_alert_dates`: paper keeps plain user_id (back-compat);
+  live uses `f"{id}:live"`. Pattern: `_mode = user.get("_mode", "paper");
+  uid = f"{id}:{_mode}" if _mode == "live" else id`.
+* `notify_user` already prefixes live messages with `[LIVE]` —
+  preserve this when touching notification paths.
+* Session-mode fallback: if `session_mode == "live"` but no live keys
+  saved, `check_auth` silently falls back to paper view (see
+  server.py:774-784). Don't break this — it prevents broken-dashboard-
+  from-misconfigured-session failures.
 
 ### Round-46 (this round) — round-45 audit fixes + UX polish
 
