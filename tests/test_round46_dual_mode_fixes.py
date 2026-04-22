@@ -20,7 +20,12 @@ import importlib
 import sys as _sys
 
 
-def _reload():
+def _reload(monkeypatch):
+    """Fresh-import cloud_scheduler + scheduler_api after ensuring the
+    env requirements auth.py needs are present. On CI (MASTER_ENCRYPTION_KEY
+    unset unless explicitly exported) these imports otherwise fail with
+    `RuntimeError: MASTER_ENCRYPTION_KEY env var is required`."""
+    monkeypatch.setenv("MASTER_ENCRYPTION_KEY", "d" * 64)
     for m in ("auth", "scheduler_api", "cloud_scheduler"):
         _sys.modules.pop(m, None)
     import cloud_scheduler  # noqa
@@ -66,7 +71,7 @@ def test_wheel_deploy_in_flight_uid_includes_mode_for_live(tmp_path, monkeypatch
     """Pin: run_wheel_auto_deploy's dedup key for a live user must
     differ from a paper user with the same id, so paper + live
     wheel-deploy ticks don't block each other."""
-    cs, _ = _reload()
+    cs, _ = _reload(monkeypatch)
     src = open(cs.__file__).read()
     # The fix lives inside run_wheel_auto_deploy. Grep-level pin:
     assert 'f"{user[\'id\']}:{_mode}" if _mode == "live"' in src, (
@@ -79,7 +84,7 @@ def test_wheel_deploy_in_flight_uid_includes_mode_for_live(tmp_path, monkeypatch
 
 
 def test_alpaca_auth_failure_dedup_includes_mode(tmp_path, monkeypatch):
-    _, sa = _reload()
+    _, sa = _reload(monkeypatch)
     src = open(sa.__file__).read()
     # Should see our mode-aware dedup — otherwise paper alert would
     # silence live alert for the same day.
@@ -93,7 +98,7 @@ def test_alpaca_auth_failure_dedup_includes_mode(tmp_path, monkeypatch):
 def test_cb_key_paper_is_plain_user_id(tmp_path, monkeypatch):
     """Paper keeps the plain-id key for backward-compat with any
     pre-round-46 in-memory state."""
-    _, sa = _reload()
+    _, sa = _reload(monkeypatch)
     user_paper = {"id": 42, "_mode": "paper"}
     user_default = {"id": 42}  # no _mode field
     assert sa._cb_key(user_paper) == 42
@@ -104,13 +109,13 @@ def test_cb_key_live_is_scoped(tmp_path, monkeypatch):
     """Live gets a separate bucket so paper + live (different Alpaca
     backends, different rate-limit budgets) don't share the CB/RL
     state."""
-    _, sa = _reload()
+    _, sa = _reload(monkeypatch)
     user_live = {"id": 42, "_mode": "live"}
     assert sa._cb_key(user_live) == "42:live"
 
 
 def test_cb_key_paper_and_live_are_distinct(tmp_path, monkeypatch):
-    _, sa = _reload()
+    _, sa = _reload(monkeypatch)
     p = sa._cb_key({"id": 1, "_mode": "paper"})
     live = sa._cb_key({"id": 1, "_mode": "live"})
     assert p != live, (
