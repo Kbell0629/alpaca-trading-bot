@@ -3321,7 +3321,16 @@ def run_wheel_auto_deploy(user):
     # 9:40 AM scheduler tick OR Force Deploy OR both), skip. Otherwise two
     # concurrent calls can both place short-put orders on the same symbol
     # before the first writes state (count_active_wheels returns 0 for both).
-    uid = user.get("id")
+    #
+    # Round-46 fix: dedup key MUST include the trading mode. Previously a
+    # user with live_parallel_enabled=1 could have paper and live wheel
+    # deploys collide in _wheel_deploy_in_flight — first one in blocks
+    # the second (different-mode) entry, so whichever tick fires second
+    # silently skips. That's the inverse of the actual bug: both modes'
+    # deploys should run independently. Scope the key the same way the
+    # main scheduler loop scopes its _last_runs cache (line 3562).
+    _mode = user.get("_mode", "paper")
+    uid = f"{user['id']}:{_mode}" if _mode == "live" else user.get("id")
     with _wheel_deploy_lock:
         if uid in _wheel_deploy_in_flight:
             log(f"[{user['username']}] Wheel auto-deploy already running — skipping concurrent invocation", "wheel")

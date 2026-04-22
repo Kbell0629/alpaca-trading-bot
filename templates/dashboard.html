@@ -2096,10 +2096,10 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
         <span id="liveModeResult" style="font-size:12px;text-align:center"></span>
       </div>
 
-      <!-- Round-45: parallel paper + live mode -->
+      <!-- Parallel paper + live mode -->
       <hr style="margin:20px 0;border:none;border-top:1px solid var(--border)">
       <div class="modal-info-box" style="margin-bottom:12px;background:rgba(34,197,94,0.05);border-color:rgba(34,197,94,0.3)">
-        <strong>🆕 Parallel Mode (round-45)</strong> — the bot runs both paper AND live in parallel.
+        <strong>🆕 Parallel Mode</strong> — the bot runs both paper AND live in parallel.
         <ul style="margin:8px 0 0 20px;font-size:13px">
           <li>Each mode has its own state tree (positions, strategies, journal, scorecard).</li>
           <li>Click the 📝 PAPER / 🔴 LIVE badge in the header to switch the dashboard view.</li>
@@ -2464,7 +2464,12 @@ const API_BASE = '';
 })();
 window.currentUsername = '';
 let dashboardData = null;
-let countdown = 60;
+// Round-46: reduced from 60s → 10s for a real-time feel. /api/data
+// makes ~3 Alpaca calls per refresh; at 10s cadence that's ~18 req/min,
+// well under Alpaca's 200/min rate-limit + the in-memory token bucket
+// serializes any rare overlap. The _refreshInFlight debounce guard
+// already prevents parallel refreshes from stacking.
+let countdown = 10;
 let countdownInterval = null;
 let activityLog = [];
 let screenerSortCol = 'best_score';
@@ -4243,7 +4248,7 @@ async function refreshData() {
             })
             .catch(function(_) { /* empty alerts are fine */ });
         renderDashboard();
-        countdown = 60;
+        countdown = 10;
     } catch(e) {
         // Only show error once per 5 failures to prevent spam
         if (!window._fetchFailCount) window._fetchFailCount = 0;
@@ -4261,7 +4266,7 @@ async function refreshData() {
                 : 'Failed to load data: ' + e.message;
             toast(msg, 'error', '', function() { refresh(); });
         }
-        countdown = 60;  // Reset even on failure so we don't spam
+        countdown = 10;  // Reset even on failure so we don't spam
     } finally {
         if (_timeoutId) clearTimeout(_timeoutId);
         _refreshInFlight = false;
@@ -4314,7 +4319,7 @@ async function forceRefresh() {
         dashboardData = await resp.json();
         lastData = dashboardData;
         renderDashboard();
-        countdown = 60;
+        countdown = 10;
         toast('Data refreshed!', 'success');
         addLog('Dashboard data refreshed', 'success');
     } catch(e) {
@@ -8681,7 +8686,7 @@ async function loadCurrentUser() {
         const el = document.getElementById('countdown');
         if (el) el.textContent = 'Next refresh: ' + Math.max(0, countdown) + 's';
         if (countdown <= 0) {
-            countdown = 60;  // Reset BEFORE calling refresh to prevent spam on failure
+            countdown = 10;  // Reset BEFORE calling refresh to prevent spam on failure
             refreshData();
             addLog('Auto-refresh triggered', 'info');
         }

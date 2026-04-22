@@ -64,6 +64,81 @@ pass. Full suite: **616 passing**. Ruff clean. Dashboard JS
 
 ---
 
+## 🆕 Round-46 — Round-45 dual-mode audit fixes + UX polish (2026-04-22)
+
+User ask: *"I merging that now I would like you to audit all the
+changes you just made because they are really important and make sure
+you were perfect in execution."* Also: *"can you also take (round45)
+off the actual app it doesn't look good"* and *"can we also make this
+dashboard refresh on a faster rate? make it more real time?"*
+
+Ran a direct code review + spawned a parallel audit Explore agent.
+Four real bugs surfaced in round-45 (merged as PR #83). All four are
+mode-contamination risks that could cause paper and live to
+cross-pollute state. Fixed in this PR + three UX tweaks.
+
+**Audit fixes (CRITICAL → HIGH severity):**
+
+1. **`get_dashboard_data` / `_resolve_user_paths` were mode-unaware.**
+   `/api/data` passed `user_id` but never told the dashboard loader
+   which mode. When a session switched to live view, the loader
+   silently read paper's `dashboard_data.json`, `overlay files`,
+   `strategies/` — while the header's Alpaca account data correctly
+   came from live. User would see live account equity paired with
+   paper positions. Fixed by adding `mode="paper"` param that flows
+   through: `/api/data` → `get_dashboard_data(..., mode=)` →
+   `_resolve_user_paths(user_id, mode=)` → `auth.user_data_dir(id, mode=)`.
+
+2. **`_wheel_deploy_in_flight` dedup shared between paper + live.**
+   `run_wheel_auto_deploy()` used `uid = user.get("id")` as its
+   in-flight dedup key. With `live_parallel_enabled=1`, the scheduler
+   tick fires the wheel-deploy for paper then live on the same loop;
+   whichever ran second would see its `uid` already in the set and
+   skip. Fixed: `uid = f"{user['id']}:{_mode}"` for live (paper
+   keeps plain `uid` for backward compat with the existing dedup
+   pattern in the main scheduler loop).
+
+3. **Alpaca auth-failure alert dedup was mode-blind.**
+   `scheduler_api._alert_alpaca_auth_failure` used `_auth_alert_dates[uid]`
+   with `uid = user.get("id")`. If paper creds expired first and
+   fired the once-per-day alert, a subsequent live-creds-expired on
+   the same day would be silenced — so users with live-parallel would
+   miss real-money auth alerts. Scoped the dedup key by mode.
+
+4. **Circuit-breaker + rate-limiter buckets shared between paper + live.**
+   `scheduler_api._cb_key(user)` returned plain user_id. But paper and
+   live hit DIFFERENT Alpaca backends (`paper-api.alpaca.markets` vs
+   `api.alpaca.markets`), each with their own 200/min rate budget.
+   Sharing the bucket meant a busy paper session could throttle live
+   trades and a live CB trip would block paper. Fixed: paper keeps the
+   plain-id key (backward compat with persisted in-memory state); live
+   gets `"<id>:live"`.
+
+**UX polish:**
+
+5. **Removed `(round-45)` from the Parallel Mode info box.** User
+   caught it on mobile and asked to take it off — it's dev-internal
+   versioning that doesn't belong in user-facing copy.
+
+6. **Dashboard refresh 60s → 10s.** User asked for a more real-time
+   feel. `/api/data` makes ~3 Alpaca calls per refresh; at 10s cadence
+   that's ~18 req/min, well under Alpaca's 200/min rate limit. The
+   existing `_refreshInFlight` debounce prevents parallel refreshes
+   from stacking. Token bucket serializes any rare overlap.
+
+**Tests:** 7 new cases in `tests/test_round46_dual_mode_fixes.py`
+pinning all four audit fixes (mode plumbing through
+`_resolve_user_paths`, wheel-deploy dedup grep-level pin, auth-alert
+dedup grep pin, `_cb_key` paper-vs-live distinctness + back-compat
+with plain `user_id` for paper). Suite: **636 passing** (629 + 7).
+Ruff clean. Node `--check` clean on dashboard JS.
+
+**Thanks to the audit agent** — caught the wheel-deploy dedup bug I
+missed. Zero false positives this time (unlike round-22's trading
+agent). Solid run.
+
+---
+
 ## 🆕 Round-45 — Dual-mode paper + live parallel trading (2026-04-22)
 
 **User ask:** *"when I switch to real money and I want to run in parallel
