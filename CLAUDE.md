@@ -141,6 +141,14 @@ singular/plural contract noun. 11 tests. Math (%, $, sort) untouched.
 
 ## Architectural invariants (CRITICAL — don't regress)
 
+### Post-58 (JSON-audit fixes)
+- `update_scorecard` correlation guard MUST route through `position_sector.annotate_sector` (OCC options resolve to underlying for sector lookup).
+- `constants.SECTOR_MAP` is the single source of truth. Missing tickers surface as "Other" which breaks the correlation guard — add them here, not in consumers.
+- Screener-annotated `will_deploy=False` picks MUST sort after `will_deploy=True` so the "top N" reflects what the deployer will pick up.
+- `/api/data` MUST filter picks that have no real screener enrichment (no technical, zero momentum, zero recommended_shares) — the default-value tail is noise.
+- `earnings_exit._fetch_next_earnings_from_yfinance` fetch failures MUST stamp `_LAST_FETCH_ERR[symbol]` with a distinct reason, and `should_exit_for_earnings` MUST emit `capture_message(event="earnings_exit_fetch_failed")` on any non-`no_future_unreported` failure. Silent fail-open held INTC through earnings in 2026-04.
+- `insider_data.total_value_usd` MUST be `null` (not `0`) — we don't parse Form 4 XML yet, and `0` reads as "no insider buying" when `buy_count > 0`.
+
 ### Post-57 (audit fixes)
 - Every `guardrails.json` RMW MUST hold `strategy_file_lock(gpath)` across
   read + write. Slow ops (Alpaca `/account` fetches, tier detection) MUST

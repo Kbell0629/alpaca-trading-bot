@@ -360,13 +360,31 @@ def calculate_metrics(journal, scorecard, account, positions):
                 }
 
     # Correlation Guard (Improvement 9)
+    # Round-58: resolve OCC option symbols to their underlying for sector
+    # lookup. Before this, an option like "HIMS260508P00027000" wasn't in
+    # SECTOR_MAP so it fell through to "Other" and triggered false "3+
+    # positions in Other sector" warnings when mixed with other sector-
+    # unmapped equities. For display, surface the underlying (e.g. "HIMS")
+    # rather than the 17-char OCC symbol which nobody recognises.
     correlation_warning = None
     if positions and isinstance(positions, list):
+        try:
+            from position_sector import annotate_sector as _annotate
+            _annotated = _annotate([dict(p) for p in positions])  # copy; don't mutate scorecard input
+        except Exception:
+            _annotated = None
+
         sector_positions = {}
-        for p in positions:
+        for idx, p in enumerate(positions):
             sym = p.get("symbol", "")
-            sector = SECTOR_MAP.get(sym, "Other")
-            sector_positions.setdefault(sector, []).append(sym)
+            if _annotated and idx < len(_annotated):
+                ap = _annotated[idx]
+                sector = ap.get("_sector") or "Other"
+                display_sym = ap.get("_underlying") or sym
+            else:
+                sector = SECTOR_MAP.get(sym, "Other")
+                display_sym = sym
+            sector_positions.setdefault(sector, []).append(display_sym)
 
         concentrated_sectors = {s: syms for s, syms in sector_positions.items() if len(syms) >= 3}
         if concentrated_sectors:

@@ -567,6 +567,77 @@ def get_dashboard_data(api_endpoint=None, api_headers=None, user_id=None, mode="
         data["updated_at"] = now_et().strftime("%Y-%m-%d %I:%M:%S %p ET")
         data["api_errors"] = api_errors
         data["trading_session"] = current_session
+        # Round-58: drop picks with empty enrichment from the response.
+        # The screener enriches only the top-50, so picks 51+ arrive with
+        # default momentum_5d=0, momentum_20d=0, relative_volume=1.0 and no
+        # technical / backtest blocks. Rendering them as "top picks" in the
+        # dashboard (which they were, sorted by best_score) was misleading —
+        # they'd never deploy because the scorer didn't actually run. Keep
+        # a pick only when it has real enrichment signal.
+        try:
+            _picks_in = data.get("picks") or []
+            _picks_out = []
+            for _p in _picks_in:
+                _has_technical = bool(_p.get("technical"))
+                _has_momentum = (
+                    float(_p.get("momentum_5d") or 0) != 0
+                    or float(_p.get("momentum_20d") or 0) != 0
+                )
+                _has_rec_shares = int(_p.get("recommended_shares") or 0) > 0
+                # Retain if ANY real signal is present; otherwise drop
+                if _has_technical or _has_momentum or _has_rec_shares:
+                    _p.setdefault("enriched", True)
+                    _picks_out.append(_p)
+            data["picks"] = _picks_out
+        except Exception:
+            pass  # never break the dashboard on enrichment filtering
+
+        # Round-58: annotate each pick with `already_held` = True when the
+        # caller is currently long (or short) the underlying. Before this,
+        # the picks list echoed symbols the user already owns (CRDO, FSLY,
+        # SOXL, USAR, INTC, HIMS in the 2026-04-22 snapshot), which made
+        # "Top picks" confusing — nothing the user hasn't already deployed.
+        # We annotate rather than drop so the screener output stays auditable;
+        # dashboard.html dims already-held rows in the picks panel.
+        try:
+            _held_underlyings = set()
+            for _p in (data.get("positions") or []):
+                _u = (_p.get("_underlying") or _p.get("symbol") or "").upper()
+                if _u:
+                    _held_underlyings.add(_u)
+            if _held_underlyings:
+                for _pick in (data.get("picks") or []):
+                    _sym = (_pick.get("symbol") or "").upper()
+                    _pick["already_held"] = _sym in _held_underlyings
+                for _pick in (data.get("diversified_top5") or []):
+                    _sym = (_pick.get("symbol") or "").upper()
+                    _pick["already_held"] = _sym in _held_underlyings
+        except Exception:
+            pass  # annotation is advisory; never block the dashboard
+
+        # Round-58: scorecard win-rate display — show null when total_trades
+        # < 5 so the UI can render "N=2 (insufficient sample)" instead of
+        # "0% win rate" which is alarmist on a tiny sample. Preserves the
+        # raw counts so downstream analytics stays correct.
+        try:
+            _sc = data.get("scorecard")
+            if isinstance(_sc, dict):
+                _tt = int(_sc.get("total_trades") or 0)
+                _closed = int(_sc.get("closed_trades") or 0)
+                _sc["win_rate_sample_size"] = _closed
+                _sc["win_rate_reliable"] = _closed >= 5
+                if _closed < 5:
+                    # Keep the raw value but flag it; UI decides display
+                    _sc["win_rate_pct_display"] = None
+                    _sc["win_rate_display_note"] = (
+                        f"Only {_closed} closed trade"
+                        f"{'' if _closed == 1 else 's'} — not enough for a "
+                        "reliable win rate. Keep paper-trading.")
+                else:
+                    _sc["win_rate_pct_display"] = _sc.get("win_rate_pct")
+                    _sc["win_rate_display_note"] = None
+        except Exception:
+            pass
         overlays = _load_overlay_files(user_dir, strats_dir, user_id)
         for key, value in overlays.items():
             data[key] = value if value is not None else data.get(key, {})

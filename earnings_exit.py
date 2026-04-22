@@ -77,23 +77,44 @@ def _cache_store(symbol: str, next_dt: Optional[date]) -> None:
         _CACHE[symbol] = (now_et().replace(tzinfo=None), next_dt)
 
 
+# Round-58: track the last fetch failure reason so the
+# should_exit_for_earnings caller can emit a LOUD Sentry breadcrumb
+# instead of silently swallowing a yfinance error. Before this, an
+# `ImportError` / shape drift / network hiccup would make the exit
+# rule silently fail-open — INTC sat through its earnings on
+# 2026-04-23 because the fetch returned None and nobody knew.
+_LAST_FETCH_ERR: dict[str, str] = {}
+
+
+def get_last_fetch_error(symbol: str) -> Optional[str]:
+    return _LAST_FETCH_ERR.get(symbol.upper())
+
+
 def _fetch_next_earnings_from_yfinance(symbol: str) -> Optional[date]:
     """One-shot yfinance call. Returns the next FUTURE earnings date
-    (unreported) or None on any error / missing data."""
+    (unreported) or None on any error / missing data.
+
+    Round-58: now records the failure reason in `_LAST_FETCH_ERR[symbol]`
+    so the caller can distinguish "really no upcoming earnings" (no
+    fetch error) from "fetch failed and we're silently holding through
+    earnings" (fetch error surfaced)."""
+    sym_u = symbol.upper() if symbol else ""
     try:
         import yfinance as yf
     except ImportError:
+        _LAST_FETCH_ERR[sym_u] = "yfinance_not_installed"
         return None
     try:
         ticker = yf.Ticker(symbol)
         ed = ticker.get_earnings_dates(limit=8)
-    except (ValueError, TypeError, AttributeError, KeyError):
-        # Shape drift — don't retry
+    except (ValueError, TypeError, AttributeError, KeyError) as e:
+        _LAST_FETCH_ERR[sym_u] = f"shape_drift:{type(e).__name__}"
         return None
-    except Exception:
-        # Transient network error
+    except Exception as e:
+        _LAST_FETCH_ERR[sym_u] = f"network:{type(e).__name__}"
         return None
     if ed is None or (hasattr(ed, "empty") and ed.empty):
+        _LAST_FETCH_ERR[sym_u] = "empty_result"
         return None
     today = now_et().date()
     next_dt: Optional[date] = None
@@ -114,6 +135,13 @@ def _fetch_next_earnings_from_yfinance(symbol: str) -> Optional[date]:
             continue
         if row_dt > today and (next_dt is None or row_dt < next_dt):
             next_dt = row_dt
+    # Clear prior error on success. Distinguish "no upcoming earnings
+    # in the next 8 scheduled events" (returned dataframe, no future
+    # unreported row) vs. fetch failure — the former is legitimate.
+    if next_dt is None:
+        _LAST_FETCH_ERR[sym_u] = "no_future_unreported"
+    else:
+        _LAST_FETCH_ERR.pop(sym_u, None)
     return next_dt
 
 
@@ -163,6 +191,26 @@ def should_exit_for_earnings(
         return False, None, None
     next_dt = get_next_earnings_date(lookup_sym)
     if next_dt is None:
+        # Round-58: LOUD on silent-skip. When the lookup fails for a
+        # real fetch reason (network / shape drift / import error),
+        # surface to Sentry so the operator knows the earnings gate
+        # isn't actually gating. Legitimate "no upcoming earnings in
+        # the next 8 scheduled events" ("no_future_unreported") stays
+        # quiet — that's a valid None, not a silent failure.
+        err = _LAST_FETCH_ERR.get(lookup_sym)
+        if err and err != "no_future_unreported":
+            try:
+                from observability import capture_message
+                capture_message(
+                    f"earnings_exit fetch failed: {lookup_sym} ({err})",
+                    level="warning",
+                    event="earnings_exit_fetch_failed",
+                    symbol=lookup_sym,
+                    strategy=strategy_type,
+                    error=err,
+                )
+            except Exception:
+                pass
         return False, None, None
     days_to = (next_dt - now_et().date()).days
     # Window: today (days_to == 0) through days_before days out.
@@ -191,3 +239,21 @@ def clear_cache() -> None:
     """Test hook — drop all cached entries."""
     with _CACHE_LOCK:
         _CACHE.clear()
+    _LAST_FETCH_ERR.clear()
+
+
+def force_refresh(symbol: str) -> Optional[date]:
+    """Round-58: operator tool. Bust the 4-hour cache for this symbol
+    and re-fetch from yfinance immediately. Returns the freshly-fetched
+    next earnings date (or None on fetch failure — check
+    `get_last_fetch_error(symbol)` for diagnosis). Used by the admin
+    "verify earnings rule is working" button and by tests."""
+    if not symbol:
+        return None
+    sym = symbol.upper()
+    with _CACHE_LOCK:
+        _CACHE.pop(sym, None)
+    _LAST_FETCH_ERR.pop(sym, None)
+    next_dt = _fetch_next_earnings_from_yfinance(sym)
+    _cache_store(sym, next_dt)
+    return next_dt

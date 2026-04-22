@@ -125,6 +125,53 @@ SECTOR_MAP = {
     "DOW": "Materials", "BF.B": "Consumer",
     # Apparel / travel
     "VFC": "Consumer", "UAL": "Industrial", "W": "Consumer",
+    # Round-58 additions — tickers surfaced as "Other" in the user's
+    # 2026-04-22 /api/data dump that have well-known sectors. Adding
+    # here closes the gap between the screener's enriched fields and
+    # correlation-guard rendering.
+    # Tech (semiconductors + SaaS + networking)
+    "CRDO": "Tech",    # semiconductor networking (Credo Technology)
+    "FSLY": "Tech",    # edge cloud / CDN (Fastly)
+    "MRVL": "Tech",    # semiconductors (Marvell)
+    "ALAB": "Tech",    # AI semiconductors (Astera Labs)
+    "ANET": "Tech",    # data-center networking (Arista)
+    "LRCX": "Tech",    # semiconductor equipment (Lam Research)
+    "NBIS": "Tech",    # AI cloud (Nebius Group)
+    "APH": "Tech",     # connectors / interconnects (Amphenol)
+    "APLD": "Tech",    # AI data centers (Applied Digital)
+    "SMTC": "Tech",    # mixed-signal semi (Semtech)
+    "CTSH": "Tech",    # IT services (Cognizant)
+    "RELX": "Tech",    # information/analytics (RELX)
+    # Finance
+    "COF": "Finance", "CG": "Finance",
+    # Industrial (defense / logistics / airlines / heavy eq)
+    "LUV": "Industrial", "DAL": "Industrial", "ALK": "Industrial", "CCL": "Consumer",
+    "JETS": "Industrial", "CARR": "Industrial",
+    # Healthcare
+    "ERAS": "Healthcare", "IBRX": "Healthcare",
+    # Energy / utilities
+    "EQT": "Energy", "XEL": "Utilities",
+    # Consumer
+    "GAP": "Consumer", "LEVI": "Consumer", "TSCO": "Consumer", "KSS": "Consumer",
+    "CPNG": "Consumer", "STUB": "Consumer", "OPEN": "Consumer", "BE": "Industrial",
+    # Crypto / fintech
+    "RKT": "Finance", "IBIT": "Crypto", "SARO": "Finance",
+    # Special situations
+    "FRMI": "Finance", "INFQ": "Finance", "AMPX": "Industrial",
+    # Satellite / aerospace
+    "ASTS": "Industrial", "SATS": "Industrial",
+    # Healthcare ETFs / basket
+    "MSOS": "Healthcare",  # cannabis ETF
+    # Nuclear / uranium
+    "NXE": "Energy", "JOBY": "Industrial", "ACHR": "Industrial",
+    # Industrial / materials
+    "IP": "Materials",
+    # Paper / other
+    "PBI": "Industrial",  # Pitney Bowes
+    "TEL": "Industrial",  # TE Connectivity (sensors/connectors)
+    "TE": "Industrial",
+    # Finance / insurance
+    "BORR": "Energy",  # Borr Drilling (oilfield)
 }
 
 

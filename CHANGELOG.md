@@ -8,6 +8,80 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-58 — Bugs surfaced by reviewing the live `/api/data`
+
+User forwarded their live `/api/data` dump at 2026-04-22 7 PM ET for review. Audit surfaced 8 real issues — all fixed.
+
+### Fix 1 — Correlation warning mis-buckets OCC options
+
+Scorecard correlation guard at `update_scorecard.py:368` was calling `SECTOR_MAP.get(sym, "Other")` directly with the raw symbol. OCC option symbols like `HIMS260508P00027000` aren't in `SECTOR_MAP`, so they all fell into "Other" and triggered false "3+ positions in same sector" warnings. Fixed by routing through `position_sector.annotate_sector` which resolves OCC → underlying first. Also surfaces the underlying (e.g. `HIMS`) in the warning text instead of the 17-char OCC symbol nobody recognises.
+
+### Fix 2 — SECTOR_MAP missing common picks
+
+User's dump showed `CRDO`, `FSLY`, `MRVL`, `ALAB`, `LEVI`, `LUV`, `DAL`, `ALK`, `COF`, `KSS`, etc. tagged as "Other" — all well-known tickers with obvious sectors. Added 40+ tickers visible in the screener output to `constants.SECTOR_MAP`. Round-30 claimed 80+ additions but these popular names were missed.
+
+### Fix 3 — Screener now mirrors the deployer's don't-chase + volatility gates
+
+Top pick in the dump was MSOS with score 281 — but `daily_change=21.56%` and `volatility=25.23%`. Round-36's deploy-time gates correctly skip picks like this (`cloud_scheduler.py:2341`), but the screener still ranked them at the top. User saw "top pick" that would never deploy.
+
+Fix: `update_dashboard.py` now annotates each enriched pick with `filter_reasons: []` + `will_deploy: bool`. Picks flagged with `chase_block` (>8% intraday for breakout/PEAD) or `volatility_block` (>20% vol) sort AFTER deployable picks so the "top 5" reflects what the deployer will actually pick up at 9:45 AM. Picks keep full enrichment so the operator can audit the screener's reasoning.
+
+### Fix 4 — Picks include current positions
+
+User's dump had CRDO, FSLY, SOXL, USAR, INTC, HIMS all in both `positions` and `picks`. The deploy path already skips already-held symbols, but the screener output didn't reflect that — confusing UX.
+
+Fix: `get_dashboard_data` (server.py) annotates each pick with `already_held: true` when the caller is currently long (or short) the underlying. OCC options route via `_underlying` so the HIMS short put flags HIMS picks as already-held. Dashboard can dim already-held rows; we annotate rather than drop so the screener output remains auditable.
+
+### Fix 5 — Scorecard displays alarmist 0% win rate on N=2
+
+Scorecard shows `win_rate_pct: 0.0` on `total_trades: 9, closed: 2` — both closes happened to be losers, so 0%. Rendered on the dashboard as "0% win rate / Readiness 40/100" — reads catastrophic when the sample is this tiny.
+
+Fix: `/api/data` now adds `win_rate_sample_size`, `win_rate_reliable`, `win_rate_pct_display` (null when N<5), and a `win_rate_display_note` ("Only 2 closed trades — not enough for a reliable win rate. Keep paper-trading."). Dashboard renders the note instead of the percentage when the sample is insufficient. Raw `win_rate_pct` stays in the payload for downstream analytics.
+
+### Fix 6 — Insider data displays "$0 of insider buying"
+
+Every pick's `insider_data.total_value_usd` was `0` even when `buy_count: 12, buyer_count: 6, has_cluster_buy: true`. SEC EDGAR's full-text search doesn't return transaction dollar amounts — those live in the Form 4 XML which we don't fetch. Displaying `0` next to a 12-filer cluster buy read as "$0 of insider buying" → misleading.
+
+Fix: emit `total_value_usd: null` + `value_parse_status: "not_parsed"` so the UI can render "—" instead of a confidence-eroding "$0". Full Form 4 XML parse deferred (requires per-filing fetch + rate-limit respect); the cluster-buy boolean + filer count still drive the `insider_bonus` score correctly.
+
+### Fix 7 — Un-enriched tail picks clutter `/api/data`
+
+Screener enriches only the top 50 candidates but writes all ~431 passing picks to `dashboard_data.json`. Picks 51+ arrived with `momentum_5d: 0`, `momentum_20d: 0`, `relative_volume: 1.0`, no `technical` block, `recommended_shares: 0`. User saw them as "top picks" in the list.
+
+Fix: `/api/data` filters picks that have none of: a `technical` block, non-zero momentum, or a positive `recommended_shares`. Everything that arrives with real screener signal gets `enriched: True` and renders normally; the default-valued tail is dropped from the response.
+
+### Fix 8 — `earnings_exit` silently failed open on yfinance errors ⚠️ operational
+
+User's INTC position should have auto-closed on 2026-04-22 per round-29 (earnings 2026-04-23, 1-day buffer). But INTC was still open at 7 PM ET. Root cause in `earnings_exit._fetch_next_earnings_from_yfinance`: every failure branch (`ImportError`, shape drift, network error, empty result) returned `None` → `should_exit_for_earnings` fail-opened silently → position held through earnings.
+
+Fix: every failure branch now stamps `_LAST_FETCH_ERR[symbol]` with a distinct reason (`yfinance_not_installed`, `shape_drift:<ErrType>`, `network:<ErrType>`, `empty_result`, `no_future_unreported`). `should_exit_for_earnings` emits a Sentry `capture_message(event="earnings_exit_fetch_failed", …)` breadcrumb when the None return came from a real fetch failure — the legitimate "no upcoming earnings in the next 8 scheduled events" (`no_future_unreported`) stays quiet.
+
+New `force_refresh(symbol)` operator tool busts the 4-hour cache and re-fetches immediately. Admin can now verify the earnings rule for a specific position in-session.
+
+### Tests
+
+13 new cases in `tests/test_round58_json_audit_fixes.py`:
+- Correlation guard grep + integration test (HIMS put → Healthcare)
+- SECTOR_MAP coverage for 14+ newly-added tickers
+- Screener chase/vol/demotion gates
+- `/api/data` `already_held` annotation
+- Win-rate suppression on small sample
+- Insider `total_value_usd: null` + `value_parse_status`
+- Un-enriched pick filter
+- `earnings_exit` LOUD path + error-type tracking + `force_refresh` tool
+
+Full suite: **794 passing, 2 deselected** (sandbox-only deselects). Ruff clean. Dashboard JS `node --check` clean.
+
+### Invariants to preserve post-round-58
+
+- `update_scorecard` correlation guard MUST route through `position_sector.annotate_sector` so OCC option symbols resolve to underlying.
+- `SECTOR_MAP` is the single source of truth. When the screener surfaces a new ticker, add it here — not duplicate in update_dashboard / update_scorecard.
+- Screener-annotated `will_deploy=False` picks MUST sort after `will_deploy=True` picks in `top_candidates` so the "top 5" panel reflects deployability.
+- `/api/data` MUST NOT emit picks with no real screener enrichment. The default-value tail is noise.
+- `earnings_exit` fetch failures MUST emit `capture_message(event="earnings_exit_fetch_failed")`. The rule's silent fail-open cost us an earnings hold in round-58 — don't regress this.
+
+---
+
 ## 🆕 Round-57 — Full tech-stack audit fixes
 
 User asked for a pre-live sweep: "audit front to back the full tech stack to make sure there are no bugs or any logic issues or anything that should be corrected … fix all bugs and issues you're able to fix."
