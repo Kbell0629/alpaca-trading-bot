@@ -688,6 +688,8 @@ Credentials are case-sensitive. If you've forgotten them or they've changed, che
 
 **The bot now calibrates itself to your account size + type automatically.** Whether you open a $500 cash account or a $1M margin account, the bot reads Alpaca's `/v2/account` and configures sensible defaults for strategies, position sizing, fractional shares, PDT rules, and settled-funds constraints.
 
+> 🚀 **Existing users:** On your first scheduler tick after round-51 deploys, the bot auto-adopts your tier's defaults. Your old `guardrails.json` is backed up to `.pre-round51.backup` so you can revert if needed. Check Settings → 🎛️ Calibration to see what tier you're on + what defaults you got.
+
 ### How it detects your tier
 
 Alpaca's `/v2/account` tells the bot exactly what your account is:

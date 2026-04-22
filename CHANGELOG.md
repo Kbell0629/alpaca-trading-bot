@@ -8,6 +8,36 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-51 — Activate calibration for existing users + deep integration
+
+**User ask:** *"can you just enable it for us now"*
+
+Round-51 turns round-50's infrastructure into real trading behavior — existing users get calibrated defaults auto-adopted on first boot after deploy.
+
+**What shipped:**
+
+* **Auto-adoption migration** (`migrate_guardrails_round51`) — detects tier from Alpaca `/account`, merges tier defaults into `guardrails.json`, backs up the old file to `.pre-round51.backup`, stamps `_migrations_applied` for idempotency. Preserves user-customized risk keys (`daily_loss_limit_pct`, `earnings_exit_*`, kill-switch state). Runs at boot via `run_all_migrations`.
+* **Settled-funds gate** in `run_auto_deployer` — cash accounts: blocks deploys that would exceed settled cash × 95% buffer (Good Faith Violation prevention). Margin: pass-through.
+* **Fractional routing** in `run_auto_deployer` — when tier enables fractional + symbol is fractionable, uses `fractional.size_position()` and passes `fractional=True` to `smart_orders.place_smart_buy()` → market-only order per Alpaca's fractional-qty constraint.
+* **PDT guard** in `check_profit_ladder` — for margin <$25k accounts, holds intraday profit-take exits overnight when `day_trades_remaining ≤ buffer`. Preserves emergency day-trade slot for kill-switch.
+* **Sell-side ledger** in `record_trade_close` — every long-position sell records proceeds + T+1 settlement date. Next cash-account deploy respects the ledger.
+* **Tier stashed on user dict** in `monitor_strategies` — all exit paths can read `user["_tier_cfg"]` to consult PDT / settled-funds rules.
+
+**Operator impact:**
+
+* **Kbell0629 + Jon (paper)**: first scheduler tick after deploy runs the migration. Activity log shows `migration round51_calibration_adopt: migrated`. Old guardrails backed up; defaults adopted.
+* **Jon's future $500 live account**: Cash Micro tier detected on first live tick; fractional ON, 2 positions × 15%, 3 strategies. Works out of the box.
+* **Revert path**: restore `guardrails.json.pre-round51.backup` if user dislikes the new defaults.
+
+**Safety rails:**
+* Migration "no_tier" outcome when Alpaca /account unavailable → stamp NOT written → retry next boot
+* All calibration hooks fail OPEN (allow trade) on exception — never block money-making on advisory code
+* User overrides always win; migration only fills tier-scoped keys (sizing, fractional, strategies)
+
+**Tests:** 15 new cases in `tests/test_round51_activation.py`. Suite: **710 passed, 1 deselected** (was 697 + 13). Ruff clean.
+
+---
+
 ## 🆕 Round-50 — Portfolio auto-calibration (any account size, Alpaca-rule aware)
 
 **User ask:** *"allow this stock bot to calibrate everything under the hood based on how much money is available... a $500 cash trading account could still use this bot... if someone opened a $1M+ account they could also still use this bot... it wouldn't matter how much they have little or big."*
