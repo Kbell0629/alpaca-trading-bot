@@ -514,24 +514,65 @@ def strategy_file_lock(path):
 
 
 # Interval-based tasks and their expected max gap. If _last_runs shows a
-# gap bigger than 2× these values during market hours, we consider the
-# task stale and fire a one-off push notification.
-# Daily tasks (auto_deployer_{uid}, wheel_deploy_{uid}, daily_close_{uid}
-# etc.) intentionally omitted — "overdue by 2x the daily interval" would
-# mean 2 days, which is not actionable alerting.
+# gap bigger than _STALENESS_MULT × these values during market hours
+# AND the gap has been observed for 2 consecutive checks, we fire a
+# one-off push notification.
+#
+# Round-49: raised multiplier from 2× → 3× + added 2-observation
+# debounce + suppress during 9:30-9:50 ET opening-bell congestion.
+# Previously a single slow Alpaca response during the opening crush
+# could push one tick past 120s and fire a false "scheduler may be
+# stuck" alert (user reported this happened at 9:34 AM, 128s behind).
+# The scheduler wasn't stuck — Alpaca was just slow — and the next
+# tick caught up on its own.
+#
+# Daily tasks (auto_deployer_{uid}, wheel_deploy_{uid}, daily_close_{uid})
+# omitted — "overdue by 2x the daily interval" = 2 days, not actionable.
 _STALENESS_INTERVALS_SEC = {
-    "monitor":        60,       # 2x → alert if > 2 min
-    "wheel_monitor":  15 * 60,  # 2x → alert if > 30 min
-    "screener":       30 * 60,  # 2x → alert if > 60 min
+    "monitor":        60,       # 3x → alert if > 3 min (was 2 min)
+    "wheel_monitor":  15 * 60,  # 3x → alert if > 45 min (was 30 min)
+    "screener":       30 * 60,  # 3x → alert if > 90 min (was 60 min)
 }
+_STALENESS_MULT = 3
+# Debounce: key → count of consecutive overdue observations.
+# Only alert on the 2nd overdue pass (transient bumps don't fire).
+_staleness_overdue_count: dict = {}
+# Opening-bell congestion window — Alpaca /quotes + /positions latency
+# routinely spikes here, so per-user monitor ticks legitimately run
+# slower than the usual 2-5s. Suppress the watchdog during this window;
+# real stalls still get caught after 9:50 when API normalizes.
+_STALENESS_SUPPRESS_START_HHMM = (9, 30)
+_STALENESS_SUPPRESS_END_HHMM = (9, 50)
+
+
+def _within_opening_bell_congestion():
+    """Return True if now ET is in the 9:30-9:50 window where Alpaca
+    API latency routinely spikes and monitor ticks legitimately slow
+    past the staleness threshold."""
+    try:
+        t = now_et()
+        start_h, start_m = _STALENESS_SUPPRESS_START_HHMM
+        end_h, end_m = _STALENESS_SUPPRESS_END_HHMM
+        hm = t.hour * 60 + t.minute
+        return (start_h * 60 + start_m) <= hm < (end_h * 60 + end_m)
+    except Exception:
+        return False
 
 
 def _check_task_staleness(users):
-    """Fire a push notification if any interval-based per-user task hasn't
-    run within 2× its expected window. One alert per (task, user) per
-    hour to avoid spam during extended outages.
+    """Fire a push notification if any interval-based per-user task
+    has been overdue (> 3× its expected window) for TWO consecutive
+    checks. One alert per (task, user) per hour to avoid spam during
+    extended outages.
+
+    Round-49: suppressed entirely during 9:30-9:50 ET opening-bell
+    congestion + requires 2 consecutive overdue observations to filter
+    transient Alpaca API slowdowns.
     """
     now = time.time()
+    # Round-49: skip the whole check during opening-bell congestion
+    if _within_opening_bell_congestion():
+        return
     try:
         for user in users:
             uid = user.get("id")
@@ -541,17 +582,30 @@ def _check_task_staleness(users):
                 key = f"{prefix}_{uid}"
                 last = _last_runs.get(key)
                 if last is None or not isinstance(last, (int, float)):
-                    continue  # never run OR tracked differently (daily keys store date strings)
-                gap = now - last
-                if gap < interval * 2:
+                    _staleness_overdue_count.pop(key, None)
                     continue
-                # Overdue. Check if we recently alerted about this.
+                gap = now - last
+                threshold = interval * _STALENESS_MULT
+                if gap < threshold:
+                    # Task caught up — reset debounce counter
+                    _staleness_overdue_count.pop(key, None)
+                    continue
+                # Overdue. Round-49 debounce: only alert on 2nd
+                # consecutive overdue observation. First overdue pass
+                # just bumps the counter so transient spikes don't
+                # page the user.
+                prev_count = _staleness_overdue_count.get(key, 0)
+                _staleness_overdue_count[key] = prev_count + 1
+                if prev_count < 1:
+                    continue  # first strike — wait for confirmation
+                # Per-hour alert dedup
                 if now - _staleness_last_alert.get(key, 0) < 3600:
                     continue
                 _staleness_last_alert[key] = now
                 msg = (
                     f"Task {prefix} for user {user.get('username','?')} is "
-                    f"{int(gap)}s behind (expected every {interval}s). "
+                    f"{int(gap)}s behind (expected every {interval}s, "
+                    f"{_STALENESS_MULT}x threshold = {threshold}s). "
                     f"Scheduler may be stuck or Alpaca may be failing."
                 )
                 log(msg, "staleness")
