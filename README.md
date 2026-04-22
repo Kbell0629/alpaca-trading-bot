@@ -67,7 +67,7 @@ Click the 📝 PAPER (orange) / 🔴 LIVE (red) badge in the top-left of the hea
 11. [Reading Your Performance — Scorecard & Heatmap](#-reading-your-performance)
 12. [Advanced Features — What Makes This Bot Smart](#-advanced-features)
 13. [When Things Go Wrong — Troubleshooting](#-when-things-go-wrong)
-14. [Going Live — Switching to Real Money](#-going-live--switching-to-real-money)
+14. [Going Live — Dual Mode (Paper + Live in Parallel)](#-going-live--dual-mode-paper--live-in-parallel)
 15. [Glossary — Trading Terms Explained](#-glossary)
 16. [Technical Reference](#-technical-reference)
 
