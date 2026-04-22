@@ -433,3 +433,25 @@ class AdminHandlerMixin:
             return self.send_json({"success": True, "result": result})
         except Exception as e:
             self._send_error_safe(e, 500, "backfill-journal")
+
+    def handle_admin_backfill_wheel_opens(self, body):
+        """Round-43: retroactively recover entry prices for orphan_close
+        wheel entries by walking wheel_*.json history[]. Turns [orphan]
+        entries into proper closes with pnl_pct.
+
+        Body: {} — operates on the caller's journal only. Idempotent.
+        """
+        if not self.current_user or not self.current_user.get("is_admin"):
+            return self.send_json({"error": "Admin only"}, 403)
+        try:
+            import wheel_open_backfill
+            result = wheel_open_backfill.backfill_wheel_opens(self.current_user)
+            auth.log_admin_action(
+                "wheel_open_backfill",
+                actor=self.current_user,
+                target_user_id=self.current_user.get("id"),
+                ip_address=self.client_address[0] if self.client_address else None,
+                detail=result)
+            return self.send_json({"success": True, "result": result})
+        except Exception as e:
+            self._send_error_safe(e, 500, "backfill-wheel-opens")

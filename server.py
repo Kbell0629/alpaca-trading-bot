@@ -2447,6 +2447,12 @@ class DashboardHandler(
             self.handle_admin_backfill_journal(body)
             return
 
+        if path == "/api/admin/backfill-wheel-opens":
+            # Round-43: recover entry price for orphan wheel closes from
+            # wheel state history. Turns [orphan] entries into real closes.
+            self.handle_admin_backfill_wheel_opens(body)
+            return
+
         if path == "/api/refresh":
             self.handle_refresh()
 

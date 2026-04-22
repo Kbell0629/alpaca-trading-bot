@@ -2204,9 +2204,11 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
     <div class="admin-tab-scroll" style="flex:1 1 auto;overflow-y:auto;overflow-x:auto;min-height:0;margin:0 -4px;padding:0 4px">
 
     <div class="settings-panel active" id="adminPanel-users">
-      <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:10px">
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:10px;flex-wrap:wrap">
         <!-- Round-40: backfill the caller's own journal in one click -->
         <button type="button" class="btn-ghost btn-sm" onclick="adminBackfillJournal()" title="Add missing open entries to your trade journal from Alpaca positions">📝 Backfill My Journal</button>
+        <!-- Round-43: fix [orphan] wheel closes by recovering entry price from wheel state history -->
+        <button type="button" class="btn-ghost btn-sm" onclick="adminBackfillWheelOpens()" title="Recover entry prices for [orphan] wheel closes (pre-round-33 deploys)">🎡 Fix Orphan Wheel Closes</button>
       </div>
       <div id="adminUserList" style="margin-top:4px"><div style="color:var(--text-dim)">Loading...</div></div>
     </div>
@@ -7403,6 +7405,31 @@ async function adminBackfillJournal() {
         var r = d.result || {};
         toast("Backfill: +" + (r.backfilled||0) + " entries, " +
               (r.skipped_existing||0) + " already present", "success");
+    } catch (e) { toast(e.message, "error"); }
+}
+
+// Round-43: recover entry prices for [orphan] wheel closes by walking
+// wheel state history. Turns orphaned closes into proper entries with
+// pnl_pct. Idempotent — safe to re-run.
+async function adminBackfillWheelOpens() {
+    if (!confirm(
+        "Backfill wheel opens from state history?\n\n" +
+        "Walks wheel_*.json history[] and pairs each orphan [orphan] " +
+        "close in the trade journal with its original entry price. " +
+        "Fixes missing pnl_pct on pre-round-33 wheel closes. " +
+        "Safe + idempotent.")) return;
+    try {
+        var resp = await fetch(API_BASE + "/api/admin/backfill-wheel-opens", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            credentials: "same-origin",
+            body: JSON.stringify({}),
+        });
+        var d = await resp.json();
+        if (!resp.ok || d.error) { toast(d.error || "Failed", "error"); return; }
+        var r = d.result || {};
+        toast("Wheel backfill: patched " + (r.patched||0) + ", " +
+              "no-match " + (r.skipped_no_match||0), "success");
     } catch (e) { toast(e.message, "error"); }
 }
 

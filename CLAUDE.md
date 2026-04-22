@@ -930,15 +930,39 @@ Ruff clean on touched files.
 
 ---
 
-## Last session state (2026-04-22 evening — END OF SESSION, after round-42 wheel-close journaling)
+## Last session state (2026-04-22 late evening — END OF SESSION, after round-43 orphan-wheel-close backfill)
 
-**79 PRs merged + round-42 in flight.** Paper-trading 30-day
+**80 PRs merged + round-43 in flight.** Paper-trading 30-day
 validation window ongoing (started 2026-04-15, ends ~2026-05-15).
 
-**Current `main` HEAD:** `c878929` (PR #79 round-41 full tech-stack
-audit — merged during this session). Round-42 branch
-`claude/round42-wheel-close-journaling` — awaiting manual PR merge
+**Current `main` HEAD:** `4a9b2cb` (PR #81 round-42 wheel close
+journaling — merged during this session). Round-43 branch
+`claude/round43-wheel-open-backfill` — awaiting manual PR merge
 via web UI (GitHub MCP still disconnected).
+
+### Round-43 (this round, follow-on to round-42)
+
+**Motivating:** After round-42 shipped + user hit Force Deploy,
+CHWY's stop-out journaled — but flagged `[orphan]` because the
+original sell-to-open predated round-33's wheel-open journaling.
+P&L dollar was right, pnl_pct was blank.
+
+**What shipped:**
+* `wheel_open_backfill.py` — walks wheel state `history[]` for
+  `sell_to_open_*` / `*_filled` events, builds OCC→entry-price
+  map (fill price wins over limit), patches any matching
+  `orphan_close: true` + `strategy=="wheel"` entries in the
+  journal with the real entry price + recomputes pnl_pct + clears
+  the orphan flag + stamps `open_backfilled: true`.
+* `/api/admin/backfill-wheel-opens` endpoint + "🎡 Fix Orphan
+  Wheel Closes" button in the admin Manage Users panel.
+* Idempotent, conservative (only touches wheel orphans), logged
+  to admin audit trail.
+* 7 tests in `tests/test_round43_wheel_open_backfill.py`.
+
+**Operator action for user:** log in, open admin panel → Manage
+Users tab → click "🎡 Fix Orphan Wheel Closes". CHWY's `[orphan]`
+tag goes away, pnl_pct shows up.
 
 ### Round-42 (this round) — wheel closes now journal properly
 
@@ -976,9 +1000,9 @@ Today's Closes + Closed Positions within ~30 minutes of the deploy.
   2. Generate dedicated live Alpaca keys.
   3. Flip Settings → 🔴 Live Trading.
 
-**Test suite:** **609 passing** locally (603 post-41 baseline + 6
-round-42 wheel close journaling) minus the two documented sandbox-
-only failures. Ruff clean. Coverage floor 20% (measured ~29%).
+**Test suite:** **616 passing** locally (609 post-42 baseline + 7
+round-43 backfill tests) minus the two documented sandbox-only
+failures. Ruff clean. Coverage floor 20% (measured ~29%).
 
 ### Round-40 (PR #78, merged) — deferred items + GDPR
 
@@ -1070,7 +1094,7 @@ XSS-escape assertion, backfill functional contract).
    (PR #78 round-40). Round-41 branch is
    `claude/round41-full-audit` at `7f790c4` — if not yet merged,
    open https://github.com/Kbell0629/alpaca-trading-bot/pull/new/claude/round41-full-audit
-2. `MASTER_ENCRYPTION_KEY=<64hex> python3 -m pytest tests/ --ignore=tests/test_dashboard_data.py -q` — expect **609 passing**.
+2. `MASTER_ENCRYPTION_KEY=<64hex> python3 -m pytest tests/ --ignore=tests/test_dashboard_data.py -q` — expect **616 passing**.
    (If you drop `--ignore=tests/test_auth.py` the sandbox without
    zxcvbn will fail 1 test — expected, see "known test quirks".)
 3. `ruff check .` — clean on current main + round-41 branch.

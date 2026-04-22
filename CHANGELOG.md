@@ -8,6 +8,55 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-43 — Retroactive entry-price recovery for orphan wheel closes (2026-04-22)
+
+**Motivating case (follow-on to round-42):** After round-42 shipped,
+CHWY's stop-out did land in Today's Closes — but tagged `[orphan]`
+because the original sell-to-open was never journaled (pre-round-33
+gap). Dollar P&L was correct, but pnl_pct was blank.
+
+**Root cause:** wheel positions deployed before round-33 ran through
+`open_short_put` which updated the wheel state file's `history[]`
+but didn't call `record_trade_open`. When one of those eventually
+closes, the round-34 orphan-close safety net writes a synthetic
+closed entry flagged `orphan_close: true`. The entry premium still
+exists — just in the wheel state history, not in the trade journal.
+
+**What shipped:**
+
+* **`wheel_open_backfill.py`** — scans every wheel state file's
+  `history[]` for `sell_to_open_*` and `*_filled` events, builds
+  an OCC-symbol → entry-price map (fill price wins over limit
+  price when both present), then walks the trade journal for any
+  `orphan_close: true` + `strategy == "wheel"` entries and
+  retroactively sets `price`, computes `pnl_pct` (short-cover
+  math: `(entry/exit - 1) * 100`), removes the orphan flag, and
+  stamps `open_backfilled: true` for audit.
+* **Admin endpoint `/api/admin/backfill-wheel-opens`** — POST,
+  admin-only, operates on caller's own journal. Logs to admin
+  audit trail.
+* **Dashboard button** — "🎡 Fix Orphan Wheel Closes" in the admin
+  panel next to "📝 Backfill My Journal".
+* **Idempotent** — safe to re-run; once an entry is patched the
+  `orphan_close` flag is gone so a second pass skips it.
+* **Conservative** — only touches entries where
+  `orphan_close: true` AND `strategy == "wheel"`. Legit paired
+  closes and non-wheel orphans are left alone.
+
+**Operator impact:** Click "🎡 Fix Orphan Wheel Closes" in the
+admin Manage Users panel → CHWY's `[orphan]` tag disappears,
+pnl_pct fills in (~-40% for CHWY at entry 0.25 / exit 0.35),
+scorecard win-rate math now uses the correct entry.
+
+**Tests:** 7 cases in `tests/test_round43_wheel_open_backfill.py`
+— happy path (fill price wins), limit-price fallback, idempotency,
+no-match skip, no-wheel-files skip, non-orphan preservation,
+non-wheel-strategy preservation. Suite: **616 passing**
+(609 baseline + 7 new). Ruff clean. Node `--check` clean on
+dashboard JS.
+
+---
+
 ## 🆕 Round-42 — Wheel close journaling (2026-04-22)
 
 **Motivating case:** CHWY short-put stopped out at $0.35 on Tuesday.
