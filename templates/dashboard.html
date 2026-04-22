@@ -594,9 +594,16 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
     /* Round-12 audit fix: previous `min-width: 420px` forced horizontal
        overflow on iPhone SE (375px viewport). Use a responsive width
        ceiling so the modal fits on every phone size without the
-       `100vw !important` override war with the 600px media query. */
-    width: min(420px, calc(100vw - 24px));
-    max-width: 500px;
+       `100vw !important` override war with the 600px media query.
+
+       Round-53 fix: use a CSS custom property (--modal-w) so individual
+       modals can widen on desktop by setting `style="--modal-w: 680px"`.
+       Default 500px. Mobile auto-clamps via `calc(100vw - 24px)`.
+       Previously the base `width: min(420px, ...)` ignored inline
+       max-width, so the Settings modal (which wants 680px) stayed
+       narrow on desktop. */
+    width: min(var(--modal-w, 500px), calc(100vw - 24px));
+    max-width: calc(100vw - 24px);
     /* Round-41 fix: cap height + scroll internally so tall modals
        (Close Position with P&L detail box, Settings with multi-row
        Danger Zone, Cancel Order with explanation panel) don't push
@@ -1854,7 +1861,7 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
 
 <!-- Close Position Modal (Enhanced with P&L) -->
 <div class="modal-overlay" id="closeModal">
-  <div class="modal" style="max-width:500px">
+  <div class="modal" style="--modal-w:500px;max-width:500px">
     <h2 id="closeModalTitle">Close Position</h2>
     <div class="modal-subtitle" id="closeModalSubtitle">Are you sure you want to close this position?</div>
     <div id="closeModalDetails" style="background:var(--bg);border-radius:8px;padding:14px;margin:12px 0;font-size:13px;"></div>
@@ -1871,7 +1878,7 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
 
 <!-- Cancel Order Modal (Enhanced with explanation) -->
 <div class="modal-overlay" id="cancelOrderModal">
-  <div class="modal" style="max-width:500px">
+  <div class="modal" style="--modal-w:500px;max-width:500px">
     <h2>Cancel Order</h2>
     <div class="modal-subtitle" id="cancelOrderSubtitle">Review this order before cancelling</div>
     <div id="cancelOrderDetails" style="background:var(--bg);border-radius:8px;padding:14px;margin:12px 0;font-size:13px;"></div>
@@ -1888,7 +1895,7 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
 
 <!-- Sell Half Modal (New) -->
 <div class="modal-overlay" id="sellHalfModal">
-  <div class="modal" style="max-width:500px">
+  <div class="modal" style="--modal-w:500px;max-width:500px">
     <h2 id="sellHalfTitle">Sell Half Position</h2>
     <div class="modal-subtitle" id="sellHalfSubtitle"></div>
     <div id="sellHalfDetails" style="background:var(--bg);border-radius:8px;padding:14px;margin:12px 0;font-size:13px;"></div>
@@ -1905,7 +1912,7 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
 
 <!-- Auto-Deployer Confirmation Modal -->
 <div class="modal-overlay" id="autoDeployerModal">
-  <div class="modal" style="max-width:500px">
+  <div class="modal" style="--modal-w:500px;max-width:500px">
     <h2 id="autoDeployerModalTitle">Enable Auto-Deployer</h2>
     <div class="modal-subtitle" id="autoDeployerModalSubtitle"></div>
     <div class="modal-info-box" id="autoDeployerInfoBox">
@@ -1944,7 +1951,7 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
      README. "Open Full Guide" button dives into the README for more
      context. -->
 <div class="modal-overlay" id="sectionGuideModal">
-  <div class="modal" style="max-width:640px">
+  <div class="modal" style="--modal-w:640px;max-width:640px">
     <h2 style="display:flex;justify-content:space-between;align-items:center">
       <span id="sectionGuideTitle">Section Guide</span>
       <button class="modal-close" aria-label="Close" onclick="closeModal('sectionGuideModal')">✕</button>
@@ -1958,7 +1965,7 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
 </div>
 
 <div class="modal-overlay" id="killSwitchModal">
-  <div class="modal" style="max-width:540px">
+  <div class="modal" style="--modal-w:540px;max-width:540px">
     <h2 style="color:var(--red)">EMERGENCY KILL SWITCH</h2>
     <div class="modal-subtitle">This will immediately:</div>
     <div class="modal-info-box warning" style="border-color:rgba(239,68,68,0.3);background:rgba(239,68,68,0.08)">
@@ -1981,7 +1988,7 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
 
 <!-- Kill Switch Results Modal -->
 <div class="modal-overlay" id="killSwitchResultsModal">
-  <div class="modal" style="max-width:540px">
+  <div class="modal" style="--modal-w:540px;max-width:540px">
     <h2 style="color:var(--red)">Kill Switch Activated</h2>
     <div class="modal-subtitle">Here is what happened:</div>
     <div id="killSwitchResults" style="background:var(--bg);border-radius:8px;padding:14px;margin:12px 0;font-size:13px;"></div>
@@ -1993,7 +2000,7 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
 
 <!-- ===== SETTINGS MODAL ===== -->
 <div class="modal-overlay" id="settingsModal">
-  <div class="modal" style="max-width:680px">
+  <div class="modal" style="--modal-w:680px;max-width:680px">
     <h2>⚙️ Account Settings</h2>
     <div class="modal-subtitle" id="settingsSubtitle">Manage your profile, Alpaca credentials, and notifications</div>
 
@@ -2336,7 +2343,7 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
      friendly error string if the username/email is taken or
      malformed. -->
 <div class="modal-overlay" id="adminEditUserModal">
-  <div class="modal" style="max-width:440px">
+  <div class="modal" style="--modal-w:440px;max-width:440px">
     <h2>✏️ Edit User</h2>
     <div class="modal-subtitle">Change username or email. The user keeps their password, API keys, strategies, and trade history.</div>
     <input type="hidden" id="adminEditUserId" />
@@ -2723,6 +2730,13 @@ function scrollToSection(id) {
         document.querySelectorAll('.nav-tab').forEach(function(t) {
             if (t.getAttribute('onclick') && t.getAttribute('onclick').indexOf(id) >= 0) t.classList.add('active');
         });
+        // Round-53 fix: remember which section the user navigated to so
+        // the nav-bar rebuild in renderDashboard() (fires every 10s via
+        // auto-refresh) restores the correct highlight instead of
+        // resetting to Overview. Before this, user would click Positions,
+        // scroll there, and see the tab highlight jump back to Overview
+        // on the next refresh tick.
+        window._activeNavSection = id;
     }
 }
 
@@ -6026,20 +6040,29 @@ function renderDashboard() {
     }
 
     // Navigation tabs
+    // Round-53 fix: respect which section the user previously navigated
+    // to (stashed on window._activeNavSection by scrollToSection()).
+    // Auto-refresh rebuilds this HTML every 10s — without this, the
+    // user's tab highlight gets lost back to Overview.
+    var _activeNav = window._activeNavSection || 'section-overview';
+    var _navBtn = function(sectionId, label) {
+        var activeClass = sectionId === _activeNav ? ' active' : '';
+        return '<button class="nav-tab' + activeClass + '" onclick="scrollToSection(\'' + sectionId + '\')">' + label + '</button>';
+    };
     const navTabs = '<div class="nav-tabs-wrap"><div class="nav-tabs">' +
-        '<button class="nav-tab active" onclick="scrollToSection(\'section-overview\')">Overview</button>' +
-        '<button class="nav-tab" onclick="scrollToSection(\'section-picks\')">Picks</button>' +
-        '<button class="nav-tab" onclick="scrollToSection(\'section-strategies\')">Strategies</button>' +
-        '<button class="nav-tab" onclick="scrollToSection(\'section-positions\')">Positions</button>' +
-        '<button class="nav-tab" onclick="scrollToSection(\'section-screener\')">Screener</button>' +
-        (shortCands.length > 0 ? '<button class="nav-tab" onclick="scrollToSection(\'section-shorts\')">Short Sells</button>' : '') +
-        (losers.length > 0 ? '<button class="nav-tab" onclick="scrollToSection(\'section-tax\')">Tax Harvest</button>' : '') +
-        '<button class="nav-tab" onclick="scrollToSection(\'section-backtest\')">Backtest</button>' +
-        '<button class="nav-tab" onclick="scrollToSection(\'section-readiness\')">Readiness</button>' +
-        '<button class="nav-tab" onclick="scrollToSection(\'section-scheduler\')">Scheduler</button>' +
-        '<button class="nav-tab" onclick="scrollToSection(\'section-heatmap\')">Heatmap</button>' +
-        '<button class="nav-tab" onclick="scrollToSection(\'section-comparison\')">Paper vs Live</button>' +
-        '<button class="nav-tab" onclick="scrollToSection(\'section-settings\')">Templates</button>' +
+        _navBtn('section-overview', 'Overview') +
+        _navBtn('section-picks', 'Picks') +
+        _navBtn('section-strategies', 'Strategies') +
+        _navBtn('section-positions', 'Positions') +
+        _navBtn('section-screener', 'Screener') +
+        (shortCands.length > 0 ? _navBtn('section-shorts', 'Short Sells') : '') +
+        (losers.length > 0 ? _navBtn('section-tax', 'Tax Harvest') : '') +
+        _navBtn('section-backtest', 'Backtest') +
+        _navBtn('section-readiness', 'Readiness') +
+        _navBtn('section-scheduler', 'Scheduler') +
+        _navBtn('section-heatmap', 'Heatmap') +
+        _navBtn('section-comparison', 'Paper vs Live') +
+        _navBtn('section-settings', 'Templates') +
         '<button class="nav-tab" onclick="openSettingsModal()">\u2699\ufe0f Account</button>' +
     '</div></div>';
 
@@ -6733,7 +6756,7 @@ function openSectionToggleModal() {
     var existing = document.getElementById('sectionToggleModal');
     if (existing) { existing.remove(); }
     var html = '<div class="modal-overlay active" id="sectionToggleModal" onclick="if(event.target===this)closeModal(\'sectionToggleModal\')">' +
-        '<div class="modal" style="max-width:420px">' +
+        '<div class="modal" style="--modal-w:420px;max-width:420px">' +
             '<h2>Customize Dashboard</h2>' +
             '<p style="font-size:13px;color:var(--text-dim);margin-bottom:14px">Hide sections you don\'t use. Preferences save to this browser.</p>' +
             '<div id="sectionToggleMenu"></div>' +
