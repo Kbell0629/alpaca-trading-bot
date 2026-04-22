@@ -690,6 +690,23 @@ Credentials are case-sensitive. If you've forgotten them or they've changed, che
 
 > 🚀 **Existing users:** On your first scheduler tick after round-51 deploys, the bot auto-adopts your tier's defaults. Your old `guardrails.json` is backed up to `.pre-round51.backup` so you can revert if needed. Check Settings → 🎛️ Calibration to see what tier you're on + what defaults you got.
 
+### Auto-migration (existing users)
+
+When the bot first boots after round-51, it runs `migrate_guardrails_round51()` for every user, once:
+
+1. **Detects tier** from your current Alpaca `/v2/account` response.
+2. **Backs up your old `guardrails.json`** to `guardrails.json.pre-round51.backup` in your data dir (one-time — won't overwrite existing backups).
+3. **Adopts the tier's defaults** for sizing / fractional / strategies (but preserves your custom risk keys like `daily_loss_limit_pct`, `earnings_exit_days_before`, `kill_switch_reason`).
+4. **Stamps the migration** in `_migrations_applied` so subsequent boots skip it.
+
+**If anything fails mid-migration** (e.g., Alpaca times out, disk full), the migration rolls back cleanly — stamp isn't written, backup is removed if it was created this call, next boot retries. You can't end up in a half-migrated state.
+
+**To revert** to your pre-round-51 settings: copy the backup over the live file:
+```
+cp users/<your_id>/guardrails.json.pre-round51.backup users/<your_id>/guardrails.json
+```
+…then delete `_migrations_applied` entry for `round51_calibration_adopted` if you want the migration to run again on next boot. (Or just leave it — your manual settings will stick going forward.)
+
 ### How it detects your tier
 
 Alpaca's `/v2/account` tells the bot exactly what your account is:

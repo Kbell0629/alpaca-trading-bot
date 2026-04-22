@@ -930,7 +930,75 @@ Ruff clean on touched files.
 
 ---
 
-## Last session state (2026-04-23 — END OF SESSION, after round-51 activation)
+## Last session state (2026-04-23 — END OF SESSION, after round-52 audit fixes)
+
+**Round-52 (this round) — full tech-stack audit + 11 fixes**
+
+User merged rounds 50 + 51 and asked for a comprehensive audit: "do a
+full tech stack audit front to back and make sure you haven't missed
+anything or there are no bugs. please fix everything you find no matter
+how big or small to 100% clean it up."
+
+Ran 5 parallel Explore agents (security, concurrency, trading-logic,
+UI, ops/tests). Surfaced 11 real bugs + 8 false positives (verified
+each claim against actual code before fixing).
+
+**All 11 fixed + tested:**
+
+| # | Sev | File | Fix |
+|---|---|---|---|
+| 1 | CRITICAL | cloud_scheduler.py:2611 | Added `TIER_CFG.short_enabled` gate before short-sell block |
+| 2 | HIGH | fractional/pdt_tracker/settled_funds.py | Added `_file_lock` helper; wrapped RMW in each module |
+| 3 | HIGH | migrations.py | Backup rollback on main-write failure |
+| 4 | HIGH | fractional/settled_funds | `observability.capture_exception` on IO/API errors |
+| 5 | HIGH | tests | Added /api/calibration + migration edge cases |
+| 6 | MEDIUM | fractional.py | Sub-$1 target → whole-share fallback if 1 share affordable |
+| 7 | MEDIUM | cloud_scheduler.py:1922 | Log tier only on state change (720 logs/day → ~1/day/user) |
+| 8 | MEDIUM | README.md | Added Auto-Migration section |
+| 9 | LOW | fractional/settled_funds | Removed `/tmp` fallback — raise if `_data_dir` missing |
+| 10 | MINOR | dashboard.html | Recalibrate button debounce |
+| 11 | MINOR | new modules | Kept broad except for best-effort paths; added Sentry (real fix) |
+
+**16 new tests** in `test_round52_audit_fixes.py`. Highlights:
+* 20-thread concurrent-write race tests for `settled_funds.record_sale`
+  + `pdt_tracker.log_day_trade` (would have lost entries pre-round-52)
+* Migration rollback test (simulates main-write failure, verifies
+  backup is removed so next boot retries)
+* Fractional sub-$1 fallback test
+* API calibration endpoint + auth-gate position grep
+
+**Suite: 728 passed, 1 deselected.** Ruff clean. Node --check clean.
+
+**Invariants to preserve post-round-52:**
+* `fractional._cache_path`, `settled_funds._ledger_path` MUST raise
+  ValueError on missing `_data_dir`. The /tmp fallback is gone — a
+  programming bug elsewhere should not silently cross-contaminate
+  users.
+* All 3 new modules' RMW paths MUST go through their module-local
+  `_file_lock(path)` helper. Direct `open()+write()` on the ledger
+  files bypasses the serialization guarantee.
+* `migrate_guardrails_round51` MUST track whether the backup was
+  created in this call (the `backup_created_this_call` flag). Never
+  delete a backup created in a prior call.
+* Short-sell block in `run_auto_deployer` MUST check
+  `TIER_CFG.short_enabled` BEFORE consulting user config. Cash
+  accounts can't override this.
+* Tier log dedup via `_last_runs` — only log calibration on state
+  change. Don't re-spam the activity log.
+
+**False positives verified (intentionally NOT fixed):**
+* Options proceeds: wheel closes use `side="buy"`, correctly skip ledger
+* Tier boundaries: no gaps or overlaps
+* Tier-stash race: single-threaded scheduler per user
+* Mode isolation: correct `_data_dir` scoping
+* Atomic writes: all use tempfile+rename
+* Ledger pruning: correct `settles_on` cutoff (not `sold_on`)
+* XSS: `loadCalibration` escapes all user strings
+* JS syntax: node --check passes
+
+---
+
+## Prior session state (2026-04-23 — END OF SESSION, after round-51 activation)
 
 **Rounds 48, 49, 50, 51 all shipped this session.** Round-51 is the
 activation layer that turns round-50's modules into real behavior

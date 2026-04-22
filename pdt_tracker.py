@@ -25,8 +25,37 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import contextmanager
 from datetime import date, timedelta
 from typing import Optional
+
+try:
+    import fcntl as _fcntl
+    _HAS_FLOCK = True
+except ImportError:
+    _HAS_FLOCK = False
+
+
+@contextmanager
+def _file_lock(path):
+    """Round-52: serialize RMW on pdt_day_trades.json so concurrent
+    scheduler ticks (paper + live) can't lose log entries."""
+    if not _HAS_FLOCK:
+        yield
+        return
+    lock_path = path + ".lock"
+    fh = None
+    try:
+        os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+        fh = open(lock_path, "w")
+        _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX)
+        yield
+    finally:
+        if fh is not None:
+            try: _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN)
+            except OSError: pass
+            try: fh.close()
+            except OSError: pass
 
 PDT_LOG_FILENAME = "pdt_day_trades.json"
 # Alpaca's rolling window is 5 BUSINESS days. We approximate with 7
@@ -98,29 +127,33 @@ def log_day_trade(user: dict, symbol: str, strategy: str = "") -> None:
             return
         path = os.path.join(data_dir, PDT_LOG_FILENAME)
         from et_time import now_et
-        log = []
-        if os.path.exists(path):
-            try:
-                with open(path) as f:
-                    log = json.load(f)
-            except (OSError, ValueError):
-                log = []
-        if not isinstance(log, list):
+        # Round-52: lock-wrap the RMW so concurrent log_day_trade calls
+        # (e.g., from paper + live scheduler ticks on the same user)
+        # can't drop entries via lost-update.
+        with _file_lock(path):
             log = []
-        # Prune entries older than retention window
-        cutoff = (date.today() - timedelta(days=LOG_RETENTION_DAYS)).isoformat()
-        log = [e for e in log
-               if isinstance(e, dict) and (e.get("date") or "") >= cutoff]
-        log.append({
-            "date": date.today().isoformat(),
-            "ts": now_et().isoformat(),
-            "symbol": (symbol or "").upper(),
-            "strategy": strategy,
-        })
-        tmp = path + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(log, f, indent=2)
-        os.rename(tmp, path)
+            if os.path.exists(path):
+                try:
+                    with open(path) as f:
+                        log = json.load(f)
+                except (OSError, ValueError):
+                    log = []
+            if not isinstance(log, list):
+                log = []
+            # Prune entries older than retention window
+            cutoff = (date.today() - timedelta(days=LOG_RETENTION_DAYS)).isoformat()
+            log = [e for e in log
+                   if isinstance(e, dict) and (e.get("date") or "") >= cutoff]
+            log.append({
+                "date": date.today().isoformat(),
+                "ts": now_et().isoformat(),
+                "symbol": (symbol or "").upper(),
+                "strategy": strategy,
+            })
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(log, f, indent=2)
+            os.rename(tmp, path)
     except Exception:
         pass  # never block a trade on a logging failure
 

@@ -30,8 +30,39 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from typing import Optional
+
+try:
+    import fcntl as _fcntl
+    _HAS_FLOCK = True
+except ImportError:
+    _HAS_FLOCK = False
+
+
+@contextmanager
+def _file_lock(path):
+    """Round-52: serialize RMW on the settled-funds ledger so
+    concurrent record_sale / can_deploy / _save_ledger calls from
+    multiple scheduler threads can't lose entries via lost-update.
+    Critical for cash-account GFV prevention."""
+    if not _HAS_FLOCK:
+        yield
+        return
+    lock_path = path + ".lock"
+    fh = None
+    try:
+        os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+        fh = open(lock_path, "w")
+        _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX)
+        yield
+    finally:
+        if fh is not None:
+            try: _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN)
+            except OSError: pass
+            try: fh.close()
+            except OSError: pass
 
 LEDGER_FILENAME = "settled_funds_ledger.json"
 # T+1 settlement (changed from T+2 in 2024). Keep as constant so we can
@@ -45,10 +76,17 @@ SETTLED_CASH_BUFFER = 0.95
 
 
 def _ledger_path(user: dict) -> str:
+    """Round-52: removed /tmp fallback. user dict without _data_dir is
+    a programming error; raise so the caller catches the bug immediately
+    instead of silently routing cash-account ledgers to a shared /tmp
+    location (cross-user collision + Good Faith Violation risk).
+    """
     data_dir = user.get("_data_dir")
     if not data_dir:
-        import tempfile
-        data_dir = tempfile.gettempdir()
+        raise ValueError(
+            "settled_funds._ledger_path: user dict missing '_data_dir'. "
+            "This is required for per-user ledger isolation."
+        )
     return os.path.join(data_dir, LEDGER_FILENAME)
 
 
@@ -97,7 +135,13 @@ def _save_ledger(user: dict, ledger: list) -> None:
 def record_sale(user: dict, symbol: str, proceeds: float,
                  sold_on: Optional[date] = None) -> None:
     """Record a sale — proceeds are unsettled until T+1. Best-effort;
-    never raises. If proceeds <= 0 or the inputs are malformed, skip."""
+    never raises. If proceeds <= 0 or the inputs are malformed, skip.
+
+    Round-52: load + append + save is now wrapped in a file lock so
+    concurrent record_sale calls (from paper + live scheduler threads
+    on the same user) can't silently drop entries via lost-update.
+    Errors route through observability.capture_exception for Sentry.
+    """
     try:
         if proceeds is None or float(proceeds) <= 0:
             return
@@ -105,17 +149,24 @@ def record_sale(user: dict, symbol: str, proceeds: float,
         return
     sold_on = sold_on or date.today()
     settles_on = _next_business_day(sold_on, SETTLEMENT_DAYS)
+    path = _ledger_path(user)
     try:
-        ledger = _load_ledger(user)
-        ledger.append({
-            "sold_on": sold_on.isoformat(),
-            "settles_on": settles_on.isoformat(),
-            "symbol": (symbol or "").upper(),
-            "amount": round(float(proceeds), 2),
-        })
-        _save_ledger(user, ledger)
-    except Exception:
-        pass
+        with _file_lock(path):
+            ledger = _load_ledger(user)
+            ledger.append({
+                "sold_on": sold_on.isoformat(),
+                "settles_on": settles_on.isoformat(),
+                "symbol": (symbol or "").upper(),
+                "amount": round(float(proceeds), 2),
+            })
+            _save_ledger(user, ledger)
+    except Exception as _e:
+        try:
+            from observability import capture_exception
+            capture_exception(_e, component="settled_funds.record_sale",
+                                symbol=symbol, proceeds=proceeds)
+        except Exception:
+            pass
 
 
 def unsettled_cash(user: dict, as_of: Optional[date] = None) -> float:

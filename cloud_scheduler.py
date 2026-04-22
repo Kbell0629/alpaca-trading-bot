@@ -1919,10 +1919,21 @@ def run_auto_deployer(user):
             _tier = pc.detect_tier(_acct)
             if _tier:
                 TIER_CFG = pc.apply_user_overrides(_tier, guardrails)
-                log(f"[{user['username']}] Calibrated tier: "
-                    f"{TIER_CFG.get('display')} — equity ${TIER_CFG.get('_detected_equity', 0):.0f} "
-                    f"(strategies: {','.join(TIER_CFG.get('strategies_enabled', []))})",
-                    "deployer")
+                # Round-52: only log on state change. Deployer runs
+                # 1x/day per user in normal op but Force Deploy +
+                # retries can fire more often. Spamming "Calibrated
+                # tier: Cash Standard..." every tick at DEBUG level
+                # is pure noise — only log when the tier name
+                # actually differs from the last-seen value.
+                _tier_key = f"tier_last_{user.get('id')}:{user.get('_mode', 'paper')}"
+                _last_tier = _last_runs.get(_tier_key)
+                _current_tier_str = TIER_CFG.get("name", "?")
+                if _last_tier != _current_tier_str:
+                    log(f"[{user['username']}] Calibrated tier: "
+                        f"{TIER_CFG.get('display')} — equity ${TIER_CFG.get('_detected_equity', 0):.0f} "
+                        f"(strategies: {','.join(TIER_CFG.get('strategies_enabled', []))})",
+                        "deployer")
+                    _last_runs[_tier_key] = _current_tier_str
             else:
                 log(f"[{user['username']}] Equity too small to auto-calibrate "
                     f"(need ≥ $500). Falling back to config defaults.",
@@ -2609,6 +2620,19 @@ def run_auto_deployer(user):
 
     # Short selling if bear market
     short_config = config.get("short_selling", {})
+    # Round-52 CRITICAL fix: gate on calibrated tier's short_enabled too.
+    # Before this, a cash-account user with short_selling.enabled=true in
+    # auto_deployer_config.json could trigger short-sell orders that
+    # Alpaca then rejected server-side (shorts require margin + ≥$2k
+    # equity per Alpaca rule). Wasted deploy slot + noisy errors.
+    # Fail-closed locally: if tier says shorts disabled, skip the block.
+    if TIER_CFG is not None and not TIER_CFG.get("short_enabled", False):
+        if short_config.get("enabled"):
+            log(f"[{user['username']}] Short selling skipped — "
+                f"{TIER_CFG.get('display', 'current tier')} does not permit "
+                "shorts (Alpaca rule: margin account + ≥$2k equity required)",
+                "deployer")
+        short_config = {}  # disable for the rest of this deploy run
     if short_config.get("enabled") and deployed < max_per_day:
         if market_regime == "bear" and spy_mom < short_config.get("require_spy_20d_below", -3):
             # Check existing shorts count
