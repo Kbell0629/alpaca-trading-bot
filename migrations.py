@@ -29,10 +29,19 @@ others (wrapped in try/except at the call site).
 """
 from __future__ import annotations
 
+import contextlib
+import errno
 import json
 import logging
 import os
 import tempfile
+
+# fcntl is POSIX-only. On Windows, the flock helper degrades to a no-op
+# (which matches Windows' single-process Railway constraint anyway).
+try:
+    import fcntl as _fcntl
+except ImportError:
+    _fcntl = None
 
 log = logging.getLogger(__name__)
 
@@ -266,6 +275,62 @@ def migrate_guardrails_round51(guardrails_path, user, account_fetcher):
         return f"error:{type(e).__name__}"
 
 
+@contextlib.contextmanager
+def _user_migration_lock(user_dir):
+    """Round-59: serialise migrations across multiple processes booting
+    against the same per-user data dir. Two Railway containers booting
+    within seconds of each other (rolling deploy) could both race the
+    `_migrations_applied` check and apply the same migration twice. The
+    second pass is mostly idempotent but the round-51 backup flag
+    `backup_created_this_call` could be lost across the race window,
+    risking a rare double-overwrite of guardrails.json.
+
+    flock is POSIX-only — on Windows we degrade to a no-op (Railway's
+    Linux containers always have fcntl, so production is covered).
+    Lock file lives at `<user_dir>/.migrations.lock`. Best-effort: if
+    the lock acquire fails (disk full, perms), we yield anyway rather
+    than blocking boot."""
+    if not _fcntl or not user_dir:
+        yield
+        return
+    try:
+        os.makedirs(user_dir, exist_ok=True)
+    except OSError:
+        yield
+        return
+    lock_path = os.path.join(user_dir, ".migrations.lock")
+    fh = None
+    try:
+        # Open with O_RDWR | O_CREAT — flock needs a writable fd on Linux
+        fh = open(lock_path, "a+")
+        try:
+            _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX)
+        except OSError as e:
+            # EAGAIN means another process holds the lock + we'd block —
+            # shouldn't happen with LOCK_EX (no LOCK_NB), but guard
+            # anyway. Anything else: log + skip locking, don't block boot.
+            if e.errno != errno.EAGAIN:
+                log.warning("migration lock acquire failed: %s", e)
+            yield
+            return
+        try:
+            yield
+        finally:
+            try:
+                _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN)
+            except OSError:
+                pass
+    except OSError as e:
+        log.warning("migration lock setup failed: %s", e)
+        yield
+    finally:
+        if fh is not None:
+            try:
+                fh.close()
+            except OSError:
+                pass
+
+
 def run_all_migrations(users, user_file_fn, account_fetcher=None):
     """Apply every idempotent migration to every user.
 
@@ -276,45 +341,59 @@ def run_all_migrations(users, user_file_fn, account_fetcher=None):
     calibration adoption. Optional — if None, round-51 skips until
     next boot.
 
+    Round-59: each user's migrations run under a per-user flock
+    (`<user_dir>/.migrations.lock`) so concurrent Railway boots don't
+    race the read-check-write cycle.
+
     Returns summary dict {user_id: {migration: action, ...}}."""
     summary = {}
     for u in users or []:
         uid = u.get("id") or u.get("username", "unknown")
         user_result = {}
+        # Resolve user_dir from any per-user file path (they all live
+        # under the same dir). Use guardrails.json since every migration
+        # touches it.
         try:
-            gpath = user_file_fn(u, "guardrails.json")
-            user_result["round20_position_cap"] = migrate_guardrails_round20(gpath)
-        except Exception as e:
-            user_result["round20_position_cap"] = f"error: {type(e).__name__}"
-            log.warning(f"migration round20 failed for {uid}: {e}")
-        try:
-            apath = user_file_fn(u, "auto_deployer_config.json")
-            user_result["round21_breakout_stop"] = (
-                migrate_auto_deployer_config_round21(apath)
-            )
-        except Exception as e:
-            user_result["round21_breakout_stop"] = f"error: {type(e).__name__}"
-            log.warning(f"migration round21 failed for {uid}: {e}")
-        try:
-            gpath29 = user_file_fn(u, "guardrails.json")
-            user_result["round29_earnings_exit"] = (
-                migrate_guardrails_round29(gpath29)
-            )
-        except Exception as e:
-            user_result["round29_earnings_exit"] = f"error: {type(e).__name__}"
-            log.warning(f"migration round29 failed for {uid}: {e}")
-        # Round-51: adopt portfolio-auto-calibration defaults for
-        # existing users. Needs Alpaca /account to know tier. Only
-        # runs if account_fetcher is provided and returns a valid
-        # account (equity ≥ $500).
-        if account_fetcher is not None:
+            _gpath = user_file_fn(u, "guardrails.json")
+            _user_dir = os.path.dirname(_gpath) if _gpath else None
+        except Exception:
+            _user_dir = None
+
+        with _user_migration_lock(_user_dir):
             try:
-                gpath51 = user_file_fn(u, "guardrails.json")
-                user_result["round51_calibration_adopt"] = (
-                    migrate_guardrails_round51(gpath51, u, account_fetcher)
+                gpath = user_file_fn(u, "guardrails.json")
+                user_result["round20_position_cap"] = migrate_guardrails_round20(gpath)
+            except Exception as e:
+                user_result["round20_position_cap"] = f"error: {type(e).__name__}"
+                log.warning(f"migration round20 failed for {uid}: {e}")
+            try:
+                apath = user_file_fn(u, "auto_deployer_config.json")
+                user_result["round21_breakout_stop"] = (
+                    migrate_auto_deployer_config_round21(apath)
                 )
             except Exception as e:
-                user_result["round51_calibration_adopt"] = f"error: {type(e).__name__}"
-                log.warning(f"migration round51 failed for {uid}: {e}")
+                user_result["round21_breakout_stop"] = f"error: {type(e).__name__}"
+                log.warning(f"migration round21 failed for {uid}: {e}")
+            try:
+                gpath29 = user_file_fn(u, "guardrails.json")
+                user_result["round29_earnings_exit"] = (
+                    migrate_guardrails_round29(gpath29)
+                )
+            except Exception as e:
+                user_result["round29_earnings_exit"] = f"error: {type(e).__name__}"
+                log.warning(f"migration round29 failed for {uid}: {e}")
+            # Round-51: adopt portfolio-auto-calibration defaults for
+            # existing users. Needs Alpaca /account to know tier. Only
+            # runs if account_fetcher is provided and returns a valid
+            # account (equity ≥ $500).
+            if account_fetcher is not None:
+                try:
+                    gpath51 = user_file_fn(u, "guardrails.json")
+                    user_result["round51_calibration_adopt"] = (
+                        migrate_guardrails_round51(gpath51, u, account_fetcher)
+                    )
+                except Exception as e:
+                    user_result["round51_calibration_adopt"] = f"error: {type(e).__name__}"
+                    log.warning(f"migration round51 failed for {uid}: {e}")
         summary[uid] = user_result
     return summary

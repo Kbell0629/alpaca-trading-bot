@@ -141,6 +141,13 @@ singular/plural contract noun. 11 tests. Math (%, $, sort) untouched.
 
 ## Architectural invariants (CRITICAL — don't regress)
 
+### Post-59 (final pre-live fixes)
+- `insider_signals.parse_form4_purchase_value` MUST cache parse errors + bad accessions but NOT cache network errors. Form 4s never change post-filing; transient errors deserve retry next screener tick.
+- Only transaction code "P" (open-market purchase) counts toward `total_value_usd`. Adding A/M/G/F/S would inflate the number with compensation/exercise/sale events — those aren't bullish signals.
+- `_FORM4_XML_BUDGET_PER_CALL = 5` per `fetch_insider_buys`. Lowering loses signal; raising slows every screener run by ~1s per extra fetch.
+- `migrations._user_migration_lock` MUST acquire per user (not globally) so one user's slow round-51 fetch doesn't block other users' migrations.
+- CI `--cov-fail-under` MUST never decrease. Rounds that add tests should ratchet it up. Currently at 30% (actual ~34%).
+
 ### Post-58 (JSON-audit fixes)
 - `update_scorecard` correlation guard MUST route through `position_sector.annotate_sector` (OCC options resolve to underlying for sector lookup).
 - `constants.SECTOR_MAP` is the single source of truth. Missing tickers surface as "Other" which breaks the correlation guard — add them here, not in consumers.
