@@ -1818,14 +1818,26 @@ class DashboardHandler(
 
         elif path == "/api/scheduler-status":
             if SCHEDULER_AVAILABLE:
-                # Round-39: pass the caller's username + admin flag so
-                # the activity log + user roster are filtered to THEIR
-                # data. Before this, every authenticated user saw every
-                # other user's scheduler events + the full user list.
+                # Round-39: filter by caller's username so non-admins
+                # don't see cross-user scheduler/screener/deploy events.
+                #
+                # Round-48 privacy fix: ADMINS are also filtered to their
+                # own activity by default. Round-39 made `is_admin=True`
+                # show the unfiltered log, which was the reason the
+                # dashboard still showed `[godguruselfone]` entries on
+                # Kbell0629's screen (Kbell0629 is the bootstrap admin).
+                # Privacy-by-default: admins now see only their own
+                # activity unless they explicitly pass `?all=1`. The
+                # admin panel's "See all activity" drill-down uses that
+                # query param.
                 _cu = self.current_user or {}
+                _qs = urllib.parse.urlparse(self.path).query or ""
+                _params = urllib.parse.parse_qs(_qs)
+                _see_all = _params.get("all", ["0"])[0] == "1"
+                _show_unfiltered = bool(_cu.get("is_admin")) and _see_all
                 self.send_json(get_scheduler_status(
                     filter_username=_cu.get("username"),
-                    is_admin=bool(_cu.get("is_admin")),
+                    is_admin=_show_unfiltered,
                 ))
             else:
                 self.send_json({"running": False, "error": "Scheduler module not loaded"})

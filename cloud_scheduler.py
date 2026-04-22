@@ -572,11 +572,35 @@ def notify_user(user, message, notify_type="info"):
     Round-45: live-mode trades get a [LIVE] prefix so the user can
     distinguish paper-account activity from real-money activity at a
     glance in ntfy / email. Paper mode (default) is unprefixed.
+
+    Round-48 PRIVACY FIX: pass per-user NOTIFICATION_EMAIL + DATA_DIR
+    into the notify.py subprocess env. Before this, notify.py wrote to
+    a SHARED root email_queue.json with a HARDCODED se2login@gmail.com
+    recipient, so every user's trade emails piled up in Kbell0629's
+    inbox — the severe cross-user leak the user reported. Now the
+    per-user queue file + per-user recipient are enforced at the
+    subprocess boundary.
     """
     try:
         env = os.environ.copy()
         if user.get("_ntfy_topic"):
             env["NTFY_TOPIC"] = user["_ntfy_topic"]
+        # Per-user email recipient — falls back to user.email if
+        # notification_email wasn't set explicitly.
+        _email = (user.get("_notification_email")
+                  or user.get("notification_email")
+                  or user.get("email") or "").strip()
+        if _email:
+            env["NOTIFICATION_EMAIL"] = _email
+        else:
+            # No recipient → make sure we don't inherit a stale
+            # NOTIFICATION_EMAIL from the parent env of another user.
+            env.pop("NOTIFICATION_EMAIL", None)
+        # Per-user queue dir — notify.py writes email_queue.json under
+        # DATA_DIR, so overriding DATA_DIR routes the queue to the
+        # user's own dir (users/<id>/ or users/<id>/live/ for dual-mode).
+        if user.get("_data_dir"):
+            env["DATA_DIR"] = user["_data_dir"]
         if user.get("_mode") == "live" and not message.startswith("[LIVE]"):
             message = "[LIVE] " + message
         p = subprocess.Popen(

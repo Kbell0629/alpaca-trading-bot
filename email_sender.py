@@ -215,15 +215,35 @@ def drain_all() -> dict:
     from_addr, _ = _creds()
 
     # Gather candidate queue files
+    # Round-48 PRIVACY: we DO NOT drain the shared root queue at
+    # DATA_DIR/email_queue.json anymore. That file was where notify.py's
+    # pre-round-48 writes landed — always with a hardcoded recipient
+    # (se2login@gmail.com) because the subprocess didn't receive the
+    # per-user NOTIFICATION_EMAIL. Draining it on a round-48+ install
+    # would flush whatever backlog the old code queued up and ship it
+    # all to the original hardcoded recipient — exact bug we're fixing.
+    # Legacy root queue is renamed to .dead so a human can review/purge.
     paths: list[str] = []
     root_q = os.path.join(DATA_DIR, "email_queue.json")
     if os.path.exists(root_q):
-        paths.append(root_q)
+        try:
+            dead = root_q + ".pre-round48.dead"
+            if not os.path.exists(dead):
+                os.rename(root_q, dead)
+                _log(f"privacy quarantine: moved shared root queue to {dead}")
+            else:
+                _log("privacy quarantine: root queue already-quarantined marker present; leaving in place")
+        except OSError as _e:
+            _log(f"could not quarantine shared root queue: {_e}")
     if os.path.isdir(USERS_DIR):
         for uid in os.listdir(USERS_DIR):
             p = os.path.join(USERS_DIR, uid, "email_queue.json")
             if os.path.exists(p):
                 paths.append(p)
+            # Round-48 dual-mode: users may have live-mode queues too.
+            live_p = os.path.join(USERS_DIR, uid, "live", "email_queue.json")
+            if os.path.exists(live_p):
+                paths.append(live_p)
 
     if not paths:
         return summary

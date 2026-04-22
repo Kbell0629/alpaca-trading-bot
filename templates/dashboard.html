@@ -4213,28 +4213,32 @@ async function refreshData() {
         // Wheel-strategy card uses the per-symbol state from /api/wheel-status
         // (introduced when wheel cycles went multi-symbol). Kick off the fetch
         // in parallel with rendering — the card shows legacy fields first,
-        // then re-renders once the fresh per-symbol data arrives.
+        // Round-48 jitter fix: previously these enrichment fetches
+        // EACH triggered another renderDashboard() on arrival, so a
+        // 10-second tick caused up to 3 wholesale innerHTML replacements
+        // within ~300ms (main + wheel + news). Each replacement
+        // restarts scroll + repaints + flashes the scheduler badge.
+        // That's what "jumping around on desktop + mobile still a bit
+        // jumpy" was.
+        //
+        // Fix: store enrichment data WITHOUT triggering a re-render.
+        // Next auto-refresh tick (10s later) picks it up. 10s stale-
+        // ness on wheel state / news alerts is a fair trade for a
+        // smooth, jump-free dashboard.
         fetch(API_BASE + '/api/wheel-status', {credentials: 'same-origin'})
             .then(function(r) { return r.ok ? r.json() : null; })
             .then(function(w) {
                 if (w && dashboardData) {
                     dashboardData.wheels_live = w;
-                    renderDashboard();
+                    // Intentionally NO renderDashboard() — next tick renders.
                 }
             })
             .catch(function(_) { /* stale card is fine, not fatal */ });
-        // Round-24: pull breaking news alerts (written by the Alpaca
-        // real-time news websocket). Stored in a global lookup keyed
-        // by symbol so pick-card renderer can query instantly. Non-
-        // fatal — if the endpoint 500s, cards just skip the 🚨 line.
         fetch(API_BASE + '/api/news-alerts?minutes=60', {credentials: 'same-origin'})
             .then(function(r) { return r.ok ? r.json() : null; })
             .then(function(n) {
                 window._newsAlertsBySymbol = {};
                 if (n && Array.isArray(n.alerts)) {
-                    // Keep only the most-recent alert per symbol so the
-                    // card shows the freshest rather than stacking
-                    // multiple lines.
                     for (var i = 0; i < n.alerts.length; i++) {
                         var a = n.alerts[i];
                         if (!a || !a.symbol) continue;
@@ -4244,7 +4248,7 @@ async function refreshData() {
                         }
                     }
                 }
-                if (dashboardData) renderDashboard();
+                // Intentionally NO renderDashboard() — next tick renders.
             })
             .catch(function(_) { /* empty alerts are fine */ });
         renderDashboard();
@@ -6404,25 +6408,41 @@ function renderDashboard() {
         }
     }, 300);
 
-    // Fetch cloud scheduler status and update header badge (v2)
-    fetch(API_BASE + '/api/scheduler-status', {credentials: 'same-origin'})
-        .then(function(r){ return r.json(); })
-        .then(function(s){
-            var el = document.getElementById('schedulerBadgeV2') || document.getElementById('schedulerBadge');
-            if (!el) return;
-            if (s.running) {
-                el.className = 'status-chip scheduler-on';
-                el.innerHTML = '<span class="scheduler-pulse"></span>\u2601\ufe0f 24/7 LIVE';
-                el.title = 'Scheduler is running autonomously on Railway. Market: ' + (s.market_open ? 'open' : 'closed');
-            } else {
-                el.className = 'status-chip scheduler-off';
-                el.innerHTML = '\u26a0\ufe0f SCHEDULER OFF';
-                el.title = 'Cloud scheduler not running';
-            }
-        }).catch(function(){
-            var el = document.getElementById('schedulerBadgeV2') || document.getElementById('schedulerBadge');
-            if (el) { el.className = 'status-chip scheduler-off'; el.innerHTML = '—'; }
-        });
+    // Round-48 jitter fix: throttle /api/scheduler-status fetch to once
+    // per 30s. Before this, every renderDashboard call (fires every
+    // 10s during auto-refresh) rewrote the badge innerHTML so the
+    // "24/7 LIVE" pulse restarted visibly on every tick. Scheduler
+    // status changes rarely; 30s is plenty. Also only touch the DOM
+    // when the displayed state actually changed.
+    if (!window._schedBadgeLastFetch ||
+        (Date.now() - window._schedBadgeLastFetch) > 30000) {
+        window._schedBadgeLastFetch = Date.now();
+        fetch(API_BASE + '/api/scheduler-status', {credentials: 'same-origin'})
+            .then(function(r){ return r.json(); })
+            .then(function(s){
+                var el = document.getElementById('schedulerBadgeV2') || document.getElementById('schedulerBadge');
+                if (!el) return;
+                var wantCls, wantHtml, wantTitle;
+                if (s.running) {
+                    wantCls = 'status-chip scheduler-on';
+                    wantHtml = '<span class="scheduler-pulse"></span>\u2601\ufe0f 24/7 LIVE';
+                    wantTitle = 'Scheduler is running autonomously on Railway. Market: ' + (s.market_open ? 'open' : 'closed');
+                } else {
+                    wantCls = 'status-chip scheduler-off';
+                    wantHtml = '\u26a0\ufe0f SCHEDULER OFF';
+                    wantTitle = 'Cloud scheduler not running';
+                }
+                if (el.className !== wantCls) el.className = wantCls;
+                if (el.innerHTML !== wantHtml) el.innerHTML = wantHtml;
+                el.title = wantTitle;
+            }).catch(function(){
+                var el = document.getElementById('schedulerBadgeV2') || document.getElementById('schedulerBadge');
+                if (el && el.innerHTML !== '—') {
+                    el.className = 'status-chip scheduler-off';
+                    el.innerHTML = '—';
+                }
+            });
+    }
 
     // Round-44: restore scroll + focus after the browser paints.
     requestAnimationFrame(function() {

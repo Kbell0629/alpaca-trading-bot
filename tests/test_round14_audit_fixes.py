@@ -95,7 +95,12 @@ def test_notify_queue_hard_cap_when_dlq_persistently_fails(monkeypatch,
                                                             tmp_path):
     """Round-13 kept overflow in main queue when DLQ fails to avoid
     silent data loss. Round-14 caps the main queue at 200 entries as a
-    memory-safety net so a permanently-wedged DLQ writer can't OOM us."""
+    memory-safety net so a permanently-wedged DLQ writer can't OOM us.
+
+    Round-48: notify.queue_email now refuses to enqueue without
+    NOTIFICATION_EMAIL set (privacy fix — no hardcoded recipient).
+    Set it here before the fresh import so the module picks it up."""
+    monkeypatch.setenv("NOTIFICATION_EMAIL", "test@example.com")
     if "notify" in sys.modules:
         del sys.modules["notify"]
     import notify

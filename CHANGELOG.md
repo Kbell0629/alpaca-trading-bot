@@ -139,6 +139,98 @@ agent). Solid run.
 
 ---
 
+## 🆕 Round-48 — Cross-user privacy FIX + dashboard jitter (2026-04-22)
+
+User reported TWO critical privacy issues + ongoing dashboard jitter:
+*"I am getting emails for my friends trades and I still see him in
+my log. Make sure there is 100% data security for users between users
+and no risk of PII exposure externally or between users."*
+
+**Root causes found:**
+
+1. **`notify.py` had `EMAIL_RECIPIENT = "se2login@gmail.com"` hardcoded.**
+   When `cloud_scheduler.notify_user(user, ...)` spawned the notify.py
+   subprocess for godguruselfone's trade, notify.py ignored the user
+   context and queued the email with the hardcoded recipient. The
+   drainer then shipped it to Kbell0629's inbox. Result: Kbell0629 got
+   every user's trade alerts, kill-switch pings, daily summaries.
+
+2. **Shared `DATA_DIR/email_queue.json` file.** notify.py wrote to
+   this shared path regardless of which user triggered it. Per-user
+   queue isolation existed in the scheduler's `_queue_direct_email`
+   but not in notify.py's `queue_email`.
+
+3. **`email_sender.drain_all` drained the shared root queue.** Even
+   after fixing #1 and #2, historical pre-round-48 entries in that
+   shared file would ship to the hardcoded recipient on the next
+   drain pass.
+
+4. **`/api/scheduler-status` with `is_admin=True` returned unfiltered
+   activity.** Round-39 filtered non-admins to their own activity but
+   explicitly exempted admins. The bootstrap admin (user_id=1, aka
+   Kbell0629) saw every user's screener/monitor/deploy events in
+   their activity log — exactly what the user reported
+   (`[godguruselfone] FSLY: Entry filled at ...` in Kbell0629's log).
+
+**Privacy fixes shipped:**
+
+* `notify.py:EMAIL_RECIPIENT` now reads from `NOTIFICATION_EMAIL` env
+  var. Missing → `queue_email` refuses to enqueue (better to drop
+  than misroute).
+* `cloud_scheduler.notify_user` now sets `env["NOTIFICATION_EMAIL"]`
+  AND `env["DATA_DIR"]` per-user before `subprocess.Popen(notify.py)`.
+  No-email users → `NOTIFICATION_EMAIL` is popped from env so a
+  stale parent-process value doesn't leak between users.
+* `email_sender.drain_all` quarantines the shared root queue to
+  `DATA_DIR/email_queue.json.pre-round48.dead` instead of draining
+  it. Prevents historical cross-user backlog from flushing on next
+  drain pass. Also added live-mode queue path (`users/<id>/live/`).
+* `/api/scheduler-status` filters admins to their own activity by
+  default. Admins who need the full view can pass `?all=1` explicitly
+  (admin-panel drill-down future work — for now admins see their
+  own trades only, privacy-by-default).
+
+**Dashboard jitter fixes (user reported desktop also jumping + badge
+flicker):**
+
+The round-47 sync scroll restore helped but didn't eliminate jitter.
+Root cause: every 10s auto-refresh triggered up to **3 wholesale
+`renderDashboard()` calls** (initial + wheel-status callback +
+news-alerts callback). Each wholesale `app.innerHTML = ...`
+caused a repaint + scroll-anchor reset.
+
+* Removed the cascading re-renders. Wheel-status and news-alerts
+  fetches now store their data silently; next tick picks up the
+  fresh values. 10s staleness on enrichment data is a fair trade
+  for a smooth, jump-free dashboard.
+* Throttled the `/api/scheduler-status` badge fetch to once per 30s
+  (was firing every 10s inside renderDashboard). Also only touches
+  the badge DOM when the displayed state actually changed — so
+  unchanged ticks trigger zero repaint. Kills the "24/7 LIVE" pulse
+  flicker the user called out.
+
+**Tests:** 7 new cases in `tests/test_round48_privacy_fixes.py`
+pinning all 4 privacy fixes (queue refuses without env,
+honors env recipient, no hardcoded fallback, notify_user passes
+per-user env, no-email user doesn't leak stale env, shared queue
+quarantined, admin default-filtered). 1 existing test updated to
+set `NOTIFICATION_EMAIL` in its setup (test_round14). Suite:
+**647 passed, 1 deselected** (CI invocation). Ruff clean. Node
+`--check` clean on dashboard JS.
+
+---
+
+## 🆕 Round-47 — Mobile dashboard auto-refresh jitter fix (2026-04-22)
+
+Round-44 added scroll preservation in renderDashboard but used
+`requestAnimationFrame` to restore scrollY AFTER the browser
+paint. On mobile this caused a visible jump-to-top, then jump-back.
+Round-47 restored scroll synchronously right after the wholesale
+`app.innerHTML = ...` assignment so the browser bundles the
+scrollTo into the same paint. Merged as PR.
+
+---
+
 ## 🆕 Round-45 — Dual-mode paper + live parallel trading (2026-04-22)
 
 **User ask:** *"when I switch to real money and I want to run in parallel
