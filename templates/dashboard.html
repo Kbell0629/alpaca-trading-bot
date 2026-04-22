@@ -6771,9 +6771,21 @@ function switchSettingsTab(name) {
 }
 
 // Round-50: fetch + render the portfolio calibration summary.
+// Round-52 debounce: prevent rapid clicks from firing concurrent
+// /api/calibration fetches. Also disables the button while in-flight
+// so the user sees visual feedback that the request is running.
+let _calibrationInFlight = false;
 async function loadCalibration() {
+    if (_calibrationInFlight) {
+        toast('Calibration already loading — wait a moment', 'info');
+        return;
+    }
+    _calibrationInFlight = true;
     var box = document.getElementById('calibrationContent');
-    if (!box) return;
+    if (!box) { _calibrationInFlight = false; return; }
+    // Disable the Recalibrate button during the fetch
+    var btns = document.querySelectorAll('#settingsPanel-calibration button[onclick*="loadCalibration"]');
+    for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
     box.innerHTML = 'Loading calibration…';
     try {
         var resp = await fetch(API_BASE + '/api/calibration', {credentials: 'same-origin'});
@@ -6824,6 +6836,11 @@ async function loadCalibration() {
             '<div style="margin-top:10px;font-size:11px;color:var(--text-dim)">Overrides: edit Guardrails in the Strategy Templates section. User settings always win over auto-calibration.</div>';
     } catch (e) {
         box.innerHTML = '<div style="color:var(--red)">Failed: ' + esc(e.message) + '</div>';
+    } finally {
+        // Round-52: re-enable Recalibrate button + clear in-flight flag
+        _calibrationInFlight = false;
+        var _btns = document.querySelectorAll('#settingsPanel-calibration button[onclick*="loadCalibration"]');
+        for (var _i = 0; _i < _btns.length; _i++) _btns[_i].disabled = false;
     }
 }
 

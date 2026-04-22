@@ -214,12 +214,16 @@ def migrate_guardrails_round51(guardrails_path, user, account_fetcher):
         tier = pc.detect_tier(account) if account else None
         if not tier:
             return "no_tier"  # retry next boot
-        # Backup the pre-migration guardrails so user can revert
+        # Backup the pre-migration guardrails so user can revert.
+        # Round-52: track whether WE created it in this call so we can
+        # roll back if the main write fails downstream.
         backup_path = guardrails_path + ".pre-round51.backup"
+        backup_created_this_call = False
         if not os.path.exists(backup_path):
             try:
                 with open(guardrails_path) as _orig, open(backup_path, "w") as _bak:
                     _bak.write(_orig.read())
+                backup_created_this_call = True
             except OSError as _e:
                 return f"error:backup_{type(_e).__name__}"
         # Merge tier defaults. User overrides that pre-date round-51 get
@@ -239,7 +243,23 @@ def migrate_guardrails_round51(guardrails_path, user, account_fetcher):
         # Record which tier was adopted (useful for debugging)
         g["_round51_tier_adopted"] = tier.get("name")
         g["_migrations_applied"] = applied + [MIGRATION_ROUND51_CALIBRATION_ADOPT]
-        _save_json_atomic(guardrails_path, g)
+        # Round-52 fix: if the main write fails AFTER the backup was
+        # successfully written, remove the orphan backup so the next
+        # boot retries cleanly (otherwise the "if not os.path.exists"
+        # guard at line 219 skips re-creating the backup, leaving user
+        # with an old backup referencing a main file that was never
+        # actually updated).
+        try:
+            _save_json_atomic(guardrails_path, g)
+        except Exception as _write_err:
+            # Main write failed — roll back the backup we just wrote if
+            # it didn't exist before this call
+            if backup_created_this_call:
+                try:
+                    os.unlink(backup_path)
+                except OSError:
+                    pass
+            raise _write_err
         return "migrated"
     except Exception as e:
         log.warning(f"round51 calibration migration failed: {e}")

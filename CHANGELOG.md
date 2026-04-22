@@ -8,6 +8,40 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-52 — Full tech-stack audit + fixes
+
+User asked for a comprehensive audit after merging rounds 50 + 51. Five parallel Explore agents swept security, concurrency, trading-logic, UI, and ops/tests. Surfaced **11 real bugs** across all layers; also verified **8 false positives** (wheel options proceeds math, tier boundaries, tier-stash race, mode isolation, atomic writes, ledger pruning, XSS, JS syntax).
+
+**Fixes shipped (all 11):**
+
+1. **CRITICAL**: Short-sell tier gate missing (`cloud_scheduler.py:2611`). A cash-account user with `short_selling.enabled=true` in `auto_deployer_config.json` would trigger Alpaca shorts that then got rejected server-side (Alpaca rule: margin + ≥$2k equity). Fail-closed locally now: `TIER_CFG.short_enabled=False` → skip the block entirely.
+2. **HIGH**: Unlocked read-modify-write in `fractional._save_cache`, `pdt_tracker.log_day_trade`, `settled_funds.record_sale`. Concurrent paper + live scheduler ticks on the same user could lose entries. Added fcntl.flock via `_file_lock(path)` helper in each module. Verified with 20-thread race tests that all entries land.
+3. **HIGH**: Migration backup could orphan on main-write failure. If `migrate_guardrails_round51` wrote the backup successfully but the main `_save_json_atomic` raised (disk full, permission denied), the backup was left in place + the stamp wasn't written → next boot hit the "backup already exists" guard + skipped the fresh migration. Now: rollback the backup we created in this call if main write fails.
+4. **HIGH**: Missing Sentry integration. New modules swallowed errors silently via `except Exception: pass`. Now route critical failure paths (`fractional.refresh_cache`, `fractional._save_cache`, `settled_funds.record_sale`) through `observability.capture_exception` so systematic failures surface in Sentry.
+5. **HIGH**: Tests gap — added 5 new tests covering `/api/calibration` response shape, auth-gate position, migration malformed-guardrails handling, migration account-fetcher-raises handling.
+6. **MEDIUM**: Fractional sub-$1 target couldn't fall back to whole-share (`fractional.size_position`). If tier said fractional ON + symbol fractionable but target was $0.50 (below Alpaca's $1 fractional minimum), we returned qty=0. Now: fall through to whole-share path — if 1 share at price ≤ $0.50 is affordable, buy it instead of rejecting.
+7. **MEDIUM**: Tier log spam (`cloud_scheduler.py:1922`). Every `run_auto_deployer` tick was logging `Calibrated tier: 🌳 Cash Standard — equity $100,243 (strategies: ...)`. Now only logs on state change (first time for that user, or when tier changes tier). Per-user-per-mode state cache via `_last_runs`.
+8. **MEDIUM**: README missing round-51 auto-migration docs. Added "Auto-migration (existing users)" section explaining the migration flow + revert path.
+9. **LOW**: Removed `/tmp` fallback in `fractional._cache_path`, `settled_funds._ledger_path`. Silent fallback to `/tmp/fractionable_cache.json` could cause cross-user collisions if a user dict lacked `_data_dir` (programming bug). Now raises `ValueError` loudly so the caller gets immediate feedback.
+10. **MINOR**: Recalibrate Now button had no debounce. Rapid double-click fired concurrent `/api/calibration` fetches. Added `_calibrationInFlight` flag + button `disabled` state + finally-block reset.
+11. **MINOR**: Bare `except Exception` on best-effort logging paths (`pdt_tracker.log_day_trade`, etc.). Kept the broad except intentionally — these are best-effort audit paths that must never block trades. But the *right* fix was missing observability calls, which we added in #4.
+
+**False positives verified** (audit agent reports read but traced against actual code):
+- Options proceeds math: wheel closes use `side="buy"` which correctly SKIPS the settled-funds ledger. No 100× multiplier bug.
+- Tier boundaries: verified no gaps or overlaps in `TIER_DEFAULTS`.
+- `tier_cfg` stash race: scheduler is single-threaded per user.
+- Mode isolation: all 3 new modules correctly scope to `user["_data_dir"]` which is mode-aware.
+- Atomic writes: all use `tempfile + rename` correctly.
+- Ledger pruning: `settles_on` cutoff is correct (not `sold_on`).
+- XSS: `loadCalibration()` correctly `esc()`'s all user-controllable strings.
+- JS syntax: `node --check` passes.
+
+**Tests:** 16 new cases in `tests/test_round52_audit_fixes.py`. Includes 20-thread concurrent-write race tests for settled_funds + pdt_tracker — without the lock fix these would have lost entries. Full suite: **728 passed, 1 deselected** (was 712 + 16 new). Ruff clean. Node `--check` clean.
+
+**Safety assessment:** all fixes are either additive (tests) or strictly fail-closed (short gate, locks, migration rollback). No behavior changes to working code paths. Can ship immediately.
+
+---
+
 ## 🆕 Round-51 — Activate calibration for existing users + deep integration
 
 **User ask:** *"can you just enable it for us now"*
