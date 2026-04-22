@@ -1693,10 +1693,34 @@ def process_strategy_file(user, filepath, strat, extended_hours=False):
                 if isinstance(new_order, dict) and "id" in new_order:
                     state["stop_order_id"] = new_order["id"]
                     state["current_stop_price"] = new_stop
-                    log(f"[{user['username']}] {symbol}: Stop raised ${current_stop:.2f} -> ${new_stop:.2f}", "monitor")
+                    _session_tag = "AH" if extended_hours else "market"
+                    log(f"[{user['username']}] {symbol}: Stop raised ${current_stop:.2f} -> ${new_stop:.2f} ({_session_tag})", "monitor")
                     notify_user(user, f"Stop raised on {symbol}: ${current_stop:.2f} -> ${new_stop:.2f}", "info")
                 else:
-                    log(f"[{user['username']}] {symbol}: WARN stop raise failed, keeping prior stop at ${current_stop:.2f}. Err: {new_order}", "monitor")
+                    _session_tag = "AH" if extended_hours else "market"
+                    log(f"[{user['username']}] {symbol}: WARN stop raise failed, keeping prior stop at ${current_stop:.2f}. Err: {new_order} ({_session_tag})", "monitor")
+                    # Round-57: surface AH raise failures to Sentry so the
+                    # operator can debug "why didn't my stop tighten at
+                    # 4:30 PM?" via the Sentry UI, not just scrolling logs.
+                    # Regular-hours failures also flow through here — they
+                    # were previously silent too, which is wrong when a
+                    # trailing stop can't be tightened during a fast rally.
+                    try:
+                        from observability import capture_message
+                        capture_message(
+                            f"trailing_stop_raise_failed: {symbol}",
+                            level="warning",
+                            event="trailing_stop_raise_failed",
+                            session=_session_tag,
+                            strategy=strategy_type,
+                            symbol=symbol,
+                            user_id=user.get("id"),
+                            current_stop=current_stop,
+                            attempted_new_stop=new_stop,
+                            alpaca_response=str(new_order)[:200],
+                        )
+                    except Exception:
+                        pass  # breadcrumb is best-effort; never block trading
 
     # Mean reversion target check (skip in AH — market-sell fills too
     # thin overnight; the raised trailing stop will capture the exit)
@@ -1888,10 +1912,16 @@ def process_strategy_file(user, filepath, strat, extended_hours=False):
                         "stop", rich_subject=_subj, rich_body=_body)
             record_trade_close(user, symbol, strategy_type, exit_price, pnl,
                                 "stop_triggered", qty=shares, side="sell")
+            # Round-57: hold the guardrails lock across RMW. Before this,
+            # a concurrent handler POST (e.g. kill_switch toggle, calibration
+            # override) could load guardrails, we overwrite with just the
+            # last_loss_time field, and the handler's write is lost. Same
+            # pattern as the monitor's daily_starting_value writer at ~1141.
             gpath = user_file(user, "guardrails.json")
-            guardrails = load_json(gpath) or {}
-            guardrails["last_loss_time"] = now_et().isoformat()
-            save_json(gpath, guardrails)
+            with strategy_file_lock(gpath):
+                guardrails = load_json(gpath) or {}
+                guardrails["last_loss_time"] = now_et().isoformat()
+                save_json(gpath, guardrails)
 
     save_json(filepath, strat)
 
@@ -2854,17 +2884,23 @@ def run_daily_close(user):
         subprocess.run([sys.executable, os.path.join(BASE_DIR, "error_recovery.py")],
                       cwd=BASE_DIR, capture_output=True, text=True, timeout=60, env=env)
 
-        gpath = user_file(user, "guardrails.json")
-        guardrails = load_json(gpath) or {}
-        daily_starting_value = guardrails.get("daily_starting_value")
-        guardrails["daily_starting_value"] = None
+        # Round-57: fetch /account OUTSIDE the lock (slow network call,
+        # 100-500ms; holding a flock that long blocks the monitor +
+        # concurrent handlers). Then do the RMW under the lock so the
+        # daily_starting_value clear + peak update is atomic vs.
+        # concurrent handler writes.
         account = user_api_get(user, "/account")
-        if isinstance(account, dict) and "error" not in account:
-            current = float(account.get("portfolio_value", 0))
-            peak = guardrails.get("peak_portfolio_value", current)
-            if current > peak:
-                guardrails["peak_portfolio_value"] = current
-        save_json(gpath, guardrails)
+        gpath = user_file(user, "guardrails.json")
+        with strategy_file_lock(gpath):
+            guardrails = load_json(gpath) or {}
+            daily_starting_value = guardrails.get("daily_starting_value")
+            guardrails["daily_starting_value"] = None
+            if isinstance(account, dict) and "error" not in account:
+                current = float(account.get("portfolio_value", 0))
+                peak = guardrails.get("peak_portfolio_value", current)
+                if current > peak:
+                    guardrails["peak_portfolio_value"] = current
+            save_json(gpath, guardrails)
 
         # Try per-user scorecard first, fall back to shared (DATA_DIR then BASE_DIR)
         scorecard_path = user_file(user, "scorecard.json")

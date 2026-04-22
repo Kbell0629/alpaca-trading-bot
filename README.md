@@ -819,6 +819,33 @@ Auto-Calibration tier defaults
 
 ---
 
+## ⚡ After-Hours Trailing Stops — Round-55
+
+**Problem the feature solves.** Before round-55, the bot only tightened trailing stops during regular market hours (9:30 AM - 4:00 PM ET). A stock that popped $4 after-hours on good news and then faded back overnight cost you the unrealised gain — the stop stayed at the pre-pop level, and the next morning's open was where it ended up selling.
+
+**What happens now.** A lightweight "stops-only" monitor runs every 5 minutes during:
+
+* **Pre-market** — 4:00 AM – 9:30 AM ET
+* **After-hours** — 4:00 PM – 8:00 PM ET
+
+It does exactly one thing: if an AH trade prints a new high above your position's existing `highest_price_seen`, the trailing-stop ladder tightens. New stop order replaces the old one (PATCH first, fall back to cancel-then-place). The next market-open tick then triggers whatever the new floor is.
+
+**It does NOT:**
+
+* Place new entries (liquidity's too thin)
+* Fire profit-take sells (same reason)
+* Touch mean-reversion or PEAD exits (market-only)
+* Run on shorts (inverse logic — too easy to whipsaw in thin AH books)
+* Touch wheel/options (options don't trade extended hours)
+
+**The ⚡ AH TRAILING chip.** When you open the dashboard during pre- or post-market, you'll see a new orange status chip next to the session badge. It confirms the monitor is active. If you've opted out (see below), the chip doesn't render.
+
+**Opt-out.** Open Settings → 🎛️ Calibration → **After-hours trailing** toggle (added in round-54). Off = bot sleeps overnight like the pre-round-55 behaviour. On (default) = trailing stops tighten whenever AH trades make new highs.
+
+**Failure visibility.** If a trailing-stop raise fails (Alpaca API hiccup, order rejected, etc.), it now surfaces to Sentry as a `trailing_stop_raise_failed` event tagged with session (AH vs market), symbol, and the old/new stop prices. No more silent misses — you'll see it in the Sentry feed.
+
+---
+
 ## 💵 Going Live — Dual Mode (Paper + Live in Parallel)
 
 The bot now supports **dual-mode trading**: paper and live Alpaca accounts run side-by-side on the same login. Each mode has its own state tree (strategies, positions, journal, scorecard), and the dashboard has a one-click view toggle in the header. No Railway env-var changes needed — everything's configured per-user in Settings.

@@ -670,6 +670,52 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
     background: rgba(245,158,11,0.08); border-color: rgba(245,158,11,0.2);
 }
 
+/* Round-57: make <input type="range"> actually usable on iOS. Browser
+   default thumbs are ~14px tall and hard to drag one-handed on mobile.
+   Extends the touch target to 32px height (still compact) + applies
+   accent-color for visible WCAG-AA contrast on the dark background. */
+input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 32px;
+    background: transparent;
+    accent-color: var(--blue);
+    cursor: pointer;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+}
+input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 22px;
+    width: 22px;
+    margin-top: -9px;
+    border-radius: 50%;
+    background: var(--blue);
+    border: 2px solid var(--bg-card, #0a0e17);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+}
+input[type="range"]::-moz-range-track {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+}
+input[type="range"]::-moz-range-thumb {
+    height: 22px;
+    width: 22px;
+    border-radius: 50%;
+    background: var(--blue);
+    border: 2px solid var(--bg-card, #0a0e17);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+}
+input[type="range"]:focus {
+    outline: 2px solid var(--blue);
+    outline-offset: 4px;
+}
+
 /* ===== SETTINGS MODAL ===== */
 .settings-tabs {
     display: flex; gap: 4px; border-bottom: 1px solid var(--border);
@@ -1132,6 +1178,17 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
     border-radius: var(--radius);
 }
 .nav-tabs::-webkit-scrollbar { height: 0; }
+
+/* Round-57: on wide desktop viewports (≥1024px) the tabs have plenty
+   of room — wrap them across rows instead of forcing horizontal scroll,
+   and hide the chevron/gradient hint since there's nothing off-screen. */
+@media (min-width: 1024px) {
+    .nav-tabs {
+        overflow-x: visible;
+        flex-wrap: wrap;
+    }
+    .nav-tabs-wrap::after { display: none; }
+}
 .nav-tab {
     padding: 10px 18px; border-radius: 8px; font-size: 13px; font-weight: 600;
     color: var(--text-dim); cursor: pointer; white-space: nowrap;
@@ -2602,12 +2659,18 @@ function renderLog() {
     if (!el) return;
     const icons = {success: '\u2713', error: '\u2717', info: '\u27A4', buy: '\u25B2', sell: '\u25BC', cancel: '\u2716'};
     const visible = activityLog.slice(0, 20);
-    el.innerHTML = visible.map(e =>
+    const _html = visible.map(e =>
         '<div class="log-entry ' + e.type + '">' +
         '<span class="log-time">' + e.time + '</span>' +
         '<span class="log-icon">' + (icons[e.type]||icons.info) + '</span>' +
         '<span class="log-msg">' + esc(e.msg) + '</span></div>'
     ).join('') || '<div class="empty">No activity yet</div>';
+    // Round-57: hash-skip identical renders so a quiet tick doesn't
+    // repaint the activity log (contributed to lower-page jitter).
+    if (el._lastHtml !== _html) {
+        el.innerHTML = _html;
+        el._lastHtml = _html;
+    }
 }
 
 // Round-28: back-to-top button — toggle visibility on scroll, smooth
@@ -3850,7 +3913,14 @@ function renderPerfAttribution(d) {
             '</tr>';
     });
     html += '</tbody></table>';
-    panel.innerHTML = html;
+    // Round-57: hash-skip identical renders — same fix as Heatmap.
+    // Auto-refresh tick runs every 10s but this data updates daily,
+    // so wholesale DOM replacement was re-flowing the perf attribution
+    // section and shifting scroll.
+    if (panel._lastHtml !== html) {
+        panel.innerHTML = html;
+        panel._lastHtml = html;
+    }
 }
 
 // Round-11 Item 2: Tax Report panel.
@@ -3936,7 +4006,11 @@ function renderTaxReport(d) {
     if (lots.length > 30) {
         html += '<div style="font-size:11px;color:var(--text-dim);margin-top:8px">Showing 30 of ' + lots.length + ' lots. Download CSV for the full list.</div>';
     }
-    panel.innerHTML = html;
+    // Round-57: hash-skip identical renders.
+    if (panel._lastHtml !== html) {
+        panel.innerHTML = html;
+        panel._lastHtml = html;
+    }
 }
 
 // Round-11: Factor Health panel — renders market breadth, top/bottom
@@ -4060,7 +4134,11 @@ function renderFactorHealth(d) {
     }
 
     html += '</div>';
-    panel.innerHTML = html;
+    // Round-57: hash-skip identical renders.
+    if (panel._lastHtml !== html) {
+        panel.innerHTML = html;
+        panel._lastHtml = html;
+    }
 }
 
 // Round-11: toggle factor_bypass in guardrails. On ON, asks for
@@ -4183,7 +4261,12 @@ function renderSchedulerPanel(s) {
         logsHtml += '</div>';
     }
 
-    panel.innerHTML = summary + gridHtml + logsHtml;
+    // Round-57: hash-skip identical renders — same fix as Heatmap.
+    var _schedHtml = summary + gridHtml + logsHtml;
+    if (panel._lastHtml !== _schedHtml) {
+        panel.innerHTML = _schedHtml;
+        panel._lastHtml = _schedHtml;
+    }
 }
 
 // Auto-refresh scheduler panel every 15 seconds
@@ -6115,6 +6198,15 @@ function renderDashboard() {
             '</div>' +
             '<div class="header-row-2">' +
                 '<div class="status-chip ' + sessionClass + '" title="Market session">\ud83d\udd52 ' + sessionLabel + '</div>' +
+                /* Round-57: surface the AH trailing-stop monitor during
+                   pre/post-market so the user sees the bot is still
+                   actively tightening stops on AH highs. Only renders
+                   when we are in an extended-hours window AND the user
+                   hasn\'t opted out via guardrails.extended_hours_trailing. */
+                ((sessionClass === 'session-pre' || sessionClass === 'session-after')
+                  && d.extended_hours_trailing !== false
+                  ? '<div class="status-chip session-after" title="After-hours trailing-stop monitor is active. Raises stops on any new AH high.">⚡ AH TRAILING</div>'
+                  : '') +
                 '<div class="status-chip" id="schedulerBadgeV2" title="Cloud scheduler status"><span class="scheduler-pulse"></span>Loading...</div>' +
                 '<div class="status-chip regime-chip ' + regimeClass + '" title="Market regime">\ud83d\udcca ' + regimeLabel + '</div>' +
                 '<div class="readiness-chip" title="Paper-to-live readiness score">' +
@@ -6955,7 +7047,7 @@ async function loadCalibration() {
               '<div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">Strategies <span style="color:var(--text-dim);font-size:10px">(click to toggle; greyed-out ones blocked by account type)</span></div>' +
               stratPills +
             '</div>' +
-            '<div style="font-size:11px;color:var(--text-dim);line-height:1.5">' +
+            '<div role="note" aria-live="polite" aria-atomic="true" style="font-size:11px;color:var(--text-dim);line-height:1.5">' +
               '<strong>How this works:</strong> Auto-calibration sets defaults based on your detected tier. Preset cards in the <strong>Strategy Templates</strong> section (Conservative/Moderate/Aggressive) overwrite all of these at once. Manual edits here override individual values. Hierarchy: <strong>your edits → preset click → calibration defaults</strong>. Alpaca-rule violations (shorts on cash, etc.) are blocked with a popup.' +
             '</div>';
     } catch (e) {
@@ -8916,7 +9008,17 @@ function renderHeatmap(data) {
     });
     wdHtml += '</div>';
 
-    el.innerHTML = stats + grid + legend + wdHtml;
+    // Round-57: hash-skip identical renders. The heatmap updates once
+    // per trading day (new data arrives after the daily-close job), but
+    // this function ran every 10s tick — each innerHTML replacement
+    // forced a reflow that shifted the user's scroll position when they
+    // were viewing the Heatmap tab. Skip the DOM write when the payload
+    // hashes to the same string as last render.
+    var _heatmapHtml = stats + grid + legend + wdHtml;
+    if (el._lastHtml !== _heatmapHtml) {
+        el.innerHTML = _heatmapHtml;
+        el._lastHtml = _heatmapHtml;
+    }
 }
 
 function buildComparisonPanel(d) {

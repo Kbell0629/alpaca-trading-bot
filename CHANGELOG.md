@@ -8,6 +8,75 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-57 — Full tech-stack audit fixes
+
+User asked for a pre-live sweep: "audit front to back the full tech stack to make sure there are no bugs or any logic issues or anything that should be corrected … fix all bugs and issues you're able to fix."
+
+5 parallel Explore agents ran (security, DB/concurrency, trading logic, UI/mobile, tests/ops). 13 real bugs fixed + 1 user-flagged UX bug (desktop nav scroll). 3 false positives verified and documented (not re-audited). Zero items deferred.
+
+### Concurrency — 4 unlocked `guardrails.json` RMW sites
+
+The round-55 scheduler and round-54 HTTP handlers both mutate `guardrails.json` from multiple threads, but four sites were still doing unlocked read-modify-write. A concurrent handler POST (e.g. kill-switch toggle, calibration override) could race a scheduler tick and lose writes.
+
+* `cloud_scheduler.py:1891` — stop-triggered `last_loss_time` write now inside `strategy_file_lock(gpath)`.
+* `cloud_scheduler.py:2857` — `run_daily_close` `daily_starting_value` reset + `peak_portfolio_value` update now locked. Alpaca `/account` fetch moved **outside** the lock (100-500ms network call would block the monitor + handlers otherwise).
+* `server.py` `/api/calibration/override` — RMW now under `strategy_file_lock`. Tier detection + `/account` fetch happen outside the lock first.
+* `server.py` `/api/calibration/reset` — same pattern.
+
+### Rate limiting — `/api/calibration/override`
+
+Added per-user 3-second cooldown (`_CALIBRATION_OVERRIDE_LAST_WRITE` module dict). Scripted loops / fast double-clicks return HTTP 429 with `rate_limited:true` so the UI can differentiate from a validation error. Not a security fix (auth + CSRF are intact), just a disk-churn + flock-contention mitigation.
+
+### Observability — failed trailing-stop raises surface to Sentry
+
+Previously, a failed `PATCH /orders/{stop_id}` during a trailing-stop raise just logged a WARN and moved on. Operator debugging "why didn't my stop tighten at 4:30 PM?" had to scroll the activity log. Now fires `observability.capture_message` with event=`trailing_stop_raise_failed`, session (`AH` vs `market`), symbol, attempted new stop, and first 200 chars of the Alpaca response. Visible in the Sentry feed.
+
+### UX / accessibility
+
+* `<input type="range">` CSS — 32px container height, 22px custom thumb, `accent-color: var(--blue)`, webkit/moz styling for WCAG-AA contrast on the dark background. iOS users can actually drag the Calibration sliders now.
+* Dashboard header — `⚡ AH TRAILING` status chip renders during pre-market (4:00-9:30 AM ET) and post-market (4:00-8:00 PM ET) when `guardrails.extended_hours_trailing ≠ false`. Users see the bot is actively tightening stops, not sleeping.
+* Calibration hierarchy text — wrapped in `role="note" aria-live="polite" aria-atomic="true"` so screen readers announce it when the tab loads.
+* **Desktop nav-tabs wrap at ≥1024px** — user flagged the horizontal scroll on a wide monitor. Tabs now flex-wrap onto multiple rows; scroll-chevron hint hidden. Mobile (<1024px) still scrolls horizontally.
+* **Lower-page jitter fix** — user reported the screen still jumped around during auto-refresh when scrolled into the lower sections (Heatmap, Perf Attribution, Tax Report, Factor Health, Scheduler, Activity Log). Each enrichment panel now hash-skips its `innerHTML` write when the output hasn't changed — same pattern as round-54's `window._lastAppHtml`. Quiet ticks are now truly zero-repaint throughout the page.
+
+### Data exposure
+
+`/api/data` now returns `extended_hours_trailing` (default True) so the dashboard can render the AH chip. Defaults to True on file-missing / read-error paths so a corrupted guardrails doesn't silently render "AH OFF" when the monitor is actually running.
+
+### Tests
+
+16 new cases in `tests/test_round57_audit_fixes.py`:
+
+* Lock-presence grep pins on all 4 guardrails RMW sites
+* `/account` fetched outside the lock (ordering check)
+* Rate-limit state + 429 response pins
+* Sentry breadcrumb emission
+* Daily-close `portfolio_value=None` / `=0` runtime edge cases
+* `/api/data` exposes `extended_hours_trailing` with True-default fallbacks
+* Dashboard `⚡ AH TRAILING` chip HTML
+* Slider touch-target CSS (32px + accent-color + webkit thumb)
+* Desktop nav-tabs wrap CSS (media query + flex-wrap + chevron hide)
+* Lower-page enrichment panel hash-skip (>=6 `_lastHtml !==` guards)
+
+**781 passing, 2 deselected** (sandbox-only deselects). Ruff clean. Dashboard JS `node --check` clean.
+
+### False positives verified (don't re-audit)
+
+* AH monitor vs. regular monitor race on strategy files — both paths already hold exclusive `strategy_file_lock(filepath)` (line 1240 + 1097). Impossible race.
+* "Hash-skip jitter fix not implemented" — UI agent missed it. Actually implemented at `dashboard.html:6411` via `window._lastAppHtml` string-equality (no hash, no collision risk).
+* "Save Overrides button does nothing if only a slider changes" — false reading. Per-key `onchange` handlers (`saveCalibrationOverride`) save each change individually; no bulk button exists by design.
+
+### Invariants to preserve post-round-57
+
+* Every `guardrails.json` RMW MUST hold `strategy_file_lock(gpath)`. Slow ops (Alpaca `/account` fetches, tier detection) MUST happen outside the lock.
+* `/api/calibration/override` MUST rate-limit at 3s per user/mode.
+* Failed trailing-stop raises MUST fire `observability.capture_message` with `event=trailing_stop_raise_failed` + `session` tag.
+* `/api/data` MUST expose `extended_hours_trailing` (default True).
+* `input[type=range]` CSS MUST keep 32px height + `accent-color` + custom webkit/moz thumb styling.
+* `server.py` LOC cap now 3100 (was 3000 post-round-54). Bump with care.
+
+---
+
 ## 🆕 Round-56 — Daily-close email option/short display
 
 User forwarded a screenshot of their end-of-day email:
