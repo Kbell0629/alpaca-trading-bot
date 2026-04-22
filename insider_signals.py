@@ -178,7 +178,13 @@ def fetch_insider_buys(symbol, days=30):
             "ticker": symbol.upper(),
             "buy_count": 0,
             "buyer_count": 0,
-            "total_value_usd": 0,
+            # Round-58: `total_value_usd` stays null (not 0) — dashboards
+            # were rendering "$0" next to buy_count=12 which read as "$0
+            # of insider buying" when the truth was "we count filings but
+            # haven't parsed dollar volume yet". See value_parse_status
+            # for the real state of the signal.
+            "total_value_usd": None,
+            "value_parse_status": "not_parsed",
             "most_recent_date": None,
             "has_cluster_buy": False,
             "error": err,
@@ -192,7 +198,8 @@ def fetch_insider_buys(symbol, days=30):
             "ticker": symbol.upper(),
             "buy_count": len(filings),
             "buyer_count": len(unique_filers),
-            "total_value_usd": 0,  # not parsed in v1
+            "total_value_usd": None,  # Round-58: see note above
+            "value_parse_status": "not_parsed",  # enum: not_parsed|parsed|unavailable
             "most_recent_date": most_recent,
             "has_cluster_buy": len(unique_filers) >= 3,
             "raw_filings": filings[:10],  # cap stored to 10

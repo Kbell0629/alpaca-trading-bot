@@ -1864,7 +1864,46 @@ def fetch_all_data():
     for pick in top_candidates:
         pick["profit_ladder"] = PROFIT_LADDER
 
-    # Improvement 3: Sector-diversified top 5
+    # Round-58: annotate each enriched pick with `filter_reasons` so the
+    # dashboard can hide (or demote) picks the deployer will reject. Before
+    # this, picks like MSOS (daily +21%, vol 25%) sat at the top of the
+    # list with score 281 even though run_auto_deployer's Gate A / Gate B
+    # (cloud_scheduler:2341) would skip them. Source-of-truth is still
+    # those gates; this mirrors them so the UI doesn't lie. We also tag
+    # will_deploy=False so the dashboard can dim violators.
+    for p in top_candidates:
+        reasons = p.get("filter_reasons") or []
+        try:
+            _dc = float(p.get("daily_change", 0) or 0)
+        except (TypeError, ValueError):
+            _dc = 0.0
+        try:
+            _vol = float(p.get("volatility", 0) or 0)
+        except (TypeError, ValueError):
+            _vol = 0.0
+        _best_strat = (p.get("best_strategy") or "").lower().replace(" ", "_")
+        # Map display names to deployer keys
+        _strat_key = {
+            "breakout": "breakout",
+            "pead": "pead",
+            "mean_reversion": "mean_reversion",
+            "wheel_strategy": "wheel",
+            "trailing_stop": "trailing_stop",
+            "copy_trading": "copy_trading",
+        }.get(_best_strat, _best_strat)
+        if _strat_key in ("breakout", "pead") and _dc > 8.0:
+            reasons.append(f"chase_block (+{_dc:.1f}% intraday)")
+        if _strat_key in ("breakout", "pead") and _vol > 20.0:
+            reasons.append(f"volatility_block ({_vol:.1f}% > 20%)")
+        p["filter_reasons"] = reasons
+        p["will_deploy"] = not reasons
+
+    # Improvement 3: Sector-diversified top 5. Round-58: prefer picks
+    # that will actually deploy — violators drop to the bottom so the
+    # "top 5" reflects what the deployer will pick up tomorrow.
+    _deployable = [p for p in top_candidates if p.get("will_deploy")]
+    _blocked = [p for p in top_candidates if not p.get("will_deploy")]
+    top_candidates = _deployable + _blocked
     diversified_top5 = apply_sector_diversification(top_candidates, max_per_sector=2, top_n=5)
     print(f"  Diversified top 5: {', '.join(p['symbol'] + ' (' + p['sector'] + ')' for p in diversified_top5)}")
 
