@@ -45,7 +45,10 @@ Daily loss limit of 3% triggers an automatic kill switch. Bot cancels all orders
 Big red **KILL SWITCH** button in the dashboard header. One click stops everything.
 
 **"When can I use real money?"**
-When the Readiness Score hits 80/100 (usually takes 30 days of profitable paper trading). The bot tells you when you're ready.
+When the Readiness Score hits 80/100 (usually takes 30 days of profitable paper trading). The bot tells you when you're ready. See the [Going Live](#-going-live--dual-mode-paper--live-in-parallel) section for the one-click dual-mode setup — paper + live run side-by-side on the same login.
+
+**"How do I switch between paper and live views?"**
+Click the 📝 PAPER (orange) / 🔴 LIVE (red) badge in the top-left of the header. One click flips the entire dashboard to the other account. Each mode has fully isolated state — paper bugs can't touch live positions, and vice versa. See [Going Live](#-going-live--dual-mode-paper--live-in-parallel) to set up parallel mode.
 
 ---
 
@@ -123,16 +126,16 @@ When the Readiness Score hits 80/100 (usually takes 30 days of profitable paper 
 | Element | What It Does |
 |---|---|
 | **Stock Trading Bot** title | Click to scroll to top |
-| **PAPER TRADING** (orange) | Reminds you it's fake money |
+| **📝 PAPER / 🔴 LIVE** (clickable) | Mode-toggle button. Orange "📝 PAPER" = viewing paper account; red "🔴 LIVE" = viewing real-money live account. Click to switch views. If you don't have live keys saved yet, clicking opens Settings → Live Trading tab. See "Going Live — Dual Mode" below for the full workflow. |
 | **Trading Session Badge** | PRE-MARKET / MARKET OPEN / AFTER HOURS / CLOSED |
 | **Readiness Score** | Progress toward going live (need 80/100) |
 | **24/7 CLOUD** badge (green) | Cloud scheduler running — bot is alive |
 | **Auto-Deployer Toggle** | ON/OFF switch for automatic trading |
-| **KILL SWITCH** (red) | Emergency stop — cancels all orders, closes all positions |
+| **KILL SWITCH** (red) | Emergency stop — cancels all orders, closes all positions. **Per-mode:** paper KILL only halts paper, live KILL only halts live. They're fully isolated. |
 | **🎤 Voice** | Voice control (Chrome/Safari) — say "Kill switch", "What's my P&L" |
 | **📖 Help** | Opens this user manual |
 | **↻ Refresh** | Manually refresh dashboard data |
-| **Next refresh: Xs** | Countdown to next auto-refresh (every 60s) |
+| **Next refresh: Xs** | Countdown to next auto-refresh (every 10 seconds — real-time feel). |
 
 ### Navigation Tabs (scrollable)
 
@@ -183,13 +186,22 @@ For Short Selling, also has **Turn On/Off** toggle since shorts are riskier.
 Your current holdings:
 - Symbol, Quantity, Entry Price, Current Price, P&L, P&L %
 - **AUTO/MANUAL** badge — was this deployed by the bot or you?
+- **🚨 BREAKING** badge — fresh news alert on this symbol (last 60 min, `|score| >= 6`)
 - **Close button** — Sell everything (confirmation modal shows expected P&L)
-- **Sell Half button** — Sell 50% (lock in gains)
+- **Sell 25% / Sell 50% buttons** — Partial sell (lock in some gains while staying in)
+- **📈 Chart button** — Pop up a native price chart (30d/60d/90d/6M) with your entry + stop overlaid
+
+### Today's Closes
+
+Shows every position closed today (all strategies). Columns: Time · Symbol · Strategy · Reason · Exit · P&L. Panel auto-hides when there are zero closes today.
+
+- **`[orphan]` tag** in orange next to a symbol means the close was recorded but the original "open" entry wasn't in the trade journal (usually a position deployed before round-33's journaling fix). The dollar P&L is still correct; only the pnl_pct is missing. For wheel positions, the bot automatically recovers the entry price from the wheel state file's history on the next scheduler tick, so the `[orphan]` tag usually disappears within ~15-30 min.
 
 ### Open Orders Table
 
-Pending orders not yet filled:
+Pending orders not yet filled (e.g., after-hours deploys waiting for next market open):
 - **Cancel button** per row — Cancel the order (no money involved)
+- Orders placed after the 4 PM ET close sit here overnight and fill at the next 9:30 AM ET open. That's normal Alpaca behavior — not a bot issue.
 
 ### Full Screener (Top 50)
 
@@ -658,7 +670,7 @@ Check Dashboard → Scheduler tab → recent logs. Common reasons:
 
 ### Scenario: "Position showing wrong P&L"
 
-Dashboard auto-refreshes every 60 seconds. Click Refresh button for immediate refresh. Position P&L comes directly from Alpaca — if still wrong, that's an Alpaca issue.
+Dashboard auto-refreshes every 10 seconds (near real-time). Click Refresh button for immediate refresh. Position P&L comes directly from Alpaca — if still wrong, that's an Alpaca issue.
 
 ### Scenario: "I can't log in"
 
@@ -671,14 +683,9 @@ Credentials are case-sensitive. If you've forgotten them or they've changed, che
 
 ---
 
-## 💵 Going Live — Switching to Real Money
+## 💵 Going Live — Dual Mode (Paper + Live in Parallel)
 
-> **The full 30-day paper review framework + go-live checklist lives in
-> Claude's memory as `thirty_day_review.md`.** If you're asking Claude
-> for a readiness review, it will automatically load that file — it has
-> GREEN / YELLOW / RED outcome thresholds, deferred-feature revisit
-> priority, and the full live-migration checklist with rollback plan.
-> This section is the short version.
+The bot now supports **dual-mode trading**: paper and live Alpaca accounts run side-by-side on the same login. Each mode has its own state tree (strategies, positions, journal, scorecard), and the dashboard has a one-click view toggle in the header. No Railway env-var changes needed — everything's configured per-user in Settings.
 
 ### Prerequisites
 
@@ -687,34 +694,61 @@ Credentials are case-sensitive. If you've forgotten them or they've changed, che
 3. **≥ 30 days of paper trading history** (first market day 2026-04-16 → earliest go-live 2026-05-16)
 4. **Understand the strategies** (re-read this manual)
 5. **$5,000 minimum** to fund live account (bot sized for this amount)
-6. **Backup of `MASTER_ENCRYPTION_KEY`** stored off-Railway — if this env var is ever lost, every user has to re-enter their Alpaca credentials
-7. **Build #11 (limit-order entries) first** — saves 0.1-0.3% slippage × real dollars, worth doing before your first live trade
+6. **Live Alpaca keys** generated at https://app.alpaca.markets → LIVE account → API Keys
+7. **Backup of `MASTER_ENCRYPTION_KEY`** stored off-Railway — if this env var is ever lost, every user has to re-enter their Alpaca credentials
 
 ### Step-by-Step Process
 
-1. **Create live Alpaca account:** https://alpaca.markets → "Open an Account" (NOT paper)
-2. **Fund with $5,000** (ACH transfer, takes 2-3 days to clear)
-3. **Generate live API keys:** Alpaca dashboard → API Keys → Generate. **IMPORTANT:** Mark them as LIVE keys.
-4. **Update Railway environment variables:**
-   ```
-   ALPACA_ENDPOINT = https://api.alpaca.markets/v2
-   ALPACA_API_KEY = <your live key>
-   ALPACA_API_SECRET = <your live secret>
-   ```
-5. **Update `guardrails.json`** to use `live_mode_settings`:
-   - Max positions: 3 (not 5)
-   - Max per stock: 5% (not 10%)
-   - Max new per day: 1 (not 2)
-6. **Keep paper running in parallel** for comparison (use separate Alpaca account).
-7. **Watch carefully for first week** — live fills may differ from paper due to slippage.
+1. **Create + fund live Alpaca account:** https://alpaca.markets → "Open an Account" (NOT paper). Fund with ≥ $5,000 (ACH transfer, takes 2-3 days to clear).
+2. **Generate live API keys** at Alpaca dashboard → API Keys → Generate. Mark them as LIVE keys.
+3. **Save live keys in the bot:** Dashboard → your username → Settings → **Alpaca API** tab → scroll to "💰 Live Trading Keys" → paste key + secret → Save. They're AES-256-GCM encrypted at rest — nobody (not even operators) sees them in cleartext after save.
+4. **Enable parallel mode:** Settings → **🔴 Live Trading** tab → scroll to "🆕 Parallel Mode" section → click **Enable Parallel Paper + Live**.
+5. **Done.** Within ~15-30 minutes the scheduler tick picks up your live-parallel flag and starts running live-keyed strategies alongside paper. Paper keeps doing exactly what it was doing, untouched. Live gets fresh strategy files at `users/<id>/live/`.
+6. **Switch views anytime** — click the 📝 PAPER / 🔴 LIVE badge in the top-left header. It flips to the other view instantly (full page reload to guarantee fresh state). All dashboard data (positions, scorecard, Today's Closes, Activity Log, etc.) reflects whichever mode you're currently viewing.
+
+### What's Isolated Per Mode
+
+Each mode is a separate state tree — nothing crosses between them:
+
+| State | Paper path | Live path |
+|---|---|---|
+| Strategies | `users/<id>/strategies/*.json` | `users/<id>/live/strategies/*.json` |
+| Trade journal | `users/<id>/trade_journal.json` | `users/<id>/live/trade_journal.json` |
+| Scorecard | `users/<id>/scorecard.json` | `users/<id>/live/scorecard.json` |
+| Wheel state | `users/<id>/strategies/wheel_*.json` | `users/<id>/live/strategies/wheel_*.json` |
+| Guardrails + kill switch | `users/<id>/guardrails.json` | `users/<id>/live/guardrails.json` |
+| Email queue | `users/<id>/email_queue.json` | `users/<id>/live/email_queue.json` |
+| Alpaca API keys | `alpaca_*_encrypted` | `alpaca_live_*_encrypted` |
+| Alpaca endpoint | `paper-api.alpaca.markets` | `api.alpaca.markets` |
+| Circuit breaker + rate limit | Per mode | Per mode |
+
+A paper-mode KILL switch does **not** halt live trading. A bug in a paper strategy file cannot touch live positions. Paper and live use separate Alpaca rate-limit budgets (each account has its own 200/min limit at Alpaca).
+
+### Live-Mode Notifications
+
+Trades that fire on the **live** account get a `[LIVE]` prefix in every ntfy push + email + Sentry alert. Example: `[LIVE] Deployed breakout on SOXL x 117 @ ~$85.11`. Paper notifications are unprefixed. Tell your eye at a glance whether the alert is real money or paper.
+
+### Safety Rails
+
+- **Default paper-only.** Saving live keys alone does NOT start live trading. You must explicitly click "Enable Parallel Paper + Live" for the bot to begin running live-keyed strategies.
+- **Live entry in scheduler** requires BOTH live keys present AND the parallel flag on. Misconfigured sessions (e.g., switching view to live when no keys are saved) silently fall back to paper view.
+- **Per-mode circuit breaker** — if live Alpaca returns 401 three times in a row, only live's CB opens; paper keeps running.
+- **Per-mode per-day auth-failure alert** — a paper-keys-expired alert today doesn't silence a separate live-keys-expired alert on the same day.
 
 ### What's Different in Live Mode
 
-- **Real slippage:** bid/ask spread costs 0.1-0.5% per trade
+- **Real slippage:** bid/ask spread costs 0.1-0.5% per trade (paper fills at mid; live fills at worst-of-spread)
 - **Slower fills** during high volume
 - **Pattern day trader rules:** need $25k for unlimited day trading, or limit to 3 day trades per 5-day period
 - **Tax implications** — consult an accountant
 - **Emotional pressure** — real money hits different
+- **Alpaca rate limit is separate** — paper's 200/min + live's 200/min are independent, so busy paper activity won't throttle live
+
+### Disabling Live Parallel
+
+Settings → 🔴 Live Trading → Parallel Mode → **Disable Parallel Mode (paper only)**. Existing live positions + state at `users/<id>/live/` are preserved (not deleted) but the scheduler stops actively managing them. Re-enable anytime to resume.
+
+If you want to CLOSE out live positions before disabling, flip the header toggle to 🔴 LIVE first, then use the per-position Close buttons or the KILL switch. That kill switch is live-scoped — it only touches your live account.
 
 ---
 
