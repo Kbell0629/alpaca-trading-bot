@@ -78,6 +78,18 @@ def _user_headers(user):
 
 
 def _cb_key(user):
+    # Round-46: include trading mode so paper and live get separate
+    # circuit-breaker + rate-limiter buckets. Paper (paper-api.alpaca.markets)
+    # and live (api.alpaca.markets) are two DIFFERENT Alpaca backends,
+    # each with their own 200/min rate-limit budget. Sharing the bucket
+    # would throttle live unnecessarily when paper is busy, and a paper
+    # CB trip would block live (and vice versa).
+    #
+    # Paper keeps the plain user-id key for backward compat with any
+    # persisted in-memory state from pre-round-46 ticks.
+    _mode = user.get("_mode", "paper")
+    if _mode == "live":
+        return f"{user.get('id', 'env')}:live"
     return user.get("id", "env")
 
 
@@ -173,7 +185,12 @@ def _alert_alpaca_auth_failure(user, code, reason):
         except Exception:
             from datetime import datetime
             today = datetime.utcnow().strftime("%Y-%m-%d")
-        uid = user.get("id")
+        # Round-46: key the per-day dedup by (user_id, mode) so a paper-
+        # creds-rot alert doesn't silence a separate live-creds-rot alert
+        # on the same day. Users running live-parallel have two distinct
+        # sets of Alpaca keys — each can fail independently.
+        _mode = user.get("_mode", "paper")
+        uid = f"{user.get('id')}:{_mode}" if _mode == "live" else user.get("id")
         with _auth_alert_lock:
             if _auth_alert_dates.get(uid) == today:
                 return

@@ -930,7 +930,58 @@ Ruff clean on touched files.
 
 ---
 
-## Last session state (2026-04-22 very late night — END OF SESSION, after round-45 dual-mode paper+live)
+## Last session state (2026-04-22 very late night — END OF SESSION, after round-46 dual-mode audit fixes)
+
+**83 PRs merged + round-46 in flight.** Paper-trading 30-day
+validation window ongoing.
+
+**Current `main` HEAD:** `cb4ffef` (PR #83 round-45 dual-mode paper+live
+— merged during this session). Round-46 branch
+`claude/round46-dual-mode-fixes` — awaiting manual PR merge.
+
+### Round-46 (this round) — round-45 audit fixes + UX polish
+
+User merged round-45 then asked for an audit ("really important, make
+sure you were perfect in execution"). Ran direct review + spawned a
+parallel audit Explore agent. Four real bugs surfaced — all
+mode-contamination risks that could cross-pollute paper + live
+state. Plus two UX tweaks.
+
+**Audit fixes:**
+* `get_dashboard_data` / `_resolve_user_paths` now take `mode=`.
+  Previously `/api/data` with session=live was reading paper's
+  dashboard_data.json + overlay files — dashboard showed live account
+  data paired with paper positions. Fixed by threading mode through
+  the call chain.
+* `_wheel_deploy_in_flight` dedup in `run_wheel_auto_deploy` now keys
+  by `f"{id}:{mode}"` for live (paper keeps plain id for back-compat
+  with the main scheduler loop's existing pattern). Before, scheduler
+  tick fired paper + live back-to-back and one would silently skip.
+* `scheduler_api._alert_alpaca_auth_failure` per-day dedup now
+  includes mode — a paper-creds-expired alert won't silence a
+  live-creds-expired alert for the same day.
+* `scheduler_api._cb_key` now returns distinct keys for paper vs
+  live. Paper and live hit different Alpaca backends with separate
+  200/min rate budgets — sharing the circuit-breaker + rate-limiter
+  buckets meant paper noise could throttle live and vice versa.
+
+**UX polish:**
+* Removed `(round-45)` text from the Parallel Mode info box — user
+  caught it on mobile. Dev-internal versioning shouldn't be in UX copy.
+* Dashboard auto-refresh 60s → **10s** (user wanted more real-time).
+  Under Alpaca 200/min rate limit; `_refreshInFlight` guard + token
+  bucket prevent stacking.
+
+**Tests:** 7 new in `tests/test_round46_dual_mode_fixes.py`. Suite:
+**636 passing** (629 + 7). Ruff clean. Node --check clean.
+
+**Audit agent performance:** one critical finding (wheel-deploy
+dedup), no false positives. Trading-logic false-positives history
+from round-22 didn't repeat here.
+
+---
+
+## Last session state (2026-04-22 very late night — after round-45, before round-46)
 
 **82 PRs merged + round-45 in flight.** Paper-trading 30-day
 validation window ongoing.

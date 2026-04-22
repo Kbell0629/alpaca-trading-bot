@@ -309,13 +309,18 @@ def alpaca_get_cached(url, timeout=15, headers=None):
 # reasoned about (and tested) independently.
 # ============================================================================
 
-def _resolve_user_paths(user_id):
+def _resolve_user_paths(user_id, mode="paper"):
     """Return (user_dir, strats_dir). Falls back to shared DATA_DIR only
-    when user_id is None (legacy env-var mode)."""
+    when user_id is None (legacy env-var mode).
+
+    Round-46: `mode` honors the caller's session_mode so /api/data and
+    other endpoints read from users/<id>/live/ when the session is live.
+    Pre-round-46 callers that didn't pass mode default to 'paper' which
+    is exact backward compatibility."""
     if user_id is not None:
         try:
             import auth as _auth
-            user_dir = _auth.user_data_dir(user_id)
+            user_dir = _auth.user_data_dir(user_id, mode=mode)
             strats_dir = os.path.join(user_dir, "strategies")
             os.makedirs(strats_dir, exist_ok=True)
             return user_dir, strats_dir
@@ -492,7 +497,7 @@ def _load_overlay_files(user_dir, strats_dir, user_id):
     }
 
 
-def get_dashboard_data(api_endpoint=None, api_headers=None, user_id=None):
+def get_dashboard_data(api_endpoint=None, api_headers=None, user_id=None, mode="paper"):
     """Assemble the dashboard payload for a user.
 
     Pipeline:
@@ -504,8 +509,13 @@ def get_dashboard_data(api_endpoint=None, api_headers=None, user_id=None):
 
     Falls back to a build-from-scratch response if no dashboard_data.json
     exists yet (new user before first screener run).
+
+    Round-46: `mode` scopes reads to the caller's session tree. Without
+    this, a live-view session was reading paper's state files while the
+    Alpaca endpoint correctly pointed at live — so the dashboard showed
+    paper's positions with live account data in the header (mismatch).
     """
-    user_dir, strats_dir = _resolve_user_paths(user_id)
+    user_dir, strats_dir = _resolve_user_paths(user_id, mode=mode)
 
     # Load screener picks. CRITICAL: do NOT fall back to the shared
     # DASHBOARD_DATA_PATH for non-admin users — that would leak another
@@ -1676,6 +1686,9 @@ class DashboardHandler(
                 api_endpoint=self.user_api_endpoint,
                 api_headers=self.user_headers(),
                 user_id=self.current_user.get("id") if self.current_user else None,
+                # Round-46: respect session mode so live view reads from
+                # users/<id>/live/ state tree.
+                mode=self.session_mode or "paper",
             )
             # Round-45: expose the session's current mode + whether the
             # user has live keys configured so the dashboard can render
