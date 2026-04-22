@@ -31,9 +31,15 @@ import pytest
 @pytest.fixture
 def _tmp_user(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    # Round-46 CI-safety: reloading cloud_scheduler transitively
+    # imports auth, which requires MASTER_ENCRYPTION_KEY to be set or
+    # it raises at module load. Set it here so this fixture is
+    # self-sufficient (same pattern as test_round46_dual_mode_fixes'
+    # _reload helper and conftest.py's isolated_data_dir fixture).
+    monkeypatch.setenv("MASTER_ENCRYPTION_KEY", "e" * 64)
     import importlib
     import sys as _sys
-    for m in ("cloud_scheduler", "scheduler_api"):
+    for m in ("cloud_scheduler", "scheduler_api", "auth"):
         if m in _sys.modules:
             del _sys.modules[m]
     import cloud_scheduler
@@ -132,17 +138,26 @@ def test_scan_todays_closes_ignores_yesterday():
 def test_scan_todays_closes_newest_first():
     from todays_closes import scan_todays_closes
     from et_time import now_et
-    now = now_et().replace(microsecond=0)
+    # Anchor the test timestamps to noon ET so `now - 3 hours` doesn't
+    # cross midnight when the CI runner executes between 00:00-03:00 ET.
+    # Before this anchor, running the test at ~midnight ET filtered out
+    # the "3 hours ago" trade as yesterday's date and the assertion
+    # `== ["THIRD", "SECOND", "FIRST"]` saw only ["THIRD"].
+    today = now_et().date()
+    noon = now_et().replace(
+        year=today.year, month=today.month, day=today.day,
+        hour=12, minute=0, second=0, microsecond=0,
+    )
     journal = {
         "trades": [
             {"symbol": "FIRST", "status": "closed",
-             "exit_timestamp": (now - timedelta(hours=3)).isoformat(),
+             "exit_timestamp": (noon - timedelta(hours=3)).isoformat(),
              "exit_price": 10.0, "exit_reason": "x", "pnl": 1.0},
             {"symbol": "SECOND", "status": "closed",
-             "exit_timestamp": (now - timedelta(hours=1)).isoformat(),
+             "exit_timestamp": (noon - timedelta(hours=1)).isoformat(),
              "exit_price": 20.0, "exit_reason": "x", "pnl": 2.0},
             {"symbol": "THIRD", "status": "closed",
-             "exit_timestamp": now.isoformat(),
+             "exit_timestamp": noon.isoformat(),
              "exit_price": 30.0, "exit_reason": "x", "pnl": 3.0},
         ],
     }
