@@ -973,11 +973,26 @@ state. Plus two UX tweaks.
   bucket prevent stacking.
 
 **Tests:** 7 new in `tests/test_round46_dual_mode_fixes.py`. Suite:
-**636 passing** (629 + 7). Ruff clean. Node --check clean.
+**640 passed, 1 deselected** under CI's invocation (`pytest tests/
+--deselect tests/test_dashboard_data.py::test_trading_session_...`).
+Ruff clean. Node --check clean.
 
 **Audit agent performance:** one critical finding (wheel-deploy
 dedup), no false positives. Trading-logic false-positives history
 from round-22 didn't repeat here.
+
+**CI hotfix (round-46 commit `affbf65`):** first push reported 5
+failed tests on CI that passed locally. Root cause: my `_reload()`
+test helper didn't set `MASTER_ENCRYPTION_KEY` before the reload
+imports cloud_scheduler → auth, so auth.py's mandatory-key check
+raised at module load time. Locally I was running with the env var
+set in the shell so it carried through; CI's pytest invocation
+doesn't set it. Fix: `_reload(monkeypatch)` takes the fixture and
+sets the key via `monkeypatch.setenv`. Every caller updated.
+Verified with `unset MASTER_ENCRYPTION_KEY; pytest ...` locally.
+Lesson for future tests: anything that `importlib.reload()`s an
+auth-dependent module must explicitly set the env var, same pattern
+as the existing `isolated_data_dir` fixture.
 
 ---
 
