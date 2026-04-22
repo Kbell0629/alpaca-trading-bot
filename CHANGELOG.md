@@ -8,6 +8,72 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-50 — Portfolio auto-calibration (any account size, Alpaca-rule aware)
+
+**User ask:** *"allow this stock bot to calibrate everything under the hood based on how much money is available... a $500 cash trading account could still use this bot... if someone opened a $1M+ account they could also still use this bot... it wouldn't matter how much they have little or big."*
+
+Round-50 makes the bot dynamic and Alpaca-rule-aware at any account size from $500 to $1M+. Detection reads Alpaca's `/v2/account` directly (not guesses from equity) and respects every Alpaca constraint: cash-account no-shorts, PDT rules, settled-funds, fractional eligibility.
+
+**Four new modules:**
+
+* **`portfolio_calibration.py`** — reads Alpaca's `multiplier`, `equity`, `pattern_day_trader`, `shorting_enabled`, `day_trades_remaining` and classifies the account into 6 tiers. Each tier has its own defaults.
+* **`fractional.py`** — daily-cached list of fractionable symbols + sizing helper. A $500 account can hold a $25 slice of TSLA at $250/share.
+* **`pdt_tracker.py`** — uses Alpaca's `day_trades_remaining` to respect the 3-in-5 rule on margin < $25k. Holds intraday exits overnight when ≤ 1 slot remains.
+* **`settled_funds.py`** — T+1 ledger for cash accounts. Blocks deploys that would exhaust settled cash before recent sales settle (Good Faith Violation prevention).
+
+**Six tiers:**
+
+| Tier | Equity | Strategies | Positions | Max% | Fractional | Short | Wheel |
+|---|---|---|---|---|---|---|---|
+| 🌱 Cash Micro | $500-$2k | TS + Breakout + MeanRev | 2 | 15% | ON | ❌ | ❌ |
+| 🌿 Cash Small | $2k-$25k | + PEAD + Copy | 5 | 10% | ON | ❌ | ❌ |
+| 🌳 Cash Standard | $25k+ | + Wheel | 8 | 7% | Optional | ❌ | ✅ |
+| 📘 Margin Small | $2k-$25k | + Short | 6 | 8% | ON | ✅ ETB, PDT | ❌ |
+| 🏛️ Margin Standard | $25k-$500k | All 6 | 10 | 6% | Optional | ✅ | ✅ |
+| 🐋 Margin Whale | $500k+ | All 6 + cap | 15 | 4% | Optional | ✅ | ✅ |
+
+**Alpaca-rule enforcement:**
+
+* **Cash accounts** → shorting BLOCKED (Alpaca rule). User overrides attempting `short_enabled=True` on cash silently rejected with `short_override_rejected=True` stamp.
+* **Margin < $25k** → PDT rules ACTIVE. Bot tracks `day_trades_remaining`; intraday exits held overnight when ≤ buffer (default 1).
+* **Cash accounts** → T+1 settled-funds active. Every sale recorded with `settles_on` date; deploys blocked if they'd exceed settled cash × 95% buffer.
+* **Margin** → `min_stock_price: 3` (Alpaca's <$3 not-marginable rule).
+
+**Fractional integration:**
+
+* Micro/Small/Margin-Small default fractional ON — any liquid stock becomes affordable.
+* `smart_orders.place_smart_buy(fractional=True)` routes direct to market (Alpaca's fractional-qty constraint).
+* Screener price filter auto-relaxes when fractional is on.
+
+**Settings UI:**
+
+* New **🎛️ Calibration** tab shows detected tier, equity, settled cash, buying power, PDT status, day-trades-remaining, enabled/disabled strategies per Alpaca rules.
+* Recalibrate Now button forces fresh `/account` fetch.
+* User overrides in guardrails.json always win for risk-preference changes; Alpaca-rule violations blocked.
+
+**Tests:** 41 new cases in `tests/test_round50_portfolio_calibration.py`:
+  * Per-tier detection (6 tests)
+  * Boundary cases (below $500, invalid input)
+  * User override merge + Alpaca-rule rejection
+  * Wheel affordability dynamic check
+  * PDT allow/deny across cash + margin scenarios
+  * Settled-funds record/query/expire
+  * Fractional sizing (fractional symbol, whole-share, invalid)
+  * Parametrized end-to-end for all 6 tiers
+
+Suite: **697 passed, 1 deselected** under CI invocation (was 656 + 41 new). Ruff clean. Node `--check` clean.
+
+**Operator impact:**
+* Jon's $500 live-money account → auto-detects as 🌱 Cash Micro, fractional on, 2 positions × 15%, no shorts/wheel. Works out of the box.
+* Your $100k paper → 🌳 Cash Standard. Full strategy set including wheel.
+* Anyone at any size → saves keys, enables parallel, bot auto-tunes.
+
+**Known limitations (future rounds can tighten):**
+* Deep integration into `run_auto_deployer`'s per-pick loop is light-touch in round-50 — calibration fills missing guardrails defaults but doesn't yet force-disable strategies mid-deploy. Full enforcement lands in round-51 after beta testing.
+* Fractional currently opt-in via smart_orders signature — round-51 will auto-route based on tier + symbol fractionability.
+
+---
+
 ## 🆕 Round-44 — Auto-fix orphan wheels + kill the refresh jitter (2026-04-22)
 
 Two user-requested UX fixes landed in one PR. Replaces the originally

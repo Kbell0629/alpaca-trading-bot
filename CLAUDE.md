@@ -930,7 +930,83 @@ Ruff clean on touched files.
 
 ---
 
-## Last session state (2026-04-23 early morning — END OF SESSION, after round-48 cross-user privacy fix)
+## Last session state (2026-04-23 — END OF SESSION, after round-50 portfolio auto-calibration)
+
+**Rounds 48, 49, 50 all merged to main during this session.** Round-50
+is a MAJOR feature drop — the bot now auto-calibrates for any account
+size from $500 to $1M+ based on Alpaca's /v2/account response.
+
+**Current `main` HEAD:** `6c9fd6e` (PR #92 round-49 staleness tuning).
+Round-50 branch `claude/round50-portfolio-auto-calibration` — awaiting
+manual PR merge.
+
+### Round-50 (this round) — Portfolio auto-calibration
+
+**User ask:** "calibrate everything under the hood based on how much
+money is available... $500 cash account could still use this bot...
+$1M+ account could also still use this bot... it wouldn't matter how
+much they have little or big."
+
+**Four new modules:**
+* `portfolio_calibration.py` — tier detection from Alpaca /account
+* `fractional.py` — fractionable-asset cache + position sizing
+* `pdt_tracker.py` — Pattern Day Trader rule awareness
+* `settled_funds.py` — T+1 settled-cash ledger (Good Faith Violation prevention)
+
+**Six tiers:**
+  * 🌱 cash_micro ($500-$2k) — 2 positions × 15%, fractional ON, no shorts/wheel
+  * 🌿 cash_small ($2k-$25k) — 5 × 10%, fractional ON, no shorts/wheel
+  * 🌳 cash_standard ($25k+) — 8 × 7%, wheel ON, no shorts
+  * 📘 margin_small ($2k-$25k) — 6 × 8%, shorts ON, **PDT applies**
+  * 🏛️ margin_standard ($25k-$500k) — 10 × 6%, ALL 6 strategies
+  * 🐋 margin_whale ($500k+) — 15 × 4%, + single-ticker cap 8%
+
+**Alpaca rules baked in:**
+* Cash accounts → shorts BLOCKED (user override silently rejected)
+* Margin <$25k → PDT: tracks day_trades_remaining, holds exits overnight at buffer
+* Cash → T+1 settled-funds ledger, blocks overspend
+* Margin → min stock price $3 (sub-$3 not marginable)
+
+**Fractional:**
+* Default ON for micro/small/margin-small tiers
+* `smart_orders.place_smart_buy(fractional=True)` routes to market
+* Per-user daily cache of `/v2/assets?fractionable=true`
+
+**UI:**
+* New Settings → 🎛️ Calibration tab shows tier + equity + cash +
+  buying_power + PDT status + strategies + Alpaca-blocked items
+* /api/calibration endpoint returns the full summary
+
+**Integration so far:**
+* `run_auto_deployer` fetches /account, detects tier, fills MISSING
+  guardrails values with tier defaults. User overrides always win.
+* Deeper integration (force-disable strategies mid-deploy, auto-route
+  fractional per tier) deferred to round-51 to reduce risk.
+
+**Tests:** 41 new in `tests/test_round50_portfolio_calibration.py` —
+per-tier detection (6), invalid-input handling, override merge,
+Alpaca-rule rejection, wheel affordability, PDT allow/deny paths,
+settled-funds ledger, fractional sizing, parametrized end-to-end
+for all 6 tiers. Suite: **697 passed, 1 deselected** (CI
+invocation). Ruff + node --check clean.
+
+### Invariants to preserve post-round-50
+
+* `portfolio_calibration.detect_tier` MUST return None for equity <$500.
+* Cash accounts MUST NEVER receive `short_enabled=True` even when
+  the user tries to override — test `test_user_cannot_enable_shorts_on_cash_account`
+  will fire if someone regresses this.
+* `pdt_tracker.can_day_trade` MUST check `pdt_applies` before
+  consulting `day_trades_remaining`. Cash accounts never have PDT.
+* `settled_funds.can_deploy` MUST passthrough for margin accounts
+  (no T+1 constraint). The 95% buffer on cash must stay.
+* `fractional.size_position` MUST return `order_type_hint='market'`
+  when `fractional=True` (Alpaca constraint).
+* `server.py` LOC cap currently 2850 (test_round6). Bump with care.
+
+---
+
+## Prior session state (2026-04-23 early morning — after round-48 cross-user privacy fix)
 
 **86 PRs merged + round-48 in flight.** Paper-trading 30-day
 validation window ongoing.
