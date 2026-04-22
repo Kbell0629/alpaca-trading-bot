@@ -3436,6 +3436,21 @@ def run_wheel_monitor(user):
         except Exception as e:
             log(f"[{user['username']}] Wheel monitor error on {fname}: {e}", "wheel")
 
+    # Round-44: auto-fix any [orphan] wheel closes whose entry price can be
+    # recovered from the wheel state history[]. Idempotent + cheap (walks
+    # wheel files + journal; no Alpaca calls). Runs at the tail of every
+    # wheel monitor tick so new orphans get paired with their opens within
+    # one cycle — no manual admin button needed.
+    try:
+        import wheel_open_backfill as _wob
+        _res = _wob.backfill_wheel_opens(user)
+        if _res.get("patched", 0) > 0:
+            log(f"[{user['username']}] wheel-open backfill: patched "
+                f"{_res['patched']} orphan close(s) with recovered entry price",
+                "wheel")
+    except Exception as e:
+        log(f"[{user['username']}] wheel-open backfill error: {e}", "wheel")
+
 
 # ============================================================================
 # TASK 10: DAILY BACKUP — shared across all users (one snapshot covers DB)
