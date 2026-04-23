@@ -56,61 +56,160 @@ via web UI. Don't try `mcp__github__*` tools.
 
 ---
 
-## Current session state (2026-04-23 — round 61 money-path tests)
+## Current session state (2026-04-23 — round 61 COMPLETE, 1015 tests)
 
-**Branch:** merged to main. Round-61 split into three PRs: **pt.1 #102**
-(monitor_strategies + check_profit_ladder, 29 tests), **pt.2 #103**
-(run_auto_deployer + wheel state machine, 42 tests), **pt.3** (this PR —
-docs + coverage ratchet + behavioral coverage top-up). Rounds 58-60 all
-merged earlier today (PRs #99-#101).
+**Branch:** merged to main through pt.3 (#104). Pt.4 (this PR) pending
+merge. Test count: **1015 passing, 39% coverage**. Floor: **32%** (ratchet
+to 36+ deferred to pt.5 — see note below on why).
 
-### Round-61 — Money-path test coverage (Option A)
-User picked Option A from the coverage-options discussion: focus-fire
-tests on the highest-risk uncovered money paths rather than a full
-push to 80%. Four targets picked for their history of real-money bugs:
+### What landed in round 61
 
-**`monitor_strategies` (13 grep-pin tests, pt.1):** kill_switch early
-return pre-API, max_drawdown + daily_loss breach flows (RMW under
-lock, notify_rich, critical_alert, _flatten_all_user), peak +
-daily_starting_value seeding under lock, main-loop skip lists
-(copy_trading + wheel_strategy) + status gate, top-level try/except
-isolation, AH mode paused/short/wheel skips, _tier_cfg stashed in
-both branches.
+| PR | Theme | Tests |
+|---|---|---|
+| #102 pt.1 | `monitor_strategies` + `check_profit_ladder` grep-pins + behavioral | +29 |
+| #103 pt.2 | `run_auto_deployer` + wheel state machine grep-pins | +42 |
+| #104 pt.3 | CLAUDE.md/CHANGELOG sync + floor 30→32 + monitor_strategies behavioral | +7 |
+| pt.4 (this PR) | PDT/settled-funds/fractional + auto_deployer behavioral + wheel helpers | +118 |
 
-**`check_profit_ladder` (16 behavioral tests, pt.1):** rung ordering
-10→20→30→50 firing exactly once per call, 25% of initial_qty anchor
-(not current shares), client_order_id ET-date format for idempotency,
-Alpaca 422 dedup, stop resize (PATCH first, cancel+replace fallback,
-cancel on zero remaining), PDT gate (skip / bypass / fail-open).
+**Total round-61: +196 tests. Coverage: 34% → 39%. Floor: 30% → 32%
+(ratchet to 36+ held back from pt.4 — see "Floor deferred" below).**
 
-**`run_auto_deployer` (19 grep-pin tests, pt.2):** kill_switch pre-API,
-enabled=False early return, cooldown parse fail-CLOSED (R3), tier cash
-short-disable (R52), LIVE_MODE_AT_START snapshot (R45), factor_bypass,
-weak-breadth skip, daily_starting_value once per ET day, capital_check
-per-user path (R10), beta-exposure after positions (R12), per-pick
-enforcement of block_all, correlation for longs+shorts, tier-log dedup,
-tier defaults respect user overrides, calibration fail-open.
+### Floor deferred to pt.5 (why)
 
-**Wheel state machine (23 grep-pin tests, pt.2):** four stage names
-stable, open_short_put/open_covered_call write sites, canceled/expired/
-rejected order stage reset, transitional statuses stay pending (R10),
-DELTA-based put assignment (R43), cost_basis = strike - prem/share
-Decimal-safe, cost_basis cleared to None when shares hit 0, call
-assignment completes cycle, call-expired → stage_2_shares_owned,
-PROFIT_CLOSE_PCT + bid fallback (R10), external-close pre-expiry only
-(R42), anomalous-delta freeze without split (R12), split auto-resolve
-(R13), every close path journals, HISTORY_MAX cap, premium accumulator
-Decimal-safe.
+GitHub requires **manual workflow approval** for any PR that modifies
+`.github/workflows/*.yml`. Pt.4 originally bumped the floor 32 → 36
+but that triggered the approval gate, blocking CI from running at all
+on #105. Rather than force the user to click-approve via the Actions
+UI, pt.4 kept the floor at 32 and ships tests-only. Pt.5 will do the
+floor ratchet as part of its ci.yml edit (user clicks approve once;
+the workflow change is trivial to review).
 
-**Coverage honesty:** 53 of the 71 tests are grep-pins (pattern
-assertions on source). They DO catch regressions from refactor-renames,
-accidental guard removal, and CLAUDE.md invariant drift — but they don't
-move pytest-cov the way behavioral tests do. Only the 16 profit_ladder
-tests + 2 daily-close edge cases are real behavioral coverage. Expected
-CI test count: 891 passing after pt.2.
+### 🚨 USER-FLAGGED for next session (unfixed)
+
+**Recent Activity panel scroll jitter on refresh.** User reports
+(2026-04-23, after R60 merge):
+> "when im on the recent activity area on desktop and mobile when it
+> refreshes the screen still scrolls up and down and then lands back
+> at the recent activity so makes it hard to navigate when
+> refreshing...the refreshing should be silent"
+
+R60 fixed the same jitter family for Heatmap / Paper-vs-Live /
+Position Correlation / Readiness (via `_lastAppNormHash` in
+`renderDashboard` + in-place timestamp patching). The **Recent
+Activity** panel was NOT in that fix list — it has its own render
+function that still hits `innerHTML` wholesale on every 10s tick.
+Fix pattern is known: extend the `_lastHtml !==` hash-skip to the
+Recent Activity renderer (same as the 6 enrichment panels fixed in
+R57, see `test_enrichment_panels_use_hash_skip` for the pattern
+assertion). Should be one PR, ~30 min.
+
+### Road to 80% coverage (the path forward)
+
+| Phase | Target | Scope | Est effort |
+|---|---|---|---|
+| **pt.4** (now) | 39% ✅ | PDT + settled-funds + fractional behavioral; auto_deployer early paths; wheel helpers (`log_history`, `has_earnings_soon`, `score_contract`, `find_wheel_candidates`, `options_trading_allowed`, `cash_covered`, `count_active_wheels`, `_journal_wheel_close`) | done |
+| **pt.5** (~50%) | +11 pts | Extend auto_deployer behavioral harness for per-pick loop; full `run_daily_close` behavioral; more `cloud_scheduler.py` branches (process_strategy_file, stop_raise, entry_fill flow); complete `smart_orders.py`, `scheduler_api.py` circuit breaker, `yfinance_budget.py` error paths | 1 PR, ~4 hrs |
+| **pt.6** (~65%) | +15 pts | **Mock WSGI harness for `server.py` + `handlers/*.py`.** Biggest lever left. 1-2 days to build the harness (fake request/response, session context, auth-mode injection), then tests come fast. Covers 1555 currently-uncovered lines in `server.py`. | 1 big PR, 1-2 days |
+| **pt.7** (~80%) | +15 pts | Un-omit `update_dashboard.py` by refactoring to separate pure scoring math from I/O. Un-omit `update_scorecard.py` similarly. Write behavioral tests for the pure functions. Also unlocks screener testability for strategy dev. | 1-2 PRs, 2-3 days |
+| **pt.8 (optional)** | Python 80% + JS coverage | Set up Vitest + jsdom for `templates/dashboard.html`. ~6000 lines of JS currently invisible to `pytest-cov`. Without this, Python-only coverage caps around 75-80%. | 1 big PR, 1-2 days |
+
+### pt.5 specific handoff (start here)
+
+**Setup:**
+```bash
+git checkout main && git fetch origin main
+git checkout -b claude/round61-pt5-behavioral-50 origin/main
+```
+
+**Where to add tests:**
+- Extend `tests/test_round61_pt4_auto_deployer_behavioral.py` — the
+  `_Stubs` harness already works. Add tests for:
+  * Full pick loop iteration (inject a `dashboard_data.json` with
+    `picks:[{symbol, price, wheel_score, best_strategy}]` — then
+    assert orders placed/skipped per-pick).
+  * Factor-bypass mode actually deploys the picks without gate checks.
+  * Short selling: bear market + spy_momentum < -3 → short order
+    placed for top short_candidate.
+  * Sector cap: 3 tech in positions → 4th tech pick blocked.
+  * Beta block_all: block_all=True in regime → no long picks deployed.
+- New file `tests/test_round61_pt5_daily_close_behavioral.py` for
+  `run_daily_close` using the same stub pattern. Already partly
+  tested (R57 edge cases) — extend to cover the full report flow,
+  email send path, journal flush.
+- New file `tests/test_round61_pt5_monitor_per_strategy.py` — full
+  `process_strategy_file` exercised per strategy type
+  (trailing_stop / breakout / mean_reversion / pead / copy_trading).
+
+**Coverage target pt.5:** 50%+ actual. Ratchet floor to 45 or 48.
+
+### pt.6 specific handoff (mock WSGI harness)
+
+**The big one.** `server.py` is 1708 statements, 7% covered. Nothing
+else at this scale. Pattern:
+
+```python
+# tests/conftest.py (add a new fixture)
+@pytest.fixture
+def http_harness(isolated_data_dir, monkeypatch):
+    """Return a harness that calls server request-handler methods
+    directly, bypassing real sockets. Fakes: do_GET/do_POST/do_DELETE
+    entry, write/wfile for response capture, session auth injection."""
+    # ... build FakeHandler inheriting from AlpacaHandler that
+    # overrides wfile/rfile with BytesIO, records write_chunks,
+    # lets tests assert on the JSON body + status code.
+```
+
+Then for each mixin (`auth_mixin`, `admin_mixin`, `strategy_mixin`,
+`actions_mixin`, etc.) write a test file that instantiates the
+harness, simulates an HTTP request, and asserts the response +
+side effects (DB state, guardrails.json, strategy files).
+
+**Expected payoff:** `server.py` from 7% → 55-60%. Adds ~15 points
+to total coverage in one PR.
+
+### pt.7 specific handoff (refactor + un-omit)
+
+**`update_dashboard.py`** (~2000 lines, currently in the `omit` list
+in `pyproject.toml`). This is the 30-min screener. The refactor:
+1. Move pure-function logic (scoring, filtering, ranking, news
+   sentiment aggregation) into a new `screener_core.py` module.
+2. Leave `update_dashboard.py` as the thin I/O orchestrator that
+   fetches from Alpaca + yfinance + SEC and calls `screener_core`.
+3. Remove `update_dashboard.py` from `omit` list; add `screener_core.py`
+   without omit so it's fully counted.
+4. Behavioral tests for `screener_core` functions — they're pure,
+   so testing is fast.
+
+**Same for `update_scorecard.py`** — extract `scorecard_core.py`.
+
+**Payoff:** +10-15 coverage points. Also makes screener logic
+testable for future strategy development (currently can only be
+validated via full end-to-end run).
+
+### Structural limits (won't go away with more Python tests)
+
+- **Dashboard JS (~6000 LOC) is invisible to `pytest-cov`.** Until
+  pt.8 (Vitest), total coverage caps around 75-80% even with perfect
+  Python. Test quality is still improving; the number is just capped.
+- **Subprocess-driven modules** (`update_dashboard.py`,
+  `update_scorecard.py`, `capital_check.py`) need the un-omit
+  refactor before coverage even counts them.
+- **`server.py` at 7% is 1555 uncovered lines** — nothing else in
+  the codebase is this under-tested.
+
+### Picking up pt.5 (checklist for next session)
+
+1. `git pull --ff-only origin main`
+2. `cat CLAUDE.md` (this section first — it's the current plan)
+3. `cat CHANGELOG.md` (skim last 3 rounds)
+4. Confirm tests pass: `MASTER_ENCRYPTION_KEY=$(python3 -c 'print("e"*64)') pytest tests/ --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json --deselect tests/test_auth.py::test_password_strength_rejects_weak --deselect tests/test_audit_round12_scheduler_latent.py::test_ruff_clean_on_real_bug_rules -q` — expect 1015 passing
+5. Either start pt.5 work OR fix the user-flagged Recent Activity
+   scroll jitter first (separate 30-min PR). User will tell you
+   priority when the session starts.
 
 ### Previously in-flight (now merged)
 Rounds 54-60 all merged via PRs #97-#101, 2026-04-22 / 2026-04-23.
+Round-61 pt.1-3 merged via #102/#103/#104, 2026-04-23.
 Round-57 audit sweep (detailed below) was the last big regression-fix
 round before the coverage-testing sprint.
 
