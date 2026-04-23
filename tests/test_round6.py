@@ -352,11 +352,16 @@ def test_dashboard_handler_mixin_decomposition(isolated_data_dir):
     # Was: 2000 (round-6), 2500 (round-11 factors), 2800 (LIVE batches),
     # 2850 (round-50 portfolio auto-calibration endpoint),
     # 3000 (round-54 override + reset endpoints with Alpaca-rule validation),
-    # now 3100 (round-57 flock-guarded RMW + per-user rate limit +
+    # 3100 (round-57 flock-guarded RMW + per-user rate limit +
     # extended_hours_trailing exposure on /api/data).
+    # 3150 (round-61 _mark_auto_deployed skip-closed-strategies fix —
+    # prevents stale trailing_stop_SOXL.json mis-labeling an active
+    # short position as "TRAILING STOP"; requires reading each
+    # strategy file's status field so can't be done in a pure
+    # filename-scan).
     import os
     server_lines = sum(1 for _ in open(server.__file__))
-    assert server_lines < 3100, \
+    assert server_lines < 3150, \
         f"server.py too large ({server_lines} lines) — handler methods leaked back in"
 
 

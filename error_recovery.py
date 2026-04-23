@@ -361,6 +361,46 @@ def main():
             fpath = os.path.join(STRATEGIES_DIR, fname)
             safe_save_json(fpath, strategy)
             print(f"    FIXED: Created {fname} with stop at ${strategy['state']['current_stop_price']:.2f}")
+            # Round-61 user-reported: a SOXL orphan recovery created the
+            # strategy file but NOT a trade-journal open entry. When the
+            # position later closed via stop-trigger, record_trade_close
+            # couldn't find a matching open → fell into the synthetic
+            # orphan_close branch → dashboard tagged the close as
+            # "[orphan]". Fix: append an open journal entry alongside
+            # the strategy file so the close can be paired. Best-effort;
+            # never block recovery on a journal-write failure.
+            try:
+                journal_path = os.path.join(DATA_DIR, "trade_journal.json")
+                _journal = {}
+                if os.path.exists(journal_path):
+                    try:
+                        with open(journal_path) as _jf:
+                            _journal = json.load(_jf) or {}
+                    except (OSError, ValueError):
+                        _journal = {}
+                if not isinstance(_journal, dict):
+                    _journal = {}
+                _journal.setdefault("trades", [])
+                _journal["trades"].append({
+                    "timestamp": now_et().isoformat(),
+                    "symbol": sym,
+                    "side": "sell_short" if is_short else "buy",
+                    "qty": int(abs(float(qty))),
+                    "price": float(avg_entry),
+                    "strategy": strat_prefix,
+                    "reason": ("Backfilled by error_recovery — position "
+                                "existed in Alpaca without a journal entry "
+                                "(likely from a pre-R61 deploy or a manual "
+                                "fill). Tagged auto_recovered=True."),
+                    "deployer": "error_recovery",
+                    "status": "open",
+                    "auto_recovered": True,
+                })
+                safe_save_json(journal_path, _journal)
+                print(f"    JOURNAL: recorded open entry for {sym} so a "
+                      f"later close can pair (prevents future [orphan] tag)")
+            except Exception as _je:
+                print(f"    Warning: journal open-write failed for {sym}: {_je}")
             issues_fixed += 1
             strategy_symbol_map[sym] = (fname, {
                 "path": fpath,
