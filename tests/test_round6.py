@@ -363,9 +363,14 @@ def test_dashboard_handler_mixin_decomposition(isolated_data_dir):
     # the email pipeline so the user can see SMTP-enabled / queued /
     # sent-today in the dashboard header chip. Legitimately belongs
     # at the route-dispatch layer).
+    # 3300 (round-61 _mark_auto_deployed journal fallback — when a
+    # position's strategy file has been cleaned up but the journal
+    # still records the auto-deploy, label AUTO from the journal.
+    # Fixes the user-reported "SOXL + HIMS option labeled MANUAL
+    # when they were auto trades" bug).
     import os
     server_lines = sum(1 for _ in open(server.__file__))
-    assert server_lines < 3250, \
+    assert server_lines < 3300, \
         f"server.py too large ({server_lines} lines) — handler methods leaked back in"
 
 
