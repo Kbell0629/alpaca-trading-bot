@@ -100,6 +100,54 @@ def test_factor_health_uses_normalized_hash():
         "placeholder in the hash so chip-only ticks skip the rewrite")
 
 
+# Round-61 pt.6 prep #3 — user reported AFTER #107 and #108 shipped:
+# "still refreshes it scrolls somewhere and then goes right back to
+#  where I was before it refreshed"
+# Diagnosis: the scroll-save-restore pattern was working, but the
+# intermediate frame where #app.innerHTML had just been assigned
+# (destroying all children → document height collapses → browser
+# clamps scrollY) was painting before the sync scrollTo restore
+# landed. Fix: use atomic children swap via <template> +
+# replaceChildren so #app never goes empty, PLUS set min-height:
+# 100vh on #app so the document height can never collapse below
+# viewport even momentarily.
+
+def test_render_dashboard_uses_atomic_replacechildren():
+    """renderDashboard must swap #app's contents atomically via
+    replaceChildren (or fallback) so there's no frame where #app is
+    empty and document height collapses."""
+    src = _src()
+    rd_start = src.find("function renderDashboard")
+    assert rd_start > 0
+    rd_block = src[rd_start:rd_start + 150_000]
+    # The atomic swap path
+    assert "_appEl.replaceChildren" in rd_block, (
+        "renderDashboard must use replaceChildren for the content swap "
+        "(prevents the intermediate-empty-frame scroll flicker)")
+    # Must build children in a <template>, not assign innerHTML directly
+    assert 'document.createElement("template")' in rd_block or \
+           "document.createElement('template')" in rd_block, (
+        "The swap must stage HTML in a template element first")
+
+
+def test_app_has_min_viewport_height():
+    """#app must declare min-height: 100vh so the document body
+    can't collapse below the viewport during a content swap."""
+    src = _src()
+    # Find the #app rule
+    idx = src.find("#app {")
+    assert idx > 0, "missing #app CSS rule"
+    block = src[idx:idx + 400]
+    assert "min-height: 100vh" in block, (
+        "#app must declare min-height: 100vh — without this, the "
+        "document height can collapse during the content swap and "
+        "the browser will clamp scrollY, causing the user-reported "
+        "scroll-jump-then-restore flicker")
+    assert "overflow-anchor: auto" in block, (
+        "#app must declare overflow-anchor: auto to give the browser's "
+        "native scroll anchoring a stable container to work from")
+
+
 def test_section_layout_containment_present():
     """Every section that auto-refreshes every 10s must declare
     `contain: layout style` so internal repaints can't reflow

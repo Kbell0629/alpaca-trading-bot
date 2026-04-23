@@ -98,6 +98,19 @@ body {
     overflow-anchor: auto;
 }
 a { color: var(--accent); text-decoration: none; }
+
+/* Round-61 pt.6 prep #3: #app must hold the viewport height at
+   minimum so that when renderDashboard swaps children atomically
+   (replaceChildren), document height can never collapse below
+   viewport — which would otherwise cause the browser to clamp
+   scrollY to a smaller max and produce the "scroll jumps then
+   goes right back" flicker the user reported. overflow-anchor on
+   the app root gives the browser's native scroll anchoring a
+   stable container to work from. */
+#app {
+    min-height: 100vh;
+    overflow-anchor: auto;
+}
 button {
     cursor: pointer; border: none; border-radius: 8px; font-family: inherit;
     font-size: 12px; font-weight: 600; padding: 6px 14px;
@@ -6662,12 +6675,39 @@ function renderDashboard() {
         .replace(/[+-]?\d+\.\d+%/g, '_%')
         .replace(/[+-]?\d+%/g, '_%');
     if (_normHash !== window._lastAppNormHash) {
-        document.getElementById('app').innerHTML = _appHtml;
+        // Round-61 pt.6 prep #3: ATOMIC children swap instead of
+        // innerHTML=. User reported "it scrolls somewhere and then
+        // goes right back to where I was before it refreshed" —
+        // classic scroll-save-restore visible flicker. Root cause:
+        // `#app.innerHTML = x` destroys all children first, document
+        // height briefly shrinks below viewport, browser clamps
+        // scrollY to the new (tiny) max, paints that frame, THEN the
+        // sync scrollTo(0, _preRenderScrollY) restores — but the
+        // flicker is already visible.
+        //
+        // Fix: parse the new HTML into a <template>, then use
+        // replaceChildren with the fragment's children. replaceChildren
+        // swaps atomically — there's no intermediate "empty #app"
+        // frame, so document height never collapses, and browser has
+        // no reason to clamp scroll. Works in all modern browsers
+        // (Chrome 86+, Firefox 78+, Safari 14+).
+        var _tmpl = document.createElement('template');
+        _tmpl.innerHTML = _appHtml;
+        var _appEl = document.getElementById('app');
+        if (_appEl && _appEl.replaceChildren) {
+            _appEl.replaceChildren.apply(_appEl,
+                Array.prototype.slice.call(_tmpl.content.childNodes));
+        } else {
+            // Fallback for pre-2020 browsers — same as before.
+            if (_appEl) _appEl.innerHTML = _appHtml;
+        }
         window._lastAppNormHash = _normHash;
         window._lastAppHtml = _appHtml;
         // Round-47: SYNCHRONOUS scroll restore immediately after the
-        // innerHTML assignment so the browser bundles this scrollTo
-        // into the same paint as the new DOM.
+        // children swap so the browser bundles this scrollTo into
+        // the same paint as the new DOM. Kept as a safety net even
+        // with the atomic swap — some browsers may still nudge scroll
+        // on large subtree changes.
         if (_preRenderScrollY > 0) {
             try { window.scrollTo(0, _preRenderScrollY); } catch(_) {}
         }
