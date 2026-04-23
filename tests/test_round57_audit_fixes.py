@@ -235,18 +235,29 @@ def test_enrichment_panels_use_hash_skip():
     identical output. Before this fix, each render wrote innerHTML
     wholesale even when the HTML was unchanged, causing scroll-jitter
     when the user was scrolled into that section. Now every final
-    render path caches `el._lastHtml` and skips the DOM write on
-    identical output. Same pattern as renderDashboard's
+    render path caches `el._lastHtml` (or `el._lastNormHtml` for the
+    normalized variants added in R61 pt.6 prep #2) and skips the DOM
+    write on identical output. Same pattern as renderDashboard's
     `window._lastAppHtml` from round-54.
 
     Covered: renderHeatmap, refreshPerfAttribution, refreshTaxReport,
-    refreshFactorHealth, refreshSchedulerStatus, renderLog."""
+    refreshFactorHealth, refreshSchedulerStatus, renderLog.
+
+    Round-61 pt.6 prep #2 — refreshFactorHealth was upgraded to use
+    `_lastNormHtml !==` instead of plain `_lastHtml !==` so its
+    embedded freshness chip ("Xs ago") doesn't trigger a rewrite
+    every 10s tick. That dropped the plain-`_lastHtml !==` count
+    from 6 to 5; we count BOTH variants to catch the hash-skip
+    intent regardless of which form is in use."""
     with open("templates/dashboard.html") as f:
         src = f.read()
-    occurrences = src.count("_lastHtml !==")
+    plain = src.count("_lastHtml !==")
+    norm = src.count("_lastNormHtml !==")
+    occurrences = plain + norm
     assert occurrences >= 6, (
-        f"expected >=6 _lastHtml hash-skip guards on enrichment panels, "
-        f"found {occurrences} — round-57 jitter fix")
+        f"expected >=6 hash-skip guards (any of _lastHtml or _lastNormHtml) "
+        f"on enrichment panels, found {plain} plain + {norm} normalized = "
+        f"{occurrences}. R57 jitter fix regressed.")
 
 
 def test_nav_tabs_wrap_on_desktop():
