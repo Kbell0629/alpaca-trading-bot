@@ -8,6 +8,71 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-60 — Post-live-rollout user feedback
+
+Round-58 made the silent-skip LOUD; round-60 handles the LOUD output properly. Plus mobile polish.
+
+### Fix 1a — Skip ETFs from earnings_exit
+
+User got email alerts for `earnings_exit fetch failed: SOXL (emp...)` and `MSOS`, `IBIT`, etc. ETFs don't have earnings reports the way individual stocks do — the yfinance lookup legitimately returns empty. But round-58 treated that as a "silent fail" and emitted a Sentry breadcrumb.
+
+Fix: `_KNOWN_ETFS` frozenset in `earnings_exit.py` containing 80+ popular ETFs (SOXL/SOXX/SMH, SPY/QQQ/IWM, XLK/XLF/XLV/…, IBIT/FBTC, MSOS/ARKK/JETS, TLT/HYG, GLD/SLV, etc.). `should_exit_for_earnings` short-circuits True on ETF match — no fetch, no breadcrumb.
+
+### Fix 1b — Dedup Sentry breadcrumbs per (symbol, error) per ET day
+
+Pre-market AH monitor runs every 5 min with 6 positions = 72 fetch attempts per hour. Before fix 1b, every failing symbol emitted a fresh Sentry breadcrumb every tick. User saw **60+ alerts in a single pre-market window**.
+
+Fix: `_CAPTURED_TODAY: dict[(symbol, error), date]` tracks what we've already fired today. Same symbol + same error within 24h → silent skip. Different error for same symbol → fires again (real new failure). Midnight ET rolls the dedup set over automatically. Stale entries garbage-collected on each call.
+
+### Fix 2 — Mobile jitter on auto-refresh
+
+User reported: *"on mobile when I am on the sections in the screenshots and the page refreshes the screen scrolls up and down again to the section like it's refreshing."*
+
+Root cause: every 10s tick, the "Updated HH:MM:SS" chip and the "Ns ago" freshness chips bake a different value into the generated HTML. Round-54's hash-skip compared raw strings — so every tick mismatched, triggered a full DOM replace, and the sync scroll-restore painted briefly at scroll=0 before catching up. On mobile that's visible as a jitter.
+
+Fix: build a **normalised hash** that strips tick-only variations (`Updated [^<]*<`, `>Ns ago<`, `Last updated:` title attr) and compare that instead. Quiet ticks → hash matches → skip DOM replace entirely. In-place patch branch updates the timestamp + freshness chips via `textContent` / `outerHTML` without touching scroll. Real content changes (price move, new trade) still hash-mismatch correctly.
+
+### Fix 3 — Position Correlation mobile horizontal scroll
+
+User screenshot showed sector rows with dollar column truncated as `$23,5...`, `$3,6...`, `$1...` — the 380px-wide row didn't fit in the 375px mobile viewport and there was no scroll fallback.
+
+Fix: wrap sector rows in `overflow-x:auto; -webkit-overflow-scrolling:touch` container with `min-width:420px` per row. User can swipe horizontally to see the dollar column; desktop users see no change (viewport accommodates the full row).
+
+### Fix 4 — Dashboard reads `win_rate_pct_display` (round-58 plumbing)
+
+Round-58 server-side plumbed `win_rate_pct_display: null` + `win_rate_reliable: false` + `win_rate_display_note` when `closed_trades < 5`. But the dashboard UI still rendered `sc.win_rate_pct||0` as `0%` in the Readiness panel AND the Paper-vs-Live comparison panel — defeating the round-58 fix.
+
+Fix: both panels now branch on `sc.win_rate_reliable`. When false, they render `N=2` + "Need 5+ trades" (in orange) + the `win_rate_display_note` as a tooltip. When reliable, they render the normal percentage. User no longer anchors on an alarmist `0% win rate` from a 2-trade sample.
+
+### Tests
+
+13 new cases in `tests/test_round60_earnings_mobile_fixes.py`:
+- ETF skip list (80+ tickers, case-insensitive, frozenset type)
+- Sentry dedup fires once per (symbol, error) per day
+- Different error for same symbol fires separately
+- `no_future_unreported` stays quiet
+- Normalised hash input strips timestamps + freshness chips + Last-updated title
+- In-place patch branch present
+- `freshnessChip` emits `data-label` for rerender
+- Position correlation min-width + overflow-x
+- Dashboard branches on `win_rate_reliable`
+- `N=X` + "Need 5+" copy present
+- `force_refresh` still works (operator bypass)
+
+Plus 2 round-54 tests updated for the new `_lastAppNormHash` name.
+
+**820 passing, 2 deselected**. Coverage 34.54%. Ruff clean. Dashboard JS `node --check` clean.
+
+### Invariants to preserve post-round-60
+
+- ETFs (SPY/QQQ/SOXL/IBIT/MSOS/XL*/etc.) MUST NOT hit yfinance via `should_exit_for_earnings`. Add new ETFs to `_KNOWN_ETFS` when they appear in positions — don't let them leak into the fetch path.
+- Sentry breadcrumbs for `earnings_exit_fetch_failed` MUST dedup per `(symbol, error)` per ET calendar day. Removing the dedup returns the 60-alert-per-morning flood.
+- `renderDashboard` MUST compare normalised hash (`_lastAppNormHash`), not raw string, so tick-varying timestamps don't trigger DOM replace.
+- `freshnessChip` MUST emit `data-label="…"` when given a label; the in-place rerender needs it to regenerate.
+- Dashboard panels that show win rate MUST branch on `sc.win_rate_reliable` to avoid anchoring on `0%` from tiny samples.
+
+---
+
 ## 🆕 Round-59 — Final pre-live fixes
 
 User asked for everything we can fix tonight. Three real items remained after rounds 56-58, all shipped in this round.

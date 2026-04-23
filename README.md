@@ -844,6 +844,8 @@ It does exactly one thing: if an AH trade prints a new high above your position'
 
 **Failure visibility.** If a trailing-stop raise fails (Alpaca API hiccup, order rejected, etc.), it now surfaces to Sentry as a `trailing_stop_raise_failed` event tagged with session (AH vs market), symbol, and the old/new stop prices. No more silent misses — you'll see it in the Sentry feed.
 
+**Earnings-exit gate.** Positions in `trailing_stop`/`breakout`/`mean_reversion`/`copy_trading` strategies are auto-closed 1 day before their next earnings event. The gate asks yfinance for the next earnings date. ETFs (SOXL, IBIT, MSOS, SPY, XLK, etc.) are explicitly skipped — they don't have earnings reports. If yfinance returns an error for a real stock, you'll see one Sentry alert per symbol per day (not per tick — round-60 dedups this so the pre-market monitor doesn't spam you with 60+ emails per morning).
+
 ---
 
 ## 💵 Going Live — Dual Mode (Paper + Live in Parallel)

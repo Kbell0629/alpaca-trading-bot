@@ -3839,7 +3839,11 @@ function freshnessChip(updatedAt, label) {
     if (diffSec > 300) cls = 'very-stale';
     else if (diffSec > 120) cls = 'stale';
     var prefix = label ? esc(label) + ' ' : '';
-    return '<span class="data-freshness ' + cls + '" title="Last updated: ' +
+    // Round-60: stash the label in a data-attr so the mobile-jitter
+    // in-place rerender path (renderDashboard hash-skip quiet branch)
+    // can regenerate just this chip without rebuilding the whole DOM.
+    var labelAttr = label ? ' data-label="' + esc(label) + '"' : '';
+    return '<span class="data-freshness ' + cls + '"' + labelAttr + ' title="Last updated: ' +
         esc(updatedAt) + '"><span class="dot"></span>' + prefix + ageStr + '</span>';
 }
 
@@ -6034,10 +6038,13 @@ function renderDashboard() {
             statusColor = 'var(--green)';
             statusIcon = '\u2705';
         }
+        // Round-60: rows need a min-width to keep money column readable;
+        // wrap in overflow-x:auto so mobile (≤380px) can swipe to see
+        // the dollar value instead of having it truncated as "$23,5...".
         var rowsHtml = sectorsList.map(function(s) {
             var barColor = s.pct >= 60 ? 'var(--red)' :
                            s.pct >= 40 ? 'var(--orange)' : 'var(--green)';
-            return '<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04)">' +
+            return '<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04);min-width:420px">' +
                 '<div style="flex:0 0 110px;font-weight:600">' + esc(s.sector) + '</div>' +
                 '<div style="flex:1 1 auto;min-width:80px">' +
                     '<div style="background:rgba(255,255,255,0.06);height:6px;border-radius:3px;overflow:hidden">' +
@@ -6047,10 +6054,15 @@ function renderDashboard() {
                 '<div style="flex:0 0 70px;text-align:right;font-weight:600">' + s.pct.toFixed(1) + '%</div>' +
                 '<div style="flex:0 0 90px;text-align:right;color:var(--text-dim);font-size:12px">' + fmtMoney(s.value) + '</div>' +
             '</div>' +
-            '<div style="padding:2px 0 8px 120px;color:var(--text-dim);font-size:11px">' +
+            '<div style="padding:2px 0 8px 120px;color:var(--text-dim);font-size:11px;min-width:420px">' +
                 s.positions.map(function(p) { return esc(p); }).join(', ') +
             '</div>';
         }).join('');
+        // Wrap the rows in a horizontal-scroll container so narrow
+        // viewports can access the dollar-value column without the
+        // whole section needing to break layout.
+        rowsHtml = '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;margin:0 -4px;padding:0 4px">' +
+            rowsHtml + '</div>';
         var warningBanner = '';
         if (topSectorPct >= 40) {
             var top = sectorsList[0];
@@ -6088,7 +6100,17 @@ function renderDashboard() {
         '<div class="readiness-metrics">' +
             '<div class="readiness-metric"><div class="rm-label">Days Tracked</div><div class="rm-value">' + scDays + '</div><div class="rm-target">Target: ' + (criteria.min_days||30) + '</div></div>' +
             '<div class="readiness-metric"><div class="rm-label">Total Trades</div><div class="rm-value">' + (sc.total_trades||0) + '</div><div class="rm-target" title="Total trades are informational only — they do not affect the readiness score. Scored metrics are Days, Win Rate, Max Drawdown, Profit Factor, Sharpe.">Informational</div></div>' +
-            '<div class="readiness-metric"><div class="rm-label">Win Rate</div><div class="rm-value">' + (sc.win_rate_pct||0) + '%</div><div class="rm-target">Target: ' + (criteria.min_win_rate||50) + '%</div></div>' +
+            /* Round-60: honour the round-58 win_rate_pct_display field.
+               Show "N=X" when total closed trades < 5 instead of the
+               alarmist "0%" — avoids readers anchoring on a 0% win rate
+               when the sample is 2 trades. */
+            '<div class="readiness-metric"><div class="rm-label">Win Rate</div>' +
+              (sc.win_rate_reliable === false
+                ? '<div class="rm-value" style="font-size:14px">N=' + (sc.win_rate_sample_size||0) + '</div>' +
+                  '<div class="rm-target" style="color:var(--orange)" title="' + esc(sc.win_rate_display_note||'') + '">Need 5+ closed</div>'
+                : '<div class="rm-value">' + (sc.win_rate_pct||0) + '%</div>' +
+                  '<div class="rm-target">Target: ' + (criteria.min_win_rate||50) + '%</div>') +
+            '</div>' +
             '<div class="readiness-metric"><div class="rm-label">Max Drawdown</div><div class="rm-value">' + (sc.max_drawdown_pct||0).toFixed(1) + '%</div><div class="rm-target">Max: ' + (criteria.max_drawdown||10) + '%</div></div>' +
             '<div class="readiness-metric"><div class="rm-label">Profit Factor</div><div class="rm-value">' + (sc.profit_factor||0).toFixed(2) + '</div><div class="rm-target">Target: ' + (criteria.min_profit_factor||1.5) + '</div></div>' +
             '<div class="readiness-metric"><div class="rm-label">Sharpe Ratio</div><div class="rm-value">' + (sc.sharpe_ratio||0).toFixed(2) + '</div><div class="rm-target">Target: ' + (criteria.min_sharpe||0.5) + '</div></div>' +
@@ -6500,8 +6522,24 @@ function renderDashboard() {
     // zero repaint, zero jitter. On "active" ticks (price changes that
     // render different text) the assignment fires but round-47's sync
     // scroll restore handles the reflow cleanly.
-    if (_appHtml !== window._lastAppHtml) {
+    //
+    // Round-60: normalise the hash input by stripping tick-varying
+    // fields (Updated timestamp, "Ns ago" freshness chips, countdown).
+    // Before this, EVERY 10s tick hash-mismatched because the timestamp
+    // was baked into the HTML — so every tick triggered a full DOM
+    // replace, which mobile users saw as "the screen scrolls up and
+    // down again to the section". Now the hash only mismatches on real
+    // content change (price tick that changed something visible), and
+    // tick-only changes flow through the in-place update branch below.
+    var _normHash = _appHtml
+        .replace(/Updated [^<]*</g, 'Updated <')
+        .replace(/>\d+s ago</g, '>_ ago<')
+        .replace(/>\d+m ago</g, '>_ ago<')
+        .replace(/>\d+h ago</g, '>_ ago<')
+        .replace(/Last updated:[^"]*"/g, 'Last updated:"');
+    if (_normHash !== window._lastAppNormHash) {
         document.getElementById('app').innerHTML = _appHtml;
+        window._lastAppNormHash = _normHash;
         window._lastAppHtml = _appHtml;
         // Round-47: SYNCHRONOUS scroll restore immediately after the
         // innerHTML assignment so the browser bundles this scrollTo
@@ -6509,6 +6547,26 @@ function renderDashboard() {
         if (_preRenderScrollY > 0) {
             try { window.scrollTo(0, _preRenderScrollY); } catch(_) {}
         }
+    } else {
+        // Round-60: quiet tick — no real content change. Patch only
+        // the tick-varying text in-place so the DOM stays put and
+        // the user's scroll position is never disturbed. Each target
+        // has a stable id or unique class; fall back silently on miss.
+        try {
+            var _updatedEls = document.querySelectorAll('[title="Last data refresh"]');
+            for (var _i = 0; _i < _updatedEls.length; _i++) {
+                _updatedEls[_i].textContent = 'Updated ' + fmtUpdatedET(d.updated_at);
+            }
+            // Freshness chips — each one has title="Last updated: ..."
+            // and text like "Positions Ns ago". Rewrite the whole
+            // element's innerHTML via the same freshnessChip() result.
+            // (Cheap — just a few dozen characters.)
+            var _freshEls = document.querySelectorAll('.data-freshness');
+            for (var _j = 0; _j < _freshEls.length; _j++) {
+                var _lbl = _freshEls[_j].getAttribute('data-label') || '';
+                _freshEls[_j].outerHTML = freshnessChip(d.updated_at, _lbl);
+            }
+        } catch (_e) { /* best effort — never break tick */ }
     }
 
     renderLog();
@@ -9028,7 +9086,16 @@ function buildComparisonPanel(d) {
     var paperStartValue = sc.starting_capital || 100000;
     var paperReturn = ((paperValue - paperStartValue) / paperStartValue * 100).toFixed(2);
     var paperReturnClass = parseFloat(paperReturn) >= 0 ? 'positive' : 'negative';
+    // Round-60: honour the round-58 win_rate_pct_display field.
+    // Shows "N=X" when closed_trades < 5 so a 0% win-rate on a tiny
+    // sample doesn't anchor the user's live-readiness decision.
+    var winRateReliable = sc.win_rate_reliable !== false;
     var winRate = sc.win_rate_pct || 0;
+    var winRateHtml = winRateReliable
+        ? '<div style="font-size:18px;font-weight:700">' + winRate.toFixed(0) + '%</div>' +
+          '<div style="font-size:9px;color:var(--text-dim);margin-top:2px">target 50%+</div>'
+        : '<div style="font-size:14px;font-weight:700;color:var(--orange)">N=' + (sc.win_rate_sample_size||0) + '</div>' +
+          '<div style="font-size:9px;color:var(--text-dim);margin-top:2px" title="' + esc(sc.win_rate_display_note||'') + '">Need 5+ trades</div>';
     var readiness = sc.readiness_score || 0;
     var readyForLive = readiness >= 80;
 
@@ -9042,7 +9109,7 @@ function buildComparisonPanel(d) {
             '<div class="comparison-metrics">' +
                 '<div><div style="font-size:10px;color:var(--text-dim)">Portfolio</div><div style="font-size:18px;font-weight:700">$' + paperValue.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) + '</div></div>' +
                 '<div><div style="font-size:10px;color:var(--text-dim)">Total Return</div><div class="' + paperReturnClass + '" style="font-size:18px;font-weight:700">' + (parseFloat(paperReturn) >= 0 ? '+' : '') + paperReturn + '%</div></div>' +
-                '<div><div style="font-size:10px;color:var(--text-dim)">Win Rate</div><div style="font-size:18px;font-weight:700">' + winRate.toFixed(0) + '%</div></div>' +
+                '<div><div style="font-size:10px;color:var(--text-dim)">Win Rate</div>' + winRateHtml + '</div>' +
                 '<div><div style="font-size:10px;color:var(--text-dim)">Readiness</div><div style="font-size:18px;font-weight:700">' + readiness + '/100</div></div>' +
             '</div>' +
         '</div>';
