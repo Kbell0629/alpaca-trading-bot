@@ -8,6 +8,55 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 post-shakedown — bug fixes from live traffic (PRs #107–#114)
+
+After the round-61 coverage sprint (#102–#106), the user took the
+deployed code through a real session and surfaced eight bugs over
+~2 hours. All eight fixed and merged the same day (2026-04-24).
+
+### Five iterative jitter fixes (#107, #108, #109, #111, #113)
+
+User reported persistent scroll jitter that took five rounds of
+fixes to resolve because the jitter came from five INDEPENDENT
+failure modes. **All five remain necessary.**
+
+| PR | Failure mode | Fix |
+|---|---|---|
+| #107 | Price ticks (`$192.40 → $192.41`) made `renderDashboard`'s normHash mismatch every 10s → full `#app.innerHTML` rewrite → jitter | Strip `$X.XX`, `±$X.XX`, `±X.X%` from the normalized hash |
+| #108 | `refreshFactorHealth` rewrote every tick (embedded freshness chip "Xs ago"); sibling sections reflowed on any rewrite | CSS `contain: layout style` + `overflow-anchor: auto` on every refreshing section + normalized hash-skip in `refreshFactorHealth` |
+| #109 | `#app.innerHTML = x` destroyed children before rebuilding → empty intermediate frame → document height collapsed → browser clamped scrollY → user saw "scroll jumps then comes back" | Atomic children swap via `<template>` + `replaceChildren`, plus `#app { min-height: 100vh; overflow-anchor: auto }` |
+| #111 | Async-populated panels (`schedulerPanel`, `factorHealthPanel`, etc.) showed "Loading…" placeholders for 500ms-2s after any `#app` rewrite → height bounce → scroll shift | Snapshot each async panel's content before the swap; transplant cached HTML into the new template's matching placeholder |
+| #113 | Individual panels still used `panel.innerHTML = html` directly (Recent Activity log added a new line every monitor tick → panel rewrite → jitter). Same empty-frame bug as #109, one level deeper. | New `atomicReplaceChildren(panelEl, newHtml)` helper applied to every panel renderer; preserves `.sched-log-box` `scrollTop` so internal log scroll position survives |
+
+### Trade-display fixes (#110, #114)
+
+| PR | Bug | Fix |
+|---|---|---|
+| #110 | SOXL close tagged `[orphan]` even though the bot's stop fired — root cause: `error_recovery.py` created a strategy file but didn't write a matching journal open entry, so `record_trade_close` couldn't find it and fell into the synthetic orphan branch | Append `auto_recovered=True` open entry alongside the strategy-file creation |
+| #110 | Short SOXL position labeled "TRAILING STOP" because a stale `trailing_stop_SOXL.json` (status=closed) was claiming the symbol over the active `short_sell_SOXL.json` | `_mark_auto_deployed` skips strategy files whose status is closed/stopped/cancelled/canceled/exited/filled_and_closed; `short_sell` priority bumped to 2 |
+| #114 | SOXL + HIMS option position labeled MANUAL when both were auto-deployed (no strategy file matched, even though the journal still recorded the deploy) | `_mark_auto_deployed` falls back to `trade_journal.json` when no strategy file matches; recognizes `deployer in (cloud_scheduler, wheel_strategy, error_recovery)`; walks newest→oldest with `setdefault`; option positions try both OCC and underlying for journal lookup |
+
+### Email diagnostics (#112)
+
+User flagged "some emails not coming through":
+- **Short force-cover email**: was using `notify_type="info"` which `notify.py`'s `EMAIL_TYPES` set excludes. Changed to `"exit"` so the user actually gets notified when the bot forcibly covers a short after 14 days.
+- **`/api/email-status` endpoint** + dashboard 📧 chip showing SMTP-enabled / queued / sent-today / failed-recent / dead-letter / last-sent / recipient. Color-coded (red OFF, orange NO ADDR / N STUCK, dim N queued, green N today). Click → details dialog. 60s poll.
+
+### Metrics post-shakedown
+
+- Tests passing: 1077 → ~1100 (+23 across the bug-fix PRs)
+- Coverage: still ~40%
+- `server.py` line-limit ratcheted 3100 → 3150 → 3250 → 3300 across three legitimate growths
+- Dashboard JS `node --check` clean across all five jitter PRs
+
+### CLAUDE.md updated
+
+`Current session state` section + new `Scroll-jitter fix history (FIVE
+rounds)` documented so the next agent doesn't undo any of the five
+fix patterns.
+
+---
+
 ## 🆕 Round-61 pt.5 — scheduler_api + yfinance_budget + Recent Activity jitter fix
 
 Fourth PR in the round-61 coverage sprint. Lands behavioral tests for
