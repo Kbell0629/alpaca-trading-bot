@@ -2940,6 +2940,72 @@ function pnlClass(n) {
     return v > 0 ? 'positive' : 'negative';
 }
 
+// Round-61 pt.6 prep #5: atomic panel-content swap.
+//
+// User reported jitter PERSISTING after #107/#108/#109/#111 fixed the
+// #app-level swap. Root cause: individual panels (renderSchedulerPanel,
+// refreshFactorHealth, refreshPerfAttribution, refreshTaxReport) still
+// use `panel.innerHTML = html` directly. On every real state change
+// (new log line, new trade, breadth regime flip) the panel's children
+// are destroyed then recreated, with a one-frame window where the panel
+// is EMPTY. Browser sees the panel collapse to zero height, scroll
+// anchor moves to stay with a visible element, user sees jitter. Same
+// bug as the #app-level one fixed by #109, just one level deeper.
+//
+// Fix: swap via <template> + replaceChildren so the panel's children
+// change atomically — no empty frame. Also preserves any descendant
+// scrollTop (e.g., .sched-log-box has its own vertical scroll) so the
+// user's position INSIDE a scrollable log stays put too.
+function atomicReplaceChildren(panelEl, newHtml) {
+    if (!panelEl) return;
+    // Save scroll positions of any inner scrollable containers so we
+    // can restore them after the swap. (.sched-log-box, .scheduler-grid
+    // scroll-on-narrow, any overflow:auto inside the panel.)
+    var _savedScrolls = [];
+    try {
+        var _scrollables = panelEl.querySelectorAll(
+            '.sched-log-box, [style*="overflow-y:auto"], [style*="overflow-y: auto"], [style*="overflow: auto"]');
+        for (var _si = 0; _si < _scrollables.length; _si++) {
+            var _el = _scrollables[_si];
+            // Use a data-scroll-key if one is set, else remember by
+            // className + position. Most reliable is className for
+            // .sched-log-box since there's exactly one.
+            _savedScrolls.push({
+                cls: _el.className,
+                top: _el.scrollTop,
+            });
+        }
+    } catch (_e) { /* best-effort */ }
+    // Try the modern atomic swap (Chrome 86+, Firefox 78+, Safari 14+).
+    if (panelEl.replaceChildren && typeof document.createElement === 'function') {
+        try {
+            var _tmpl = document.createElement('template');
+            _tmpl.innerHTML = newHtml;
+            panelEl.replaceChildren.apply(panelEl,
+                Array.prototype.slice.call(_tmpl.content.childNodes));
+        } catch (_e) {
+            // Fallback on any parse error.
+            panelEl.innerHTML = newHtml;
+        }
+    } else {
+        panelEl.innerHTML = newHtml;
+    }
+    // Restore scroll positions.
+    try {
+        for (var _ri = 0; _ri < _savedScrolls.length; _ri++) {
+            var _saved = _savedScrolls[_ri];
+            if (!_saved.cls) continue;
+            var _cls = _saved.cls.split(' ')[0];
+            var _newEls = panelEl.getElementsByClassName(_cls);
+            if (_newEls && _newEls[_ri]) {
+                _newEls[_ri].scrollTop = _saved.top;
+            } else if (_newEls && _newEls[0] && _savedScrolls.length === 1) {
+                _newEls[0].scrollTop = _saved.top;
+            }
+        }
+    } catch (_e) { /* best-effort */ }
+}
+
 /* Format a server-emitted timestamp as 12-hour ET. Accepts:
      - New format: "YYYY-MM-DD HH:MM:SS AM/PM ET" (server emits this directly)
      - Legacy format: "YYYY-MM-DD HH:MM:SS UTC" (backward compat for any
@@ -3958,8 +4024,10 @@ function renderPerfAttribution(d) {
     // Auto-refresh tick runs every 10s but this data updates daily,
     // so wholesale DOM replacement was re-flowing the perf attribution
     // section and shifting scroll.
+    // Round-61 pt.6 prep #5: atomic swap so the panel's children never
+    // go empty between the old and new trees (see helper docstring).
     if (panel._lastHtml !== html) {
-        panel.innerHTML = html;
+        atomicReplaceChildren(panel, html);
         panel._lastHtml = html;
     }
 }
@@ -4048,8 +4116,9 @@ function renderTaxReport(d) {
         html += '<div style="font-size:11px;color:var(--text-dim);margin-top:8px">Showing 30 of ' + lots.length + ' lots. Download CSV for the full list.</div>';
     }
     // Round-57: hash-skip identical renders.
+    // Round-61 pt.6 prep #5: atomic children swap.
     if (panel._lastHtml !== html) {
-        panel.innerHTML = html;
+        atomicReplaceChildren(panel, html);
         panel._lastHtml = html;
     }
 }
@@ -4186,7 +4255,8 @@ function renderFactorHealth(d) {
         .replace(/[+-]?\d+\.\d+%/g, '_%')
         .replace(/[+-]?\$-?[\d,]+\.\d{2}/g, '$_');
     if (panel._lastNormHtml !== _normHtml) {
-        panel.innerHTML = html;
+        // Round-61 pt.6 prep #5: atomic children swap.
+        atomicReplaceChildren(panel, html);
         panel._lastHtml = html;
         panel._lastNormHtml = _normHtml;
     }
@@ -4437,14 +4507,20 @@ function renderSchedulerPanel(s) {
         } catch (_patchErr) {
             // Patch failed — fall through to a full rewrite as a
             // safety net so the user never sees stale data.
-            panel.innerHTML = _schedHtml;
+            // Round-61 pt.6 prep #5: atomic swap here too.
+            atomicReplaceChildren(panel, _schedHtml);
             panel._lastHtml = _schedHtml;
         }
         return;
     }
 
     if (panel._lastHtml !== _schedHtml) {
-        panel.innerHTML = _schedHtml;
+        // Round-61 pt.6 prep #5: atomic swap when the scheduler panel
+        // has a real state change (new log line, task status change).
+        // panel.innerHTML = x would destroy children + recreate them,
+        // briefly leaving the panel empty → user scrolled into Recent
+        // Activity sees the panel height flicker → scroll jumps.
+        atomicReplaceChildren(panel, _schedHtml);
         panel._lastHtml = _schedHtml;
     }
     panel._lastNormHash = _normHash;
