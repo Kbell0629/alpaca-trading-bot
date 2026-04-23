@@ -31,7 +31,7 @@ auto-deploys top picks across 6 strategies, manages exits, handles kill-switch
 1. `git checkout main && git pull --ff-only`
 2. `cat CLAUDE.md` (this file), `cat README.md`, `cat CHANGELOG.md`
 3. `MASTER_ENCRYPTION_KEY=$(python3 -c 'print("e"*64)') python3 -m pytest tests/ --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json --deselect tests/test_auth.py::test_password_strength_rejects_weak --deselect tests/test_audit_round12_scheduler_latent.py::test_ruff_clean_on_real_bug_rules -q`
-   — expect **1077 passing, 3 deselected** after round-61 pt.5.
+   — expect **1337 passing, 3 deselected** after round-61 pt.6 + follow-ups (PRs #116 + #117).
 4. `ruff check .` — clean.
 5. Validate dashboard JS: `awk '/^<script>/,/^<\/script>/' templates/dashboard.html | grep -v '^<script>' | grep -v '^</script>' > /tmp/dash.js && node --check /tmp/dash.js`
 
@@ -58,12 +58,12 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-24 — round 61 pt.6 SHIPPED)
+## Current session state (2026-04-24 — round 61 pt.6 + follow-ups SHIPPED)
 
-**All work merged to main through #116 (pt.6).** Test count: **~1280
-passing, 47% coverage**. Floor: **45%**. Pt.6 follow-ups (more handler
-edge cases + strategy_mixin deeper exploration) are in progress; then
-pt.7 (refactor screener) and pt.8 (JS test stack) remain.
+**All work merged to main through #117 (pt.6 follow-ups).** Test count:
+**1337 passing, 51.04% coverage**. Floor: **45%**. Pt.6 is complete.
+Remaining strategic work: pt.7 (refactor screener to un-omit) and pt.8
+(Vitest for dashboard JS).
 
 ### What landed in round 61
 
@@ -91,8 +91,9 @@ pt.7 (refactor screener) and pt.8 (JS test stack) remain.
 | #114 | AUTO/MANUAL mislabel fix: `_mark_auto_deployed` falls back to `trade_journal.json` when no strategy file matches a position |
 | #115 | Docs sync PR closing out round-61: CLAUDE.md/CHANGELOG/README updated to reflect every PR shipped |
 | #116 pt.6 | **Mock WSGI harness for DashboardHandler** — `tests/conftest.py::http_harness` subclasses `DashboardHandler` without the socket, auto-injects session + CSRF cookies. +200 tests. `server.py` 7% → 42%; handlers/*.py 0% → 13-44%. Total 39.79% → **47.19%**. Floor 36 → **45**. |
+| #117 pt.6 follow-ups | Admin-and-target pattern lets admin endpoints run against REAL user IDs (not just auth gates): set-active, reset-password, update-user, delete-user, set-admin, create-backup. Plus invite lifecycle end-to-end, user toggles (live-mode, track-record-public, scorecard-email), kill-switch round-trip, force-auto-deploy, force-daily-close, forgot-password, logout-clears-server-session. `handlers/admin_mixin.py` 33% → **74%**; `handlers/actions_mixin.py` 38% → **56%**. Total 47.19% → **51.04%**. +57 tests. |
 
-**Total round-61: 15 PRs shipped. Coverage 34% → 47.19%. Floor 30% → 45%.**
+**Total round-61: 16 PRs shipped. Coverage 34% → 51.04%. Floor 30% → 45%.**
 
 ### Mock WSGI harness (post-pt.6 — use it for any HTTP endpoint test)
 
@@ -120,15 +121,19 @@ don't need to re-derive it.
 
 ### Module coverage milestones
 
+- `server.py` 7% → **47%** (via mock WSGI harness, pt.6 + follow-ups)
+- `handlers/admin_mixin.py` 0% → **74%** (admin-and-target pattern exercises real user IDs)
+- `handlers/actions_mixin.py` 0% → **56%** (kill-switch, force-deploy, force-daily-close, refresh)
+- `handlers/strategy_mixin.py` 0% → **49%** (deploy validation, pause/stop, apply-preset, toggle-short-selling)
+- `handlers/auth_mixin.py` 0% → **49%** (login/signup/logout, password change, settings update, invite consumption)
 - `scheduler_api.py` 41% → ~85% • `yfinance_budget.py` 61% → 92%
 - `wheel_strategy.py` 33% → 47% (helpers covered; state-machine
   transitions still grep-pinned only)
 - `pdt_tracker.py` 60% → >90% • `settled_funds.py` 76% → >90%
 - `fractional.py` 60% → >80%
-- `cloud_scheduler.py` ~31% (mostly flat — pt.6 won't touch it
-  directly; behavioral tests hit kill-switch + drawdown paths only)
-- `server.py` STILL ~7% — mock WSGI harness (pt.6) is the only
-  realistic way to move this
+- `cloud_scheduler.py` ~31% (mostly flat — pt.6 didn't touch it
+  directly; behavioral tests hit kill-switch + drawdown paths only.
+  A future pt could target the 60+ remaining fns in this file.)
 
 ### Scroll-jitter fix history (FIVE rounds — mandatory reading before touching refresh)
 
@@ -200,41 +205,44 @@ a refactor that "simplifies" any of these will fail loudly.
   N queued (dim), 📧 N today (green). Click to see full diagnostic.
   Short force-cover now emails (`exit` not `info`).
 
-### Road to 80% coverage (the path forward — UNCHANGED)
+### Road to 80% coverage (the path forward)
 
-| Phase | Target | Scope | Est effort |
-|---|---|---|---|
-| **pt.5** ✅ | 39% | scheduler_api + yfinance_budget + helper modules | done |
-| **pt.6** | ~65% | **Mock WSGI harness for `server.py` + `handlers/*.py`.** Biggest lever left — `server.py` is 1708 statements at 7%. 1-2 days to build the harness (fake request/response, session context, auth-mode injection), then tests come fast. | 1 big PR, 1-2 days |
-| **pt.7** | ~78% | Refactor `update_dashboard.py` + `update_scorecard.py` to extract pure scoring math into `screener_core.py` / `scorecard_core.py`. Un-omit from coverage. Requires source changes — needs careful review. | 1-2 PRs, 2-3 days |
-| **pt.8 (optional, parallel)** | adds JS coverage | Vitest + jsdom for `templates/dashboard.html`'s ~6000 LOC. Without this, Python-only caps ~78%. | 1 PR, 1-2 days |
+| Phase | Target | Scope | Est effort | Status |
+|---|---|---|---|---|
+| **pt.5** | 39% | scheduler_api + yfinance_budget + helper modules | 1 PR | ✅ done |
+| **pt.6** | ~65% | **Mock WSGI harness for `server.py` + `handlers/*.py`.** Biggest lever left — `server.py` was 1708 statements at 7%. Built the harness in `tests/conftest.py::http_harness` + 260 endpoint tests across #116 (base) + #117 (follow-ups). Landed at **51%** total (below the 65% target because cloud_scheduler.py is still ~31% — not within pt.6's scope). | 2 PRs, 1 day | ✅ done (51% actual) |
+| **pt.7** | ~78% | Refactor `update_dashboard.py` + `update_scorecard.py` to extract pure scoring math into `screener_core.py` / `scorecard_core.py`. Un-omit from coverage. Requires source changes — needs careful review. | 1-2 PRs, 2-3 days | next |
+| **pt.8 (optional, parallel)** | adds JS coverage | Vitest + jsdom for `templates/dashboard.html`'s ~6000 LOC. Without this, Python-only caps ~78%. | 1 PR, 1-2 days | optional |
+| **pt.9 (stretch)** | `cloud_scheduler.py` deeper | Still ~31% after pt.6 because pt.6 focused on the HTTP surface. Could add behavioral tests for the 60+ remaining scheduler functions (run_daily_close, process_strategy_file branches, wheel orchestration). Adds +5-8 points. | 1 PR, ~1 day | future |
 
-### pt.6 specific handoff (start here)
+### pt.6 DONE — harness + test pattern reference
 
-**The big one.** `server.py` is 1708 statements, 7% covered. Nothing
-else at this scale. Pattern:
+The harness lives at `tests/conftest.py::http_harness`. Five test files
+use it and should be the template for any future HTTP-endpoint test:
+  * `tests/test_round61_pt6_harness_smoke.py` — 6 smoke tests
+  * `tests/test_round61_pt6_wsgi_endpoints.py` — 76 auth-gate + shape
+  * `tests/test_round61_pt6_wsgi_authed_flows.py` — 82 authed flows
+  * `tests/test_round61_pt6_strategy_mixin_flows.py` — 21 deploy paths
+  * `tests/test_round61_pt6_followup_admin_actions.py` — 57 admin flows
+
+Usage:
 
 ```python
-# tests/conftest.py (add a new fixture)
-@pytest.fixture
-def http_harness(isolated_data_dir, monkeypatch):
-    """Return a harness that calls server request-handler methods
-    directly, bypassing real sockets. Fakes: do_GET/do_POST/do_DELETE
-    entry, write/wfile for response capture, session auth injection."""
-    # ... build FakeHandler inheriting from AlpacaHandler that
-    # overrides wfile/rfile with BytesIO, records write_chunks,
-    # lets tests assert on the JSON body + status code.
+def test_my_endpoint(http_harness):
+    http_harness.create_user()  # user #1 is auto-admin
+    resp = http_harness.get("/api/my-endpoint")
+    assert resp["status"] == 200
+    assert resp["body"]["foo"] == "bar"
+    # POSTs auto-inject CSRF cookie + header:
+    resp = http_harness.post("/api/my-endpoint", body={"k": "v"})
 ```
 
-Then for each mixin (`auth_mixin`, `admin_mixin`, `strategy_mixin`,
-`actions_mixin`, etc.) write a test file that instantiates the
-harness, simulates an HTTP request, and asserts the response +
-side effects (DB state, guardrails.json, strategy files).
+For admin tests, use the **admin-and-target pattern** (see
+`test_round61_pt6_followup_admin_actions.py::TestAdminSetActive._create_admin_and_target`):
+create admin1 + target user, logout, re-auth as admin so admin
+endpoints have a real target user ID to operate on.
 
-**Expected payoff:** `server.py` from 7% → 55-60%. Adds ~15 points
-to total coverage in one PR.
-
-### pt.7 specific handoff (refactor + un-omit)
+### pt.7 specific handoff (refactor + un-omit) — NEXT UP
 
 **`update_dashboard.py`** (~2000 lines, currently in the `omit` list
 in `pyproject.toml`). This is the 30-min screener. The refactor:
@@ -261,18 +269,17 @@ validated via full end-to-end run).
 - **Subprocess-driven modules** (`update_dashboard.py`,
   `update_scorecard.py`, `capital_check.py`) need the un-omit
   refactor before coverage even counts them.
-- **`server.py` at 7% is 1555 uncovered lines** — nothing else in
-  the codebase is this under-tested.
+- **`server.py` now 47%** — pt.6 moved the big lever. Further gains
+  on server.py from here need either pt.7 (refactor) or more happy-
+  path tests that drive Alpaca-facing code (stubbed).
 
-### Picking up pt.5 (checklist for next session)
+### Picking up pt.7 (checklist for next session)
 
 1. `git pull --ff-only origin main`
 2. `cat CLAUDE.md` (this section first — it's the current plan)
 3. `cat CHANGELOG.md` (skim last 3 rounds)
-4. Confirm tests pass: `MASTER_ENCRYPTION_KEY=$(python3 -c 'print("e"*64)') pytest tests/ --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json --deselect tests/test_auth.py::test_password_strength_rejects_weak --deselect tests/test_audit_round12_scheduler_latent.py::test_ruff_clean_on_real_bug_rules -q` — expect 1015 passing
-5. Either start pt.5 work OR fix the user-flagged Recent Activity
-   scroll jitter first (separate 30-min PR). User will tell you
-   priority when the session starts.
+4. Confirm tests pass: `MASTER_ENCRYPTION_KEY=$(python3 -c 'print("a"*64)') pytest tests/ --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json --deselect tests/test_auth.py::test_password_strength_rejects_weak --deselect tests/test_audit_round12_scheduler_latent.py::test_ruff_clean_on_real_bug_rules -q` — expect **1337 passing, 3 deselected**
+5. Start pt.7 work (refactor `update_dashboard.py` + `update_scorecard.py` to extract pure scoring into `screener_core.py` / `scorecard_core.py`; un-omit from coverage). This is a source refactor — read the "pt.7 specific handoff" section above BEFORE touching production logic.
 
 ### Previously in-flight (now merged)
 Rounds 54-60 all merged via PRs #97-#101, 2026-04-22 / 2026-04-23.
