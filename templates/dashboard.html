@@ -6593,12 +6593,40 @@ function renderDashboard() {
     // down again to the section". Now the hash only mismatches on real
     // content change (price tick that changed something visible), and
     // tick-only changes flow through the in-place update branch below.
+    //
+    // Round-61 pt.6 prep: user reported jitter PERSISTING after R60 +
+    // R61 pt.5 because price ticks change dollar amounts ($192.40 →
+    // $192.41) and percentages (+1.7% → +1.8%) in position/account
+    // cells every few seconds during market hours. Those diffs made
+    // normHash mismatch → full #app rewrite → jitter.
+    //
+    // Fix: also strip dollar amounts and percentages from the hash.
+    // This means price-only ticks flow through the quiet-tick path
+    // (no innerHTML rewrite = no scroll jitter). The displayed numbers
+    // only visually refresh when something STRUCTURAL changes (new
+    // position, closed position, order fill) — which is the silent-
+    // refresh UX the user asked for. Exact-match user quote:
+    //   "the refreshing should be silent and the user should not
+    //    experience it by the page moving up and down"
+    //
+    // Pattern coverage:
+    //   $123.45 and $1,234.56 → $_
+    //   +$12.34 / -$12.34 → ±$_
+    //   +12.34% / -12.34% / 12.34% → _%
+    //   Bare numerics-with-decimals inside class="pnl-*" or data-value
+    //   are handled by the ±$_ / _% patterns above.
     var _normHash = _appHtml
         .replace(/Updated [^<]*</g, 'Updated <')
         .replace(/>\d+s ago</g, '>_ ago<')
         .replace(/>\d+m ago</g, '>_ ago<')
         .replace(/>\d+h ago</g, '>_ ago<')
-        .replace(/Last updated:[^"]*"/g, 'Last updated:"');
+        .replace(/Last updated:[^"]*"/g, 'Last updated:"')
+        // Dollar amounts — both plain and signed. Must run BEFORE the
+        // percent regex so signed-dollar prefixes don't get half-eaten.
+        .replace(/[+-]?\$-?[\d,]+\.\d{2}/g, '$_')
+        // Percentages (0.00%, +0.00%, -0.00%, with or without decimals)
+        .replace(/[+-]?\d+\.\d+%/g, '_%')
+        .replace(/[+-]?\d+%/g, '_%');
     if (_normHash !== window._lastAppNormHash) {
         document.getElementById('app').innerHTML = _appHtml;
         window._lastAppNormHash = _normHash;
