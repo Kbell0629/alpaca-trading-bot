@@ -147,12 +147,20 @@ def test_calibration_ui_has_risk_warnings():
 def test_render_hash_skip_present():
     """Pin the hash-skip: renderDashboard only writes to app.innerHTML
     when the output string changed from the previous render. Eliminates
-    jitter on quiet ticks (no new trades, unchanged data)."""
+    jitter on quiet ticks (no new trades, unchanged data).
+
+    Round-60: the comparison key is now a *normalised* hash
+    (_lastAppNormHash) that strips tick-varying timestamp text so
+    quiet ticks don't invalidate on the 'Updated 09:04:19 PM' chip
+    alone — but the invariant (one gate around the DOM replace)
+    stays."""
     with open("templates/dashboard.html") as f:
         src = f.read()
-    # The hash-skip uses a cached _lastAppHtml string on window
+    # Round-60: normalised hash replaces the raw string comparison
+    assert "_lastAppNormHash" in src
+    assert "_normHash !== window._lastAppNormHash" in src
+    # The raw string is still cached for debugging / future use
     assert "_lastAppHtml" in src
-    assert "_appHtml !== window._lastAppHtml" in src
     # The string is built then compared — not directly assigned
     assert "var _appHtml =" in src
 
@@ -163,9 +171,8 @@ def test_render_still_runs_scroll_restore_when_html_changed():
     restore on unchanged renders would cause its own mini-jitter."""
     with open("templates/dashboard.html") as f:
         src = f.read()
-    # Rough structural check: scroll restore must be under the
-    # _appHtml !== check
-    idx_check = src.find("_appHtml !== window._lastAppHtml")
+    # Round-60: gate is now the normalised-hash check
+    idx_check = src.find("_normHash !== window._lastAppNormHash")
     assert idx_check > 0
     following = src[idx_check:idx_check+2000]
     assert "scrollTo(0, _preRenderScrollY)" in following

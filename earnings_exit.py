@@ -47,10 +47,67 @@ EXIT_ON_EARNINGS_STRATEGIES = frozenset({
     "copy_trading",
 })
 
+
+# Round-60: ETFs / ETNs / index funds don't have earnings reports in
+# the same way individual companies do — yfinance legitimately returns
+# empty for them, but our silent-fail-surfaced-loudly fix in round-58
+# was then emitting a Sentry breadcrumb every tick for every ETF
+# position. User saw 60+ alerts/morning from SOXL/IBIT/MSOS alone.
+# Skip these up-front: no fetch, no breadcrumb.
+#
+# The list is conservative — only well-known ETFs and thematic funds.
+# A normal stock ticker accidentally in this list would silently skip
+# the earnings exit; a real ETF accidentally OUTSIDE this list would
+# waste a yfinance fetch + emit one breadcrumb before being deduped
+# (see _CAPTURED_TODAY below). Err on the side of adding.
+_KNOWN_ETFS: frozenset[str] = frozenset({
+    # 3x leveraged / inverse semi / tech
+    "SOXL", "SOXS", "SOXX", "SMH", "TQQQ", "SQQQ", "UPRO", "SPXU",
+    "TSLQ", "TSDD", "TSLG",
+    # Broad market
+    "SPY", "VOO", "IVV", "QQQ", "IWM", "VTI", "VEA", "VWO", "EFA",
+    "EEM", "DIA", "MDY",
+    # Sector ETFs (XL-family + more)
+    "XLK", "XLF", "XLV", "XLE", "XLY", "XLP", "XLI", "XLU", "XLB",
+    "XLRE", "XLC", "XBI", "XHB", "XHE", "XME", "XOP", "XRT",
+    # Crypto ETFs / ETPs
+    "IBIT", "FBTC", "BITO", "BITB", "ARKB", "EZBC",
+    # Thematic
+    "MSOS", "ARKK", "ARKQ", "ARKG", "ARKF", "ARKW", "ARKX",
+    "JETS", "INFQ", "TAN", "ICLN", "KWEB", "CLOU", "ROBO", "LIT",
+    # Bond / income
+    "TLT", "HYG", "LQD", "AGG", "BND", "TIP", "SCHD", "VYM",
+    # Volatility
+    "VXX", "UVXY", "SVXY", "VIXY",
+    # Commodities
+    "GLD", "SLV", "USO", "UNG", "DBA",
+    # Small-cap / growth
+    "IWO", "IWN", "IWF", "IWD", "VUG", "VTV",
+    # REITs
+    "VNQ", "IYR", "SCHH",
+    # International
+    "FXI", "EWZ", "EWJ", "INDA", "MCHI",
+})
+
+
+def _is_etf(symbol: str) -> bool:
+    """Return True if `symbol` is a known ETF/ETN/index fund we don't
+    expect to have earnings reports. Case-insensitive."""
+    return bool(symbol) and symbol.upper() in _KNOWN_ETFS
+
+
 # Cache: {symbol: (fetched_at_datetime, next_earnings_date_or_None)}
 _CACHE: dict[str, tuple[datetime, Optional[date]]] = {}
 _CACHE_TTL = timedelta(hours=4)
 _CACHE_LOCK = Lock()
+
+# Round-60: dedup Sentry breadcrumbs per (symbol, error) per ET calendar
+# day. Before this, every pre-market AH monitor tick (every 5 min) fired
+# a fresh breadcrumb for every failing symbol — ~60+ alerts per morning
+# for 6 positions. Now we fire once per unique failure per day and
+# refresh every midnight ET.
+_CAPTURED_TODAY: dict[tuple[str, str], date] = {}
+_CAPTURED_LOCK = Lock()
 
 
 _CACHE_MISS = object()
@@ -189,6 +246,11 @@ def should_exit_for_earnings(
     lookup_sym = _underlying_for_lookup(symbol, asset_class)
     if not lookup_sym:
         return False, None, None
+    # Round-60: ETFs + index funds don't have earnings — short-circuit
+    # before hitting yfinance so we neither waste a fetch nor generate
+    # a Sentry breadcrumb. The earnings gate simply doesn't apply.
+    if _is_etf(lookup_sym):
+        return False, None, None
     next_dt = get_next_earnings_date(lookup_sym)
     if next_dt is None:
         # Round-58: LOUD on silent-skip. When the lookup fails for a
@@ -199,18 +261,35 @@ def should_exit_for_earnings(
         # quiet — that's a valid None, not a silent failure.
         err = _LAST_FETCH_ERR.get(lookup_sym)
         if err and err != "no_future_unreported":
-            try:
-                from observability import capture_message
-                capture_message(
-                    f"earnings_exit fetch failed: {lookup_sym} ({err})",
-                    level="warning",
-                    event="earnings_exit_fetch_failed",
-                    symbol=lookup_sym,
-                    strategy=strategy_type,
-                    error=err,
-                )
-            except Exception:
-                pass
+            # Round-60: dedup — fire once per (symbol, error) per ET
+            # day. Without this, the pre-market AH monitor would emit
+            # a fresh breadcrumb every 5 min for every failing symbol.
+            today = now_et().date()
+            dedup_key = (lookup_sym, err)
+            should_fire = False
+            with _CAPTURED_LOCK:
+                last_fired = _CAPTURED_TODAY.get(dedup_key)
+                if last_fired != today:
+                    _CAPTURED_TODAY[dedup_key] = today
+                    should_fire = True
+                # GC: drop entries older than today so the dict doesn't
+                # grow unbounded across days.
+                stale = [k for k, d in _CAPTURED_TODAY.items() if d < today]
+                for k in stale:
+                    _CAPTURED_TODAY.pop(k, None)
+            if should_fire:
+                try:
+                    from observability import capture_message
+                    capture_message(
+                        f"earnings_exit fetch failed: {lookup_sym} ({err})",
+                        level="warning",
+                        event="earnings_exit_fetch_failed",
+                        symbol=lookup_sym,
+                        strategy=strategy_type,
+                        error=err,
+                    )
+                except Exception:
+                    pass
         return False, None, None
     days_to = (next_dt - now_et().date()).days
     # Window: today (days_to == 0) through days_before days out.
@@ -240,6 +319,8 @@ def clear_cache() -> None:
     with _CACHE_LOCK:
         _CACHE.clear()
     _LAST_FETCH_ERR.clear()
+    with _CAPTURED_LOCK:
+        _CAPTURED_TODAY.clear()
 
 
 def force_refresh(symbol: str) -> Optional[date]:
