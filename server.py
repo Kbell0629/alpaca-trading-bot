@@ -377,7 +377,7 @@ def _load_with_shared_fallback(user_path, shared_path, user_id):
     )
 
 
-def _mark_auto_deployed(positions, strats_dir):
+def _mark_auto_deployed(positions, strats_dir, user_dir=None):
     """Round-11: annotate each position with `_auto_deployed` AND
     `_strategy` so the dashboard can show the correct AUTO/MANUAL
     badge plus which strategy the bot is actively running on this
@@ -387,11 +387,23 @@ def _mark_auto_deployed(positions, strats_dir):
     underlying from the symbol prefix and look for
     wheel_<underlying>.json.
 
+    Round-61 user-reported: a user had a SHORT SOXL position and a
+    wheel-deployed HIMS put option, both legitimately deployed by
+    the auto-deployer, but both labeled "MANUAL" in the dashboard.
+    Root cause: the strategy file for SOXL had been cleaned up /
+    renamed, or for HIMS the wheel file was under a different name
+    than expected. The journal still had an "open" entry recording
+    the auto-deploy, but _mark_auto_deployed only looked at files on
+    disk. Fix: fall back to the trade journal when no strategy file
+    matches — if there's an open entry with deployer=cloud_scheduler
+    (or similar), label AUTO with the journal's strategy field.
+
     Sets on each position dict:
-      _auto_deployed : bool  (True if any strategy file matches)
+      _auto_deployed : bool  (True if any strategy file OR open
+                              journal entry matches)
       _strategy      : str   (e.g. "trailing_stop", "wheel", "breakout",
-                              "mean_reversion", "pead", "short"; "" if
-                              no match)
+                              "mean_reversion", "pead", "short_sell";
+                              "" if no match)
     """
     if not isinstance(positions, list) or not positions or not strats_dir:
         return positions
@@ -446,6 +458,48 @@ def _mark_auto_deployed(positions, strats_dir):
                           "short_sell": 2}.get(symbol_to_strategy.get(sym_u), 0)
         if priority >= existing_prio:
             symbol_to_strategy[sym_u] = strat
+
+    # Round-61 journal fallback. If a position has no matching strategy
+    # file on disk but the trade journal has an "open" entry with a
+    # known auto-deployer value (cloud_scheduler, wheel_strategy,
+    # error_recovery), label it AUTO with the journal's strategy field.
+    # This catches positions whose strategy file got cleaned up, renamed,
+    # or moved, but which were legitimately opened by the bot. Without
+    # this fallback the dashboard would mis-label auto trades as MANUAL,
+    # leading the user to think manual intervention was required.
+    journal_symbol_to_strategy = {}
+    if user_dir:
+        journal_path = os.path.join(user_dir, "trade_journal.json")
+        try:
+            if os.path.exists(journal_path):
+                with open(journal_path) as _jf:
+                    _journal = json.load(_jf) or {}
+                _auto_deployers = (
+                    "cloud_scheduler", "wheel_strategy", "error_recovery")
+                # Walk newest -> oldest so we pick up the most recent
+                # open per-symbol (positions can be re-opened after a
+                # close; we want the CURRENT open's strategy, not a
+                # historical one).
+                for _t in reversed(_journal.get("trades") or []):
+                    if not isinstance(_t, dict):
+                        continue
+                    if (_t.get("status") or "open") != "open":
+                        continue
+                    _sym = (_t.get("symbol") or "").upper()
+                    _strat = _t.get("strategy") or ""
+                    _dep = _t.get("deployer") or ""
+                    if not _sym or not _strat:
+                        continue
+                    if _dep not in _auto_deployers:
+                        continue
+                    # Don't overwrite an entry we already picked up from
+                    # a more-recent journal walk iteration.
+                    journal_symbol_to_strategy.setdefault(_sym, _strat)
+        except (OSError, ValueError):
+            # Journal unreadable — fall through silently; a missing
+            # journal is no worse than the pre-R61 behavior.
+            pass
+
     for p in positions:
         try:
             sym = (p.get("symbol") or "").upper()
@@ -459,6 +513,19 @@ def _mark_auto_deployed(positions, strats_dir):
             else:
                 lookup = sym
             strat = symbol_to_strategy.get(lookup, "")
+            # Round-61 journal fallback: no matching strategy file → try
+            # the journal. For option positions the journal tracks by
+            # contract symbol (the full OCC string), not underlying, so
+            # try BOTH lookups: contract-sym for journal, underlying for
+            # strategy file.
+            if not strat:
+                # For options, journal tracks by the full OCC symbol.
+                journal_lookup = sym if asset_class == "us_option" else lookup
+                strat = journal_symbol_to_strategy.get(journal_lookup, "")
+                # Options also sometimes get journaled under the underlying
+                # (wheel path), so fall through to that.
+                if not strat and asset_class == "us_option":
+                    strat = journal_symbol_to_strategy.get(lookup, "")
             p["_auto_deployed"] = bool(strat)
             p["_strategy"] = strat
         except Exception as e:
@@ -576,8 +643,10 @@ def get_dashboard_data(api_endpoint=None, api_headers=None, user_id=None, mode="
     except Exception:
         current_session = "unknown"
 
-    # Annotate AUTO/MANUAL on each position based on strategy-file presence.
-    positions = _mark_auto_deployed(positions, strats_dir)
+    # Annotate AUTO/MANUAL on each position based on strategy-file
+    # presence (with trade-journal fallback for positions whose
+    # strategy file got cleaned up — round-61 fix).
+    positions = _mark_auto_deployed(positions, strats_dir, user_dir=user_dir)
     # Round-35: annotate sector + underlying so the Position Correlation
     # panel can render a real sector breakdown with $ allocation.
     positions = _annotate_sector(positions)
