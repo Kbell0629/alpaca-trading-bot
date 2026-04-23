@@ -8,6 +8,57 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.4 — Behavioral coverage push (36% → 39%)
+
+Third follow-on PR in the round-61 sprint. Pt.1-3 landed the grep-pin
+invariants + first behavioral test for `monitor_strategies`; pt.4 adds
+real behavioral coverage on modules that were under-tested:
+
+**+118 tests across three files:**
+
+- `tests/test_round61_pt4_helpers.py` (57 tests) — full behavioral
+  coverage of `pdt_tracker.py`, `settled_funds.py`, `fractional.py`.
+  PDT day-trade detection, buffer/bypass logic, settled-cash ledger
+  math, business-day settlement calendar, fractional sizing with
+  $1 minimum + whole-share fallback.
+- `tests/test_round61_pt4_auto_deployer_behavioral.py` (17 tests) —
+  `run_auto_deployer` early-exit paths with a full Alpaca + subprocess
+  stub harness. Covers kill-switch short-circuit, config-disabled
+  return, cooldown-after-loss + parse-failure-closed, calibration
+  with small equity, daily_starting_value seeding, peak bump, capital
+  check subprocess + CAPITAL_STATUS_PATH env injection, LIVE_MODE
+  snapshot, correlation gate, circuit breaker.
+- `tests/test_round61_pt4_wheel_behavioral.py` (44 tests) —
+  `wheel_strategy.py` helpers: `log_history` + HISTORY_MAX cap,
+  `has_earnings_soon` flag + days window, `find_wheel_candidates`
+  filter + sort by wheel_score, `options_trading_allowed` approval
+  level check, `cash_covered` sufficiency, `score_contract` delta /
+  DTE / premium / liquidity math, `count_active_wheels`,
+  `_journal_wheel_close` with fail-safe behavior, `_save_json`/
+  `_load_json` atomic roundtrip.
+
+**Coverage: 36.02% → 39%** (wheel_strategy 33% → 47%; helper modules
+each now >80%).
+
+**CI floor stays at 32 for now.** The 32 → 36 ratchet was pulled out
+of this PR because editing `.github/workflows/ci.yml` triggers
+GitHub's workflow-approval gate (which requires a human click before
+CI runs). Pt.5 will bundle the floor bump with its workflow edit —
+one approval for both. Tests from this PR still enforce the existing
+32% floor locally and on CI.
+
+🚨 **User-flagged for next round:** Recent Activity panel still causes
+scroll jitter on refresh (desktop + mobile). R60 fixed the same family
+for other panels but missed Recent Activity. Fix pattern known (extend
+`_lastHtml !==` hash-skip to that renderer). Queued for pt.5 or
+sibling round.
+
+See CLAUDE.md "Current session state" section for the full roadmap to
+50% (pt.5), 65% (pt.6 — mock WSGI harness for `server.py`), and 80%
+(pt.7 — refactor `update_dashboard.py` + optional JS test stack).
+
+---
+
 ## 🆕 Round-61 — Money-path test coverage (Option A)
 
 User picked **Option A** from the test-coverage options discussion:
