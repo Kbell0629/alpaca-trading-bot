@@ -58,15 +58,15 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-24 — round 61 pt.5 COMPLETE, pt.6 next)
+## Current session state (2026-04-24 — round 61 SHIPPED, pt.6 next)
 
-**Branch:** merged to main through pt.5 (#106). **Pt.6 is the next piece
-of work — mock WSGI harness for `server.py` + `handlers/*.py`.** See the
-"pt.6 specific handoff" section below for the starting commands.
-
-Test count: **1077 passing, 39.79% coverage**. Floor: **36%**.
+**All work merged to main through #114.** Test count: **~1100 passing,
+~40% coverage**. Floor: **36%**. Pt.6 (the mock WSGI harness for
+`server.py` + `handlers/*.py`) is the next strategic piece of work.
 
 ### What landed in round 61
+
+**Coverage push (5 PRs, 258 tests):**
 
 | PR | Theme | Tests | Status |
 |---|---|---|---|
@@ -74,89 +74,115 @@ Test count: **1077 passing, 39.79% coverage**. Floor: **36%**.
 | #103 pt.2 | `run_auto_deployer` + wheel state machine grep-pins | +42 | ✅ merged |
 | #104 pt.3 | CLAUDE.md/CHANGELOG sync + floor 30→32 + monitor_strategies behavioral | +7 | ✅ merged |
 | #105 pt.4 | PDT/settled-funds/fractional + auto_deployer behavioral + wheel helpers | +118 | ✅ merged |
-| #106 pt.5 | scheduler_api + yfinance_budget behavioral + Recent Activity jitter fix + floor 32→36 | +62 | ✅ merged |
+| #106 pt.5 | scheduler_api + yfinance_budget behavioral + initial scheduler-jitter fix + floor 32→36 | +62 | ✅ merged |
 
-**Total round-61: +258 tests. Coverage: 34% → 39.79%. Floor: 30% → 36%.**
+**Bug fixes (8 PRs after the live-traffic shakedown):**
 
-### Module coverage milestones (end of pt.5)
+| PR | What |
+|---|---|
+| #107 | Jitter fix #1: strip `$` and `%` from `renderDashboard` normHash (price-tick rewrite prevention) |
+| #108 | Jitter fix #2: CSS `contain: layout style` on every refreshing section + normalized hash-skip in `refreshFactorHealth` (sibling reflow fix) |
+| #109 | Jitter fix #3: atomic children swap via `<template>` + `replaceChildren` for `#app` + `min-height: 100vh` on `#app` (empty-frame collapse fix) |
+| #110 | `[orphan]` close tag + TRAILING STOP label on short SOXL fixes (error_recovery journals open + `_mark_auto_deployed` skips closed strategy files) |
+| #111 | Jitter fix #4: preserve async-panel content (`schedulerPanel`, `factorHealthPanel`, etc.) across `#app` rewrites so `<div>Loading…</div>` placeholders don't flash |
+| #112 | Email notifications: short-force-cover now emails (`info` → `exit`) + new `/api/email-status` endpoint + dashboard 📧 chip |
+| #113 | Jitter fix #5: atomic children swap helper applied at the panel level (renderSchedulerPanel + refreshPerfAttribution + refreshTaxReport + refreshFactorHealth) — fixes Recent Activity log-line jitter |
+| #114 | AUTO/MANUAL mislabel fix: `_mark_auto_deployed` falls back to `trade_journal.json` when no strategy file matches a position |
 
-- `scheduler_api.py` 41% → ~85% (CB, rate limiter, auth alerts, full
-  HTTP verb paths with 429/5xx/4xx branching)
-- `yfinance_budget.py` 61% → 92% (rate limit window, CB lifecycle,
-  public wrappers with yfinance stubbed)
-- `wheel_strategy.py` 33% → 47% (helpers: log_history, score_contract,
-  options_trading_allowed, cash_covered, count_active_wheels,
-  find_wheel_candidates, _journal_wheel_close, JSON helpers)
+**Total round-61: 13 PRs shipped. Coverage 34% → ~40%. Floor 30% → 36%.**
+
+### Module coverage milestones
+
+- `scheduler_api.py` 41% → ~85% • `yfinance_budget.py` 61% → 92%
+- `wheel_strategy.py` 33% → 47% (helpers covered; state-machine
+  transitions still grep-pinned only)
 - `pdt_tracker.py` 60% → >90% • `settled_funds.py` 76% → >90%
 - `fractional.py` 60% → >80%
-- `cloud_scheduler.py` mostly-flat (~31%) — pt.6 won't touch it
-  directly; pt.5 behavioral tests hit the kill-switch + drawdown
-  paths in monitor_strategies.
+- `cloud_scheduler.py` ~31% (mostly flat — pt.6 won't touch it
+  directly; behavioral tests hit kill-switch + drawdown paths only)
+- `server.py` STILL ~7% — mock WSGI harness (pt.6) is the only
+  realistic way to move this
 
-### Scroll-jitter fix history (mandatory reading before touching refresh)
+### Scroll-jitter fix history (FIVE rounds — mandatory reading before touching refresh)
 
-Three rounds of iterative fixes because the jitter came from multiple
-simultaneous sources:
+The jitter took five iterative fixes because it came from five
+independent failure modes. **All five remain necessary; do not
+"simplify" any of them.** When the user reports refresh-related
+issues, check this list first — most likely the same patterns.
 
 1. **R60** — added `_lastAppNormHash` to `renderDashboard` stripping
    timestamps from the hash so quiet ticks skip `#app.innerHTML` swap.
-2. **R61 pt.5** — extended the same pattern to `renderSchedulerPanel`
-   (the Recent Activity section) since its 15s tick was still doing
-   full panel rewrites.
-3. **R61 pt.6 prep (this PR)** — user reported jitter STILL present
-   after R60+pt.5. Root cause: during market hours, price ticks change
-   `$192.40 → $192.41` and `+1.7% → +1.8%` in position/account cells
-   every few seconds — those diffs made `_normHash` mismatch → full
-   `#app.innerHTML` rewrite every 10s → jitter. Fix: extend the
-   `renderDashboard` normalization regex to also strip dollar amounts
-   (`$X.XX`, `±$X.XX`) and percentages (`±X.X%`) from the hash. Price-
-   only ticks now flow through the quiet-tick branch = no innerHTML
-   swap = no scroll jitter. Tradeoff: the displayed numbers only
-   visually refresh when something STRUCTURAL changes (new/closed
-   position, order fill) — which IS the "refreshing should be silent"
-   UX the user explicitly asked for. `test_round61_pt6_prep_jitter_fix`
-   pins the regex patterns against regression.
+2. **R61 #107** — extended the same regex to strip `$X.XX` and `±X.X%`
+   from the hash. Price-tick-only changes now flow through the quiet
+   branch instead of triggering full rewrites every 10s.
+3. **R61 #108** — added CSS `contain: layout style` + `overflow-anchor:
+   auto` on every refreshing section. Plus normalized hash-skip in
+   `refreshFactorHealth` (it embeds a freshness chip that was making
+   the panel rewrite every 10s). Browser-native containment so panel-
+   internal updates don't reflow siblings.
+4. **R61 #109** — atomic children swap for `#app`: parse new HTML into
+   a `<template>` element, then transfer via `replaceChildren` in one
+   atomic DOM op. `#app.innerHTML = x` was destroying children first
+   then rebuilding, leaving an empty-frame where document height
+   collapsed and the browser clamped scrollY. Plus `#app { min-height:
+   100vh; overflow-anchor: auto; }` as a second line of defense.
+5. **R61 #111** — preserve **async-populated panel content** across
+   the `#app` swap. Snapshot each async panel's current `innerHTML`
+   before `replaceChildren`, transplant into the new template's matching
+   placeholder. User was seeing "Loading scheduler status" flash
+   during refresh because the new `#app` shell had empty placeholders
+   for `schedulerPanel`, `factorHealthPanel`, etc.
+6. **R61 #113** — atomic children swap **at the panel level too**.
+   `renderSchedulerPanel`, `refreshPerfAttribution`, `refreshTaxReport`,
+   `refreshFactorHealth` were all using `panel.innerHTML = html`
+   directly. Same empty-frame bug as #109, just one level deeper.
+   New helper `atomicReplaceChildren(panelEl, newHtml)` does the
+   `<template>` + `replaceChildren` swap AND preserves descendant
+   `scrollTop` (so `.sched-log-box` internal scroll stays put).
 
-### Road to 80% coverage (the path forward)
+If jitter resurfaces on a NEW area, check whether it's a 6th failure
+mode or a regression of one of the above. The pinning tests are in
+`tests/test_round61_pt6_prep_*.py` — they assert source patterns so
+a refactor that "simplifies" any of these will fail loudly.
+
+### Bug fixes from the live-traffic shakedown (must-not-regress)
+
+- **#110 — `[orphan]` close tag**: `error_recovery.py` now appends a
+  `trade_journal.json` open entry alongside any strategy file it
+  creates. Without this, when the recovered position later closes via
+  stop-trigger, `record_trade_close` can't find a matching open and
+  falls into the synthetic `orphan_close` path. Look for
+  `auto_recovered=True` flag on backfilled opens.
+- **#110 — `_mark_auto_deployed` skips closed strategy files**: stale
+  `trailing_stop_SOXL.json` (status=closed) was claiming the SOXL
+  symbol over the active `short_sell_SOXL.json`. Status-skip list:
+  `closed/stopped/cancelled/canceled/exited/filled_and_closed`. Also:
+  `short_sell` priority bumped to 2 (same tier as `trailing_stop`).
+- **#114 — AUTO/MANUAL journal fallback**: `_mark_auto_deployed` now
+  falls back to `trade_journal.json` when no strategy file matches.
+  Recognizes `deployer in (cloud_scheduler, wheel_strategy,
+  error_recovery)`. Walks newest→oldest with `setdefault` so the
+  most-recent open wins on re-opens. Strategy files still preferred
+  when both exist. Option positions try BOTH the OCC contract symbol
+  and the underlying for the journal lookup.
+- **#112 — Email diagnostics**: new `/api/email-status` endpoint
+  returns `{enabled, queued, sent_today, failed_recent, last_sent_at,
+  recipient, dead_letter_count}`. Dashboard 📧 header chip shows
+  state at a glance: 📧 OFF (red, SMTP creds missing), 📧 NO ADDR
+  (orange, recipient not set), 📧 N STUCK (orange, >10 unsent), 📧
+  N queued (dim), 📧 N today (green). Click to see full diagnostic.
+  Short force-cover now emails (`exit` not `info`).
+
+### Road to 80% coverage (the path forward — UNCHANGED)
 
 | Phase | Target | Scope | Est effort |
 |---|---|---|---|
-| **pt.4** (now) | 39% ✅ | PDT + settled-funds + fractional behavioral; auto_deployer early paths; wheel helpers (`log_history`, `has_earnings_soon`, `score_contract`, `find_wheel_candidates`, `options_trading_allowed`, `cash_covered`, `count_active_wheels`, `_journal_wheel_close`) | done |
-| **pt.5** (~50%) | +11 pts | Extend auto_deployer behavioral harness for per-pick loop; full `run_daily_close` behavioral; more `cloud_scheduler.py` branches (process_strategy_file, stop_raise, entry_fill flow); complete `smart_orders.py`, `scheduler_api.py` circuit breaker, `yfinance_budget.py` error paths | 1 PR, ~4 hrs |
-| **pt.6** (~65%) | +15 pts | **Mock WSGI harness for `server.py` + `handlers/*.py`.** Biggest lever left. 1-2 days to build the harness (fake request/response, session context, auth-mode injection), then tests come fast. Covers 1555 currently-uncovered lines in `server.py`. | 1 big PR, 1-2 days |
-| **pt.7** (~80%) | +15 pts | Un-omit `update_dashboard.py` by refactoring to separate pure scoring math from I/O. Un-omit `update_scorecard.py` similarly. Write behavioral tests for the pure functions. Also unlocks screener testability for strategy dev. | 1-2 PRs, 2-3 days |
-| **pt.8 (optional)** | Python 80% + JS coverage | Set up Vitest + jsdom for `templates/dashboard.html`. ~6000 lines of JS currently invisible to `pytest-cov`. Without this, Python-only coverage caps around 75-80%. | 1 big PR, 1-2 days |
+| **pt.5** ✅ | 39% | scheduler_api + yfinance_budget + helper modules | done |
+| **pt.6** | ~65% | **Mock WSGI harness for `server.py` + `handlers/*.py`.** Biggest lever left — `server.py` is 1708 statements at 7%. 1-2 days to build the harness (fake request/response, session context, auth-mode injection), then tests come fast. | 1 big PR, 1-2 days |
+| **pt.7** | ~78% | Refactor `update_dashboard.py` + `update_scorecard.py` to extract pure scoring math into `screener_core.py` / `scorecard_core.py`. Un-omit from coverage. Requires source changes — needs careful review. | 1-2 PRs, 2-3 days |
+| **pt.8 (optional, parallel)** | adds JS coverage | Vitest + jsdom for `templates/dashboard.html`'s ~6000 LOC. Without this, Python-only caps ~78%. | 1 PR, 1-2 days |
 
-### pt.5 specific handoff (start here)
-
-**Setup:**
-```bash
-git checkout main && git fetch origin main
-git checkout -b claude/round61-pt5-behavioral-50 origin/main
-```
-
-**Where to add tests:**
-- Extend `tests/test_round61_pt4_auto_deployer_behavioral.py` — the
-  `_Stubs` harness already works. Add tests for:
-  * Full pick loop iteration (inject a `dashboard_data.json` with
-    `picks:[{symbol, price, wheel_score, best_strategy}]` — then
-    assert orders placed/skipped per-pick).
-  * Factor-bypass mode actually deploys the picks without gate checks.
-  * Short selling: bear market + spy_momentum < -3 → short order
-    placed for top short_candidate.
-  * Sector cap: 3 tech in positions → 4th tech pick blocked.
-  * Beta block_all: block_all=True in regime → no long picks deployed.
-- New file `tests/test_round61_pt5_daily_close_behavioral.py` for
-  `run_daily_close` using the same stub pattern. Already partly
-  tested (R57 edge cases) — extend to cover the full report flow,
-  email send path, journal flush.
-- New file `tests/test_round61_pt5_monitor_per_strategy.py` — full
-  `process_strategy_file` exercised per strategy type
-  (trailing_stop / breakout / mean_reversion / pead / copy_trading).
-
-**Coverage target pt.5:** 50%+ actual. Ratchet floor to 45 or 48.
-
-### pt.6 specific handoff (mock WSGI harness)
+### pt.6 specific handoff (start here)
 
 **The big one.** `server.py` is 1708 statements, 7% covered. Nothing
 else at this scale. Pattern:

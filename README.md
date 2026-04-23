@@ -137,6 +137,9 @@ Click the 📝 PAPER (orange) / 🔴 LIVE (red) badge in the top-left of the hea
 | **📖 Help** | Opens this user manual |
 | **↻ Refresh** | Manually refresh dashboard data |
 | **Next refresh: Xs** | Countdown to next auto-refresh (every 10 seconds — real-time feel). |
+| **📧 Email status** (round-61) | At-a-glance email-pipeline health. Click for details. **📧 N today** (green) = healthy, N emails sent today. **📧 N queued** (dim) = backlog present but pipeline working. **📧 N STUCK** (orange) = >10 unsent — Gmail app password may have rotated. **📧 NO ADDR** (orange) = your `notification_email` isn't set; open Settings → Notifications. **📧 OFF** (red) = `GMAIL_USER` / `GMAIL_APP_PASSWORD` env vars missing on Railway. |
+
+> 🤫 **Why don't the numbers tick every second?** (round-61 jitter fix.) The 10-second auto-refresh used to rewrite the entire dashboard on every tick, which caused the screen to scroll-jump on mobile when prices changed. Now the dashboard only does a full DOM update when something **structural** changes (new position, closed position, order fill, manual refresh). Price-only ticks flow through a quiet path that updates timestamps in place but leaves your scroll position untouched. The displayed `$192.40 → $192.41` only refreshes when the next structural event fires — that's the silent-refresh UX. If you want a hard refresh, hit the ↻ button in the header.
 
 ### Navigation Tabs (scrollable)
 
@@ -186,7 +189,8 @@ For Short Selling, also has **Turn On/Off** toggle since shorts are riskier.
 
 Your current holdings:
 - Symbol, Quantity, Entry Price, Current Price, P&L, P&L %
-- **AUTO/MANUAL** badge — was this deployed by the bot or you?
+- **AUTO/MANUAL** badge — was this deployed by the bot or you? (round-61: if no strategy file is on disk but the trade journal has an auto-deploy record, the badge shows AUTO via the journal-fallback path. Covers positions whose strategy files got cleaned up or renamed.)
+- **Strategy badge** (TRAILING STOP / BREAKOUT / WHEEL / MEAN REVERSION / PEAD / SHORT SELL) — which strategy is actively managing this position. (round-61: stale strategy files with status=closed are ignored so a closed-long file can't mis-label an active short position.)
 - **🚨 BREAKING** badge — fresh news alert on this symbol (last 60 min, `|score| >= 6`)
 - **Close button** — Sell everything (confirmation modal shows expected P&L)
 - **Sell 25% / Sell 50% buttons** — Partial sell (lock in some gains while staying in)
