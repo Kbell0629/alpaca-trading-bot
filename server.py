@@ -2003,6 +2003,77 @@ class DashboardHandler(
             else:
                 self.send_json({"running": False, "error": "Scheduler module not loaded"})
 
+        elif path == "/api/email-status":
+            # Round-61: diagnostic endpoint so the user can see at a
+            # glance whether the email pipeline is healthy. Without this,
+            # a missing GMAIL_USER env var silently skipped every drain
+            # and the user saw no emails but had no way to tell if the
+            # problem was sending or receiving.
+            #
+            # Returns:
+            #   enabled        — email sender has credentials + isn't disabled
+            #   queued         — current count of unsent entries in THIS user's queue
+            #   sent_today     — count of entries marked sent with today's ET date
+            #   failed_recent  — count with last_error and not yet sent
+            #   last_sent_at   — ISO timestamp of most-recent sent email
+            #   dead_letter_count — entries older than 7 days, still unsent (dropped)
+            #   recipient      — the email we'd send to (notification_email or
+            #                     user.email fallback). Returned so dashboard
+            #                     can warn if it's empty.
+            if not self.current_user:
+                return self.send_json({"error": "Not authenticated"}, 401)
+            try:
+                import email_sender as _es
+                status = {
+                    "enabled": _es.enabled(),
+                    "queued": 0,
+                    "sent_today": 0,
+                    "failed_recent": 0,
+                    "last_sent_at": None,
+                    "dead_letter_count": 0,
+                    "recipient": (self.current_user.get("notification_email")
+                                   or self.current_user.get("email") or ""),
+                }
+                queue_path = os.path.join(self._user_dir(), "email_queue.json")
+                if os.path.exists(queue_path):
+                    try:
+                        with open(queue_path) as f:
+                            queue = json.load(f)
+                        if isinstance(queue, list):
+                            from et_time import now_et as _now_et
+                            _today_prefix = _now_et().strftime("%Y-%m-%d")
+                            _last_sent = None
+                            for entry in queue:
+                                if not isinstance(entry, dict):
+                                    continue
+                                if entry.get("sent"):
+                                    _sent_at = entry.get("sent_at") or ""
+                                    if _sent_at.startswith(_today_prefix):
+                                        status["sent_today"] += 1
+                                    if not _last_sent or _sent_at > _last_sent:
+                                        _last_sent = _sent_at
+                                else:
+                                    status["queued"] += 1
+                                    if entry.get("last_error"):
+                                        status["failed_recent"] += 1
+                            status["last_sent_at"] = _last_sent
+                    except (OSError, ValueError):
+                        pass
+                # Dead-letter queue file (created by notify.py when queue
+                # overflows past 50). Count stale unsent entries.
+                dlq_path = os.path.join(self._user_dir(), "email_queue_dlq.json")
+                if os.path.exists(dlq_path):
+                    try:
+                        with open(dlq_path) as f:
+                            dlq = json.load(f)
+                        if isinstance(dlq, list):
+                            status["dead_letter_count"] = len(dlq)
+                    except (OSError, ValueError):
+                        pass
+                self.send_json(status)
+            except Exception as e:
+                self._send_error_safe(e, 500, "email-status")
+
         elif path == "/api/tax-report":
             # Round-11 expansion: per-lot tax reporting (FIFO basis,
             # short/long-term split, wash-sale warnings). Pulls from

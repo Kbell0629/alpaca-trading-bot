@@ -1563,7 +1563,11 @@ def process_short_strategy(user, filepath, strat, state, rules):
                     state["exit_reason"] = "max_hold_exceeded"
                     pnl = (entry - price) * shares
                     state["exit_price"] = price
-                    notify_user(user, f"Short on {symbol} force-covered after {age_days} days. P&L ~${pnl:.2f}", "info")
+                    # Round-61: force-cover is a position-closing event
+                    # (same class as stop-triggered), so it must email the
+                    # user — not just push. Changed from "info" → "exit"
+                    # which puts it in notify.py EMAIL_TYPES.
+                    notify_user(user, f"Short on {symbol} force-covered after {age_days} days. P&L ~${pnl:.2f}", "exit")
                     record_trade_close(user, symbol, strat.get("strategy", "short_sell"),
                                         price, pnl, "max_hold_exceeded", qty=shares, side="buy")
     except Exception as e:

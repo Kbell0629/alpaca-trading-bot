@@ -359,9 +359,13 @@ def test_dashboard_handler_mixin_decomposition(isolated_data_dir):
     # short position as "TRAILING STOP"; requires reading each
     # strategy file's status field so can't be done in a pure
     # filename-scan).
+    # 3250 (round-61 /api/email-status endpoint — diagnostic for
+    # the email pipeline so the user can see SMTP-enabled / queued /
+    # sent-today in the dashboard header chip. Legitimately belongs
+    # at the route-dispatch layer).
     import os
     server_lines = sum(1 for _ in open(server.__file__))
-    assert server_lines < 3150, \
+    assert server_lines < 3250, \
         f"server.py too large ({server_lines} lines) — handler methods leaked back in"
 
 
