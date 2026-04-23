@@ -415,13 +415,35 @@ def _mark_auto_deployed(positions, strats_dir):
         if not sym or not sym.isalnum() or not strat:
             continue
         sym_u = sym.upper()
+        # Round-61 user-reported: a stale `trailing_stop_SOXL.json` (from
+        # a long that stopped out earlier in the day, status=closed)
+        # was coexisting with the new `short_sell_SOXL.json` (current
+        # short). The old priority rule preferred trailing_stop over
+        # short_sell → dashboard showed "TRAILING STOP" label on a
+        # -29-share SHORT position. Skip strategy files whose status
+        # is closed/stopped/cancelled so only ACTIVE files can claim
+        # a symbol.
+        try:
+            fpath = os.path.join(strats_dir, fname)
+            with open(fpath) as _sf:
+                _state = json.load(_sf)
+            _status = str((_state or {}).get("status") or "").lower()
+            if _status in ("closed", "stopped", "cancelled", "canceled",
+                           "exited", "filled_and_closed"):
+                continue  # stale file — ignore
+        except (OSError, ValueError):
+            # If the file can't be read, fall through to the priority
+            # logic below — better to show a (possibly stale) label
+            # than to hide the fact that a strategy file exists at all.
+            pass
         # If multiple strategies somehow share one symbol (shouldn't
         # happen in practice, but: breakout_ + trailing_stop_ side-by-
         # side during migration), prefer wheel > trailing_stop > the
         # actual entry strategy. That surfaces the "what's actively
         # managing this position right now" answer, not stale files.
-        priority = {"wheel": 3, "trailing_stop": 2}.get(strat, 1)
-        existing_prio = {"wheel": 3, "trailing_stop": 2}.get(symbol_to_strategy.get(sym_u), 0)
+        priority = {"wheel": 3, "trailing_stop": 2, "short_sell": 2}.get(strat, 1)
+        existing_prio = {"wheel": 3, "trailing_stop": 2,
+                          "short_sell": 2}.get(symbol_to_strategy.get(sym_u), 0)
         if priority >= existing_prio:
             symbol_to_strategy[sym_u] = strat
     for p in positions:
