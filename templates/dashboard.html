@@ -232,7 +232,15 @@ button:active { transform: translateY(0); }
 .strategy-card.short-sell::before { background: linear-gradient(90deg,#dc2626,#7f1d1d); }
 
 /* Scheduler Panel */
-.scheduler-section { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 24px; }
+.scheduler-section { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 24px;
+    /* Round-61 pt.6 prep: contain layout + style so that ANY internal
+       update (new log line, status change, panel rewrite) stays inside
+       this section's box and cannot reflow content outside it. The
+       browser uses this hint to skip recomputing layout for siblings.
+       Pairs with the renderDashboard normHash + renderSchedulerPanel
+       hash-skip — three layers of defense against scroll jitter. */
+    contain: layout style;
+    overflow-anchor: auto; }
 .scheduler-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 16px; }
 .sched-task { background: rgba(16,185,129,0.03); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
 .sched-task.active { border-color: rgba(16,185,129,0.4); background: rgba(16,185,129,0.05); }
@@ -254,7 +262,10 @@ button:active { transform: translateY(0); }
 .sched-log-empty { color: var(--text-dim); font-style: italic; text-align: center; padding: 20px; }
 
 /* Trade Heatmap */
-.heatmap-section { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 24px; }
+.heatmap-section { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 24px;
+    /* Round-61 pt.6 prep: layout containment for jitter prevention. */
+    contain: layout style;
+    overflow-anchor: auto; }
 .heatmap-grid { display: grid; grid-template-columns: 60px repeat(auto-fill, minmax(16px, 1fr)); gap: 2px; margin: 20px 0; font-size: 10px; }
 .heatmap-cell { aspect-ratio: 1; border-radius: 2px; cursor: pointer; transition: transform 0.15s; }
 .heatmap-cell:hover { transform: scale(1.3); z-index: 10; position: relative; }
@@ -281,7 +292,10 @@ button:active { transform: translateY(0); }
 .heatmap-weekday-value { font-size: 16px; font-weight: 700; }
 
 /* Paper vs Live Comparison */
-.comparison-section { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 24px; }
+.comparison-section { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 24px;
+    /* Round-61 pt.6 prep: layout containment for jitter prevention. */
+    contain: layout style;
+    overflow-anchor: auto; }
 .comparison-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 .comparison-card { background: rgba(10,14,23,0.5); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
 .comparison-card.paper { border-top: 3px solid var(--accent); }
@@ -415,6 +429,12 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
     border-radius: var(--radius);
     padding: 20px;
     margin-bottom: 24px;
+    /* Round-61 pt.6 prep: layout containment so internal panel rewrites
+       (refreshFactorHealth, refreshPerfAttribution, refreshTaxReport,
+        all of which fire every 10s) cannot push siblings around and
+       jitter the user's scroll position. */
+    contain: layout style;
+    overflow-anchor: auto;
 }
 .factor-health-grid {
     display: grid;
@@ -542,6 +562,10 @@ td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); }
 .activity-log {
     background: var(--card); border: 1px solid var(--border);
     border-radius: var(--radius); padding: 20px; margin-bottom: 24px;
+    /* Round-61 pt.6 prep: layout containment so log-line additions
+       can't push siblings around (jitter prevention). */
+    contain: layout style;
+    overflow-anchor: auto;
 }
 .activity-log h3 {
     font-size: 14px; margin-bottom: 12px; color: var(--text-dim);
@@ -4138,10 +4162,20 @@ function renderFactorHealth(d) {
     }
 
     html += '</div>';
-    // Round-57: hash-skip identical renders.
-    if (panel._lastHtml !== html) {
+    // Round-61 pt.6 prep: normalized hash-skip. The freshness chip
+    // (factor-card-age) embedded in the breadth card outputs "Xs ago"
+    // which changes every render — that made the raw _lastHtml check
+    // mismatch every 10s tick → panel rewrite → user scroll jump
+    // when scrolled into Factor Health. Strip the chip text from the
+    // hash so factor-state changes drive rewrites, not just the clock.
+    var _normHtml = html
+        .replace(/<div class="factor-card-age">[\s\S]*?<\/div>/g, '<div class="factor-card-age">#</div>')
+        .replace(/[+-]?\d+\.\d+%/g, '_%')
+        .replace(/[+-]?\$-?[\d,]+\.\d{2}/g, '$_');
+    if (panel._lastNormHtml !== _normHtml) {
         panel.innerHTML = html;
         panel._lastHtml = html;
+        panel._lastNormHtml = _normHtml;
     }
 }
 
