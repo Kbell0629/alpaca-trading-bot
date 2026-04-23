@@ -8,6 +8,43 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.6 follow-ups — deeper handler coverage (PR #117)
+
+Pt.6 (#116) landed the harness + base coverage. This follow-up
+exercises the happy-path branches those tests skipped via the
+**admin-and-target pattern**: create admin1 → logout → create target
+user → logout → re-auth as admin, so admin endpoints run against
+real user IDs rather than only hitting auth gates.
+
+`tests/test_round61_pt6_followup_admin_actions.py` — 57 tests:
+  * admin set-active (activate / deactivate + last-admin protection)
+  * admin reset-password (target reset + cross-admin block + short-pwd)
+  * admin update-user / delete-user / set-admin / create-backup
+  * invite lifecycle end-to-end (create → token returned → signup
+    consumes the token via `/api/signup`)
+  * user toggles: live-mode, track-record-public, scorecard-email
+  * kill-switch activate → deactivate round-trip
+  * auto-deployer, factor-bypass, force-auto-deploy, force-daily-close
+  * forgot-password enumeration defense (same response existing vs
+    bogus email — no user enumeration leak)
+  * logout actually invalidates the server session (subsequent
+    `/api/me` returns 401)
+  * seeded journal tests for /api/perf-attribution, /api/trade-heatmap
+  * /api/chart-bars, /api/readme, /api/compute-backtest
+  * /api/admin/audit-log with `?limit`, /api/admin/export-user-data
+
+**Coverage (server.py + handlers combined):**
+  * `handlers/admin_mixin.py`: 33% → **74%** (+41)
+  * `handlers/actions_mixin.py`: 38% → **56%** (+18)
+  * `handlers/auth_mixin.py`: 44% → **49%** (+5)
+  * `server.py`: 42% → **47%** (+5)
+  * Full-suite total: 47.19% → **51.04%** (+3.85)
+  * Tests: 1259 → **1337** (+78 across pt.6 follow-ups)
+
+No source-code changes. Ruff clean.
+
+---
+
 ## 🆕 Round-61 pt.6 — Mock WSGI harness for HTTP endpoints (PR #116)
 
 `server.py` was 7% covered (1708 statements, 1555 uncovered) because

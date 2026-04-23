@@ -998,6 +998,32 @@ and `templates/track_record.html`. Re-run whenever you bump a version.
 - "What's the top pick" → speaks top recommendation
 - "Deploy trailing stop on NVDA" → opens deploy modal
 
+### Testing (For Developers)
+
+Run the full suite locally:
+```bash
+MASTER_ENCRYPTION_KEY=$(python3 -c 'print("a"*64)') \
+  pytest tests/ \
+    --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json \
+    --deselect tests/test_auth.py::test_password_strength_rejects_weak \
+    --deselect tests/test_audit_round12_scheduler_latent.py::test_ruff_clean_on_real_bug_rules -q
+```
+Expect **1337 passing** (as of round-61 pt.6), **51% total coverage**.
+
+**HTTP endpoint tests** use the `http_harness` fixture in
+`tests/conftest.py` — a mock WSGI harness that invokes `DashboardHandler`
+directly without a real socket. Minimum viable pattern:
+```python
+def test_my_endpoint(http_harness):
+    http_harness.create_user()  # user #1 is auto-admin
+    resp = http_harness.get("/api/my-endpoint")
+    assert resp["status"] == 200
+    # POSTs auto-inject CSRF cookie + header
+    resp = http_harness.post("/api/my-endpoint", body={"k": "v"})
+```
+See `tests/test_round61_pt6_*.py` for 260+ example tests spanning
+every major endpoint.
+
 ### API Endpoints (For Developers)
 
 All authenticated endpoints require a valid session cookie (obtained
