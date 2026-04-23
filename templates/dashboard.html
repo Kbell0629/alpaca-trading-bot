@@ -6693,6 +6693,60 @@ function renderDashboard() {
         // (Chrome 86+, Firefox 78+, Safari 14+).
         var _tmpl = document.createElement('template');
         _tmpl.innerHTML = _appHtml;
+        // Round-61 pt.6 prep #4: preserve async-populated panel content.
+        // User reported "sometimes it says loading scheduler status in
+        // the scheduler area after it refreshes when it jumps back to
+        // that section". Root cause: the fresh #app shell that
+        // replaceChildren inserts has EMPTY placeholder <div>s for
+        // schedulerPanel/factorHealthPanel/perfAttributionPanel/
+        // taxReportPanel/heatmapContent. Those get repopulated async
+        // by the refresh* calls a few hundred ms later. During the
+        // gap, the panel's intrinsic height shrinks (placeholder is
+        // small; full content is tall) → document height changes →
+        // scroll anchor shifts → visible jump + "Loading..." flash.
+        //
+        // Fix: snapshot each async panel's CURRENT innerHTML before
+        // the swap, find the matching new placeholder in the template,
+        // inject the cached HTML into the new placeholder. The user
+        // sees the SAME content before/during/after the swap. The
+        // async refresh* call still fires right after, and if the
+        // content changed it patches in-place via each panel's own
+        // hash-skip guard (no visual churn).
+        var _asyncPanelIds = [
+            "schedulerPanel", "factorHealthPanel",
+            "perfAttributionPanel", "taxReportPanel", "heatmapContent",
+            "logEntries"
+        ];
+        var _panelCache = {};
+        for (var _pi = 0; _pi < _asyncPanelIds.length; _pi++) {
+            var _pid = _asyncPanelIds[_pi];
+            var _existing = document.getElementById(_pid);
+            if (_existing && _existing.innerHTML) {
+                // Only cache if the existing content isn't a loading
+                // placeholder (if it is, there's nothing to preserve).
+                var _html = _existing.innerHTML;
+                if (_html.indexOf("empty-state loading") < 0) {
+                    _panelCache[_pid] = _html;
+                }
+            }
+        }
+        // Transplant cached HTML into the fresh placeholders BEFORE the
+        // swap. After replaceChildren, the panels come up already
+        // populated with their last-known content — no empty-state flash,
+        // no height collapse.
+        for (var _pid2 in _panelCache) {
+            if (!_panelCache.hasOwnProperty(_pid2)) continue;
+            var _newPlaceholder =
+                _tmpl.content.getElementById && _tmpl.content.getElementById(_pid2);
+            if (!_newPlaceholder) {
+                // Older/odd browsers: walk children manually.
+                var _all = _tmpl.content.querySelectorAll("#" + _pid2);
+                _newPlaceholder = _all.length ? _all[0] : null;
+            }
+            if (_newPlaceholder) {
+                _newPlaceholder.innerHTML = _panelCache[_pid2];
+            }
+        }
         var _appEl = document.getElementById('app');
         if (_appEl && _appEl.replaceChildren) {
             _appEl.replaceChildren.apply(_appEl,
@@ -6700,6 +6754,17 @@ function renderDashboard() {
         } else {
             // Fallback for pre-2020 browsers — same as before.
             if (_appEl) _appEl.innerHTML = _appHtml;
+        }
+        // Restore each panel's _lastHtml cache so subsequent
+        // hash-skip logic still works after the swap. Without this,
+        // every panel's hash check would false-mismatch on the next
+        // tick (since _lastHtml was on the OLD detached element).
+        for (var _pid3 in _panelCache) {
+            if (!_panelCache.hasOwnProperty(_pid3)) continue;
+            var _newEl = document.getElementById(_pid3);
+            if (_newEl) {
+                _newEl._lastHtml = _panelCache[_pid3];
+            }
         }
         window._lastAppNormHash = _normHash;
         window._lastAppHtml = _appHtml;
