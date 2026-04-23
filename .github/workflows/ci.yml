@@ -34,12 +34,12 @@ jobs:
         run: ruff check .
 
       - name: Run pytest with coverage
-        # Coverage floor is the RATCHET baseline. Round-61 pt.5
-        # locks in the pt.4 gain that had to be deferred because of
-        # the workflow-approval gate. Pt.4 measured 39% actual; pt.5
-        # adds scheduler_api + yfinance_budget behavioral coverage.
-        # Floor moved 32 → 36 to lock in most of the gain with a
-        # 3-4% cushion vs actual.
+        # Coverage floor is the RATCHET baseline. Round-61 pt.6
+        # built a mock WSGI harness for DashboardHandler that lets us
+        # exercise every HTTP endpoint without a real socket. server.py
+        # went 7% → 42%+, handlers/*.py went 0% → 13-44%. Total actual
+        # coverage jumped 39.79% → 47.19%. Floor moved 36 → 45 to lock
+        # the gain with a ~2% cushion.
         # Nudge UP again in any PR that adds a new test suite. Never
         # lower without a written PR justification — ratchet only
         # moves one direction.
@@ -50,5 +50,5 @@ jobs:
             --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json \
             --cov=. \
             --cov-report=term-missing \
-            --cov-fail-under=36 \
+            --cov-fail-under=45 \
             --tb=short
