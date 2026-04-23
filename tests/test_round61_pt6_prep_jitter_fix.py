@@ -74,3 +74,54 @@ def test_normhash_applied_inside_renderDashboard():
     assert "_normHash" in rd_block
     assert r"\$-?[\d,]+\.\d{2}" in rd_block
     assert "_normHash !== window._lastAppNormHash" in rd_block
+
+
+# Round-61 pt.6 prep — second jitter pass: the user reported the
+# screen STILL jumped after the renderDashboard normHash strip
+# (#107 merged but jitter persisted). Root cause: refreshFactorHealth
+# ran every 10s with a freshness chip ("Xs ago") embedded in its
+# HTML, so the panel-level _lastHtml check mismatched every tick →
+# panel rewrite → outer layout reflow → scroll jump (especially
+# visible from the Recent Activity panel above it). Plus, even
+# panels that DO have stable HTML can still cause sibling layout
+# shifts unless the browser is told their internals are contained.
+
+def test_factor_health_uses_normalized_hash():
+    """refreshFactorHealth's hash-skip must strip the freshness chip
+    so the auto-refresh tick doesn't repaint the panel every 10s."""
+    src = _src()
+    # Hint string from the new hash-skip block
+    assert 'panel._lastNormHtml' in src, (
+        "refreshFactorHealth must use a normalized hash (panel._lastNormHtml) "
+        "so the freshness chip's 'Xs ago' text doesn't trigger a rewrite "
+        "every 10s")
+    assert '<div class="factor-card-age">#</div>' in src, (
+        "factor-card-age (freshness chip) must be replaced with a stable "
+        "placeholder in the hash so chip-only ticks skip the rewrite")
+
+
+def test_section_layout_containment_present():
+    """Every section that auto-refreshes every 10s must declare
+    `contain: layout style` so internal repaints can't reflow
+    sibling sections — even a panel that DOES rewrite cannot then
+    shift the user's scroll position. Browser-native containment is
+    cheap and the right tool here."""
+    src = _src()
+    # Each refreshing section's CSS rule must include the contain.
+    # We assert the keyword is paired with each of the four section
+    # classes that fire on the 10s tick.
+    for cls in (".scheduler-section", ".factor-health-section",
+                ".comparison-section", ".heatmap-section",
+                ".activity-log"):
+        idx = src.find(cls + " {")
+        if idx < 0:
+            idx = src.find(cls + " {", 0)
+        if idx < 0:
+            # CSS may use single-line `.x {`. Accept inline form too.
+            idx = src.find(cls + " ")
+        assert idx > 0, f"missing CSS rule for {cls}"
+        block = src[idx:idx + 800]
+        assert "contain: layout style" in block, (
+            f"{cls} must declare contain: layout style (jitter prevention)")
+        assert "overflow-anchor: auto" in block, (
+            f"{cls} must declare overflow-anchor: auto (jitter prevention)")
