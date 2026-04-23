@@ -56,12 +56,63 @@ via web UI. Don't try `mcp__github__*` tools.
 
 ---
 
-## Current session state (2026-04-22 night — round 57 audit sweep)
+## Current session state (2026-04-23 — round 61 money-path tests)
 
-**Branch:** `claude/round57-audit`. Round-54 + 55 + 56 all merged to main
-(PR #97, commit `a10d00b`). Round-57 is a follow-on audit sweep that
-landed 11 fixes across concurrency, observability, UX, a11y, and edge
-cases — see below.
+**Branch:** merged to main. Round-61 split into three PRs: **pt.1 #102**
+(monitor_strategies + check_profit_ladder, 29 tests), **pt.2 #103**
+(run_auto_deployer + wheel state machine, 42 tests), **pt.3** (this PR —
+docs + coverage ratchet + behavioral coverage top-up). Rounds 58-60 all
+merged earlier today (PRs #99-#101).
+
+### Round-61 — Money-path test coverage (Option A)
+User picked Option A from the coverage-options discussion: focus-fire
+tests on the highest-risk uncovered money paths rather than a full
+push to 80%. Four targets picked for their history of real-money bugs:
+
+**`monitor_strategies` (13 grep-pin tests, pt.1):** kill_switch early
+return pre-API, max_drawdown + daily_loss breach flows (RMW under
+lock, notify_rich, critical_alert, _flatten_all_user), peak +
+daily_starting_value seeding under lock, main-loop skip lists
+(copy_trading + wheel_strategy) + status gate, top-level try/except
+isolation, AH mode paused/short/wheel skips, _tier_cfg stashed in
+both branches.
+
+**`check_profit_ladder` (16 behavioral tests, pt.1):** rung ordering
+10→20→30→50 firing exactly once per call, 25% of initial_qty anchor
+(not current shares), client_order_id ET-date format for idempotency,
+Alpaca 422 dedup, stop resize (PATCH first, cancel+replace fallback,
+cancel on zero remaining), PDT gate (skip / bypass / fail-open).
+
+**`run_auto_deployer` (19 grep-pin tests, pt.2):** kill_switch pre-API,
+enabled=False early return, cooldown parse fail-CLOSED (R3), tier cash
+short-disable (R52), LIVE_MODE_AT_START snapshot (R45), factor_bypass,
+weak-breadth skip, daily_starting_value once per ET day, capital_check
+per-user path (R10), beta-exposure after positions (R12), per-pick
+enforcement of block_all, correlation for longs+shorts, tier-log dedup,
+tier defaults respect user overrides, calibration fail-open.
+
+**Wheel state machine (23 grep-pin tests, pt.2):** four stage names
+stable, open_short_put/open_covered_call write sites, canceled/expired/
+rejected order stage reset, transitional statuses stay pending (R10),
+DELTA-based put assignment (R43), cost_basis = strike - prem/share
+Decimal-safe, cost_basis cleared to None when shares hit 0, call
+assignment completes cycle, call-expired → stage_2_shares_owned,
+PROFIT_CLOSE_PCT + bid fallback (R10), external-close pre-expiry only
+(R42), anomalous-delta freeze without split (R12), split auto-resolve
+(R13), every close path journals, HISTORY_MAX cap, premium accumulator
+Decimal-safe.
+
+**Coverage honesty:** 53 of the 71 tests are grep-pins (pattern
+assertions on source). They DO catch regressions from refactor-renames,
+accidental guard removal, and CLAUDE.md invariant drift — but they don't
+move pytest-cov the way behavioral tests do. Only the 16 profit_ladder
+tests + 2 daily-close edge cases are real behavioral coverage. Expected
+CI test count: 891 passing after pt.2.
+
+### Previously in-flight (now merged)
+Rounds 54-60 all merged via PRs #97-#101, 2026-04-22 / 2026-04-23.
+Round-57 audit sweep (detailed below) was the last big regression-fix
+round before the coverage-testing sprint.
 
 ### Round-57 — Full tech-stack audit fixes
 5 parallel Explore agents ran. 13 real bugs triaged, 3 false positives verified.
@@ -141,6 +192,29 @@ singular/plural contract noun. 11 tests. Math (%, $, sort) untouched.
 
 ## Architectural invariants (CRITICAL — don't regress)
 
+### Post-61 (money-path test coverage — Option A)
+- `tests/test_round61_*.py` pin money-path invariants at the source-string
+  level. A refactor that renames `strategy_file_lock` or moves the
+  `kill_switch` guard will break these — BY DESIGN. Read the failing
+  assertion's docstring before "fixing" the test; it documents which
+  past bug the invariant prevents.
+- `check_profit_ladder` MUST keep the rung order `[10, 20, 30, 50]` at
+  25% of `initial_qty` each. Changing this changes every open wheel's
+  exit plan — needs a product-level decision, not a refactor.
+- `check_profit_ladder` MUST return after firing ONE rung per call.
+  Firing all rungs at once on a single spike sells into thin upper-book
+  liquidity. The `return  # One level per check` comment is the pin.
+- `check_profit_ladder` `client_order_id = ladder-<sym>-L<pct>-<ET_YYYYMMDD>`
+  format MUST be stable. Alpaca dedup key depends on it — changing the
+  format loses idempotency across a retry window.
+- Wheel stage strings (`stage_1_searching`, `stage_1_put_active`,
+  `stage_2_shares_owned`, `stage_2_call_active`) are persisted in every
+  live `wheel_*.json`. Renaming any of them breaks every existing state
+  file on disk. Never rename without a migration.
+- Call assignment MUST reset `state["cost_basis"] = None` when
+  `shares_owned` hits 0. Without this, the next cycle's assignment math
+  inherits stale cost basis → wrong tax lot on every wheel past #1.
+
 ### Post-60 (post-deploy user feedback fixes)
 - ETFs (SPY/QQQ/SOXL/IBIT/MSOS/XL*/TQQQ/VIXY/GLD/TLT/JETS/ARKK/etc.) MUST short-circuit in `earnings_exit.should_exit_for_earnings` via the `_KNOWN_ETFS` frozenset. They have no earnings — fetching wastes rate limit + emits false-positive Sentry alerts.
 - `earnings_exit_fetch_failed` Sentry breadcrumbs MUST dedup per `(symbol, error)` per ET calendar day via `_CAPTURED_TODAY`. The pre-market AH monitor fires 12+ times per hour; without dedup that's 60+ alerts per morning per failing symbol.
@@ -155,7 +229,7 @@ singular/plural contract noun. 11 tests. Math (%, $, sort) untouched.
 - Only transaction code "P" (open-market purchase) counts toward `total_value_usd`. Adding A/M/G/F/S would inflate the number with compensation/exercise/sale events — those aren't bullish signals.
 - `_FORM4_XML_BUDGET_PER_CALL = 5` per `fetch_insider_buys`. Lowering loses signal; raising slows every screener run by ~1s per extra fetch.
 - `migrations._user_migration_lock` MUST acquire per user (not globally) so one user's slow round-51 fetch doesn't block other users' migrations.
-- CI `--cov-fail-under` MUST never decrease. Rounds that add tests should ratchet it up. Currently at 30% (actual ~34%).
+- CI `--cov-fail-under` MUST never decrease. Rounds that add tests should ratchet it up. Currently at 32% (actual 35% per round-61 measurement).
 
 ### Post-58 (JSON-audit fixes)
 - `update_scorecard` correlation guard MUST route through `position_sector.annotate_sector` (OCC options resolve to underlying for sector lookup).

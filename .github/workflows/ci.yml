@@ -34,9 +34,10 @@ jobs:
         run: ruff check .
 
       - name: Run pytest with coverage
-        # Coverage floor is the RATCHET baseline. Round-59 measured
-        # 33% actual after rounds 54-58 added ~50 tests. Floor moved
-        # 25 → 30 to lock that gain in (8% → 3% cushion vs actual).
+        # Coverage floor is the RATCHET baseline. Round-61 measured
+        # 35% actual after the R61 money-path tests landed (71 new
+        # tests, mostly grep-pins but ~18 behavioral). Floor moved
+        # 30 → 32 to lock in most of the gain (3% cushion vs actual).
         # Nudge UP again in any PR that adds a new test suite. Never
         # lower without a written PR justification — ratchet only
         # moves one direction.
@@ -47,5 +48,5 @@ jobs:
             --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json \
             --cov=. \
             --cov-report=term-missing \
-            --cov-fail-under=30 \
+            --cov-fail-under=32 \
             --tb=short

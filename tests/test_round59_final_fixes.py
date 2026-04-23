@@ -360,11 +360,18 @@ def test_run_all_migrations_uses_per_user_lock(monkeypatch):
 
 # ========= Fix C: Coverage floor bumped =========
 
-def test_coverage_floor_bumped_to_30():
-    """CI's --cov-fail-under value must be 30 (round-59 ratchet from 25)."""
+def test_coverage_floor_at_or_above_30():
+    """CI's --cov-fail-under value must be >= 30. Round-59 ratcheted
+    25→30; round-61 ratcheted 30→32 after money-path tests landed.
+    The ratchet only moves one direction — never lower."""
+    import re
     with open(".github/workflows/ci.yml") as f:
         ci = f.read()
-    assert "--cov-fail-under=30" in ci, (
-        "CI coverage floor must be 30 after round-59")
+    m = re.search(r"--cov-fail-under=(\d+)", ci)
+    assert m, "CI workflow must declare --cov-fail-under=<N>"
+    floor = int(m.group(1))
+    assert floor >= 30, (
+        f"CI coverage floor must be >= 30 (ratchet baseline post-R59), "
+        f"got {floor} — did someone lower the ratchet?")
     assert "--cov-fail-under=25" not in ci, (
-        "Old 25% coverage floor must be removed — round-59 ratcheted")
+        "Old 25% coverage floor must stay removed — ratchet only moves up")

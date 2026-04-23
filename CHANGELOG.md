@@ -8,6 +8,57 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 — Money-path test coverage (Option A)
+
+User picked **Option A** from the test-coverage options discussion:
+focus-fire tests on the four highest-risk money paths rather than a
+full push to 80% coverage. Rationale: 50% coverage on the code that
+can lose you money beats 80% on trivial glue.
+
+### Targets
+
+1. **`monitor_strategies`** — 60s loop that enforces kill-switch, daily-
+   loss, max-drawdown, stop raises, profit takes, and exits. Heart of
+   loss prevention.
+2. **`check_profit_ladder`** — 25%-at-each-rung profit-take engine
+   (+10/+20/+30/+50% levels). Quarterback of the exit flow.
+3. **`run_auto_deployer`** — ~880-LOC deploy pipeline: tier gate,
+   fractional routing, short-sell tier block, sector cap, correlation
+   gate, skip-chop schedule, already-open dedup.
+4. **Wheel state machine** — CSP open → assigned → CC open → CC
+   assigned / expired / bought-back / rolled, plus OCC-symbol cost
+   basis on assignment.
+
+### Tests shipped
+
+| File | Style | Tests |
+|---|---|---|
+| `test_round61_monitor_strategies.py` | grep-pin | 13 |
+| `test_round61_profit_ladder.py` | behavioral (stubbed Alpaca) | 16 |
+| `test_round61_auto_deployer.py` | grep-pin | 19 |
+| `test_round61_wheel_state.py` | grep-pin | 23 |
+| **Total** | | **71** |
+
+PR split: **#102** (pt.1 — monitor_strategies + profit_ladder, 29 tests),
+**#103** (pt.2 — auto_deployer + wheel_state, 42 tests), **#104** (pt.3
+— docs, coverage ratchet, behavioral top-up).
+
+### Coverage honesty
+
+53 of the 71 tests are **grep-pin** — they assert on source patterns
+(`strategy_file_lock(...)` present, `kill_switch` guard before
+`/account` fetch, etc.). They catch refactor-renames, accidental guard
+removals, and invariant drift. But they don't exercise code at runtime,
+so `pytest-cov` doesn't count them as coverage.
+
+Only the 16 profit_ladder tests + 2 daily-close edge tests are real
+behavioral coverage. Actual `pytest-cov` delta is small; the value is
+in the regression *detection*, not the coverage number.
+
+Expected CI test count: 820 → **891 passing** after pt.2.
+
+---
+
 ## 🆕 Round-60 — Post-live-rollout user feedback
 
 Round-58 made the silent-skip LOUD; round-60 handles the LOUD output properly. Plus mobile polish.
