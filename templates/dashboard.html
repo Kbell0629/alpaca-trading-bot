@@ -4191,6 +4191,8 @@ function renderSchedulerPanel(s) {
     if (!panel) return;
     if (!s.running) {
         panel.innerHTML = '<div class="empty" style="padding:20px;color:var(--red)">Scheduler NOT RUNNING. ' + esc(s.error||'') + '</div>';
+        panel._lastNormHash = null;
+        panel._lastHtml = null;
         return;
     }
     var lastRuns = s.last_runs || {};
@@ -4229,20 +4231,26 @@ function renderSchedulerPanel(s) {
             statusClass = 'pending'; statusLabel = 'Pending';
         }
         var lastStr = hasRun ? fmtSchedLast(last, t.key) : 'Not yet today';
+        // Round-61 pt.5: data-task-key + data-last tags so the in-place
+        // patch below can update just the "Last: Xm ago" text without
+        // re-rendering the whole panel — fixes Recent Activity scroll
+        // jitter on 15s auto-refresh.
         gridHtml += '<div class="sched-task ' + (statusClass === 'ok' ? 'active' : '') + '">' +
             '<div class="sched-task-header">' +
                 '<span class="sched-task-name">' + esc(t.name) + '</span>' +
                 '<span class="sched-task-status ' + statusClass + '">' + statusLabel + '</span>' +
             '</div>' +
             '<div class="sched-task-schedule">' + esc(t.schedule) + '</div>' +
-            '<div class="sched-task-last">Last: ' + esc(lastStr) + '</div>' +
+            '<div class="sched-task-last" data-task-key="' + esc(t.key) + '">Last: ' + esc(lastStr) + '</div>' +
         '</div>';
     });
     gridHtml += '</div>';
 
-    // Summary bar
+    // Summary bar — the Current ET span is data-tagged so the in-place
+    // patch can refresh just the timestamp text every 15s without
+    // rewriting the whole panel.
     var summary = '<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--text-dim);margin-bottom:16px">' +
-        '<span>Current ET: <strong style="color:var(--text)">' + esc(etTime) + '</strong>' + (etDate ? ' <span style="color:var(--text-dim)">(' + esc(etDate) + ')</span>' : '') + '</span>' +
+        '<span data-current-et>Current ET: <strong style="color:var(--text)">' + esc(etTime) + '</strong>' + (etDate ? ' <span style="color:var(--text-dim)">(' + esc(etDate) + ')</span>' : '') + '</span>' +
         '<span>Market: <strong style="color:' + (marketOpen ? 'var(--green)' : 'var(--text-dim)') + '">' + (marketOpen ? 'OPEN' : 'CLOSED') + '</strong></span>' +
         '<span>Thread: <strong style="color:var(--text)">' + esc(s.thread_name || '?') + '</strong></span>' +
         '<span>Running: <strong style="color:var(--green)">YES</strong></span>' +
@@ -4265,12 +4273,66 @@ function renderSchedulerPanel(s) {
         logsHtml += '</div>';
     }
 
-    // Round-57: hash-skip identical renders — same fix as Heatmap.
     var _schedHtml = summary + gridHtml + logsHtml;
+
+    // Round-61 pt.5: normalized hash-skip + in-place timestamp patch.
+    // The 15s auto-refresh was repainting the entire panel every tick
+    // because etTime and per-task "Xm ago" texts always differ between
+    // renders — even when scheduler state was unchanged. That full
+    // innerHTML swap triggered browser layout reflow and scroll-jitter
+    // when the user was scrolled into the Recent Activity section on
+    // mobile or desktop. Same pattern as the R60 _lastAppNormHash fix
+    // in renderDashboard.
+    //
+    // Strategy: build a normalized hash that strips the tick-varying
+    // strings (Current ET value + "Last: Xm ago" values + log
+    // timestamps). If that hash matches the prior render, the panel's
+    // STATE is unchanged — only timestamps advanced — so we patch the
+    // data-tagged elements in place via textContent without touching
+    // innerHTML. Zero reflow, zero jitter, full data freshness.
+    var _normHash = _schedHtml
+        .replace(/<span data-current-et>[\s\S]*?<\/span>/g, '<span data-current-et>#</span>')
+        .replace(/<div class="sched-task-last"[^>]*>Last: [^<]*<\/div>/g, '<div class="sched-task-last">#</div>')
+        .replace(/<span class="ts">\[[^\]]*\]<\/span>/g, '<span class="ts">[#]</span>');
+
+    if (panel._lastNormHash === _normHash && panel.childElementCount > 0) {
+        // State unchanged — patch just the tick-varying text nodes.
+        try {
+            var etEl = panel.querySelector('[data-current-et]');
+            if (etEl) {
+                etEl.innerHTML = 'Current ET: <strong style="color:var(--text)">' + esc(etTime) + '</strong>' + (etDate ? ' <span style="color:var(--text-dim)">(' + esc(etDate) + ')</span>' : '');
+            }
+            tasks.forEach(function(t) {
+                var el = panel.querySelector('.sched-task-last[data-task-key="' + t.key + '"]');
+                if (!el) return;
+                var last = latestForTask(lastRuns, t.key);
+                var lastStr = (last != null) ? fmtSchedLast(last, t.key) : 'Not yet today';
+                el.textContent = 'Last: ' + lastStr;
+            });
+            // Patch log-line timestamps too (the only tick-varying part
+            // within the log box). Log CONTENT only changes when a new
+            // entry arrives, which shifts _normHash — so we'd take the
+            // full-rewrite branch instead. Here we only reach for
+            // same-length log lists.
+            var logLines = panel.querySelectorAll('.sched-log-line .ts');
+            var reversedLogs = logs.slice().reverse();
+            for (var i = 0; i < logLines.length && i < reversedLogs.length; i++) {
+                logLines[i].textContent = '[' + (reversedLogs[i].ts || '') + ']';
+            }
+        } catch (_patchErr) {
+            // Patch failed — fall through to a full rewrite as a
+            // safety net so the user never sees stale data.
+            panel.innerHTML = _schedHtml;
+            panel._lastHtml = _schedHtml;
+        }
+        return;
+    }
+
     if (panel._lastHtml !== _schedHtml) {
         panel.innerHTML = _schedHtml;
         panel._lastHtml = _schedHtml;
     }
+    panel._lastNormHash = _normHash;
 }
 
 // Auto-refresh scheduler panel every 15 seconds

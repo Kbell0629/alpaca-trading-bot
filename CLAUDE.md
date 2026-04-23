@@ -56,11 +56,10 @@ via web UI. Don't try `mcp__github__*` tools.
 
 ---
 
-## Current session state (2026-04-23 — round 61 COMPLETE, 1015 tests)
+## Current session state (2026-04-23 — round 61 pt.5, 1077 tests)
 
-**Branch:** merged to main through pt.3 (#104). Pt.4 (this PR) pending
-merge. Test count: **1015 passing, 39% coverage**. Floor: **32%** (ratchet
-to 36+ deferred to pt.5 — see note below on why).
+**Branch:** merged to main through pt.4 (#105). Pt.5 (this PR) pending
+merge. Test count: **1077 passing, 39.79% coverage**. Floor: **36%**.
 
 ### What landed in round 61
 
@@ -69,20 +68,33 @@ to 36+ deferred to pt.5 — see note below on why).
 | #102 pt.1 | `monitor_strategies` + `check_profit_ladder` grep-pins + behavioral | +29 |
 | #103 pt.2 | `run_auto_deployer` + wheel state machine grep-pins | +42 |
 | #104 pt.3 | CLAUDE.md/CHANGELOG sync + floor 30→32 + monitor_strategies behavioral | +7 |
-| pt.4 (this PR) | PDT/settled-funds/fractional + auto_deployer behavioral + wheel helpers | +118 |
+| #105 pt.4 | PDT/settled-funds/fractional + auto_deployer behavioral + wheel helpers | +118 |
+| pt.5 (this PR) | scheduler_api + yfinance_budget behavioral + Recent Activity jitter fix + floor 32→36 | +62 |
 
-**Total round-61: +196 tests. Coverage: 34% → 39%. Floor: 30% → 32%
-(ratchet to 36+ held back from pt.4 — see "Floor deferred" below).**
+**Total round-61: +258 tests. Coverage: 34% → 39.79%. Floor: 30% → 36%.**
 
-### Floor deferred to pt.5 (why)
+### Pt.5 specific contents (this PR)
 
-GitHub requires **manual workflow approval** for any PR that modifies
-`.github/workflows/*.yml`. Pt.4 originally bumped the floor 32 → 36
-but that triggered the approval gate, blocking CI from running at all
-on #105. Rather than force the user to click-approve via the Actions
-UI, pt.4 kept the floor at 32 and ships tests-only. Pt.5 will do the
-floor ratchet as part of its ci.yml edit (user clicks approve once;
-the workflow change is trivial to review).
+- `tests/test_round61_pt5_scheduler_api.py` (38 tests): circuit
+  breaker lifecycle, rate limiter token bucket, auth-failure alert
+  dedup (per paper/live + per ET day), `user_api_{get,post,delete,
+  patch}` full paths including 429 Retry-After, 5xx backoff, 4xx
+  no-retry, CB-open fast-fail, endpoint routing. `scheduler_api.py`
+  coverage: 41% → ~85%.
+- `tests/test_round61_pt5_yfinance_budget.py` (24 tests): rate-limit
+  sliding window, circuit breaker trip/cooldown, `stats()` shape,
+  public wrappers (yf_download / yf_ticker_info / yf_history /
+  yf_splits) happy + missing-yfinance + broken-ticker paths.
+  `yfinance_budget.py` coverage: 61% → 92%.
+- **Recent Activity scroll-jitter fix** (the user-flagged bug):
+  `renderSchedulerPanel` now uses a normalized hash-skip + in-place
+  `textContent` patch for tick-varying strings (Current ET,
+  per-task "Last: Xm ago", log-line timestamps). Same pattern as
+  R60's `_lastAppNormHash` in renderDashboard. Zero `innerHTML`
+  swap on quiet ticks → zero scroll reflow.
+- **CI floor ratchet 32 → 36** (deferred from pt.4 because of
+  workflow-approval gate). Bundled here so the user clicks the
+  approve button ONCE for both the workflow edit and the jitter fix.
 
 ### 🚨 USER-FLAGGED for next session (unfixed)
 

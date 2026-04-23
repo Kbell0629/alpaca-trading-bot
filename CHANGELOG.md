@@ -8,6 +8,60 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.5 — scheduler_api + yfinance_budget + Recent Activity jitter fix
+
+Fourth PR in the round-61 coverage sprint. Lands behavioral tests for
+the two most-used infra modules, fixes a user-flagged scroll jitter,
+and ratchets the CI floor that was deferred in pt.4.
+
+**+62 tests (scheduler_api + yfinance_budget):**
+
+- `tests/test_round61_pt5_scheduler_api.py` (38 tests) — full
+  behavioral coverage of the Alpaca HTTP layer: circuit breaker
+  threshold/cooldown/paper-live isolation, rate limiter token
+  bucket, auth-failure alert dedup per-day, GET retry on 429 with
+  Retry-After, 5xx backoff, 4xx no-retry, CB-open fast-fail,
+  endpoint routing (stocks/options/news → data endpoint; orders →
+  api endpoint), POST/DELETE/PATCH 401/403 auth alerts. Coverage:
+  41% → ~85%.
+- `tests/test_round61_pt5_yfinance_budget.py` (24 tests) — rate-limit
+  sliding window with timestamp pruning, circuit breaker lifecycle,
+  `_call_with_retry` short-circuit when open, public wrappers with
+  stubbed yfinance module (happy path, ImportError fallback,
+  broken-ticker fallback, empty splits). Coverage: 61% → 92%.
+
+**Recent Activity scroll-jitter fix.** User reported the scheduler
+panel (which contains the "Recent Activity (last N)" section) caused
+the page to scroll up/down on every 15s auto-refresh tick. Root
+cause: the panel rebuilds its HTML every tick because `etTime` and
+per-task "Last: Xm ago" strings always differ between renders, so
+the existing `_lastHtml` hash-skip never fired → full innerHTML
+swap → layout reflow → scroll jump.
+
+Fix pattern (same as R60's `_lastAppNormHash` in `renderDashboard`):
+`renderSchedulerPanel` now computes a *normalized* hash that strips
+tick-varying substrings (Current ET, per-task "Last: Xm ago", log
+timestamps). When the normalized hash matches the prior tick —
+meaning state is unchanged, only timestamps advanced — the function
+patches just the data-tagged elements via `textContent`/`innerHTML`
+surgically instead of rewriting the whole panel. Zero reflow, zero
+jitter, full data freshness. Falls back to a full rewrite if the
+patch path throws, as a safety net.
+
+**CI floor ratchet 32 → 36** (deferred from pt.4 to avoid triggering
+the workflow-approval gate twice). Bundled into this PR so the user
+clicks "Approve and run" once for the combined workflow edit +
+jitter fix.
+
+**Metrics:**
+- Tests passing: 1015 → **1077** (+62)
+- Coverage: 38.81% → **39.79%**
+- Floor: 32% → **36%**
+
+Ruff clean. `node --check` on dashboard JS clean.
+
+---
+
 ## 🆕 Round-61 pt.4 — Behavioral coverage push (36% → 39%)
 
 Third follow-on PR in the round-61 sprint. Pt.1-3 landed the grep-pin
