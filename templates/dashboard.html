@@ -4221,6 +4221,74 @@ async function toggleFactorBypass(enable) {
     }
 }
 
+// Round-61: email-pipeline diagnostic. User reported "some emails not
+// coming through" — this chip shows queued / sent-today / SMTP-healthy
+// at a glance so the user can tell whether sends are actually failing
+// or just not firing for a given event type.
+let _emailStatusCache = null;
+async function refreshEmailStatus() {
+    try {
+        var resp = await fetch(API_BASE + '/api/email-status', {credentials: 'same-origin'});
+        if (!resp.ok) return;  // silent — endpoint may be unavailable
+        var s = await resp.json();
+        _emailStatusCache = s;
+        var chip = document.getElementById('emailStatusChip');
+        if (!chip) return;
+        var label;
+        var tooltip;
+        if (!s.enabled) {
+            label = '📧 OFF';
+            tooltip = 'Email sender disabled — GMAIL_USER / GMAIL_APP_PASSWORD env var missing. No trade, exit, or daily-close emails will be sent. Set both in Railway env and redeploy.';
+            chip.style.color = 'var(--red)';
+        } else if (!s.recipient) {
+            label = '📧 NO ADDR';
+            tooltip = 'Email sender is running, but your account has no notification_email set. Open Settings → Notifications to add one.';
+            chip.style.color = 'var(--orange)';
+        } else if (s.queued > 10) {
+            label = '📧 ' + s.queued + ' STUCK';
+            tooltip = 'Email pipeline enabled but ' + s.queued + ' emails are queued and not sending. Check Railway logs for email_sender errors or Gmail app-password lock.';
+            chip.style.color = 'var(--orange)';
+        } else if (s.queued > 0) {
+            label = '📧 ' + s.queued + ' queued';
+            tooltip = s.queued + ' queued · ' + (s.sent_today || 0) + ' sent today · ' + (s.last_sent_at ? ('last sent ' + s.last_sent_at.slice(11, 19)) : 'no sends yet');
+            chip.style.color = 'var(--text-dim)';
+        } else {
+            label = '📧 ' + (s.sent_today || 0) + ' today';
+            tooltip = 'Email pipeline healthy · 0 queued · ' + (s.sent_today || 0) + ' sent today · ' + (s.last_sent_at ? ('last sent ' + s.last_sent_at.slice(11, 19)) : 'no sends yet') + ' · recipient: ' + s.recipient;
+            chip.style.color = 'var(--green)';
+        }
+        chip.textContent = label;
+        chip.title = tooltip;
+    } catch (_e) { /* never break the dashboard on a diagnostic fetch */ }
+}
+
+function showEmailStatusDetail() {
+    var s = _emailStatusCache;
+    if (!s) {
+        toast('Email status still loading — try again in a moment', 'info');
+        return;
+    }
+    var lines = [
+        'SMTP enabled: ' + (s.enabled ? 'YES' : 'NO (missing GMAIL_USER / GMAIL_APP_PASSWORD)'),
+        'Recipient: ' + (s.recipient || '— NOT SET — open Settings → Notifications'),
+        '',
+        'Queue (pending): ' + (s.queued || 0),
+        'Sent today: ' + (s.sent_today || 0),
+        'Failed recent: ' + (s.failed_recent || 0),
+        'Dead-letter (dropped, too old): ' + (s.dead_letter_count || 0),
+        'Last sent: ' + (s.last_sent_at || 'never'),
+        '',
+        'If queued > 0 but sent_today = 0, check Railway logs for',
+        'email_sender failures (SMTP auth, Gmail app-password rotated, etc).',
+    ];
+    if (typeof alert === 'function') alert(lines.join('\n'));
+}
+
+// Fire once on load (chip shows "…" until first response) then every 60s.
+// Using the chip's own clock so it doesn't depend on renderDashboard.
+setTimeout(refreshEmailStatus, 500);
+setInterval(refreshEmailStatus, 60000);
+
 async function refreshSchedulerStatus() {
     try {
         var resp = await fetch(API_BASE + '/api/scheduler-status', {credentials: 'same-origin'});
@@ -6354,6 +6422,12 @@ function renderDashboard() {
                     '<span class="auto-status ' + (autoDeployerEnabled ? 'on' : 'off') + '" id="autoDeployerStatus">' + (autoDeployerEnabled ? 'ON' : 'OFF') + '</span>' +
                 '</div>' +
                 '<div class="status-chip countdown-chip" title="Next auto-refresh"><span id="countdown">' + countdown + 's</span></div>' +
+                // Round-61: email-queue diagnostic chip. User reported
+                // "some emails not coming through" — this gives live
+                // visibility: queued / sent-today / SMTP-healthy.
+                // Clickable to show details. Populated by
+                // refreshEmailStatus() on a 60s tick.
+                '<div class="status-chip subtle" id="emailStatusChip" title="Email pipeline status — click for details" onclick="showEmailStatusDetail()" style="cursor:pointer">📧 …</div>' +
                 '<div class="status-chip subtle" title="Last data refresh">Updated ' + fmtUpdatedET(d.updated_at) + '</div>' +
             '</div>' +
         '</div>' +
@@ -6715,7 +6789,11 @@ function renderDashboard() {
         var _asyncPanelIds = [
             "schedulerPanel", "factorHealthPanel",
             "perfAttributionPanel", "taxReportPanel", "heatmapContent",
-            "logEntries"
+            "logEntries",
+            // Round-61: email-status chip is populated asynchronously
+            // on a 60s tick — preserve its content so the header doesn't
+            // briefly show "📧 …" after every renderDashboard rewrite.
+            "emailStatusChip"
         ];
         var _panelCache = {};
         for (var _pi = 0; _pi < _asyncPanelIds.length; _pi++) {
