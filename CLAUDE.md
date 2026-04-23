@@ -58,11 +58,12 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-24 — round 61 SHIPPED, pt.6 next)
+## Current session state (2026-04-24 — round 61 pt.6 SHIPPED)
 
-**All work merged to main through #114.** Test count: **~1100 passing,
-~40% coverage**. Floor: **36%**. Pt.6 (the mock WSGI harness for
-`server.py` + `handlers/*.py`) is the next strategic piece of work.
+**All work merged to main through #116 (pt.6).** Test count: **~1280
+passing, 47% coverage**. Floor: **45%**. Pt.6 follow-ups (more handler
+edge cases + strategy_mixin deeper exploration) are in progress; then
+pt.7 (refactor screener) and pt.8 (JS test stack) remain.
 
 ### What landed in round 61
 
@@ -88,8 +89,34 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 | #112 | Email notifications: short-force-cover now emails (`info` → `exit`) + new `/api/email-status` endpoint + dashboard 📧 chip |
 | #113 | Jitter fix #5: atomic children swap helper applied at the panel level (renderSchedulerPanel + refreshPerfAttribution + refreshTaxReport + refreshFactorHealth) — fixes Recent Activity log-line jitter |
 | #114 | AUTO/MANUAL mislabel fix: `_mark_auto_deployed` falls back to `trade_journal.json` when no strategy file matches a position |
+| #115 | Docs sync PR closing out round-61: CLAUDE.md/CHANGELOG/README updated to reflect every PR shipped |
+| #116 pt.6 | **Mock WSGI harness for DashboardHandler** — `tests/conftest.py::http_harness` subclasses `DashboardHandler` without the socket, auto-injects session + CSRF cookies. +200 tests. `server.py` 7% → 42%; handlers/*.py 0% → 13-44%. Total 39.79% → **47.19%**. Floor 36 → **45**. |
 
-**Total round-61: 13 PRs shipped. Coverage 34% → ~40%. Floor 30% → 36%.**
+**Total round-61: 15 PRs shipped. Coverage 34% → 47.19%. Floor 30% → 45%.**
+
+### Mock WSGI harness (post-pt.6 — use it for any HTTP endpoint test)
+
+The `http_harness` fixture in `tests/conftest.py` is the template for
+every future HTTP-endpoint test. Usage:
+
+```python
+def test_my_endpoint(http_harness):
+    http_harness.create_user()  # seeds user #1 as admin, gets cookie + CSRF
+    resp = http_harness.get("/api/my-endpoint")
+    assert resp["status"] == 200
+    assert resp["body"]["foo"] == "bar"
+    # Or for POSTs (CSRF + JSON body auto-injected):
+    resp = http_harness.post("/api/my-endpoint", body={"k": "v"})
+```
+
+`resp` shape: `{"status": int, "headers": dict, "headers_list": list,
+"body": parsed-json-or-str, "raw": bytes}`. The fixture also includes
+`http_harness.logout()` to drop the session for anonymous-access tests.
+
+The pattern for the `BaseHTTPRequestHandler` subclass override (skip
+`__init__`, override `send_response`/`send_header`/`end_headers` to
+record instead of socket-write) lives in the fixture — next agents
+don't need to re-derive it.
 
 ### Module coverage milestones
 

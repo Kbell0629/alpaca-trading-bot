@@ -8,6 +8,44 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.6 — Mock WSGI harness for HTTP endpoints (PR #116)
+
+`server.py` was 7% covered (1708 statements, 1555 uncovered) because
+every endpoint required a real socket to test. `handlers/*.py` mixins
+were near-0% for the same reason. Built a mock WSGI harness
+(`tests/conftest.py::http_harness`) that subclasses `DashboardHandler`
+without the socket-dependent `__init__`, auto-injects session + CSRF
+cookies, and captures the response as a plain dict.
+
+Four test files exercise the harness end-to-end:
+  * `test_round61_pt6_harness_smoke.py` — 6 smoke tests
+  * `test_round61_pt6_wsgi_endpoints.py` — 76 tests covering every
+    major endpoint's auth gate and basic response shape
+  * `test_round61_pt6_wsgi_authed_flows.py` — 82 tests exercising the
+    authed code paths inside handlers (SSRF defense, ntfy allowlist,
+    password change flow, settings update, email-status queue counting,
+    tax report with seeded journal, switch-mode variants, admin flows,
+    forgot/reset password enumeration defense)
+  * `test_round61_pt6_strategy_mixin_flows.py` — 21 tests on the
+    strategy lifecycle (deploy validation, kill-switch / loss-cooldown
+    guardrails, pause/stop, apply-preset, toggle-short-selling, per-
+    strategy deploy dispatch)
+
+**Metrics:**
+- Tests: 1077 → **~1280** (+200)
+- Total coverage: 39.79% → **47.19%**
+- `server.py`: 7% → **42%**
+- `handlers/actions_mixin.py`: ~0% → 38%
+- `handlers/admin_mixin.py`: ~0% → 33%
+- `handlers/auth_mixin.py`: ~0% → 44%
+- `handlers/strategy_mixin.py`: ~0% → 13%+ (pt.6 follow-ups push higher)
+- CI floor: 36 → **45** (2% cushion)
+
+No source code changes — pt.6 is purely test infrastructure + coverage.
+Dashboard JS untouched. Ruff clean.
+
+---
+
 ## 🆕 Round-61 post-shakedown — bug fixes from live traffic (PRs #107–#114)
 
 After the round-61 coverage sprint (#102–#106), the user took the
