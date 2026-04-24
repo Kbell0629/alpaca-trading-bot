@@ -8,6 +8,32 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.8 batch-7 — sanitize / preset / panels (+60)
+
+Continues the pt.8 coverage push. JS tests 205 → **241** (+36). Test-only.
+
+- `tests/js/sanitizeReadme.test.js` (16) — `_sanitizeReadmeHtml`
+  XSS barrier. Allowed-tag preservation (h1-h6, p, strong, em, ul/li,
+  code, pre, blockquote, tables), disallowed-tag unwrap (script,
+  iframe, style, svg onload), attribute stripping (onclick, onerror,
+  data-*), URI defang (javascript:, data:, vbscript:,
+  case-insensitive), https:// passthrough, img data: defang.
+- `tests/js/detectActivePreset.test.js` (8) — preset detection from
+  guardrails + auto_deployer_config. Pins Round-20 migration
+  (0.10 → 0.07 per-stock for Moderate), conservative/aggressive
+  boundaries, custom fallback.
+- `tests/js/buildTodaysClosesPanel.test.js` (10) — Round-34 panel.
+  Empty-state hides panel entirely, one data-row per close,
+  positive/negative P&L colour, net total sum, [orphan] marker
+  placement, missing-field em-dash fallback (no "$NaN"),
+  XSS escape on symbol/strategy/reason.
+- `tests/js/renderPortfolioImpact.test.js` (2) — early-exit paths
+  (missing target element, null dashboardData).
+
+Results: JS 205 → 241. Python unchanged. Ruff + node checks clean.
+
+---
+
 ## 🆕 Round-61 pt.8 batch-5 — sell-fraction, cancel-order, fmtSchedLast
 
 Continues the pt.8 coverage push. JS tests 160 → **181** (+21) across

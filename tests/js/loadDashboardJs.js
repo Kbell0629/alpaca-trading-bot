@@ -167,6 +167,12 @@ export function loadDashboardJs(stubs = {}) {
     'scrollToTop', 'scrollToSection',
     // Heatmap / audit / screener helpers
     'heatmapColor', 'fmtAuditTime', 'ariaSort', 'getMarketRegime',
+    // Preset detection + README sanitizer
+    'detectActivePreset', '_sanitizeReadmeHtml',
+    // Portfolio-impact preview (deploy modal)
+    'renderPortfolioImpact',
+    // Today's closes panel builder (takes data as param, no globals)
+    'buildTodaysClosesPanel', 'sectionHelpButton',
   ];
   for (const name of exposed) {
     if (typeof globalThis[name] === 'function') {
