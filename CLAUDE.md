@@ -61,7 +61,50 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-24 — round 61 pt.10/11/12 SHIPPED)
+## Current session state (2026-04-24 — round 61 pt.10/11/12/13/14/15 SHIPPED)
+
+**Pt.15 in flight (PR #141):** user-reported SOXL short labeled
+MANUAL despite being opened by the auto-deployer. Root cause:
+`error_recovery.py` (orphan adoption → synthesizes strategy files
+for positions without one) only ran ONCE per day inside
+`run_daily_close`. Between 4:05 PM ET closes, any position opened
+outside the bot or whose strategy file got cleaned up sat
+unmanaged for up to 23.5 hours. Fix:
+  1. `cloud_scheduler.run_orphan_adoption(user)` — per-user wrapper
+     around `error_recovery.py` subprocess (same isolation pattern
+     as `run_daily_close`).
+  2. Scheduled every 10 min during market hours via
+     `should_run_interval(f"adopt_orphans_{uid}", 600)`.
+  3. On-demand endpoint `/api/adopt-orphans` + "🤖 Adopt MANUAL →
+     AUTO" button in the Positions header.
+  +10 tests in `tests/test_round61_pt15_auto_orphan_adoption.py`.
+
+**Pt.14 landed (PR #140):** URGENT — start.sh was running Nix's
+system `python3` instead of `/opt/venv/bin/python` where pip had
+installed cryptography (and everything else). Pt.13's red banner
+pinpointed it: "Boot-time import error: ModuleNotFoundError: No
+module named 'cryptography'". Fix: start.sh prefers the venv
+interpreter with a loud WARNING fallback if `/opt/venv` is missing,
+AND does a boot-time `AESGCM` import smoke check so Railway's log
+shows success/failure BEFORE the server starts handling requests.
+  +4 tests in `tests/test_round61_pt14_venv_python_fix.py`.
+
+**Pt.13 landed (PR #139):** URGENT — user confirmed
+`MASTER_ENCRYPTION_KEY` unchanged but save still failed. Exposed
+the real cause: cryptography import was silently failing at boot
+(`except Exception: pass` swallowed it). Fix:
+  1. Use `except BaseException` (pyo3 PanicException is
+     BaseException, not Exception).
+  2. Capture the exception text into `_AESGCM_IMPORT_ERROR`
+     module-level var.
+  3. Print `[auth] CRITICAL: ...` to stderr at module load.
+  4. `encrypt_secret` RuntimeError now includes the captured error.
+  5. `_fetch_live_alpaca_state` appends an `encryption: ...` entry
+     to `api_errors` when `_HAS_AESGCM` is False.
+  6. Dedicated red dashboard banner for `encryption:` errors.
+  7. `requirements.txt` pinned cryptography <44.0.0 + added cffi
+     explicitly. nixpacks.toml added libffi.
+  +10 tests in `tests/test_round61_pt13_crypto_import_diag.py`.
 
 **Pt.12 in flight (PR #138):** URGENT user-reported "Save failed"
 with no detail when re-entering Alpaca keys, even though Test
@@ -150,9 +193,9 @@ escaped `&` → `&`; the first draft of the extraction missed it.
 Fixed before any inline duplicate was removed. Regression-guard test
 now exists.
 
-**Test counts (on `main` after pt.11; pt.12 pending merge):**
-  * Python: **1572 passing**, 3 deselected (pt.12 adds +11)
-  * JS: **392 passing** across 31 files (pt.11 added +4)
+**Test counts (on `main` after pt.14; pt.15 pending merge):**
+  * Python: **1586 passing**, 3 deselected (pt.15 adds +10)
+  * JS: **392 passing** across 31 files
   * CI coverage floor: 50% Python (ratcheted up from 48% in #133)
 
 **Picking up next session:**

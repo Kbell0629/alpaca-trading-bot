@@ -2863,6 +2863,70 @@ def run_auto_deployer(user):
 # ============================================================================
 # TASK 4: DAILY CLOSE (per user)
 # ============================================================================
+def run_orphan_adoption(user):
+    """Round-61 pt.15: per-user orphan adoption.
+
+    Finds Alpaca positions that have no matching strategy file and
+    synthesizes one so `monitor_strategies` starts managing them
+    (stops, profit-take ladders, etc.). Long positions get a
+    `trailing_stop_<SYM>.json` with a 10% stop below entry; shorts
+    get a `short_sell_<SYM>.json` with a 10% stop above entry. See
+    `error_recovery.create_orphan_strategy` for the schema.
+
+    Previously this only ran once per day inside `run_daily_close`.
+    That left a gap of up to 23.5 hours during which a position
+    opened outside the bot (or whose strategy file got cleaned up /
+    renamed by an earlier close path) would sit as MANUAL with no
+    stop-management. Now it runs every 10 min during market hours +
+    on-demand via the dashboard's 'Adopt MANUAL Positions' button.
+
+    Runs as a subprocess so the scheduler loop keeps its heartbeat
+    alive even if error_recovery.py hangs on a slow Alpaca response.
+    Per-user isolation via env vars (ALPACA_* + DATA_DIR +
+    STRATEGIES_DIR), same pattern as run_daily_close.
+    """
+    try:
+        env = os.environ.copy()
+        env["ALPACA_API_KEY"] = user["_api_key"]
+        env["ALPACA_API_SECRET"] = user["_api_secret"]
+        env["ALPACA_ENDPOINT"] = user["_api_endpoint"]
+        env["ALPACA_DATA_ENDPOINT"] = user["_data_endpoint"]
+        env["DATA_DIR"] = user.get("_data_dir") or DATA_DIR
+        env["STRATEGIES_DIR"] = user.get("_strategies_dir") or os.path.join(
+            user.get("_data_dir") or DATA_DIR, "strategies"
+        )
+        env["JOURNAL_PATH"] = user_file(user, "trade_journal.json")
+        result = subprocess.run(
+            [sys.executable, os.path.join(BASE_DIR, "error_recovery.py")],
+            cwd=BASE_DIR, capture_output=True, text=True, timeout=60, env=env,
+        )
+        # Parse "FIXED: Created <file>" lines from stdout so we can
+        # log a tight summary instead of dumping the whole subprocess
+        # output into the scheduler log on every 10-min tick.
+        created = [ln for ln in (result.stdout or "").splitlines()
+                   if "FIXED: Created" in ln]
+        if created:
+            log(f"[{user['username']}] orphan_adoption: "
+                f"adopted {len(created)} position(s) to AUTO — "
+                f"{', '.join(ln.split('Created ')[-1].split(' ')[0] for ln in created)}",
+                "recovery")
+            notify_user(user, f"Adopted {len(created)} MANUAL position(s) into "
+                              "AUTO management. Stops placed by the bot.",
+                        "info")
+        return {"created": len(created), "lines": created,
+                "stdout": (result.stdout or "")[:4000]}
+    except subprocess.TimeoutExpired:
+        log(f"[{user['username']}] orphan_adoption: subprocess timed out (60s)",
+            "recovery")
+        return {"error": "timeout"}
+    except Exception as e:
+        log(f"[{user['username']}] orphan_adoption failed: {e}", "recovery")
+        return {"error": str(e)}
+
+
+# ============================================================================
+# TASK 4: DAILY CLOSE (per user)
+# ============================================================================
 def run_daily_close(user):
     log(f"[{user['username']}] Running daily close...", "close")
     try:
@@ -4051,6 +4115,17 @@ def scheduler_loop():
                     # Strategy monitor: every 60s during market hours
                     if market_open_flag and should_run_interval(f"monitor_{uid}", 60):
                         monitor_strategies(user)
+
+                    # Round-61 pt.15: orphan adoption — every 10 min
+                    # during market hours. Synthesizes strategy files
+                    # for Alpaca positions that have no matching file
+                    # on disk so `monitor_strategies` starts placing
+                    # + maintaining stops. Previously this only fired
+                    # once per day inside run_daily_close, which left
+                    # positions unmanaged (labeled MANUAL in the
+                    # dashboard) for up to 23.5 hours.
+                    if market_open_flag and should_run_interval(f"adopt_orphans_{uid}", 600):
+                        run_orphan_adoption(user)
 
                     # Round-55: AFTER-HOURS trailing-stop monitor.
                     # Runs every 5 min in pre-market (4-9:30 AM ET) +
