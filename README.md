@@ -428,6 +428,33 @@ Bot picks top 2 and places market buy orders.
 
 ---
 
+## 🔍 State Audit — One-Click Sanity Check (Round-61 pt.21)
+
+**In plain English:** a single button in the **Positions** section header (**🔍 Audit**) that cross-checks everything — Alpaca positions, open orders, your strategy files, your trade journal, and your scorecard — and surfaces any inconsistencies in plain English.
+
+**What it checks:**
+
+| Severity | Check | Example finding |
+|---|---|---|
+| 🔴 **HIGH** | Position with no strategy file + no journal entry (orphan) | "Position SOXL has no active strategy file — dashboard will show MANUAL" |
+| 🔴 **HIGH** | Long position missing a SELL stop at Alpaca | "CRDO (qty 18) has NO SELL stop at Alpaca. Unprotected downside" |
+| 🔴 **HIGH** | Short position missing a BUY stop at Alpaca | "SOXL short has NO BUY stop" |
+| 🔴 **HIGH** | Stop price on the wrong side of current | "SOXL short cover-stop is $121.72 but current price is $129.00. Stop must be ABOVE current for a buy-stop to protect" |
+| 🟡 **MEDIUM** | Legacy OCC option file still in short-sell path (pre-pt.17) | "Legacy file short_sell_DKNG260515P00021000.json is still on disk — pt.21 migration should have retired it" |
+| 🟡 **MEDIUM** | Journal entry has strategy name the scorecard doesn't recognize | "Trades with strategy='imaginary' won't appear in performance attribution" |
+| 🟡 **MEDIUM** | Scorecard hasn't updated in >48h | "Scorecard last updated 72h ago. daily_close may have failed" |
+| ⚫ **LOW** | Ghost strategy file with no matching Alpaca position | "File breakout_OLD.json references OLD, but no matching Alpaca position" |
+
+**When to use it:**
+- After a position you expected to be AUTO is still showing MANUAL
+- After "Adopt MANUAL → AUTO" didn't seem to work
+- Before going live — run the audit to confirm no inconsistencies
+- Anytime something on the dashboard doesn't match what you expect
+
+**What if it shows findings?** Most HIGH findings are auto-fixing on the next monitor tick (60 sec) or orphan-adoption tick (10 min). MEDIUM findings surface state that needs a deploy or a click on "Force Daily Close". LOW findings are informational.
+
+---
+
 ## 🛡️ Position Management — How Trades Get Watched
 
 Every 60 seconds during market hours, the bot checks every position:

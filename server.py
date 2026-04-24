@@ -461,10 +461,14 @@ def _mark_auto_deployed(positions, strats_dir, user_dir=None):
             fpath = os.path.join(strats_dir, fname)
             with open(fpath) as _sf:
                 _state = json.load(_sf)
-            _status = str((_state or {}).get("status") or "").lower()
-            if _status in ("closed", "stopped", "cancelled", "canceled",
-                           "exited", "filled_and_closed"):
-                continue  # stale file — ignore
+            # Round-61 pt.21: delegate to constants.is_closed_status so
+            # this list is the single source of truth. Also skips the
+            # new "migrated" status introduced by pt.21's legacy-file
+            # retirement.
+            from constants import is_closed_status as _is_closed
+            _status = (_state or {}).get("status")
+            if _is_closed(_status) or str(_status or "").strip().lower() == "migrated":
+                continue  # stale or migrated file — ignore
         except (OSError, ValueError):
             # If the file can't be read, fall through to the priority
             # logic below — better to show a (possibly stale) label
@@ -3176,6 +3180,12 @@ class DashboardHandler(
             # error_recovery.py per-user so positions with no strategy
             # file get one synthesized (MANUAL -> AUTO).
             self.handle_force_orphan_adoption(body)
+
+        elif path == "/api/audit":
+            # Round-61 pt.21: state-consistency audit. Cross-checks
+            # positions / orders / strategy files / journal / scorecard
+            # and surfaces every inconsistency in plain English.
+            self.handle_state_audit(body)
 
         else:
             self.send_json({"error": "Not found"}, 404)

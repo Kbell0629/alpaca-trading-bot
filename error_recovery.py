@@ -187,18 +187,26 @@ def list_strategy_files():
     if not os.path.isdir(STRATEGIES_DIR):
         return strategies
 
-    _CLOSED_STATUSES = {"closed", "stopped", "cancelled", "canceled",
-                        "exited", "filled_and_closed"}
+    # Round-61 pt.21: delegate to constants.is_closed_status (shared
+    # source of truth with server._mark_auto_deployed). Also treats
+    # the new "migrated" status (set by pt.21's legacy-file retirement)
+    # as not-a-strategy so the wheel monitor takes over.
+    try:
+        from constants import is_closed_status as _is_closed
+    except ImportError:
+        _is_closed = lambda s: str(s or "").strip().lower() in {
+            "closed", "stopped", "cancelled", "canceled",
+            "exited", "filled_and_closed"}
     for fname in os.listdir(STRATEGIES_DIR):
         if fname.endswith(".json"):
             path = os.path.join(STRATEGIES_DIR, fname)
             data = load_json(path)
             if data:
-                status = str(data.get("status") or "").lower()
-                if status in _CLOSED_STATUSES:
-                    # Stale file — dashboard's _mark_auto_deployed
-                    # ignores it too. Treat as not-a-strategy so the
-                    # orphan scan adopts the live Alpaca position.
+                status = data.get("status")
+                status_lower = str(status or "").strip().lower()
+                if _is_closed(status) or status_lower == "migrated":
+                    # Stale/migrated file — dashboard's
+                    # _mark_auto_deployed ignores it too.
                     continue
                 strategies[fname] = {
                     "path": path,
@@ -319,10 +327,164 @@ def place_stop_loss_order(symbol, qty, stop_price, side="sell"):
     return result
 
 
+def migrate_legacy_short_sell_option_files():
+    """Round-61 pt.21: migrate `short_sell_<OCC>.json` → `wheel_<UNDERLYING>.json`.
+
+    User-reported state audit: DKNG260515P00021000 and
+    HIMS260508P00027000 (short puts) were written to
+    `short_sell_<OCC>.json` by pre-pt.17 error_recovery. The equity
+    short-sell monitor path in cloud_scheduler.py doesn't understand
+    options (contracts vs shares, assignment, buy-to-close mechanics),
+    so these positions sit mis-managed. pt.17 started routing NEW
+    OCC orphans to wheel files, but LEGACY files already on disk
+    were never converted.
+
+    This migration:
+      1. Scans STRATEGIES_DIR for files named `short_sell_<OCC>.json`
+      2. For each, parses the OCC symbol via _occ_parse
+      3. If wheel_<UNDERLYING>.json already exists: leave the wheel
+         file alone (it owns that state), mark the legacy file
+         status=closed+migrated
+      4. If NOT: synthesize a wheel_<UNDERLYING>.json in
+         stage_1_put_active (or stage_2_call_active for covered calls)
+         with the active_contract populated from the OCC parse
+      5. Mark the old file status=closed+migrated so it stops being
+         picked up by the dashboard / monitor on the short-sell path
+
+    Also handles the reverse-discovery case: positions that exist in
+    Alpaca as OCC options WITHOUT any strategy file yet — those are
+    adopted directly via the pt.17 wheel-synthesis path later in
+    main().
+
+    Returns a list of migration events for logging.
+    """
+    events = []
+    if not os.path.isdir(STRATEGIES_DIR):
+        return events
+    try:
+        fnames = list(os.listdir(STRATEGIES_DIR))
+    except OSError:
+        return events
+
+    for fname in fnames:
+        if not fname.startswith("short_sell_") or not fname.endswith(".json"):
+            continue
+        stem = fname[:-5]  # "short_sell_HIMS260508P00027000"
+        sym = stem[len("short_sell_"):]  # "HIMS260508P00027000"
+        if not _is_occ_option_symbol(sym):
+            continue  # equity short — leave alone
+        parsed = _occ_parse(sym)
+        if parsed is None:
+            continue
+        underlying = parsed["underlying"]
+        right = parsed["right"]
+        old_path = os.path.join(STRATEGIES_DIR, fname)
+        wheel_fname = f"wheel_{underlying}.json"
+        wheel_path = os.path.join(STRATEGIES_DIR, wheel_fname)
+
+        try:
+            with open(old_path) as _f:
+                old_data = json.load(_f) or {}
+        except (OSError, ValueError) as _e:
+            print(f"  [migrate] skip {fname}: cannot read ({_e})")
+            continue
+
+        # Don't migrate an already-closed file — nothing to manage.
+        if str(old_data.get("status", "")).lower() in ("closed", "stopped",
+                                                        "cancelled",
+                                                        "canceled", "exited",
+                                                        "filled_and_closed",
+                                                        "migrated"):
+            continue
+
+        old_state = old_data.get("state") or {}
+        entry_estimate = (old_data.get("entry_price_estimate")
+                          or old_state.get("entry_fill_price") or 0.0)
+        qty = (old_state.get("shares_shorted")
+               or old_state.get("total_shares_held")
+               or old_data.get("initial_qty") or 1)
+        qty_contracts = int(abs(float(qty)))
+
+        if os.path.exists(wheel_path):
+            # Existing wheel file owns the state — just retire the legacy.
+            events.append(f"retire {fname} (wheel_{underlying}.json already owns {sym})")
+        else:
+            # Synthesize a new wheel file. Short put → stage_1_put_active.
+            # Covered call → stage_2_call_active (requires user to hold shares,
+            # which they should at this point; we can't verify from file alone).
+            wheel_stage = ("stage_1_put_active" if right == "put"
+                           else "stage_2_call_active")
+            wheel = {
+                "symbol": underlying,
+                "strategy": "wheel",
+                "status": "active",
+                "created": now_et().strftime("%Y-%m-%d"),
+                "updated": now_et().isoformat(),
+                "stage": wheel_stage,
+                "shares_owned": 0 if right == "put" else qty_contracts * 100,
+                "shares_at_open": 0,
+                "cost_basis": None,
+                "cycles_completed": 0,
+                "total_premium_collected": 0.0,
+                "total_realized_pnl": 0.0,
+                "active_contract": {
+                    "contract_symbol": sym,
+                    "type": right,
+                    "strike": parsed["strike"],
+                    "expiration": parsed["expiration"],
+                    "dte_at_open": None,
+                    "quantity": qty_contracts,
+                    "premium_received": float(entry_estimate) * qty_contracts * 100,
+                    "limit_price_used": float(entry_estimate),
+                    "open_order_id": old_state.get("entry_order_id"),
+                    "close_order_id": old_state.get("cover_order_id"),
+                    "opened_at": old_data.get("created") or now_et().isoformat(),
+                    "closed_at": None,
+                    "status": "active",
+                },
+                "history": [{
+                    "timestamp": now_et().isoformat(),
+                    "event": "migrated_from_short_sell",
+                    "note": (f"Auto-migrated from {fname} — pre-pt.17 "
+                             "error_recovery had routed this OCC option to "
+                             "the equity short-sell path. Wheel monitor "
+                             "will now manage buy-to-close + assignment."),
+                }],
+                "deployer": "error_recovery",
+                "auto_recovered": True,
+                "_migrated_from": fname,
+            }
+            safe_save_json(wheel_path, wheel)
+            events.append(f"migrated {fname} -> {wheel_fname} ({wheel_stage})")
+
+        # Mark the legacy file as retired so it stops claiming the
+        # position on the short-sell path.
+        old_data["status"] = "migrated"
+        old_data["_migrated_to"] = wheel_fname
+        old_data["_migrated_at"] = now_et().isoformat()
+        try:
+            safe_save_json(old_path, old_data)
+        except OSError as _e:
+            print(f"  [migrate] warning: could not update {fname}: {_e}")
+
+    return events
+
+
 def main():
     print("=" * 60)
     print("ERROR RECOVERY")
     print("=" * 60)
+
+    # Round-61 pt.21: retrofit legacy short_sell_<OCC>.json files.
+    # Runs BEFORE the orphan scan so the wheel file it creates becomes
+    # the authoritative match for the position when orphan scan hits.
+    print("\n--- Migration: legacy OCC short_sell files ---")
+    mig_events = migrate_legacy_short_sell_option_files()
+    if mig_events:
+        for ev in mig_events:
+            print(f"  {ev}")
+    else:
+        print("  No legacy files to migrate.")
 
     issues_found = 0
     issues_fixed = 0

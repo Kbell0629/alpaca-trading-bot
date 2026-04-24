@@ -50,6 +50,7 @@ MIGRATION_ROUND20_POSITION_CAP = "round20_position_cap_0.07"
 MIGRATION_ROUND21_BREAKOUT_STOP = "round21_breakout_stop_0.12"
 MIGRATION_ROUND29_EARNINGS_EXIT = "round29_earnings_exit_days_before_1"
 MIGRATION_ROUND51_CALIBRATION_ADOPT = "round51_calibration_adopted"
+MIGRATION_ROUND61_PT21_STRATEGIES = "round61_pt21_auto_deployer_strategies_full"
 
 
 def _load_json(path):
@@ -153,6 +154,54 @@ def migrate_auto_deployer_config_round21(config_path):
     c["_migrations_applied"] = applied + [MIGRATION_ROUND21_BREAKOUT_STOP]
     _save_json_atomic(config_path, c)
     return "user_customised" if user_customised else "migrated"
+
+
+def migrate_auto_deployer_strategies_round61_pt21(config_path):
+    """Round-61 pt.21: widen `auto_deployer_config.strategies` from the
+    historical short list (trailing_stop, mean_reversion, breakout) to
+    include every strategy the bot actually supports (wheel, pead,
+    short_sell, copy_trading). Pre-pt.21 this list was used to gate
+    auto-deployment, so wheel/pead/short positions only got deployed
+    via their strategy-specific entry paths — never via the unified
+    auto_deployer loop. Users who want the bot to fully manage every
+    strategy autonomously were effectively opting out of wheel/short
+    unless they manually edited the config.
+
+    Idempotent via `_migrations_applied`. Only adds missing entries;
+    never removes user-added strategies. If a user has explicitly
+    disabled a strategy (e.g. removed it AFTER running this migration
+    once), we honor that — the migration stamp prevents re-adding.
+
+    Returns "migrated" | "already_applied" | "no_file".
+    """
+    if not os.path.exists(config_path):
+        return "no_file"
+    c = _load_json(config_path)
+    if not isinstance(c, dict):
+        return "no_file"
+    applied = c.get("_migrations_applied") or []
+    if MIGRATION_ROUND61_PT21_STRATEGIES in applied:
+        return "already_applied"
+
+    try:
+        from constants import STRATEGY_NAMES
+        full_set = set(STRATEGY_NAMES)
+    except ImportError:
+        full_set = {"trailing_stop", "breakout", "mean_reversion",
+                    "wheel", "short_sell", "pead", "copy_trading"}
+
+    current = c.get("strategies")
+    if not isinstance(current, list):
+        current = []
+    merged = list(current)
+    for name in sorted(full_set):
+        if name not in merged:
+            merged.append(name)
+    c["strategies"] = merged
+
+    c["_migrations_applied"] = applied + [MIGRATION_ROUND61_PT21_STRATEGIES]
+    _save_json_atomic(config_path, c)
+    return "migrated"
 
 
 def migrate_guardrails_round29(guardrails_path):
@@ -374,6 +423,14 @@ def run_all_migrations(users, user_file_fn, account_fetcher=None):
             except Exception as e:
                 user_result["round21_breakout_stop"] = f"error: {type(e).__name__}"
                 log.warning(f"migration round21 failed for {uid}: {e}")
+            try:
+                apath61 = user_file_fn(u, "auto_deployer_config.json")
+                user_result["round61_pt21_strategies_full"] = (
+                    migrate_auto_deployer_strategies_round61_pt21(apath61)
+                )
+            except Exception as e:
+                user_result["round61_pt21_strategies_full"] = f"error: {type(e).__name__}"
+                log.warning(f"migration round61 pt.21 strategies failed for {uid}: {e}")
             try:
                 gpath29 = user_file_fn(u, "guardrails.json")
                 user_result["round29_earnings_exit"] = (

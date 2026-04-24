@@ -8,6 +8,156 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.21 — consistency audit + constants source-of-truth + legacy file migration (+26 tests)
+
+User requested a way to prevent the key-drift bug class that spawned
+pt.16/pt.19/pt.20, plus fix two production data issues caught in the
+JSON audit: DKNG and HIMS short-put positions were mis-routed through
+the equity short-sell path (pre-pt.17 error_recovery) and never got
+migrated. Five-part change:
+
+### 1. Central constants module extensions
+
+`constants.py` (already existed for SECTOR_MAP + HTTP timeouts) now
+also exports:
+
+- `STRATEGY_NAMES: frozenset` — every strategy the bot produces
+- `CLOSED_STATUSES: frozenset` — closed/stopped/cancelled/canceled/
+  exited/filled_and_closed
+- `ACTIVE_STATUSES: frozenset` — active/awaiting_fill
+- `STRATEGY_FILE_PREFIXES: tuple` — for filename parsing
+- Helpers: `is_closed_status`, `is_active_status`, `is_known_strategy`
+
+Existing consumers updated to import from constants:
+- `server._mark_auto_deployed` — closed-status filter
+- `error_recovery.list_strategy_files` — closed-status filter
+- `scorecard_core.STRATEGY_BUCKETS` — derived from STRATEGY_NAMES
+  directly (tuple of sorted names)
+
+Adding a new strategy in the future is now a one-line change:
+append to STRATEGY_NAMES and every consumer picks it up.
+
+### 2. Legacy OCC file migration
+
+`error_recovery.migrate_legacy_short_sell_option_files()` runs every
+error_recovery invocation (before the orphan scan loop). Scans
+STRATEGIES_DIR for `short_sell_<OCC>.json` files, parses the OCC
+symbol via `_occ_parse`, and:
+- Creates `wheel_<UNDERLYING>.json` in `stage_1_put_active` (short
+  put) or `stage_2_call_active` (covered call) with active_contract
+  populated from the OCC parse
+- Preserves any existing wheel_<UNDERLYING>.json — the wheel monitor
+  owns that state
+- Marks the legacy file `status: "migrated"` so the dashboard
+  labeller and the short-sell monitor both stop picking it up
+
+Fixes user-reported DKNG260515P00021000 + HIMS260508P00027000
+mis-routing from production audit.
+
+### 3. `/api/audit` endpoint + `audit_core` module
+
+New `audit_core.run_audit()` pure helper takes a state snapshot
+(positions, orders, strategy_files, journal, scorecard) and returns
+a severity-grouped findings list covering 7 check categories:
+
+| # | Check | Severity |
+|---|---|---|
+| 1 | Orphan positions (position + no file + no journal) | HIGH |
+| 2 | Legacy OCC mis-routing (short_sell_<OCC>.json still present) | MEDIUM |
+| 3 | Ghost strategy files (active file + no position) | LOW |
+| 4 | Missing stop orders on non-wheel positions | HIGH |
+| 5 | Invalid stop prices (wrong side of current market) | HIGH |
+| 6 | Unknown strategy names in journal | MEDIUM |
+| 7 | Scorecard freshness (>48h stale) | MEDIUM |
+
+`/api/audit` is the HTTP endpoint; `handle_state_audit` in
+`handlers/actions_mixin.py` wires it up. Read-only, safe to call
+on-demand. Auth-gated.
+
+### 4. Dashboard 🔍 Audit button + modal
+
+Added next to "🤖 Adopt MANUAL → AUTO" in the Positions section
+header. Click opens a modal with findings grouped by severity, each
+with category, symbol, and plain-English message. No need to grep
+log files or read scheduler output.
+
+### 5. `auto_deployer_config.strategies` widening
+
+New migration `migrate_auto_deployer_strategies_round61_pt21`
+(stamped `round61_pt21_auto_deployer_strategies_full`) extends the
+historical `[trailing_stop, mean_reversion, breakout]` to include
+all 7 strategies so wheel/pead/short_sell/copy_trading can also be
+eligible for the unified auto-deployer loop. Idempotent via
+`_migrations_applied`. Never removes user-added entries.
+
+### Tests
+- `tests/test_round61_pt21_audit_and_migration.py` (+26):
+  - Constants: 5 tests on STRATEGY_NAMES + CLOSED_STATUSES + helpers
+  - Migration: 4 tests on legacy-file retrofit (happy path, existing
+    wheel preservation, equity-short skip, idempotency)
+  - audit_core.run_audit: 9 behavioral tests across all 7 check
+    categories + wheel exception
+  - HTTP endpoint: 3 tests (auth gate, structured response, route)
+  - Dashboard UI: 2 source pins (button + JS handler)
+  - auto_deployer migration: 3 tests (widening, idempotency,
+    missing-file no-op)
+
+### Results
+- Python tests: 1656 → **1682 (+26)**
+- JS tests: 392 unchanged
+- Ruff: clean, `node --check` clean
+
+### Impact on deploy
+1. On next Railway deploy, the per-user migration runs once and
+   widens the strategies list.
+2. On the next error_recovery tick (within 10 min during market
+   hours), `migrate_legacy_short_sell_option_files` runs and
+   converts DKNG + HIMS legacy files to proper wheel files. Next
+   dashboard refresh shows both as AUTO + WHEEL.
+3. User can click 🔍 Audit any time to verify state is consistent.
+
+---
+
+## 🆕 Round-61 pt.20 — strategy badge on shorts/wheels + de-spam orphan notifications (+8 tests)
+
+User screenshot showed SOXL + DKNG with AUTO badge but no strategy
+pill. Root cause: dashboard's `stratLabelMap` used key `'short'` but
+backend writes `'short_sell'` (from filename). Also orphan-found
+push notifications fired at warning severity every 10 min with the
+same symbol list.
+
+### Fixes
+- `stratLabelMap` now keys on `'short_sell'` (primary), back-compat
+  with `'short'`, aliases `'wheel_strategy'` + `'wheel_auto_deploy'`
+  → WHEEL.
+- Orphan notifications use `--type info` (not alert) + persist last
+  notified set to `.orphan_notif_last.json`. Same set = no re-fire.
+
+### Results
+- Python: 1648 → **1656 (+8)**
+
+---
+
+## 🆕 Round-61 pt.19 — fix SOXL/HIMS adoption gaps + short_sell scorecard drop (+9 tests)
+
+Three user-reported issues from pt.17/18 deploy:
+1. SOXL adopted (AUTO badge) but no BUY stop. Monitor's initial
+   cover-stop formula `entry * (1 + stop_pct)` placed stop BELOW
+   current for underwater short → Alpaca rejected. Fix:
+   `max(entry*(1+pct), current*1.05)` — same adaptive formula as
+   error_recovery.
+2. HIMS short put still MANUAL after "Adopt" click. Grace-period
+   filter treated user's manual BUY stop as "in-progress entry"
+   and skipped adoption. Fix: exempt shorts + OCC options.
+3. `short_sell` missing from `scorecard_core.STRATEGY_BUCKETS` →
+   every closed short trade silently dropped from performance
+   attribution.
+
+### Results
+- Python: 1639 → **1648 (+9)**
+
+---
+
 ## 🆕 Round-61 pt.18 — professional stepped trailing stop (+23 tests)
 
 User feedback on pt.17 deploy: on CRDO (long, entry $189.15, current

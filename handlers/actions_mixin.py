@@ -517,6 +517,59 @@ class ActionsHandlerMixin:
         except Exception as e:
             self._send_error_safe(e, 500, "force-daily-close")
 
+    def handle_state_audit(self, body=None):
+        """Round-61 pt.21: run the state-consistency audit for the
+        current user. Cross-checks Alpaca positions, open orders, the
+        strategy-file directory, the trade journal, and the scorecard.
+        Returns a structured finding list grouped by severity so the
+        dashboard can surface issues in plain English without the user
+        having to grep files.
+
+        Pure read-only — does not place orders, does not modify files.
+        Safe to call on-demand from a button click.
+        """
+        if not self.current_user:
+            return self.send_json({"error": "Not authenticated"}, 401)
+        try:
+            import audit_core
+            import server
+            user = self.build_scoped_user_dict()
+            # Fetch live Alpaca state via the same cached helpers the
+            # dashboard uses so results match what the user sees.
+            api_endpoint = user.get("_api_endpoint") or ""
+            api_headers = {
+                "APCA-API-KEY-ID": user.get("_api_key") or "",
+                "APCA-API-SECRET-KEY": user.get("_api_secret") or "",
+            }
+            account, positions, orders, _errors = server._fetch_live_alpaca_state(
+                api_endpoint, api_headers,
+            )
+            strats_dir = user.get("_strategies_dir") or ""
+            user_dir = user.get("_data_dir") or ""
+            strategy_files = audit_core.load_strategy_files(strats_dir)
+            journal = server.load_json(
+                self._user_file("trade_journal.json")) or {}
+            scorecard = server.load_json(
+                self._user_file("scorecard.json")) or {}
+            report = audit_core.run_audit(
+                positions=positions if isinstance(positions, list) else [],
+                orders=orders if isinstance(orders, list) else [],
+                strategy_files=strategy_files,
+                journal=journal,
+                scorecard=scorecard,
+            )
+            self.send_json({
+                "success": True,
+                "report": report,
+                "user_dir": user_dir,
+                "strategies_dir": strats_dir,
+                "file_count": len(strategy_files),
+                "position_count": len(positions) if isinstance(positions, list) else 0,
+                "order_count": len(orders) if isinstance(orders, list) else 0,
+            })
+        except Exception as e:
+            self._send_error_safe(e, 500, "state-audit")
+
     def handle_force_orphan_adoption(self, body=None):
         """Round-61 pt.15: run orphan adoption on-demand. Synthesizes
         strategy files for every Alpaca position that has no matching
