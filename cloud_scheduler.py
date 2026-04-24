@@ -3449,46 +3449,53 @@ def run_friday_risk_reduction(user):
             # Update the matching strategy file so next monitor tick doesn't
             # try to re-place stops sized for the OLD quantity. Resize any
             # open stop order to match the remaining qty.
+            # Round-61 pt.8 audit fix: RMW on the strategy file MUST hold
+            # `strategy_file_lock` so the 60s monitor loop can't interleave
+            # a read between our load and save (clobbers `friday_trims`
+            # history + `total_shares_held` reset). Friday trim fires once
+            # a week at 3:45 PM ET, so holding the lock across the Alpaca
+            # PATCH/DELETE is acceptable throughput-wise (~200ms, once).
             try:
                 for sf in os.listdir(sdir):
                     if not (sf.endswith(f"_{symbol}.json") and not sf.startswith("wheel_")):
                         continue
                     sf_path = os.path.join(sdir, sf)
-                    strat = load_json(sf_path) or {}
-                    state = strat.get("state", {})
-                    remaining = qty - half_qty
-                    state["total_shares_held"] = remaining
-                    state.setdefault("friday_trims", []).append({
-                        "ts": now_et().isoformat(),
-                        "sold_qty": half_qty,
-                        "remaining_qty": remaining,
-                        "estimated_profit": round(profit, 2),
-                    })
-                    # Resize stop order if one exists
-                    old_stop = state.get("stop_order_id")
-                    stop_price = state.get("current_stop_price")
-                    if old_stop and remaining > 0 and stop_price:
-                        new_stop_side = "sell" if raw_qty > 0 else "buy"
-                        # Round-10: PATCH qty atomically; fall back to
-                        # cancel-then-place. Previous path hit the
-                        # duplicate-order 403 on every Friday trim.
-                        patched = user_api_patch(user, f"/orders/{old_stop}",
-                                                  {"qty": str(remaining)})
-                        new_stop_resp = patched if (isinstance(patched, dict)
-                                                    and "id" in patched) else None
-                        if not new_stop_resp:
-                            user_api_delete(user, f"/orders/{old_stop}")
-                            new_stop_resp = user_api_post(user, "/orders", {
-                                "symbol": symbol, "qty": str(remaining),
-                                "side": new_stop_side,
-                                "type": "stop", "stop_price": str(stop_price),
-                                "time_in_force": "gtc",
-                            })
-                        if isinstance(new_stop_resp, dict) and "id" in new_stop_resp:
-                            state["stop_order_id"] = new_stop_resp["id"]
-                        # else: keep old oversized stop — still protective
-                    strat["state"] = state
-                    save_json(sf_path, strat)
+                    with strategy_file_lock(sf_path):
+                        strat = load_json(sf_path) or {}
+                        state = strat.get("state", {})
+                        remaining = qty - half_qty
+                        state["total_shares_held"] = remaining
+                        state.setdefault("friday_trims", []).append({
+                            "ts": now_et().isoformat(),
+                            "sold_qty": half_qty,
+                            "remaining_qty": remaining,
+                            "estimated_profit": round(profit, 2),
+                        })
+                        # Resize stop order if one exists
+                        old_stop = state.get("stop_order_id")
+                        stop_price = state.get("current_stop_price")
+                        if old_stop and remaining > 0 and stop_price:
+                            new_stop_side = "sell" if raw_qty > 0 else "buy"
+                            # Round-10: PATCH qty atomically; fall back to
+                            # cancel-then-place. Previous path hit the
+                            # duplicate-order 403 on every Friday trim.
+                            patched = user_api_patch(user, f"/orders/{old_stop}",
+                                                      {"qty": str(remaining)})
+                            new_stop_resp = patched if (isinstance(patched, dict)
+                                                        and "id" in patched) else None
+                            if not new_stop_resp:
+                                user_api_delete(user, f"/orders/{old_stop}")
+                                new_stop_resp = user_api_post(user, "/orders", {
+                                    "symbol": symbol, "qty": str(remaining),
+                                    "side": new_stop_side,
+                                    "type": "stop", "stop_price": str(stop_price),
+                                    "time_in_force": "gtc",
+                                })
+                            if isinstance(new_stop_resp, dict) and "id" in new_stop_resp:
+                                state["stop_order_id"] = new_stop_resp["id"]
+                            # else: keep old oversized stop — still protective
+                        strat["state"] = state
+                        save_json(sf_path, strat)
             except Exception as e:
                 log(f"[{user['username']}] WARN Friday strategy-file update failed for {symbol}: {e}", "friday")
 
@@ -3570,17 +3577,25 @@ def run_monthly_rebalance(user):
             # Round-10: cancel any open stop on this symbol FIRST so we
             # don't orphan a GTC stop in Alpaca after the shares are gone
             # (same orphan-stop class as SOXL / mean-reversion target).
+            # Round-61 pt.8 audit fix: RMW on the strategy file MUST hold
+            # `strategy_file_lock`. Without it the 60s monitor loop can
+            # read between load and save, then write back with
+            # `stop_order_id` still set — next tick tries to re-cancel the
+            # same order (harmless) or, worse, overrides a user-triggered
+            # pause that landed in the gap. Monthly rebalance fires once
+            # a month so holding the lock across the Alpaca DELETE is fine.
             try:
                 for sf in os.listdir(sdir):
                     if not (sf.endswith(f"_{symbol}.json") and not sf.startswith("wheel_")):
                         continue
                     sf_path = os.path.join(sdir, sf)
-                    strat_for_close = load_json(sf_path) or {}
-                    sid = (strat_for_close.get("state") or {}).get("stop_order_id")
-                    if sid:
-                        user_api_delete(user, f"/orders/{sid}")
-                        strat_for_close["state"]["stop_order_id"] = None
-                        save_json(sf_path, strat_for_close)
+                    with strategy_file_lock(sf_path):
+                        strat_for_close = load_json(sf_path) or {}
+                        sid = (strat_for_close.get("state") or {}).get("stop_order_id")
+                        if sid:
+                            user_api_delete(user, f"/orders/{sid}")
+                            strat_for_close["state"]["stop_order_id"] = None
+                            save_json(sf_path, strat_for_close)
             except Exception as _e:
                 log(f"[{user['username']}] rebalance cancel-stop failed for {symbol}: {_e}", "rebalance")
             # Round-11: idempotency so a timeout-retry doesn't double-close.
