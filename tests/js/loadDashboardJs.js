@@ -175,6 +175,8 @@ export function loadDashboardJs(stubs = {}) {
     'buildTodaysClosesPanel', 'sectionHelpButton',
     // Strategy card / templates / comparison panel builders (take `d`)
     'buildShortStrategyCard', 'buildStrategyTemplates', 'buildComparisonPanel',
+    // Section-visibility helpers (localStorage round-trip)
+    'getHiddenSections', 'setHiddenSections', 'toggleSection',
   ];
   for (const name of exposed) {
     if (typeof globalThis[name] === 'function') {
