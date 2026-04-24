@@ -29,7 +29,12 @@ Gaps filled (vs R55 + R57 + R51):
   7. Per-strategy main loop requires status in (active, awaiting_fill).
   8. Top-level try/except keeps the monitor alive across per-user crashes.
   9. AH mode skips paused strategies.
- 10. AH mode skips short_sell strategies (thin-book covers would be brutal).
+ 10. Round-61 pt.28: AH mode flows short_sell strategies through to
+     process_short_strategy which runs ONLY initial cover-stop
+     placement for unprotected shorts (GTC stops sit until regular
+     hours, no thin-book fill risk). Thin-book-risky short paths
+     (trailing tighten, cover-fill processing, force-cover) stay
+     gated on regular hours.
 """
 from __future__ import annotations
 
@@ -249,15 +254,24 @@ def test_monitor_catches_top_level_exceptions():
 def test_ah_mode_skips_paused_strategies():
     """In AH mode, paused strategies must stay paused. A tick that
     processes a paused strategy could raise the trailing stop under
-    the user's intent to leave it alone."""
+    the user's intent to leave it alone.
+
+    Round-61 pt.28 narrowed this: only ``paused`` is filtered at the
+    loop level now. short_sell strategies flow through to
+    ``process_short_strategy(extended_hours=True)`` which runs ONLY
+    the initial cover-stop placement path for unprotected shorts."""
     src = _src()
     block = _slice(src, "def monitor_strategies", "def check_profit_ladder")
-    # In the AH-only per-file loop, paused is filtered
     ah_idx = block.find('if extended_hours:')
     assert ah_idx > 0
     ah_block = block[ah_idx:ah_idx + 3000]
-    assert 'if strat.get("paused") or strat.get("strategy") == "short_sell":' in ah_block, (
-        "AH loop must skip paused + short_sell strategies")
+    # Pt.28: paused still skipped, short_sell no longer skipped here.
+    assert 'if strat.get("paused"):' in ah_block, (
+        "AH loop must still skip paused strategies")
+    assert 'strat.get("strategy") == "short_sell"' not in ah_block, (
+        "Pt.28: short_sell must NOT be skipped at the loop level — "
+        "process_strategy_file → process_short_strategy handles the "
+        "AH gating internally (placement-only for unprotected shorts).")
 
 
 def test_ah_mode_skips_wheel_files_in_per_user_loop():

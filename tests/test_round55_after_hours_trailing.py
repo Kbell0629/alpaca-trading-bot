@@ -86,17 +86,24 @@ def test_ah_mode_skips_initial_stop_placement(monkeypatch):
     assert "if not extended_hours and not state.get(\"stop_order_id\")" in src
 
 
-def test_ah_mode_skips_shorts(monkeypatch):
-    """Shorts: don't process in AH. Covering a short in thin post-
-    market hours would get brutal fills."""
+def test_ah_mode_passes_shorts_through_to_dedicated_handler(monkeypatch):
+    """Round-61 pt.28 narrowed the R55 short-skip. Shorts now flow
+    through to process_short_strategy even in AH mode so unprotected
+    shorts (no cover_order_id) get a protective GTC stop placed before
+    the next regular-hours open. The thin-book "brutal cover fill"
+    concern doesn't apply to placement — GTC stops don't trigger in
+    AH, they sit idle and fire at next regular-hours cross. See pt.28
+    docstring on process_short_strategy."""
     cs = _reload(monkeypatch)
     src = open(cs.__file__).read()
-    # Inside process_strategy_file, short_sell + extended_hours → early return
     idx = src.find('if strategy_type == "short_sell":')
     assert idx > 0
-    following = src[idx:idx+600]
-    assert "if extended_hours:" in following
-    assert "return  # shorts" in following
+    following = src[idx:idx+800]
+    # Pt.28: pass-through, NOT an early return
+    assert "process_short_strategy" in following
+    assert "extended_hours=extended_hours" in following
+    # The old "return  # shorts" guard is gone
+    assert "return  # shorts" not in following
 
 
 def test_scheduler_main_loop_calls_ah_monitor(monkeypatch):

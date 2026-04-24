@@ -1138,6 +1138,17 @@ def monitor_strategies(user, extended_hours=False):
     hours liquidity and shouldn't fire against thin extended-hours
     quotes). The raised stop prices take effect at next market open
     — locking in any post-market pop before the next morning's drop.
+
+    Round-61 pt.28: narrow carve-out for unprotected shorts.
+    ``process_short_strategy`` is now called in AH mode too, but
+    internally it only runs the initial cover-stop placement path
+    for positions with no live ``cover_order_id``. A GTC stop placed
+    in AH sits idle at Alpaca (doesn't fire until regular hours), so
+    the thin-book risk that motivated the original R55 skip doesn't
+    apply to placement. This closes the gap where a Friday-close
+    audit finding of HIGH missing_stop on a short (e.g. SOXL) had
+    to wait for Monday's regular-hours monitor tick to get covered,
+    leaving the position unprotected all weekend.
     """
     try:
         guardrails_path = user_file(user, "guardrails.json")
@@ -1186,8 +1197,17 @@ def monitor_strategies(user, extended_hours=False):
                             strat = load_json(filepath)
                             if not strat:
                                 continue
-                            if strat.get("paused") or strat.get("strategy") == "short_sell":
-                                continue  # no AH on shorts — cover would be brutal
+                            # Round-61 pt.28: shorts are no longer skipped
+                            # at the loop level. process_strategy_file
+                            # delegates to process_short_strategy with
+                            # extended_hours=True, which ONLY places a
+                            # protective cover-stop for unprotected shorts
+                            # (GTC stops don't fire until regular hours,
+                            # so there's no thin-book cover-fill risk).
+                            # All other short-side branches remain gated
+                            # on regular hours — see the pt.28 docstring.
+                            if strat.get("paused"):
+                                continue
                             process_strategy_file(user, filepath, strat,
                                                     extended_hours=True)
                     except Exception as _e:
@@ -1473,8 +1493,25 @@ def check_profit_ladder(user, filepath, strat, price, entry, shares):
             notify_user(user, f"Profit take on {symbol} at +{level}%: sold {sell_qty} shares. {remaining} still held.", "exit")
             return  # One level per check
 
-def process_short_strategy(user, filepath, strat, state, rules):
-    """Manage a short_sell position (inverse logic — we profit when price falls)."""
+def process_short_strategy(user, filepath, strat, state, rules, extended_hours=False):
+    """Manage a short_sell position (inverse logic — we profit when price falls).
+
+    Round-61 pt.28: when ``extended_hours=True`` the function runs ONLY
+    the initial cover-stop placement path for unprotected positions
+    (``cover_order_id`` is ``None`` or has been reset by pt.24/25/26's
+    liveness checks). Everything else — profit-target limit placement,
+    trailing-stop tightening, cover-fill processing, force-cover on
+    max-hold-exceeded — is gated on regular hours because it either
+    requires thin-book-risky fills or assumes regular-hours liquidity.
+
+    Placing a protective stop in AH is safe: stop orders we submit are
+    ``time_in_force=gtc`` without ``extended_hours=true``, so Alpaca
+    only triggers them when regular-hours price crosses. The stop
+    sits idle over the weekend / overnight and fires at next open if
+    the short has moved against us. This closes the pt.26 gap where
+    an unprotected short (audit HIGH missing_stop) had to wait until
+    the next regular-hours monitor tick — which on a Friday close
+    means the position sits uncovered all weekend."""
     symbol = strat["symbol"]
 
     # Check entry fill — shares_shorted is positive magnitude, Alpaca reports negative qty
@@ -1592,6 +1629,16 @@ def process_short_strategy(user, filepath, strat, state, rules):
                    else str(order))
             log(f"[{user['username']}] {symbol}: SHORT cover-stop placement "
                 f"FAILED — Alpaca returned: {err}", "monitor")
+
+    # Round-61 pt.28: in AH mode, stop is the only thing we place.
+    # Everything below — profit-target limit, trailing-stop tightening,
+    # cover-fill processing, force-cover on max-hold — either depends
+    # on regular-hours liquidity or risks thin-book fills. Persist the
+    # state update (so newly-placed stop's cover_order_id + adaptive
+    # stop price are written to disk) and return.
+    if extended_hours:
+        save_json(filepath, strat)
+        return
 
     # Place profit target (limit buy below entry)
     if not state.get("target_order_id"):
@@ -1773,11 +1820,17 @@ def process_strategy_file(user, filepath, strat, extended_hours=False):
     rules = strat.get("rules", {})
     strategy_type = strat.get("strategy", "trailing_stop")
 
-    # Shorts have inverse logic — delegate to dedicated handler
+    # Shorts have inverse logic — delegate to dedicated handler.
+    # Round-61 pt.28: don't hard-skip AH for shorts. Instead, pass
+    # ``extended_hours`` through so ``process_short_strategy`` can run
+    # ONLY the initial cover-stop placement path for unprotected
+    # positions (``cover_order_id`` is None or got reset by pt.24/25/26
+    # liveness checks). The thin-book-risky paths (profit-target
+    # limit, trailing tighten, cover-fill processing, force-cover)
+    # stay regular-hours-only. See ``process_short_strategy`` docstring.
     if strategy_type == "short_sell":
-        if extended_hours:
-            return  # shorts: don't touch in AH (cover fills would be brutal)
-        process_short_strategy(user, filepath, strat, state, rules)
+        process_short_strategy(user, filepath, strat, state, rules,
+                               extended_hours=extended_hours)
         return
 
     # Check entry fill (skip in AH — new fills are regular-hours only)

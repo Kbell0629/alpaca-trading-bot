@@ -31,7 +31,7 @@ auto-deploys top picks across 6 strategies, manages exits, handles kill-switch
 1. `git checkout main && git pull --ff-only`
 2. `cat CLAUDE.md` (this file), `cat README.md`, `cat CHANGELOG.md`
 3. `MASTER_ENCRYPTION_KEY=$(python3 -c 'print("e"*64)') python3 -m pytest tests/ --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json --deselect tests/test_auth.py::test_password_strength_rejects_weak --deselect tests/test_audit_round12_scheduler_latent.py::test_ruff_clean_on_real_bug_rules -q`
-   — expect **1490 passing, 3 deselected** after round-61 pt.8 Option B.
+   — expect **1746 passing, 3 deselected** after round-61 pt.27.
 4. `ruff check .` — clean.
 5. Validate dashboard JS: `awk '/^<script>/,/^<\/script>/' templates/dashboard.html | grep -v '^<script>' | grep -v '^</script>' > /tmp/dash.js && node --check /tmp/dash.js`
 6. `npm ci && npx vitest run` — expect **341 JS tests passing** (29 files).
@@ -61,9 +61,115 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-24 — round 61 pt.10-22 SHIPPED)
+## Current session state (2026-04-24 — round 61 pt.10-27 SHIPPED)
 
-**Pt.22 in flight (PR #148):** defensive hardening + audit-modal fix.
+**Pt.27 landed (PR #153):** daily-close email "Today" fix. User
+forwarded Apr 24 close email showing `+$39.29` when actual day
+P&L was `+$707.67` (CRDO +3.5% / INTC +22% / HIMS +43.9%). Root
+cause: `_build_daily_close_report` used
+`guardrails.daily_starting_value` as the baseline, which is
+captured by the monitor's FIRST tick of the day — if the monitor
+didn't fire at 9:30 AM open (mid-deploy, heartbeat gap at the
+bell), it captured a mid-day value and missed the morning move.
+For Apr 24: `daily_starting_value=$103,214` (mid-morning) vs
+Alpaca `last_equity=$102,425.35` (true yesterday's close). Close
+$103,133 − $103,214 = −$81 (shown as +$39 after rounding), vs
+correct $103,133 − $102,425 = +$707.67.
+  **Fix:** swap priority in `_build_daily_close_report` to prefer
+  Alpaca's `last_equity` (canonical yesterday's close, always
+  full-day), fall back to `daily_starting_value` only when
+  `last_equity` is missing.
+  +4 tests in `tests/test_round61_pt27_daily_close_today.py`
+  (regression pin for exact Apr 24 numbers + fallback + zero
+  safety + source ordering pin).
+
+**Pt.26 landed (PR #152):** aggressive open-orders cross-check +
+loud placement-failure logging. SOXL STILL showed missing_stop
+HIGH after pt.25. Pt.24/25 handled dead-status list + error
+dicts, but missed these edge cases:
+  * Order in `accepted` / `pending_new` that silently expired
+  * Single `/orders/{id}` lookup returns stale/partial data not
+    matching any known dead alias
+  * Order was replaced/canceled outside the monitor loop and
+    Alpaca's status propagation hasn't caught up
+  **Fix 1:** cross-check against Alpaca's open-orders ground
+  truth (`/orders?status=open&symbols=`). If the persisted
+  `cover_order_id` / `stop_order_id` isn't in that list, reset
+  + retry regardless of what the individual order lookup said.
+  **Fix 2:** loud placement-failure logging. Before pt.26, when
+  Alpaca rejected a stop (insufficient margin, shorting
+  restricted, invalid qty), the failure was silently swallowed.
+  Now every rejection logs the Alpaca response so the user /
+  operator can diagnose.
+  +5 tests in `tests/test_round61_pt26_open_orders_crosscheck.py`.
+
+**Pt.25 landed (PR #151):** fix pt.24 unreachable-elif + remove
+ghost-cleanup grace period. Two regressions from pt.24 deploy:
+  1. SOXL still showed missing_stop HIGH. Pt.24's short-side
+     `cover_order_id` liveness check had unreachable code:
+     Alpaca error responses (`{"error": "..."}`) hit the first
+     dict branch, but `get("status")` returned None → empty
+     string → no dead-status match → no reset → cover_order_id
+     stayed forever. Fix: check `"error"` key FIRST inside the
+     dict branch. Normalized long-side `stop_order_id` path to
+     the same shape.
+  2. 🧹 Clean Up Ghosts always reported "Closed 0, skipped 2"
+     — `error_recovery.py`'s periodic Check 3 touches these
+     files every 10 min (`safe_save_json`'s atomic-rename bumps
+     mtime even on no-ops), so they never fell outside the
+     10-min grace window. Fix: remove the grace-period filter
+     from the USER-TRIGGERED cleanup path. Clicking the button
+     is explicit intent. Scheduled Check 3 keeps its grace
+     period. Pending-sell check remains.
+  +9 tests (5 E2E in `test_round61_pt25_soxl_stop_e2e.py` +
+  4 in `test_round61_pt25_force_ghost_cleanup.py`).
+
+**Pt.24 landed (PR #150):** 3 live audit findings (SOXL + CORZ +
+AXTI). User ran 🔍 Audit and modal showed:
+  * HIGH missing_stop: SOXL (qty -29, no BUY stop)
+  * LOW ghost_strategy_file: breakout_CORZ.json
+  * LOW ghost_strategy_file: breakout_AXTI.json
+  **Fix 1:** `process_short_strategy` used `if not
+  state.get("cover_order_id"):` to gate placement. If a prior
+  placement was rejected (invalid price pre-pt.19, auth failure,
+  rate limit) or later canceled, the stale order-id stayed in
+  state forever → placement skipped forever. Before trusting the
+  persisted id, query Alpaca — if status is `canceled/rejected/
+  expired/replaced/done_for_day` or lookup returns error (404 on
+  non-existent id), reset `cover_order_id=None` so the next
+  block places a fresh stop. Same treatment for long-side
+  `stop_order_id`. (Note: this pt.24 check had an unreachable
+  elif — fixed in pt.25.)
+  **Fix 2:** `error_recovery.py` Check 3 marks stale files
+  closed but only runs inside `run_daily_close` (4:05 PM ET) +
+  the "Adopt MANUAL → AUTO" path. User sees ghosts in the audit
+  modal and wants to clear them NOW. New
+  `/api/close-ghost-strategies` endpoint + 🧹 Clean Up Ghosts
+  button in the audit modal runs Check 3's exact logic in-
+  request. Modal auto-re-runs audit after cleanup.
+  +10 tests in `tests/test_round61_pt24_audit_findings_fix.py`.
+
+**Pt.23 landed (PR #149):** self-audit catch — multi-contract
+wheel state-overwrite bug introduced by pt.22.
+`wheel_strategy.save_wheel_state(user, state)` derived the write
+path via `wheel_state_path(user, state["symbol"])` where
+`state["symbol"]` is the underlying (e.g. "HIMS"). So for any
+state loaded from `wheel_HIMS__260515P26.json` (the pt.22
+indexed sibling file), saving would write to `wheel_HIMS.json`
+(the default file). On every 15-min wheel-monitor tick both
+files got loaded, both writes landed on `wheel_HIMS.json`,
+last-write-wins → indexed file frozen forever. Multi-contract
+wheel support was silently broken until pt.23.
+  **Fix:** `list_wheel_files` stamps a `_state_file` marker on
+  each loaded state dict with the filename it came from.
+  `save_wheel_state` reads the marker and writes back to the
+  same file. Falls back to default `wheel_<UNDERLYING>.json`
+  when marker is absent (fresh state from
+  `run_wheel_auto_deploy`). Marker stripped before persist so
+  it doesn't leak into the JSON schema.
+  +5 tests in `tests/test_round61_pt23_wheel_state_per_file.py`.
+
+**Pt.22 landed (PR #148):** defensive hardening + audit-modal fix.
 Six-in-one PR addressing the 4 gaps flagged after pt.21 close-out +
 the audit button being broken:
 
