@@ -165,6 +165,8 @@ export function loadDashboardJs(stubs = {}) {
     'openModal', 'closeModal', '_focusablesIn',
     // Scroll helpers
     'scrollToTop', 'scrollToSection',
+    // Heatmap / audit / screener helpers
+    'heatmapColor', 'fmtAuditTime', 'ariaSort', 'getMarketRegime',
   ];
   for (const name of exposed) {
     if (typeof globalThis[name] === 'function') {
