@@ -364,7 +364,15 @@
     var dailyLimit = (gr.daily_loss_limit_pct || 0.03) * 100;
     var maxDrawdown = (gr.max_drawdown_pct || 0.10) * 100;
     var peakValue = gr.peak_portfolio_value || lastEquity || portfolioValue;
-    var currentDrawdown = peakValue > 0 ? ((peakValue - portfolioValue) / peakValue * 100) : 0;
+    // Round-61 pt.11: if portfolioValue is 0/missing (e.g. Alpaca
+    // /account fetch failed), the drawdown computation against the
+    // stored peak yields a misleading "100% drawdown" alarm. Skip
+    // the drawdown panel entirely until we have a real portfolio
+    // value — the dashboard already surfaces the API failure via the
+    // api_errors banner.
+    var portfolioValid = (portfolioValue && portfolioValue > 0);
+    var currentDrawdown = (portfolioValid && peakValue > 0)
+      ? ((peakValue - portfolioValue) / peakValue * 100) : 0;
     var dailyLossPct = Math.abs(Math.min(0, dailyPnlPct));
 
     var dailyRatio = dailyLimit > 0 ? (dailyLossPct / dailyLimit * 100) : 0;
@@ -373,11 +381,19 @@
     if (dailyRatio > 80) { dailyColor = 'red'; dailyWarn = '<div class="guardrail-warning red">Approaching daily loss limit!</div>'; }
     else if (dailyRatio > 50) { dailyColor = 'yellow'; dailyWarn = '<div class="guardrail-warning yellow">Over 50% of daily loss limit used</div>'; }
 
-    var ddRatio = maxDrawdown > 0 ? (currentDrawdown / maxDrawdown * 100) : 0;
+    var ddRatio = (portfolioValid && maxDrawdown > 0) ? (currentDrawdown / maxDrawdown * 100) : 0;
     var ddColor = 'green';
     var ddWarn = '';
-    if (ddRatio > 80) { ddColor = 'red'; ddWarn = '<div class="guardrail-warning red">Approaching max drawdown limit!</div>'; }
-    else if (ddRatio > 50) { ddColor = 'yellow'; ddWarn = '<div class="guardrail-warning yellow">Over 50% of max drawdown limit used</div>'; }
+    if (portfolioValid) {
+      if (ddRatio > 80) { ddColor = 'red'; ddWarn = '<div class="guardrail-warning red">Approaching max drawdown limit!</div>'; }
+      else if (ddRatio > 50) { ddColor = 'yellow'; ddWarn = '<div class="guardrail-warning yellow">Over 50% of max drawdown limit used</div>'; }
+    }
+    // When portfolio value is unavailable, render the meter at 0% with
+    // an explanatory note instead of the false "100% drawdown" alarm.
+    var ddLabelRight = portfolioValid
+      ? (currentDrawdown.toFixed(1) + '% / ' + maxDrawdown.toFixed(0) + '% limit')
+      : ('— / ' + maxDrawdown.toFixed(0) + '% limit');
+    var ddBarPct = portfolioValid ? Math.min(100, ddRatio) : 0;
 
     return '<div class="guardrail-meters">' +
       '<div class="guardrail-meter">' +
@@ -386,8 +402,8 @@
         dailyWarn +
       '</div>' +
       '<div class="guardrail-meter">' +
-        '<div class="meter-label"><span>Drawdown from Peak</span><span>' + currentDrawdown.toFixed(1) + '% / ' + maxDrawdown.toFixed(0) + '% limit</span></div>' +
-        '<div class="meter-bar"><div class="meter-fill ' + ddColor + '" style="width:' + Math.min(100, ddRatio) + '%"></div><div class="meter-limit"></div></div>' +
+        '<div class="meter-label"><span>Drawdown from Peak</span><span>' + ddLabelRight + '</span></div>' +
+        '<div class="meter-bar"><div class="meter-fill ' + ddColor + '" style="width:' + ddBarPct + '%"></div><div class="meter-limit"></div></div>' +
         ddWarn +
       '</div>' +
     '</div>';

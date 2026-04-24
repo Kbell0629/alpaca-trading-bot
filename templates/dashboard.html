@@ -5898,6 +5898,22 @@ function renderDashboard() {
         (killSwitchActive
             ? '<div class="kill-switch-active-banner"><span>KILL SWITCH ACTIVE -- All trading halted. Auto-deployer disabled.</span><button class="deactivate-btn" onclick="deactivateKillSwitch()">Deactivate</button></div>'
             : '') +
+        // Round-61 pt.11: API-error banner. When Alpaca /account fetch
+        // fails, the metric cards below render $0.00 — which the user
+        // (rightly) reads as "my account is gone". Surface the actual
+        // error so they know it's a data-fetch issue, not a real
+        // liquidation.
+        ((function () {
+            var errs = (d.api_errors || []).filter(function(e) {
+                var s = String(e || '').toLowerCase();
+                return s.indexOf('account') === 0 || s.indexOf('account:') >= 0;
+            });
+            if (errs.length === 0) return '';
+            return '<div class="kill-switch-active-banner" style="background:rgba(245,158,11,0.15);border-color:rgba(245,158,11,0.4);color:var(--orange)">' +
+                '<span><strong>⚠ Alpaca /account fetch failed</strong> — the values below show $0.00 because the API call returned an error, NOT because your account is empty. ' +
+                'Check API keys in Settings → Alpaca API. Last error: <code>' + esc(errs[0]) + '</code></span>' +
+            '</div>';
+        })()) +
         econBannerHtml +
         pnlAlertHtml +
         navTabs +
