@@ -254,12 +254,29 @@ def test_position_correlation_rows_have_min_width_and_scroll_wrap():
 
 # ========= Fix 4: Dashboard reads win_rate_pct_display =========
 
+def _dashboard_sources():
+    """Round-61 pt.8 Option B: panel renderers are split between
+    inline dashboard.html (Readiness card) and the extracted
+    static/dashboard_render_core.js (Comparison panel). Grep
+    against the CONCATENATED source so invariants survive the
+    extraction boundary."""
+    import pathlib
+    out = []
+    for p in ("templates/dashboard.html", "static/dashboard_render_core.js"):
+        try:
+            out.append(pathlib.Path(p).read_text())
+        except FileNotFoundError:
+            pass
+    return "\n".join(out)
+
+
 def test_dashboard_readiness_uses_win_rate_reliable_flag():
     """Round-58 plumbed win_rate_reliable + win_rate_sample_size +
     win_rate_display_note through /api/data. Round-60 actually wires
-    those into the dashboard UI."""
-    with open("templates/dashboard.html") as f:
-        src = f.read()
+    those into the dashboard UI. Round-61 pt.8 extracted the
+    comparison panel into dashboard_render_core.js; the pin greps
+    both sources so refactors don't break the invariant."""
+    src = _dashboard_sources()
     assert "sc.win_rate_reliable" in src
     assert "sc.win_rate_sample_size" in src
     assert "sc.win_rate_display_note" in src
@@ -273,9 +290,7 @@ def test_dashboard_readiness_uses_win_rate_reliable_flag():
 def test_dashboard_shows_sample_size_instead_of_zero():
     """When win_rate_reliable is False, the UI must render 'N=X' +
     the display note, not '0%'."""
-    with open("templates/dashboard.html") as f:
-        src = f.read()
-    # Both branches should emit 'N=' + the sample-size
+    src = _dashboard_sources()
     assert "N=" in src and "sc.win_rate_sample_size" in src
     assert "Need 5+" in src, (
         "UI must prompt the user that 5+ closed trades are needed "

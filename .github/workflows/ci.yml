@@ -50,7 +50,7 @@ jobs:
             --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json \
             --cov=. \
             --cov-report=term-missing \
-            --cov-fail-under=48 \
+            --cov-fail-under=50 \
             --tb=short
 
       # Round-61 pt.8 — JS test suite for templates/dashboard.html.
