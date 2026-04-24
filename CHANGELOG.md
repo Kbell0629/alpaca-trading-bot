@@ -8,6 +8,27 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.8 batch-5 — sell-fraction, cancel-order, fmtSchedLast
+
+Continues the pt.8 coverage push. JS tests 160 → **181** (+21) across
+3 new files. Test-only PR.
+
+- `tests/js/sellFractionModal.test.js` (7) — share-count math (floor
+  + 1-share minimum clamp), pro-rata P&L on the sold fraction,
+  25%/50% label, negative-P&L red styling.
+- `tests/js/cancelOrderModal.test.js` (7) — market vs limit price
+  rendering, singular vs plural "share"/"shares", buy-vs-sell copy
+  distinction, Confirm button wiring.
+- `tests/js/fmtSchedLast.test.js` (7) — nulls → "never", garbage
+  passthrough, "just now" / "Xm ago" / "scheduled" branches,
+  Round-11 scheduler-aware calendar-day math ("yesterday" vs
+  "Nd ago" vs "17h ago" for same-calendar-day entries).
+
+**Results:** 160 → 181 (+21), Python suite unchanged, ruff + node
+checks clean.
+
+---
+
 ## 🆕 Round-61 pt.8 batch-4 — close-position modal + modal lifecycle
 
 Continues the pt.8 JS coverage push. JS tests 136 → **160** (+24)
