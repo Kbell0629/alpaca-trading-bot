@@ -263,6 +263,14 @@ def list_wheel_files(user):
     """Return list of (filename, state_dict) for all wheel files this user has.
     Logs a WARN to stderr for any wheel_*.json that fails to parse so a
     corrupted state file doesn't silently cause positions to go unmanaged.
+
+    Round-61 pt.23: each returned state dict has `_state_file`
+    stamped onto it so downstream `save_wheel_state` writes back to
+    the SAME file it was loaded from. Without this, multi-contract
+    wheel positions (pt.22: `wheel_HIMS.json` + `wheel_HIMS__<suffix>.json`
+    for two simultaneous HIMS short puts) would both write to the
+    default `wheel_<UNDERLYING>.json` path — overwriting each other's
+    state on every monitor tick.
     """
     import sys as _sys
     sdir = _user_strategies_dir(user)
@@ -278,6 +286,9 @@ def list_wheel_files(user):
                 if state.get("strategy") != "wheel":
                     print(f"[wheel] WARN: {path} missing 'strategy':'wheel' — skipping.", file=_sys.stderr, flush=True)
                     continue
+                # Round-61 pt.23: remember which file this came from
+                # so save_wheel_state writes back to the same file.
+                state["_state_file"] = f
                 results.append((f, state))
     except FileNotFoundError:
         pass
@@ -289,9 +300,26 @@ def wheel_state_path(user, symbol):
 
 
 def save_wheel_state(user, state):
-    """Write state and append to history."""
+    """Write state and append to history.
+
+    Round-61 pt.23: if the state came from `list_wheel_files` it has
+    a `_state_file` marker. Write back to THAT file so multi-contract
+    wheels (pt.22) don't overwrite each other. Fall back to the
+    default `wheel_<SYMBOL>.json` path when no marker is present
+    (e.g. for fresh state dicts created by run_wheel_auto_deploy
+    that haven't been loaded+modified).
+    """
     state["updated"] = now_et().isoformat()
-    _save_json(wheel_state_path(user, state["symbol"]), state)
+    state_file = state.get("_state_file")
+    if state_file:
+        path = os.path.join(_user_strategies_dir(user), state_file)
+    else:
+        path = wheel_state_path(user, state["symbol"])
+    # Strip the marker before persisting — it's a load-time hint, not
+    # persistent state. Other code paths that call save_wheel_state
+    # on a freshly-built state dict (no marker) still work.
+    clean_state = {k: v for k, v in state.items() if k != "_state_file"}
+    _save_json(path, clean_state)
 
 
 def log_history(state, event, detail=None):
