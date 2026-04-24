@@ -557,12 +557,79 @@ class AuthHandlerMixin:
             })
         except urllib.error.HTTPError as e:
             code = e.code
+            try:
+                _body = e.read().decode("utf-8", errors="replace")[:200]
+            except Exception:
+                _body = ""
             if code in (401, 403):
-                self.send_json({"error": "Invalid API credentials"}, 400)
+                self.send_json({
+                    "error": (f"Alpaca rejected the keys (HTTP {code}). "
+                              "Most likely a typo OR you used your "
+                              + ("LIVE" if mode == "live" else "PAPER")
+                              + " endpoint with the wrong mode's keys."),
+                    "alpaca_status": code,
+                    "alpaca_body": _body,
+                }, 400)
+            elif code == 429:
+                self.send_json({
+                    "error": "Alpaca rate-limit (HTTP 429) — wait 60s and retry.",
+                    "alpaca_status": code,
+                }, 400)
+            elif 500 <= code < 600:
+                self.send_json({
+                    "error": (f"Alpaca server error (HTTP {code}) — not "
+                              "your keys. Try again in a few minutes."),
+                    "alpaca_status": code,
+                }, 400)
             else:
-                self.send_json({"error": f"Alpaca error: HTTP {code}"}, 400)
+                self.send_json({
+                    "error": f"Alpaca error: HTTP {code}",
+                    "alpaca_status": code,
+                    "alpaca_body": _body,
+                }, 400)
+        except urllib.error.URLError as e:
+            self.send_json({
+                "error": (f"Couldn't reach Alpaca ({type(e).__name__}: "
+                          f"{getattr(e, 'reason', e)}). Network or DNS issue."),
+            }, 400)
         except Exception as e:
             self.send_json({"error": f"Connection failed: {str(e)[:120]}"}, 400)
+
+    def handle_test_saved_alpaca_keys(self, body):
+        """Round-61 pt.12: ping /account using the user's ALREADY-SAVED
+        keys (no need to re-enter on the form). Used to diagnose why
+        the dashboard suddenly shows $0 — the response includes the
+        actual Alpaca error code so the user knows whether it's a key
+        rotation, an endpoint mismatch, or a transient outage.
+        """
+        uid = self.current_user["id"]
+        mode = (body.get("mode") or "paper").strip().lower()
+        if mode not in ("paper", "live"):
+            return self.send_json({"error": "mode must be 'paper' or 'live'"}, 400)
+        try:
+            creds = auth.get_user_alpaca_creds(uid, mode=mode)
+        except Exception as e:
+            return self.send_json({
+                "error": (f"Could not load saved keys: {type(e).__name__}: "
+                          f"{e}. If MASTER_ENCRYPTION_KEY changed, every "
+                          "saved credential is invalidated and must be "
+                          "re-entered."),
+            }, 500)
+        if not creds or not creds.get("key") or not creds.get("secret"):
+            return self.send_json({
+                "error": (f"No {mode.upper()} keys are saved for this user. "
+                          f"Open the form below and paste them in."),
+            }, 400)
+        endpoint = creds.get("endpoint") or (
+            "https://api.alpaca.markets/v2" if mode == "live"
+            else "https://paper-api.alpaca.markets/v2")
+        # Reuse the same verification path as the form-based test by
+        # forwarding to handle_test_alpaca_keys.
+        return self.handle_test_alpaca_keys({
+            "api_key": creds.get("key"),
+            "api_secret": creds.get("secret"),
+            "mode": mode,
+        })
 
     def handle_save_alpaca_keys(self, body):
         """Save paper and/or live Alpaca credentials. Accepts partial
@@ -587,22 +654,87 @@ class AuthHandlerMixin:
         endpoint = ("https://api.alpaca.markets/v2" if mode == "live"
                     else "https://paper-api.alpaca.markets/v2")
         try:
-            import urllib.request, json as _json
+            import urllib.request
+            import urllib.error
             req = urllib.request.Request(
                 endpoint + "/account",
                 headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret},
             )
             urllib.request.urlopen(req, timeout=10).close()
+        except urllib.error.HTTPError as e:
+            # Round-61 pt.12: surface the actual HTTP status + Alpaca's
+            # error body. The previous generic "Keys failed verification"
+            # message left users staring at "Save failed" with no idea
+            # whether the issue was a 401 (wrong key), 403 (mode mismatch
+            # — paper key against live endpoint), or 5xx (Alpaca outage).
+            try:
+                _body = e.read().decode("utf-8", errors="replace")[:200]
+            except Exception:
+                _body = ""
+            if e.code == 401 or e.code == 403:
+                hint = (" Double-check the key + secret were copied with "
+                        "no extra whitespace, AND that you used your "
+                        + ("LIVE" if mode == "live" else "PAPER")
+                        + " keys (not the other mode's pair).")
+            elif e.code == 429:
+                hint = (" Alpaca rate-limit — wait 60 seconds and retry. "
+                        "If this persists, your IP may be temporarily "
+                        "throttled by Alpaca.")
+            elif 500 <= e.code < 600:
+                hint = (" Alpaca server-side error — try again in a few "
+                        "minutes; it's not your keys.")
+            else:
+                hint = ""
+            return self.send_json({
+                "error": (f"Alpaca rejected the key check (HTTP {e.code} "
+                          f"at {endpoint}/account).{hint}"),
+                "alpaca_status": e.code,
+                "alpaca_body": _body,
+            }, 400)
+        except urllib.error.URLError as e:
+            try:
+                from observability import capture_exception
+                capture_exception(e, component="auth_mixin",
+                                  fn="handle_save_alpaca_keys_verify")
+            except Exception:
+                pass
+            return self.send_json({
+                "error": ("Could not reach Alpaca to verify the keys "
+                          f"({type(e).__name__}: {getattr(e, 'reason', e)}). "
+                          "Network blip or Alpaca outage — try again in 30s."),
+            }, 400)
         except Exception as e:
             try:
                 from observability import capture_exception
                 capture_exception(e, component="auth_mixin",
-                                  fn="handle_save_settings_verify_keys")
+                                  fn="handle_save_alpaca_keys_verify")
             except Exception:
                 pass
-            return self.send_json({"error": "Keys failed verification. "
-                                            "Check your key and secret and try again."}, 400)
-        auth.save_user_alpaca_creds(uid, **updates)
+            return self.send_json({
+                "error": (f"Key verification failed: {type(e).__name__}: {e}"),
+            }, 400)
+        # Round-61 pt.12: wrap the persist call so the user sees the
+        # actual exception instead of a generic "Save failed" 500. The
+        # most common runtime failure here is encrypt_secret() raising
+        # because cryptography isn't importable on a stripped image OR
+        # MASTER_ENCRYPTION_KEY changed under us.
+        try:
+            auth.save_user_alpaca_creds(uid, **updates)
+        except Exception as e:
+            try:
+                from observability import capture_exception
+                capture_exception(e, component="auth_mixin",
+                                  fn="handle_save_alpaca_keys_persist")
+            except Exception:
+                pass
+            return self.send_json({
+                "error": (f"Verified the keys against Alpaca, but couldn't "
+                          f"write them to local storage: "
+                          f"{type(e).__name__}: {e}. If this is a "
+                          "MASTER_ENCRYPTION_KEY mismatch, every saved "
+                          "credential is invalidated and the deployment "
+                          "needs the original key restored."),
+            }, 500)
         try:
             ip = self.client_address[0] if self.client_address else None
             auth.log_admin_action(

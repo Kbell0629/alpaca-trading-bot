@@ -2208,6 +2208,7 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
       <div class="settings-actions">
         <button type="button" class="btn-ghost btn-sm" onclick="testAlpacaKeys('paper')">Test Connection</button>
         <button type="button" class="btn-primary btn-sm" onclick="saveAlpacaKeys('paper')">Save Paper Keys</button>
+        <button type="button" class="btn-ghost btn-sm" onclick="testSavedAlpacaKeys('paper')" title="Ping Alpaca /account using the keys already on file — diagnoses why the dashboard might be showing $0 without re-typing.">Test Saved Keys</button>
         <span id="paperKeyResult" style="font-size:12px;margin-left:8px"></span>
       </div>
 
@@ -2226,6 +2227,7 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
       <div class="settings-actions">
         <button type="button" class="btn-ghost btn-sm" onclick="testAlpacaKeys('live')">Test Connection</button>
         <button type="button" class="btn-danger btn-sm" onclick="saveAlpacaKeys('live')">Save Live Keys</button>
+        <button type="button" class="btn-ghost btn-sm" onclick="testSavedAlpacaKeys('live')" title="Ping Alpaca /account using the keys already on file — diagnoses why the dashboard might be showing $0 without re-typing.">Test Saved Keys</button>
         <span id="liveKeyResult" style="font-size:12px;margin-left:8px"></span>
       </div>
     </div>
@@ -7196,6 +7198,34 @@ async function testAlpacaKeys(mode) {
         var pv = Number(d.portfolio_value || 0).toLocaleString();
         resEl.innerHTML = '<span style="color:var(--green)">✓ ' + mode.toUpperCase() + ' verified</span> · Acct ' +
             esc(d.account_number || '?') + ' · $' + pv + ' pv · $' + cash + ' cash';
+    } catch (e) {
+        resEl.textContent = '✗ Network error: ' + e.message; resEl.style.color = 'var(--red)';
+    }
+}
+
+// Round-61 pt.12: ping /account using SAVED creds. Lets the user
+// diagnose why the dashboard shows $0 (Alpaca outage? key rotated?
+// MASTER_ENCRYPTION_KEY mismatch?) without re-entering keys.
+async function testSavedAlpacaKeys(mode) {
+    var resEl = document.getElementById(mode === 'live' ? 'liveKeyResult' : 'paperKeyResult');
+    resEl.textContent = 'Testing saved keys...'; resEl.style.color = 'var(--text-dim)';
+    try {
+        var resp = await fetch(API_BASE + '/api/test-saved-alpaca-keys', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'X-CSRF-Token': getCSRFToken()},
+            credentials: 'same-origin',
+            body: JSON.stringify({mode: mode}),
+        });
+        var d = await resp.json();
+        if (!resp.ok || d.error) {
+            resEl.innerHTML = '<span style="color:var(--red)">✗ ' + esc(d.error || 'Test failed') + '</span>';
+            return;
+        }
+        var cash = Number(d.cash || 0).toLocaleString();
+        var pv = Number(d.portfolio_value || 0).toLocaleString();
+        resEl.innerHTML = '<span style="color:var(--green)">✓ SAVED ' + mode.toUpperCase() +
+            ' keys reach Alpaca</span> · Acct ' + esc(d.account_number || '?') +
+            ' · $' + pv + ' pv · $' + cash + ' cash';
     } catch (e) {
         resEl.textContent = '✗ Network error: ' + e.message; resEl.style.color = 'var(--red)';
     }
