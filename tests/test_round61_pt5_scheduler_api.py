@@ -362,7 +362,10 @@ class TestUserApiGet:
 
         monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
         result = sa.user_api_get(u, "/orders/nonexistent")
-        assert result == {"error": "HTTP 404"}
+        # Round-61 pt.29: GET now surfaces ``HTTP <code>: <reason>``
+        # (matching POST/DELETE/PATCH shape) so operators see Alpaca's
+        # status text, plus any response-body detail when present.
+        assert "HTTP 404" in result["error"]
         assert attempts["n"] == 1, "4xx errors must not be retried"
 
     def test_generic_exception_retried_then_exhausts(self, monkeypatch):
