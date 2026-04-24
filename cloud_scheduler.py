@@ -3383,9 +3383,19 @@ def _build_daily_close_report(user, account, scorecard, guardrails,
     lines.append(divider)
     close_val = float(account.get("portfolio_value", scorecard.get("current_value", 0)) or 0)
     last_equity = float(account.get("last_equity", 0) or 0)
-    # Prefer the guardrails.daily_starting_value captured at open for the
-    # intraday delta; fall back to Alpaca's last_equity when it's missing.
-    start_val = float(daily_starting_value) if daily_starting_value else last_equity
+    # Round-61 pt.27: prefer Alpaca's `last_equity` (yesterday's close)
+    # as the "Today" baseline. User-reported: email showed
+    # "Today: +$39.29" on a day when total unrealized was +$750
+    # — clearly wrong. Root cause: `daily_starting_value` gets
+    # captured by the monitor's FIRST tick of the day, which can be
+    # WELL AFTER market open (e.g. after a deploy/restart crossing
+    # the bell). That misses pre-capture intraday movement.
+    # `last_equity` is Alpaca's canonical yesterday-close value and
+    # always reflects the full trading day. Fall back to
+    # daily_starting_value only if last_equity is missing
+    # (defensive — Alpaca always populates it).
+    start_val = last_equity if last_equity else (
+        float(daily_starting_value) if daily_starting_value else 0.0)
     day_chg = close_val - start_val if start_val else 0.0
     day_pct = (day_chg / start_val * 100) if start_val else 0.0
     peak = float(guardrails.get("peak_portfolio_value", close_val) or 0)
