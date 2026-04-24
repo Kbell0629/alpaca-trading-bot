@@ -173,6 +173,8 @@ export function loadDashboardJs(stubs = {}) {
     'renderPortfolioImpact',
     // Today's closes panel builder (takes data as param, no globals)
     'buildTodaysClosesPanel', 'sectionHelpButton',
+    // Strategy card / templates / comparison panel builders (take `d`)
+    'buildShortStrategyCard', 'buildStrategyTemplates', 'buildComparisonPanel',
   ];
   for (const name of exposed) {
     if (typeof globalThis[name] === 'function') {
