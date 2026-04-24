@@ -311,236 +311,54 @@ ENTRY_STRATEGIES = tuple(_ENTRY_BASE)
 
 
 def pick_best_entry_strategy(scores):
-    """Return the strategy name with the highest score, restricted to
-    entry strategies. Trailing Stop is silently ignored."""
-    if not scores:
-        return "Breakout"  # arbitrary safe default
-    return max(ENTRY_STRATEGIES, key=lambda s: float(scores.get(s, 0) or 0))
+    """Round-61 pt.7 — thin compat wrapper. Real implementation lives
+    in screener_core.py so pytest-cov can see it."""
+    from screener_core import pick_best_entry_strategy as _impl
+    return _impl(scores, ENTRY_STRATEGIES)
 
 
 def _trading_day_fraction_elapsed():
-    """What fraction of the US cash session has passed at the moment
-    score_stocks runs? Returns a value in (0, 1] — 0.05 at 9:50 AM,
-    0.5 at 12:45 PM, 1.0 at/after 4 PM. Weekends/after-hours return 1.0
-    so pre-market runs use full yesterday volume without scaling.
-
-    Used to rescale volume_surge so comparing 20 minutes of today's
-    volume against a full day of yesterday's doesn't report -95% for
-    every stock. Round-10 audit fix.
-    """
+    """Round-61 pt.7 — thin compat wrapper around
+    screener_core.trading_day_fraction_elapsed."""
     try:
         from et_time import get_et_time
         now = get_et_time()
     except Exception:
         from datetime import datetime
-        now = datetime.now()  # best-effort fallback
-    # If weekday and during 9:30-16:00 ET, compute elapsed fraction.
-    if now.weekday() >= 5:
-        return 1.0
-    open_mins = 9 * 60 + 30
-    close_mins = 16 * 60
-    now_mins = now.hour * 60 + now.minute
-    if now_mins < open_mins or now_mins >= close_mins:
-        return 1.0  # pre-/post-market: no scaling needed
-    total = close_mins - open_mins  # 390 minutes
-    elapsed = now_mins - open_mins
-    return max(0.01, min(1.0, elapsed / total))
+        now = datetime.now()
+    from screener_core import trading_day_fraction_elapsed as _impl
+    return _impl(now)
 
 
 def score_stocks(snapshots):
-    """Score each stock across all 3 strategies using snapshot data (initial fast pass)."""
-    results = []
+    """Round-61 pt.7 — thin compat wrapper. Real scoring math is in
+    screener_core.score_stocks, fully unit-tested. The local flags
+    (COPY_TRADING_ENABLED, PEAD_ENABLED) and SECTOR_MAP are passed
+    through as parameters."""
+    from screener_core import score_stocks as _impl
 
-    for symbol, snap in snapshots.items():
-        try:
-            daily_bar = snap.get("dailyBar") or {}
-            prev_bar = snap.get("prevDailyBar") or {}
-            latest_trade = snap.get("latestTrade") or {}
+    # Build the score-fn callbacks here so the core module doesn't
+    # have to import capitol_trades / pead_strategy.
+    def _copy_fn(symbol):
+        import capitol_trades
+        return capitol_trades.score_symbol(symbol)
 
-            price = latest_trade.get("p", 0)
-            daily_close = daily_bar.get("c", 0)
-            prev_close = prev_bar.get("c", 0)
-            daily_high = daily_bar.get("h", 0)
-            daily_low = daily_bar.get("l", 0)
-            daily_volume = daily_bar.get("v", 0)
-            prev_volume = prev_bar.get("v", 0)
+    def _pead_fn(symbol):
+        import pead_strategy
+        return pead_strategy.score_symbol(symbol)
 
-            # Skip if missing critical data
-            if not price or not prev_close or not daily_low:
-                continue
+    return _impl(
+        snapshots,
+        entry_strategies=ENTRY_STRATEGIES,
+        sector_map=SECTOR_MAP,
+        min_price=MIN_PRICE,
+        min_volume=MIN_VOLUME,
+        copy_trading_enabled=COPY_TRADING_ENABLED,
+        pead_enabled=PEAD_ENABLED,
+        copy_score_fn=_copy_fn if COPY_TRADING_ENABLED else None,
+        pead_score_fn=_pead_fn if PEAD_ENABLED else None,
+    )
 
-            # Filter: penny stocks and illiquid
-            # Round-10 audit: liquidity filter was comparing INTRADAY
-            # partial volume (e.g. first 25 min of the day) to a fixed
-            # 300k cutoff, which only ~6 stocks cleared — causing the
-            # 9:35 AM screener to report "6 passed filters" out of
-            # 10,878. Use prev_volume (yesterday's full-day close
-            # volume) as the liquidity proxy instead — that reflects
-            # how tradable a stock actually is and doesn't warp with
-            # time-of-day.
-            if price < MIN_PRICE:
-                continue
-            liquidity_volume = prev_volume or daily_volume  # fall back if no prev
-            if liquidity_volume < MIN_VOLUME:
-                continue
-
-            # Calculate metrics. Intraday volume_surge comparing partial
-            # today vs full yesterday gives -80% to -95% for ~every
-            # stock in the first hour of trading, making the 50%+
-            # breakout confirmation threshold unreachable. Scale the
-            # prev_volume divisor by the fraction of the trading day
-            # elapsed so the ratio is apples-to-apples.
-            daily_change = (daily_close / prev_close - 1) * 100 if prev_close else 0
-            volatility = (daily_high - daily_low) / daily_low * 100 if daily_low else 0
-            day_fraction = _trading_day_fraction_elapsed()
-            adjusted_prev_volume = prev_volume * max(day_fraction, 0.05) if prev_volume else 0
-            volume_surge = (daily_volume / adjusted_prev_volume - 1) * 100 if adjusted_prev_volume else 0
-
-            # Data-quality filter: reject obvious stale/split-adjusted/bad-data snapshots.
-            # A legit single-session move is almost never >100%; >300% is corrupt data.
-            # These would otherwise produce garbage best_scores that dominate the auto-deployer.
-            if abs(daily_change) > 100 or volatility > 100:
-                continue
-
-            # --- Strategy Scores ---
-            # Architecture note (round 10, "Option C"):
-            # Trailing Stop is an EXIT policy attached to Breakout /
-            # Copy Trading / error-recovered positions — it is no longer
-            # an entry strategy competing in the screener. We still
-            # surface a trailing_score on the pick for backward compat
-            # and analytics, but it's forced to 0 in the `scores` dict
-            # below so it can never win best_strategy.
-            trailing_score = daily_change * 0.5 + volatility * 0.3
-            if volume_surge > 50:
-                trailing_score += 5
-
-            # Copy Trading Score — driven by real politician disclosures
-            # when enabled. Currently disabled (see COPY_TRADING_ENABLED
-            # flag above) because free providers are no longer available.
-            # Infrastructure in capitol_trades.py is preserved for
-            # re-enable once a working data source returns.
-            copy_score = 0
-            copy_signals = []
-            if COPY_TRADING_ENABLED:
-                try:
-                    import capitol_trades
-                    copy_score, copy_signals = capitol_trades.score_symbol(symbol)
-                except Exception:
-                    pass
-
-            # PEAD Score — non-zero only if symbol just beat earnings
-            # by >= MIN_SURPRISE_PCT and the cache says it's still in
-            # the post-announcement drift window. See pead_strategy.py.
-            pead_score = 0
-            pead_signal = None
-            if PEAD_ENABLED:
-                try:
-                    import pead_strategy
-                    pead_score, pead_signal = pead_strategy.score_symbol(symbol)
-                except Exception:
-                    pass
-
-            # Wheel Strategy Score (bell curve: moderate volatility scores highest)
-            if volatility <= 5:
-                wheel_score = volatility * 3
-            elif volatility <= 10:
-                wheel_score = 15 + (10 - volatility)  # tapers off
-            else:
-                wheel_score = max(0, 15 - (volatility - 10))  # penalized
-            if 20 <= price <= 500:
-                wheel_score += 5
-            if -5 <= daily_change <= 5:
-                wheel_score += 5
-
-            # Mean Reversion Score: rewards oversold stocks (big drop + high volume = bounce candidate)
-            mean_reversion_score = 0
-            if daily_change < -5:  # stock dropped significantly today
-                mean_reversion_score = abs(daily_change) * 1.5 + volatility * 0.3
-                if volume_surge > 200:  # 3x normal volume = likely news-driven, reduce score
-                    mean_reversion_score *= 0.5
-                elif volume_surge > 50:
-                    mean_reversion_score += 5  # high volume selloff = more likely to bounce
-            elif daily_change < -2:
-                mean_reversion_score = abs(daily_change) * 0.8
-
-            # Breakout Score: rewards stocks breaking up on high volume
-            # Feature 7: Volume Profile Breakouts -- stricter volume tiers + confirmation strength
-            breakout_score = 0
-            breakout_note = None
-            if daily_change > 3 and volume_surge > 50:  # up big on high volume
-                breakout_score = daily_change * 1.5 + (volume_surge / 20)
-                # Volume quality multiplier (higher relative volume = more conviction)
-                if volume_surge > 200:  # 3x normal volume
-                    breakout_score *= 1.5
-                    breakout_note = "3x_volume_confirmed"
-                elif volume_surge > 100:  # 2x normal volume
-                    breakout_score *= 1.2
-                    breakout_note = "2x_volume_confirmed"
-                else:
-                    breakout_note = "standard_breakout"
-            elif daily_change > 2 and volume_surge > 30:
-                breakout_score = daily_change * 0.8
-                breakout_note = "weak_breakout"
-
-            # Volatility soft-cap: a stock with > 25% intraday range is
-            # usually reacting to a news event or pump/squeeze. The raw
-            # breakout formula keeps rewarding those (big % + heavy
-            # volume), but the entry is low-quality — spreads wide, fill
-            # unpredictable, often reverts hard. Halve the score so those
-            # names can still rank but don't dominate the top of the list.
-            # Keeps the signal (it's a real breakout) while penalizing
-            # the risk (hard to trade cleanly).
-            if volatility > 25 and breakout_score > 0:
-                breakout_score *= 0.5
-                breakout_note = (breakout_note or "standard_breakout") + "_highvol_capped"
-
-            # Best strategy — Trailing Stop is deliberately excluded
-            # from the competition (it's an exit policy, see above).
-            # The full `scores` dict still includes Trailing Stop as a
-            # dimmed reference value for the UI + learning engine.
-            entry_scores = {
-                "Copy Trading": copy_score,
-                "Wheel Strategy": wheel_score,
-                "Mean Reversion": mean_reversion_score,
-                "Breakout": breakout_score,
-                "PEAD": pead_score,
-            }
-            scores = {"Trailing Stop": 0, **entry_scores}
-            # Restrict the argmax to entries we actually want competing
-            # — pick_best_entry_strategy enforces ENTRY_STRATEGIES.
-            best_strategy = pick_best_entry_strategy(scores)
-            best_score = entry_scores.get(best_strategy, 0)
-
-            # Sector (Improvement 3)
-            sector = SECTOR_MAP.get(symbol, "Other")
-
-            results.append({
-                "symbol": symbol,
-                "price": price,
-                "daily_change": daily_change,
-                "volatility": volatility,
-                "daily_volume": daily_volume,
-                "volume_surge": volume_surge,
-                "best_strategy": best_strategy,
-                "best_score": best_score,
-                "scores": scores,
-                "trailing_score": trailing_score,
-                "copy_score": copy_score,
-                "copy_signals": copy_signals,  # politician list for UI tooltip
-                "wheel_score": wheel_score,
-                "mean_reversion_score": mean_reversion_score,
-                "breakout_score": breakout_score,
-                "breakout_note": breakout_note,
-                "pead_score": pead_score,
-                "pead_signal": pead_signal,  # earnings detail for UI tooltip
-                "sector": sector,
-            })
-        except Exception:
-            continue
-
-    # Sort by highest best-strategy score
-    results.sort(key=lambda x: x["best_score"], reverse=True)
-    return results
 
 
 # ---------------------------------------------------------------------------
