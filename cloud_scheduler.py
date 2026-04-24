@@ -1506,9 +1506,20 @@ def process_short_strategy(user, filepath, strat, state, rules):
         return
 
     # Place initial stop-buy (cover) ABOVE entry — closes short if price rises
+    # Round-61 pt.19: adaptive stop distance so an already-underwater short
+    # still gets an Alpaca-accepted stop. Previous logic
+    # `entry * (1 + stop_pct)` placed the stop BELOW current market when the
+    # short had moved significantly against us (user-reported: SOXL entry
+    # $110.65 -> stop $121.72, but current $129.13 — Alpaca rejected every
+    # placement attempt so no cover stop existed despite the strategy file
+    # being in place). Mirror the error_recovery.create_orphan_strategy
+    # formula: max(entry*(1+pct), current*1.05) so the stop is ALWAYS on
+    # the protective side of current price.
     if not state.get("cover_order_id"):
         stop_pct = rules.get("stop_loss_pct", 0.08)
-        stop_price = round(entry * (1 + stop_pct), 2)
+        entry_stop = entry * (1 + stop_pct)
+        current_stop = price * 1.05
+        stop_price = round(max(entry_stop, current_stop), 2)
         order = user_api_post(user, "/orders", {
             "symbol": symbol, "qty": str(shares), "side": "buy",
             "type": "stop", "stop_price": str(stop_price), "time_in_force": "gtc"
@@ -1516,7 +1527,7 @@ def process_short_strategy(user, filepath, strat, state, rules):
         if isinstance(order, dict) and "id" in order:
             state["cover_order_id"] = order["id"]
             state["current_stop_price"] = stop_price
-            log(f"[{user['username']}] {symbol}: SHORT cover-stop placed at ${stop_price}", "monitor")
+            log(f"[{user['username']}] {symbol}: SHORT cover-stop placed at ${stop_price} (adaptive)", "monitor")
             notify_user(user, f"Short cover-stop on {symbol} at ${stop_price:.2f}", "info")
 
     # Place profit target (limit buy below entry)
@@ -1747,9 +1758,16 @@ def process_strategy_file(user, filepath, strat, extended_hours=False):
         return
 
     # Place initial stop (regular-hours only — don't spam AH quotes)
+    # Round-61 pt.19: adaptive stop distance for longs too. A long whose
+    # current price has dropped BELOW entry*(1-stop_pct) would produce a
+    # sell-stop ABOVE current market, which Alpaca rejects (or would
+    # trigger immediately if not rejected). Mirror the short-side +
+    # error_recovery formula: min(entry*(1-pct), current*0.95).
     if not extended_hours and not state.get("stop_order_id"):
         stop_pct = rules.get("stop_loss_pct", 0.10)
-        stop_price = round(entry * (1 - stop_pct), 2)
+        entry_stop = entry * (1 - stop_pct)
+        current_stop = price * 0.95
+        stop_price = round(min(entry_stop, current_stop), 2)
         order = user_api_post(user, "/orders", {
             "symbol": symbol, "qty": str(shares), "side": "sell",
             "type": "stop", "stop_price": str(stop_price), "time_in_force": "gtc"
@@ -1757,7 +1775,7 @@ def process_strategy_file(user, filepath, strat, extended_hours=False):
         if isinstance(order, dict) and "id" in order:
             state["stop_order_id"] = order["id"]
             state["current_stop_price"] = stop_price
-            log(f"[{user['username']}] {symbol}: Stop-loss placed at ${stop_price}", "monitor")
+            log(f"[{user['username']}] {symbol}: Stop-loss placed at ${stop_price} (adaptive)", "monitor")
             notify_user(user, f"Stop-loss placed on {symbol} at ${stop_price:.2f}", "info")
 
     # Trailing-stop exit — applied to every non-wheel entry strategy.

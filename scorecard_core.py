@@ -240,6 +240,12 @@ def total_return_pct(portfolio_value: Decimal,
 STRATEGY_BUCKETS: tuple = (
     "trailing_stop", "copy_trading", "wheel",
     "mean_reversion", "breakout", "pead",
+    # Round-61 pt.19: short_sell was missing from this tuple, which
+    # silently dropped every closed short-sell trade from the
+    # performance attribution panel. User-reported: had closed short
+    # positions but no short_sell row in the breakdown. Add here so
+    # the scorecard + A/B testing cover all deployed strategies.
+    "short_sell",
 )
 
 
