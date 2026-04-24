@@ -8,6 +8,39 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.8 batch-4 — close-position modal + modal lifecycle
+
+Continues the pt.8 JS coverage push. JS tests 136 → **160** (+24)
+across 2 new files. **Test-only PR** — no behavior changes.
+
+**New JS tests:**
+  * `tests/js/closePositionModal.test.js` (15) —
+    `openClosePositionModal` wheel-aware OCC math + equity path.
+    High-value target: getting the math wrong here leads users to
+    think they're selling a covered call (capped-upside, safe) when
+    they're actually in a naked call (unlimited loss). Pins short
+    put breakeven (`strike - premium`), premium×100×contracts,
+    cost-to-close math, max-profit = premium-collected,
+    max-loss = (strike×100 - premium), assignment-note direction
+    ("below" for puts / "above" for calls) + share count, short
+    call "Unlimited (naked call)" label, long option breakeven +
+    premium-paid-as-max-loss, equity shares×price breakdown +
+    fmtPct formatting, multi-contract multiplier, Confirm button
+    onclick wiring on both wheel + equity paths.
+  * `tests/js/modal.test.js` (9) — `openModal` + `closeModal`
+    lifecycle. Round-12 a11y fix pins: `.active` class toggle,
+    `role=dialog` + `aria-modal=true` set on open, unknown-id
+    no-ops, focus restoration to pre-open opener on close,
+    detached-prev-focus safe-exit, stack-based multi-modal open/
+    close round-trip.
+
+**Results:**
+  * JS tests: **136 → 160** (+24 across 2 new files).
+  * Python suite unchanged.
+  * Ruff clean, `node --check` clean.
+
+---
+
 ## 🆕 Round-61 pt.8 batch-3 — toast / log / relative / scroll tests
 
 Continues the pt.8 JS coverage push. JS tests 99 → **136** (+37)
