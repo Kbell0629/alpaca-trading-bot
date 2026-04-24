@@ -61,9 +61,60 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-24 — round 61 pt.10-21 SHIPPED)
+## Current session state (2026-04-24 — round 61 pt.10-22 SHIPPED)
 
-**Pt.21 in flight (PR #147):** consolidated cleanup + audit
+**Pt.22 in flight (PR #148):** defensive hardening + audit-modal fix.
+Six-in-one PR addressing the 4 gaps flagged after pt.21 close-out +
+the audit button being broken:
+
+  1. **Audit modal visibility fix.** Pt.21 used
+     `class="modal-backdrop"` which didn't exist in the stylesheet —
+     button said "Running..." but modal never appeared. Rewrote to
+     use the shared `.modal-overlay.active` pattern + `openModal()`
+     helper that every other modal uses. Static `<div
+     id="auditModal">` markup + dynamic body fill via
+     `renderAuditReport()`.
+  2. **Silent `except Exception: pass` ratchet.** New test
+     `test_round61_pt22_no_silent_except.py` scans 9 auth/trading
+     files (auth.py, cloud_scheduler.py, handlers/*, wheel,
+     scheduler_api, smart_orders, error_recovery) and fails CI if
+     the count increases. Baseline frozen at current production
+     numbers. Opt-out per line via `# noqa: silent-except` marker
+     comment. Fixes the pt.13-class bug forever (PanicException
+     silently swallowed).
+  3. **Production snapshot regression test.** New fixture
+     `tests/fixtures/production_snapshot_scrubbed.json` with all
+     IDs/usernames/emails redacted. Accompanying test runs
+     `audit_core.run_audit` against it and pins the exact
+     findings expected (5 HIGH orphans + SOXL missing_stop + 1
+     MEDIUM stale scorecard). Any future audit-rule change that
+     breaks detection on this known-bad state fails CI.
+  4. **Multi-contract wheel support.** Pt.17 created one
+     `wheel_<UNDERLYING>.json` per underlying — a user with TWO
+     short puts on the same symbol (e.g. HIMS May 8 $27 + May 15
+     $26) got the second contract left as an orphan. Pt.22
+     creates an indexed sibling file
+     `wheel_<UNDERLYING>__<YYMMDD><C|P><STRIKE8>.json` when the
+     default file is already tracking a different contract. Both
+     the dashboard (`_mark_auto_deployed`) and the audit
+     (`audit_core._parse_strategy_filename`) now handle the
+     double-underscore pattern so both contracts resolve to the
+     underlying for labelling.
+  5. **JS coverage threshold in CI.** `vitest.config.js` now
+     declares a `thresholds` block + CI runs
+     `npx vitest run --coverage`. Floor starts at 0% (vm-executed
+     code isn't instrumented by V8) with a clear comment on how
+     to raise it by switching to `@vitest/coverage-istanbul` in a
+     follow-up. Ratchet infrastructure is in place.
+  6. **cloud_scheduler helper coverage.** 13 new tests covering
+     `_fmt_money`, `_fmt_pct`, `_fmt_signed_money`,
+     `_within_opening_bell_congestion`, `_compute_stepped_stop`
+     (defensive pin in case pt.18 tests drift), `_has_user_tag`,
+     `_build_user_dict_for_mode`.
+
+  +31 tests in 4 new test files. Docs updated.
+
+**Pt.21 landed (PR #147):** consolidated cleanup + audit
 infrastructure. User requested a way to prevent the key-drift
 bug class that spawned pt.16/19/20, plus fix two production data
 issues from the JSON audit (DKNG + HIMS OCC options mis-routed

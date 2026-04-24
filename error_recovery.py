@@ -621,18 +621,58 @@ def main():
                 right = parsed["right"]
                 wheel_stage = ("stage_1_put_active" if right == "put"
                                else "stage_2_call_active")
-                wheel_fname = f"wheel_{underlying}.json"
-                wheel_fpath = os.path.join(STRATEGIES_DIR, wheel_fname)
-                if os.path.exists(wheel_fpath):
-                    # A wheel file for this underlying already exists
-                    # but didn't claim this OCC symbol earlier. Don't
-                    # overwrite — the wheel monitor may already be
-                    # tracking it in active_contract. Just leave it;
-                    # _mark_auto_deployed resolves OCC → underlying
-                    # on the label side.
-                    print(f"    NOTE: {sym} — wheel_{underlying}.json "
-                          "already exists, leaving alone.")
-                    continue
+                # Round-61 pt.22: multi-contract wheel support. If the
+                # default wheel_<UNDERLYING>.json already exists AND
+                # is actively tracking a DIFFERENT contract, create an
+                # indexed file `wheel_<UNDERLYING>__<EXP><RIGHT><STRIKE>.json`
+                # so both contracts get autonomous management. Each
+                # file has its own active_contract pinned to a single
+                # OCC symbol. Dashboard's _mark_auto_deployed still
+                # matches on underlying so both label AUTO + WHEEL.
+                default_fname = f"wheel_{underlying}.json"
+                default_fpath = os.path.join(STRATEGIES_DIR, default_fname)
+                wheel_fname = default_fname
+                wheel_fpath = default_fpath
+                existing_tracks_different_contract = False
+                if os.path.exists(default_fpath):
+                    try:
+                        import json as _json
+                        with open(default_fpath) as _fx:
+                            existing = _json.load(_fx)
+                        existing_contract = ((existing or {}).get("active_contract") or {})
+                        existing_sym = existing_contract.get("contract_symbol")
+                        existing_status = (existing or {}).get("status", "").lower()
+                        if existing_sym and existing_sym != sym \
+                                and existing_status not in ("closed", "migrated",
+                                                              "stopped", "cancelled"):
+                            existing_tracks_different_contract = True
+                    except (OSError, ValueError):
+                        pass
+                if existing_tracks_different_contract:
+                    # Build an indexed filename: wheel_HIMS__260515P26.json
+                    # The double-underscore separates underlying from the
+                    # contract suffix, so `rpartition("_")` in the dashboard
+                    # still gets the underlying correctly (underlying is
+                    # anything before the LAST "_"; with double underscore
+                    # the full "<UNDER>__<CONTRACT>" becomes the "symbol"
+                    # slot. We ALSO add `symbol: UNDERLYING` field so
+                    # _mark_auto_deployed's strategy_symbol_map entry
+                    # uses the underlying for lookup).
+                    exp_compact = parsed["expiration"].replace("-", "")[2:]  # YYMMDD
+                    strike_int = int(parsed["strike"] * 1000)
+                    right_ch = "P" if right == "put" else "C"
+                    indexed_fname = f"wheel_{underlying}__{exp_compact}{right_ch}{strike_int:08d}.json"
+                    wheel_fname = indexed_fname
+                    wheel_fpath = os.path.join(STRATEGIES_DIR, indexed_fname)
+                    if os.path.exists(wheel_fpath):
+                        # Already have an indexed file for this exact
+                        # contract. Leave it alone.
+                        print(f"    NOTE: {sym} — {indexed_fname} already "
+                              "exists, leaving alone.")
+                        continue
+                    print(f"    MULTI-WHEEL: {underlying} already has an "
+                          "active contract; creating indexed file "
+                          f"{indexed_fname} for {sym}.")
                 qty_contracts = int(abs(float(qty)))
                 wheel = {
                     "symbol": underlying,

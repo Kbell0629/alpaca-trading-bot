@@ -69,3 +69,9 @@ jobs:
 
       - name: Run vitest
         run: npm test
+
+      # Round-61 pt.22 — JS coverage threshold. vitest.config.js
+      # defines the floor; this step fails the job if coverage drops
+      # below it. Same ratchet philosophy as the Python --cov-fail-under.
+      - name: Run vitest with coverage threshold
+        run: npx vitest run --coverage

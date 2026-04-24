@@ -445,7 +445,23 @@ def _mark_auto_deployed(positions, strats_dir, user_dir=None):
         stem = fname[:-5]  # strip .json
         if "_" not in stem:
             continue
-        strat, _, sym = stem.rpartition("_")
+        # Round-61 pt.22: multi-contract wheel support. An indexed
+        # wheel filename like `wheel_HIMS__260515P26.json` would split
+        # wrong under rpartition("_") — strat would be `wheel_HIMS_`
+        # and sym would be the contract suffix. Handle the double-
+        # underscore pattern explicitly: if the stem starts with
+        # `wheel_<UNDER>__`, strat="wheel" and the sym lookup should
+        # use the UNDERLYING (parsed from the JSON's "symbol" field
+        # later in this loop).
+        if "__" in stem and stem.startswith(("wheel_", "trailing_stop_",
+                                              "breakout_", "mean_reversion_",
+                                              "short_sell_", "pead_",
+                                              "copy_trading_")):
+            prefix, _, _rest = stem.partition("__")
+            # prefix = "wheel_HIMS" → strat / sym via rpartition
+            strat, _, sym = prefix.rpartition("_")
+        else:
+            strat, _, sym = stem.rpartition("_")
         if not sym or not sym.isalnum() or not strat:
             continue
         sym_u = sym.upper()

@@ -8,6 +8,48 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.22 — audit modal fix + 4 defensive hardening gaps + cloud_scheduler coverage (+31 tests)
+
+User-reported after pt.21 deploy: clicked 🔍 Audit button, toast said
+"Running state audit..." but no modal appeared. Plus the 4 hardening
+gaps I had flagged as "proposed but not shipped" in the pt.21
+close-out.
+
+### What landed
+1. **Audit modal visibility fix.** Rewrote `runStateAudit` to use
+   the shared `.modal-overlay.active` pattern + `openModal()` helper.
+   Pt.21's custom `modal-backdrop` class didn't exist in the
+   stylesheet.
+2. **Silent-except ratchet.**
+   `tests/test_round61_pt22_no_silent_except.py` scans 9
+   auth/trading files and fails CI on new `except Exception: pass`
+   additions. Baseline frozen at current numbers; opt-out per line
+   via `# noqa: silent-except`.
+3. **Production snapshot regression test.**
+   `tests/fixtures/production_snapshot_scrubbed.json` + matching
+   test pin the exact audit findings expected from the known-bad
+   state.
+4. **Multi-contract wheel support.** When the default
+   `wheel_<UNDERLYING>.json` already tracks a different contract,
+   error_recovery creates `wheel_<UNDERLYING>__<YYMMDD><P|C><STRIKE8>.json`
+   for the second contract. Dashboard + audit both handle the
+   double-underscore filename pattern.
+5. **JS coverage threshold.** `vitest.config.js` declares a
+   `thresholds` block; CI runs `npx vitest run --coverage`. Floor
+   starts at 0% pending switch to istanbul provider (vm-executed
+   code isn't instrumented by V8).
+6. **cloud_scheduler helper coverage.** 13 new tests covering
+   `_fmt_money`/`_fmt_pct`/`_fmt_signed_money`, opening-bell window,
+   `_compute_stepped_stop` (defensive re-pin), `_has_user_tag`,
+   `_build_user_dict_for_mode`.
+
+### Results
+- Python tests: 1682 → **1713 (+31)**
+- JS: 392 unchanged
+- Ruff: clean
+
+---
+
 ## 🆕 Round-61 pt.21 — consistency audit + constants source-of-truth + legacy file migration (+26 tests)
 
 User requested a way to prevent the key-drift bug class that spawned
