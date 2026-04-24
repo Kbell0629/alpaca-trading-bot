@@ -40,16 +40,23 @@ def _src(path):
 # ----------------------------------------------------------------------------
 
 def test_list_strategy_files_documents_closed_filter():
+    # Round-61 pt.21: the closed-status list moved into constants.py
+    # so error_recovery.py and server.py share a single source of
+    # truth. Pin the delegation at call-site + the canonical list in
+    # constants.py (not the local variable inside error_recovery
+    # anymore).
     src = _src("error_recovery.py")
-    assert "_CLOSED_STATUSES" in src, (
-        "list_strategy_files must reference a closed-statuses set so "
-        "the filter is visible to readers / testable.")
-    # Every status _mark_auto_deployed skips must also be skipped here.
+    assert "is_closed_status" in src, (
+        "list_strategy_files must import constants.is_closed_status "
+        "for the filter — pt.21 moved the list there to prevent drift "
+        "with server._mark_auto_deployed.")
+    cs = _src("constants.py")
     for s in ("closed", "stopped", "cancelled", "canceled",
               "exited", "filled_and_closed"):
-        assert f'"{s}"' in src, (
-            f"list_strategy_files must skip status={s!r} so the "
-            "dashboard and error_recovery agree on what's 'active'.")
+        assert f'"{s}"' in cs, (
+            f"constants.CLOSED_STATUSES must include {s!r} — that's "
+            "the single source of truth both error_recovery and "
+            "server._mark_auto_deployed read from.")
 
 
 def test_list_strategy_files_references_dashboard_contract():

@@ -376,9 +376,12 @@ def test_dashboard_handler_mixin_decomposition(isolated_data_dir):
     # unavailable, so the dashboard banner can point at the real
     # deploy-side fix instead of leaving the user re-pasting keys
     # that will fail to save for the same reason).
+    # 3360 (round-61 pt.21 — /api/audit route + constants.is_closed_status
+    # import + migrated-status check in _mark_auto_deployed, plus the
+    # handle_state_audit handler delegation one-liner).
     import os
     server_lines = sum(1 for _ in open(server.__file__))
-    assert server_lines < 3340, \
+    assert server_lines < 3360, \
         f"server.py too large ({server_lines} lines) — handler methods leaked back in"
 
 
