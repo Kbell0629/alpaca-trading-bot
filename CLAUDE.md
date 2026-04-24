@@ -58,7 +58,27 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-24 — round 61 pt.8 BATCH-3)
+## Current session state (2026-04-24 — round 61 pt.8 BATCH-4)
+
+**Pt.8 batch-4 on `claude/round-61-pt8-batch4`.** Pure test-only
+PR. JS tests 136 → **160** (+24) across 2 new files:
+  * `closePositionModal` (15) — wheel-aware OCC math. Short put /
+    short call / long option / equity paths. Pins breakeven,
+    premium math, max-profit/loss, assignment note direction
+    ("below" for put / "above" for call), multi-contract
+    multiplier, Confirm button wiring.
+  * `modal` (9) — `openModal` / `closeModal` lifecycle. Round-12
+    a11y fix: .active class toggle, role=dialog + aria-modal,
+    focus restoration to opener, detached-prev-focus safety.
+
+**Pt.8 follow-ups (future PRs):** renderPortfolioImpact.colorFor
+math, renderDashboard.normHash hash-skip invariants (5 jitter-fix
+pins from CLAUDE.md), sell-fraction modal math. Possibly JS
+coverage threshold in CI once a stable floor is established.
+
+---
+
+## Previous session state (2026-04-24 — round 61 pt.8 BATCH-3)
 
 **Pt.8 batch-3 on `claude/round-61-pt8-batch3`.** Pure test-only
 PR. JS tests 99 → **136** (+37) across 4 new files:
