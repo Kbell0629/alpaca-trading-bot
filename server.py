@@ -1877,9 +1877,33 @@ class DashboardHandler(
                 account = self.user_api_get(f"{self.user_api_endpoint}/account")
                 tier = pc.detect_tier(account)
                 if tier is None:
+                    # Round-61 pt.9: differentiate the three failure modes
+                    # so the user sees an actionable message instead of a
+                    # catch-all "Equity below $500 or Alpaca /account
+                    # returned no data" lumping API errors with a genuine
+                    # under-$500 account.
+                    if isinstance(account, dict) and account.get("error"):
+                        reason = (
+                            "Alpaca /account call failed: "
+                            + str(account.get("error"))
+                            + " — check API keys in Settings → Alpaca API.")
+                    else:
+                        try:
+                            _eq = float((account or {}).get("equity") or 0)
+                        except (TypeError, ValueError):
+                            _eq = 0
+                        if _eq and _eq < 500:
+                            reason = (
+                                f"Account equity ${_eq:,.2f} is below the "
+                                "$500 minimum required for auto-calibration. "
+                                "Fund the account to enable tier detection.")
+                        else:
+                            reason = ("Alpaca /account returned no equity "
+                                      "data — try reconnecting in Settings → "
+                                      "Alpaca API.")
                     return self.send_json({
                         "detected": False,
-                        "reason": "Equity below $500 or Alpaca /account returned no data",
+                        "reason": reason,
                         "raw_account": account,
                     })
                 # Pull the caller's guardrails overrides
