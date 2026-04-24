@@ -8,6 +8,60 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.7 kickoff — extract screener_core.py (PR #119)
+
+`update_dashboard.py` (2608 lines) has been in the `omit` list since
+the start because it's run as a subprocess, not import-tested. That
+meant the pure scoring math inside it — ~190 lines of per-strategy
+scoring, regime filters, position sizing — was invisible to
+`pytest-cov` regardless of how many tests we wrote around it.
+
+Pt.7 fixes that by extracting the pure-function logic into a new
+`screener_core.py` module that is NOT in the omit list. Functions
+pulled out:
+
+  * `pick_best_entry_strategy(scores, entry_strategies)` — argmax
+    over entry strategies (Trailing Stop excluded by design)
+  * `trading_day_fraction_elapsed(now=None)` — trading-day time math
+    that drives the volume_surge rescale. `now` param lets tests
+    pin a deterministic value without monkey-patching the clock.
+  * `score_stocks(snapshots, *, entry_strategies, sector_map,
+                    min_price, min_volume, copy_trading_enabled,
+                    pead_enabled, day_fraction=None,
+                    pead_score_fn=None, copy_score_fn=None)` — the
+    190-line heart of the screener. Per-strategy scoring (Breakout,
+    Wheel, Mean Reversion, PEAD, Copy Trading, Trailing Stop),
+    volatility soft-cap, data-quality filters, penny-stock + low-
+    volume rejection. External deps (pead_strategy.score_symbol,
+    capitol_trades.score_symbol) injected as callables so the core
+    module has zero outbound imports.
+  * `apply_market_regime(picks, regime)` — bias annotation
+  * `apply_sector_diversification(picks, max_per_sector, top_n)` —
+    max-per-sector + top-N selection
+  * `calc_position_size(price, volatility, portfolio_value,
+                          max_risk_pct)` — ATR-informed share count
+    with 10%-of-portfolio notional cap
+  * `compute_portfolio_pnl(positions, portfolio_value)` — per-
+    strategy P&L aggregation
+
+`update_dashboard.py` now imports from `screener_core` via thin
+compat wrappers so every existing call site still works unchanged.
+
+`tests/test_screener_guards.py` updated to concatenate both files in
+its `_read_source()` helper so the regex-based guard tests resolve
+patterns regardless of which file holds the definition.
+
+**No behavior changes.** All 1392 pre-existing tests still pass.
+
+**Still to do in pt.7** (follow-up PRs):
+  * Behavioral tests for `screener_core.py` — pure functions, cheap
+    to cover, should add ~3-5 percentage points
+  * Extract `scorecard_core.py` from `update_scorecard.py` with the
+    same pattern — another ~2-3 points
+  * Ratchet CI floor 45 → ~50
+
+---
+
 ## 🆕 Round-61 pt.6 follow-ups — deeper handler coverage (PR #117)
 
 Pt.6 (#116) landed the harness + base coverage. This follow-up

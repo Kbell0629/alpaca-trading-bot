@@ -58,12 +58,18 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-24 — round 61 pt.6 + follow-ups SHIPPED)
+## Current session state (2026-04-24 — round 61 pt.7 in progress)
 
-**All work merged to main through #117 (pt.6 follow-ups).** Test count:
-**1337 passing, 51.04% coverage**. Floor: **45%**. Pt.6 is complete.
-Remaining strategic work: pt.7 (refactor screener to un-omit) and pt.8
-(Vitest for dashboard JS).
+**Pt.7 kickoff (#119) merged to main.** `screener_core.py` extracted
+from `update_dashboard.py` with 7 pure functions — `pick_best_entry_strategy`,
+`trading_day_fraction_elapsed`, `score_stocks` (the 190-line heart
+of the screener), `apply_market_regime`, `apply_sector_diversification`,
+`calc_position_size`, `compute_portfolio_pnl`. Update_dashboard.py
+stays in the `omit` list (still I/O-heavy) but `screener_core.py`
+is NOT omitted so pytest-cov can see the pure math. **Still to do
+in pt.7**: behavioral tests for screener_core + extract
+`scorecard_core.py` from `update_scorecard.py`. Test count still
+~1392 (CI green; no behavior change from the extraction).
 
 ### What landed in round 61
 
@@ -92,8 +98,10 @@ Remaining strategic work: pt.7 (refactor screener to un-omit) and pt.8
 | #115 | Docs sync PR closing out round-61: CLAUDE.md/CHANGELOG/README updated to reflect every PR shipped |
 | #116 pt.6 | **Mock WSGI harness for DashboardHandler** — `tests/conftest.py::http_harness` subclasses `DashboardHandler` without the socket, auto-injects session + CSRF cookies. +200 tests. `server.py` 7% → 42%; handlers/*.py 0% → 13-44%. Total 39.79% → **47.19%**. Floor 36 → **45**. |
 | #117 pt.6 follow-ups | Admin-and-target pattern lets admin endpoints run against REAL user IDs (not just auth gates): set-active, reset-password, update-user, delete-user, set-admin, create-backup. Plus invite lifecycle end-to-end, user toggles (live-mode, track-record-public, scorecard-email), kill-switch round-trip, force-auto-deploy, force-daily-close, forgot-password, logout-clears-server-session. `handlers/admin_mixin.py` 33% → **74%**; `handlers/actions_mixin.py` 38% → **56%**. Total 47.19% → **51.04%**. +57 tests. |
+| #118 docs sync | CLAUDE.md + CHANGELOG.md + README.md updated for pt.6 close-out. New "Testing (For Developers)" README section with http_harness usage template. |
+| #119 pt.7 kickoff | **Extract `screener_core.py`** from update_dashboard.py — 7 pure functions (pick_best_entry_strategy, trading_day_fraction_elapsed, score_stocks [190 LOC], apply_market_regime, apply_sector_diversification, calc_position_size, compute_portfolio_pnl). External deps (pead, capitol_trades) injected as callables. update_dashboard.py still in `omit` but screener_core.py is NOT omitted → pytest-cov can see the math. No behavior change; CI green. |
 
-**Total round-61: 16 PRs shipped. Coverage 34% → 51.04%. Floor 30% → 45%.**
+**Total round-61: 18 PRs shipped. Coverage 34% → 51.04%. Floor 30% → 45%.**
 
 ### Mock WSGI harness (post-pt.6 — use it for any HTTP endpoint test)
 
@@ -211,7 +219,7 @@ a refactor that "simplifies" any of these will fail loudly.
 |---|---|---|---|---|
 | **pt.5** | 39% | scheduler_api + yfinance_budget + helper modules | 1 PR | ✅ done |
 | **pt.6** | ~65% | **Mock WSGI harness for `server.py` + `handlers/*.py`.** Biggest lever left — `server.py` was 1708 statements at 7%. Built the harness in `tests/conftest.py::http_harness` + 260 endpoint tests across #116 (base) + #117 (follow-ups). Landed at **51%** total (below the 65% target because cloud_scheduler.py is still ~31% — not within pt.6's scope). | 2 PRs, 1 day | ✅ done (51% actual) |
-| **pt.7** | ~78% | Refactor `update_dashboard.py` + `update_scorecard.py` to extract pure scoring math into `screener_core.py` / `scorecard_core.py`. Un-omit from coverage. Requires source changes — needs careful review. | 1-2 PRs, 2-3 days | next |
+| **pt.7** | ~78% | Refactor `update_dashboard.py` + `update_scorecard.py` to extract pure scoring math into `screener_core.py` / `scorecard_core.py`. Un-omit from coverage. Requires source changes — needs careful review. | 1-2 PRs, 2-3 days | **in progress** — `screener_core.py` landed via #119; behavioral tests + `scorecard_core.py` still to do |
 | **pt.8 (optional, parallel)** | adds JS coverage | Vitest + jsdom for `templates/dashboard.html`'s ~6000 LOC. Without this, Python-only caps ~78%. | 1 PR, 1-2 days | optional |
 | **pt.9 (stretch)** | `cloud_scheduler.py` deeper | Still ~31% after pt.6 because pt.6 focused on the HTTP surface. Could add behavioral tests for the 60+ remaining scheduler functions (run_daily_close, process_strategy_file branches, wheel orchestration). Adds +5-8 points. | 1 PR, ~1 day | future |
 
@@ -242,24 +250,39 @@ For admin tests, use the **admin-and-target pattern** (see
 create admin1 + target user, logout, re-auth as admin so admin
 endpoints have a real target user ID to operate on.
 
-### pt.7 specific handoff (refactor + un-omit) — NEXT UP
+### pt.7 IN PROGRESS — screener_core.py landed, more extraction + tests next
 
-**`update_dashboard.py`** (~2000 lines, currently in the `omit` list
-in `pyproject.toml`). This is the 30-min screener. The refactor:
-1. Move pure-function logic (scoring, filtering, ranking, news
-   sentiment aggregation) into a new `screener_core.py` module.
-2. Leave `update_dashboard.py` as the thin I/O orchestrator that
-   fetches from Alpaca + yfinance + SEC and calls `screener_core`.
-3. Remove `update_dashboard.py` from `omit` list; add `screener_core.py`
-   without omit so it's fully counted.
-4. Behavioral tests for `screener_core` functions — they're pure,
-   so testing is fast.
+**Kickoff (#119) SHIPPED:** `screener_core.py` now hosts the pure
+scoring math extracted from `update_dashboard.py`. Functions:
 
-**Same for `update_scorecard.py`** — extract `scorecard_core.py`.
+  * `pick_best_entry_strategy(scores, entry_strategies)` — argmax
+  * `trading_day_fraction_elapsed(now=None)` — session time math
+  * `score_stocks(snapshots, *, entry_strategies, sector_map,
+                    min_price, min_volume, copy_trading_enabled,
+                    pead_enabled, day_fraction=None,
+                    pead_score_fn=None, copy_score_fn=None)`
+    — the 190-line heart of the screener. External deps
+    (pead, capitol_trades) injected as callables so the core module
+    has zero network/disk dependencies.
+  * `apply_market_regime(picks, regime)` — bias annotation
+  * `apply_sector_diversification(picks, max_per_sector, top_n)`
+  * `calc_position_size(price, volatility, portfolio_value, max_risk_pct)`
+  * `compute_portfolio_pnl(positions, portfolio_value)`
 
-**Payoff:** +10-15 coverage points. Also makes screener logic
-testable for future strategy development (currently can only be
-validated via full end-to-end run).
+`update_dashboard.py` still in `omit` list — imports from
+`screener_core` via thin compat wrappers. `screener_core.py` is NOT
+omitted — pytest-cov sees every statement.
+
+**Still to do in pt.7:**
+1. Write behavioral tests for `screener_core.py` (pure functions, so
+   cheap — should hit 90%+ coverage in one test file, adding
+   ~3-5 percentage points to total coverage)
+2. Extract `scorecard_core.py` from `update_scorecard.py` using the
+   same pattern; add tests (~2-3 more points)
+3. Measure total coverage impact; ratchet CI floor 45 → 48-50
+
+**Payoff when complete:** total coverage 51% → ~56-60%. Remaining
+gap to 80% filled by pt.8 (Vitest for dashboard JS).
 
 ### Structural limits (won't go away with more Python tests)
 
