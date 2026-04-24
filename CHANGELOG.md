@@ -8,6 +8,115 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.32 — orchestrator coverage (+26 tests)
+
+**Date:** 2026-04-24
+
+Source-pin tests for the four scheduler orchestrators that drive
+every live trade. The existing `test_round61_auto_deployer.py`
+covered `run_auto_deployer` exhaustively; pt.32 fills the gaps for
+the remaining three orchestrators so the coverage push from CLAUDE.md
+checks out before the live-trading flip on ~2026-05-15.
+
+### What landed
+
+* **`run_daily_close` coverage** — per-user Alpaca cred + data path
+  env vars passed to subprocess (round-9 isolation), update_scorecard.py
+  + error_recovery.py both run with `timeout=60`, daily_starting_value
+  reset under `strategy_file_lock` (round-57 RMW fix), legacy scorecard
+  path fallback chain, push-only ntfy + rich email queueing.
+* **`run_wheel_auto_deploy` coverage** — `_wheel_deploy_in_flight`
+  dedup with mode-scoped key (round-46 paper+live separation),
+  kill-switch gate, auto-deployer-disabled gate, per-strategy
+  `wheel.enabled` toggle, `deploy_should_abort()` mid-loop check,
+  `max_new_per_day` cap, screener-data freshness via
+  `max_age_seconds=300`, rich `wheel_put_sold` email template.
+* **`run_wheel_monitor` coverage** — kill-switch gate, multi-contract-
+  aware iteration via `ws.list_wheel_files`, `advance_wheel_state`
+  dispatch with per-event log+notify, stage-2 covered-call auto-pilot
+  gated on `stage_2_shares_owned + not active_contract`, round-44
+  wheel-open backfill at end-of-tick. Per-wheel try/except inside
+  the loop so one bad file can't crash the whole monitor.
+* **Cross-orchestrator invariants** — every orchestrator logs with
+  `[username]` prefix, every orchestrator wraps its body in
+  try/except so a single tick can't kill the scheduler thread.
+
+### Tests
++26 in `tests/test_round61_pt32_orchestrator_coverage.py`
+
+---
+
+## 🆕 Round-61 pt.31 — partial-qty sell paths must shrink the protective stop FIRST (+13 tests)
+
+**Date:** 2026-04-24
+
+User-reported every Friday at 3:45 PM ET on INTC: 63 shares long,
+trailing-stop reserved all 63, Friday risk reduction trim of 31
+failed with HTTP 403 / `alpaca_code=40310000` "insufficient qty
+available for order (requested: 31, available: 0)". Same bug class
+as the SOXL pt.30 cover-stop loop, just on the long side and in a
+different code path.
+
+### Fix
+New helper `_shrink_stop_before_partial_exit` PATCHes the stop's qty
+to `remaining` (or cancels and lets the caller re-place if PATCH
+fails). On Alpaca's replace-order semantics, PATCH returns a NEW
+order id which the helper writes back to state.
+
+Two paths fixed:
+* **`check_profit_ladder`** — sells 25%/25%/25%/25% at +10/+20/+30/+50%
+  profit; each rung's market sell would 403 because the trailing
+  stop reserved the whole position.
+* **`run_friday_risk_reduction`** — sells half of any +20% winner
+  before weekend; same 403.
+
+Already-correct paths (mean-reversion target, PEAD time/earnings,
+universal pre-earnings, monthly rebalance) cancel-stop-FIRST
+correctly and were left untouched — pinned via source assertions.
+
+### Tests
++13 in `tests/test_round61_pt31_partial_sell_qty_reservation.py`
+
+---
+
+## 🆕 Round-61 pt.30 — position-drift guard + qty-available retry (SOXL loop fix) (+17 tests)
+
+**Date:** 2026-04-24
+
+User-reported SOXL stuck retrying a cover-stop every monitor tick
+with HTTP 403 / `alpaca_code=40310000` "insufficient qty available
+for order (requested: 29, available: 0)" despite the short being
+live at -29 shares. Two-layer fix in one PR.
+
+### 1. Position-drift guard
+At the top of `process_short_strategy` and `process_strategy_file`,
+query `/positions/{symbol}`. Act on POSITIVE evidence only:
+  * 404-style error message → position gone. Mark strategy closed,
+    journal-record, cancel lingering orders.
+  * `qty == 0` → position flat. Same handling.
+  * `abs(qty) < state-shares` → partial external close. Sync state
+    to broker truth so the next placement uses real qty.
+
+Critically **fails open** on transient errors (circuit breaker
+open, rate limited, 5xx) — closing live strategies due to a brief
+Alpaca outage would be catastrophic.
+
+### 2. Qty-available retry
+When cover-stop placement fails with a 40310000 / "insufficient qty"
+/ "available: 0" error, query `/orders?status=open&symbols=SOXL`,
+cancel any open BUY orders (they're competing for the same
+short-cover qty), retry placement once. Diagnostic for the
+production SOXL bug: a leftover `target_order_id` BUY limit at
+$94.05 was reserving all 29 shares and blocking every cover-stop
+attempt; the retry path flushes that and the cover-stop lands.
+
+Symmetric handling on the long side via `process_strategy_file`.
+
+### Tests
++17 in `tests/test_round61_pt30_position_drift.py`
+
+---
+
 ## 🆕 Round-61 pt.22 — audit modal fix + 4 defensive hardening gaps + cloud_scheduler coverage (+31 tests)
 
 User-reported after pt.21 deploy: clicked 🔍 Audit button, toast said

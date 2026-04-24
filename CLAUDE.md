@@ -31,7 +31,7 @@ auto-deploys top picks across 6 strategies, manages exits, handles kill-switch
 1. `git checkout main && git pull --ff-only`
 2. `cat CLAUDE.md` (this file), `cat README.md`, `cat CHANGELOG.md`
 3. `MASTER_ENCRYPTION_KEY=$(python3 -c 'print("e"*64)') python3 -m pytest tests/ --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json --deselect tests/test_auth.py::test_password_strength_rejects_weak --deselect tests/test_audit_round12_scheduler_latent.py::test_ruff_clean_on_real_bug_rules -q`
-   — expect **1746 passing, 3 deselected** after round-61 pt.27.
+   — expect **1802 passing, 3 deselected** after round-61 pt.32 (1746 + 17 pt.30 + 13 pt.31 + 26 pt.32).
 4. `ruff check .` — clean.
 5. Validate dashboard JS: `awk '/^<script>/,/^<\/script>/' templates/dashboard.html | grep -v '^<script>' | grep -v '^</script>' > /tmp/dash.js && node --check /tmp/dash.js`
 6. `npm ci && npx vitest run` — expect **341 JS tests passing** (29 files).
@@ -61,7 +61,64 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-24 — round 61 pt.10-27 SHIPPED)
+## Current session state (2026-04-24 — round 61 pt.10-32 SHIPPED)
+
+**Pt.32 landed (PR #158):** orchestrator coverage. Source-pin tests
+for the four scheduler orchestrators that drive every live trade —
+the gaps that earlier rounds didn't fill. Existing
+`test_round61_auto_deployer.py` covers `run_auto_deployer`
+extensively; pt.32 adds parallel coverage for `run_daily_close`
+(subprocess wrapper + per-user env var construction + RMW lock
+ordering + email queueing), `run_wheel_auto_deploy` (kill-switch +
+auto-deployer-disabled + wheel-disabled gating + dedup via
+`_wheel_deploy_in_flight` + mid-loop kill-switch abort + per-day
+cap), and `run_wheel_monitor` (kill-switch + `list_wheel_files`
+iteration + `advance_wheel_state` dispatch + stage-2 covered-call
+auto-pilot + wheel-open backfill at end-of-tick). Plus
+cross-orchestrator invariants: every orchestrator must log with
+`[username]` prefix, every orchestrator wraps its body in
+try/except so a single tick can't kill the scheduler thread.
++26 source-pin tests in `tests/test_round61_pt32_orchestrator_coverage.py`.
+
+**Pt.31 landed (PR #157):** partial-qty sell paths must shrink the
+protective stop BEFORE placing the sell. User-reported every
+Friday at 3:45 PM ET on INTC: 63 shares long, sell-stop reserved
+all 63, trim of 31 failed with HTTP 403 / `alpaca_code=40310000`
+"insufficient qty available for order (requested: 31, available: 0)".
+Same bug class as the SOXL pt.30 cover-stop loop, just on the
+long side and in a different code path.
+  **Fix:** new helper `_shrink_stop_before_partial_exit` PATCHes
+  the stop's qty to `remaining` (or cancels and lets the caller
+  re-place if PATCH fails). Two paths fixed:
+    * `check_profit_ladder` — sells 25%/25%/25%/25% of original at
+      +10/+20/+30/+50% profit; each rung's market sell would 403
+      because the trailing stop reserved the whole position.
+    * `run_friday_risk_reduction` — sells half of any +20% winner
+      before weekend; same 403.
+  Already-correct paths (mean-reversion target, PEAD time/earnings,
+  universal pre-earnings, monthly rebalance) left untouched and
+  pinned via source assertions.
+  +13 tests in `tests/test_round61_pt31_partial_sell_qty_reservation.py`.
+
+**Pt.30 landed (PR #156):** position-drift guard + qty-available
+retry. User-reported SOXL stuck retrying a cover-stop every monitor
+tick with HTTP 403 / `alpaca_code=40310000` "insufficient qty
+available for order (requested: 29, available: 0)" despite the
+short being live at -29 shares. Two fixes in one PR:
+  1. **Drift guard:** at the top of `process_short_strategy` and
+     `process_strategy_file`, query `/positions/{symbol}`. On
+     positive evidence of drift (404 error dict, qty=0, or
+     abs(qty)<state-shares) close/sync the strategy file. Fails
+     OPEN on transient errors (circuit breaker, rate limit, 5xx).
+     Symmetric on long + short paths.
+  2. **Qty-available retry:** when cover-stop placement fails with
+     a 40310000-style error, query `/orders?status=open` for the
+     symbol, cancel any open BUY orders (they're competing for the
+     same short-cover qty), retry placement once. Fixed the live
+     SOXL loop where a leftover `target_order_id` BUY limit at
+     $94.05 was reserving all 29 shares and blocking every
+     cover-stop attempt.
+  +17 tests in `tests/test_round61_pt30_position_drift.py`.
 
 **Pt.27 landed (PR #153):** daily-close email "Today" fix. User
 forwarded Apr 24 close email showing `+$39.29` when actual day
