@@ -2118,6 +2118,7 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
     </div>
     <div class="modal-actions">
       <button class="btn-ghost" onclick="runStateAudit()">Re-run Audit</button>
+      <button class="btn-ghost" onclick="closeGhostStrategies()" title="Mark active strategy files that have no matching Alpaca position as closed. Same grace-period + pending-sell filters as the scheduled cleanup.">🧹 Clean Up Ghosts</button>
       <button class="btn-primary" onclick="closeModal('auditModal')">Close</button>
     </div>
   </div>
@@ -3716,6 +3717,42 @@ async function runStateAudit() {
         openModal('auditModal');
     } catch(e) {
         toast('Audit error: ' + e.message, 'error');
+    }
+}
+
+// Round-61 pt.24: mutating counterpart to runStateAudit — marks
+// ghost strategy files (active file but no Alpaca position) as
+// closed. Same grace-period + pending-sell filters as the
+// scheduled error_recovery.py cleanup, so this is safe to click
+// even during active trading.
+async function closeGhostStrategies() {
+    toast('Cleaning ghost strategy files...', 'info');
+    try {
+        var resp = await fetch(API_BASE + '/api/close-ghost-strategies', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {'Content-Type': 'application/json', 'X-CSRF-Token': getCSRFToken()},
+            body: '{}'
+        });
+        var data = await resp.json();
+        if (!resp.ok) {
+            toast('Ghost cleanup failed: ' + (data.error || 'unknown'), 'error');
+            return;
+        }
+        var closed = data.closed || [];
+        var skipped = data.skipped || [];
+        if (closed.length === 0 && skipped.length === 0) {
+            toast('No ghost files to clean up', 'info');
+        } else {
+            var msg = 'Closed ' + closed.length + ' ghost file(s)';
+            if (skipped.length) msg += ', skipped ' + skipped.length + ' (grace period or pending sell)';
+            toast(msg, 'success');
+            addLog('Ghost cleanup: ' + closed.join(', '), 'success');
+        }
+        // Re-run audit to show the updated state.
+        setTimeout(runStateAudit, 800);
+    } catch(e) {
+        toast('Ghost cleanup error: ' + e.message, 'error');
     }
 }
 

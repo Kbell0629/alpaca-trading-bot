@@ -3203,6 +3203,13 @@ class DashboardHandler(
             # and surfaces every inconsistency in plain English.
             self.handle_state_audit(body)
 
+        elif path == "/api/close-ghost-strategies":
+            # Round-61 pt.24: mutating counterpart to /api/audit —
+            # marks active strategy files with no matching Alpaca
+            # position as closed. Same grace-period + pending-sell
+            # filters as error_recovery.py Check 3.
+            self.handle_close_ghost_strategies(body)
+
         else:
             self.send_json({"error": "Not found"}, 404)
 

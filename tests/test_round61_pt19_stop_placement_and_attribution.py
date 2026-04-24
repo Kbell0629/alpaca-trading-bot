@@ -45,7 +45,7 @@ def test_short_cover_stop_uses_adaptive_formula_in_monitor():
     # Find the short cover-stop placement block.
     idx = src.find("Place initial stop-buy (cover) ABOVE entry")
     assert idx > 0, "Short cover-stop placement block missing"
-    block = src[idx:idx + 1500]
+    block = src[idx:idx + 4000]  # pt.24 widened for liveness-check insertion
     # Pin the adaptive formula bits.
     assert "max(entry_stop, current_stop)" in block, (
         "Monitor's initial short cover-stop must use "
@@ -66,7 +66,7 @@ def test_long_initial_stop_uses_adaptive_formula_in_monitor():
     src = _src("cloud_scheduler.py")
     idx = src.find("Place initial stop (regular-hours only")
     assert idx > 0
-    block = src[idx:idx + 1500]
+    block = src[idx:idx + 4000]  # pt.24 widened for liveness-check insertion
     assert "min(entry_stop, current_stop)" in block, (
         "Long side must also use the adaptive formula.")
     assert "price * 0.95" in block

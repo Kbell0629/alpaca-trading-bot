@@ -517,6 +517,111 @@ class ActionsHandlerMixin:
         except Exception as e:
             self._send_error_safe(e, 500, "force-daily-close")
 
+    def handle_close_ghost_strategies(self, body=None):
+        """Round-61 pt.24: mark ghost strategy files as closed. A
+        ghost = active strategy file for a symbol that has no matching
+        Alpaca position. The audit endpoint detects these; this
+        handler fixes them.
+
+        Called from the "🧹 Clean Up Ghosts" button in the audit modal.
+        Read-only audit endpoint stays pure; this is the mutating
+        counterpart the user can opt into.
+
+        Also runs `error_recovery.py` Check 3 in-process logic —
+        same rules: skip files modified in the last 10 min (grace
+        period for fresh closes) and skip files with pending sell
+        orders (position may be mid-exit).
+        """
+        if not self.current_user:
+            return self.send_json({"error": "Not authenticated"}, 401)
+        try:
+            import audit_core
+            import server
+            import time as _time
+            from et_time import now_et
+            from constants import is_closed_status
+            user = self.build_scoped_user_dict()
+            api_endpoint = user.get("_api_endpoint") or ""
+            api_headers = {
+                "APCA-API-KEY-ID": user.get("_api_key") or "",
+                "APCA-API-SECRET-KEY": user.get("_api_secret") or "",
+            }
+            _, positions, orders, _errors = server._fetch_live_alpaca_state(
+                api_endpoint, api_headers,
+            )
+            strats_dir = user.get("_strategies_dir") or ""
+            strategy_files = audit_core.load_strategy_files(strats_dir)
+            position_symbols = set()
+            if isinstance(positions, list):
+                for p in positions:
+                    if isinstance(p, dict):
+                        s = (p.get("symbol") or "").upper()
+                        if s:
+                            position_symbols.add(s)
+                            # OCC underlyings also count.
+                            if (p.get("asset_class") or "").lower() == "us_option":
+                                u = audit_core._occ_underlying(s)
+                                if u:
+                                    position_symbols.add(u)
+
+            pending_sells = set()
+            if isinstance(orders, list):
+                for o in orders:
+                    if (o.get("side") or "").lower() == "sell":
+                        pending_sells.add((o.get("symbol") or "").upper())
+
+            closed = []
+            skipped = []
+            import os
+            import json as _json
+            for fname, data in strategy_files.items():
+                if not isinstance(data, dict):
+                    continue
+                if is_closed_status(data.get("status")):
+                    continue
+                if str(data.get("status") or "").lower() == "migrated":
+                    continue
+                prefix, fsym = audit_core._parse_strategy_filename(fname)
+                sym = str(data.get("symbol") or fsym or "").upper()
+                if not sym:
+                    continue
+                if sym in position_symbols:
+                    continue  # not a ghost
+                # Grace period: skip if recently modified.
+                fpath = os.path.join(strats_dir, fname)
+                try:
+                    mtime = os.path.getmtime(fpath)
+                    if _time.time() - mtime < 600:  # 10 min
+                        skipped.append({"file": fname, "reason": "modified_recent"})
+                        continue
+                except OSError:
+                    pass
+                # Skip if there are pending sell orders (position
+                # may be mid-exit).
+                if sym in pending_sells:
+                    skipped.append({"file": fname, "reason": "pending_sell"})
+                    continue
+                # Mark closed.
+                data["status"] = "closed"
+                data["closed_reason"] = ("No position found — marked closed "
+                                          "via /api/close-ghost-strategies")
+                data["closed_at"] = now_et().isoformat()
+                try:
+                    with open(fpath, "w") as f:
+                        _json.dump(data, f, indent=2)
+                    closed.append(fname)
+                except OSError as e:
+                    skipped.append({"file": fname, "reason": f"write_error:{e}"})
+            self.send_json({
+                "success": True,
+                "closed": closed,
+                "skipped": skipped,
+                "message": (f"Closed {len(closed)} ghost file(s), "
+                            f"skipped {len(skipped)}."),
+            })
+        except Exception as e:
+            self._send_error_safe(e, 500, "close-ghost-strategies")
+
     def handle_state_audit(self, body=None):
         """Round-61 pt.21: run the state-consistency audit for the
         current user. Cross-checks Alpaca positions, open orders, the
