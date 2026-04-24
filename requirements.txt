@@ -1,12 +1,27 @@
 # Cryptography for AES-GCM authenticated encryption of Alpaca credentials
-# (supersedes the original stdlib-only HMAC stream cipher). Falls back to
-# the legacy cipher at runtime if this package isn't installed, so removal
-# doesn't brick existing deployments.
+# (supersedes the original stdlib-only HMAC stream cipher). REQUIRED for
+# encrypting/decrypting Alpaca keys at rest. If this package fails to load
+# at runtime, every saved credential becomes inaccessible — auth.py logs
+# "[auth] CRITICAL: cryptography.AESGCM import failed: ..." to stderr and
+# the dashboard returns 401 from /account on every refresh.
 #
-# Upper bound prevents auto-upgrade to a future major version with breaking
-# API changes. Review and bump when cryptography releases 46.0.0; until then,
-# Railway rebuilds pull a known-good version range.
-cryptography>=42.0.0,<46.0.0
+# Round-61 pt.13: tightened the upper bound from <46.0.0 to <44.0.0 after
+# a Railway deploy went degraded with what was likely an ABI mismatch
+# between Nix's Python 3.12 and a pre-built cryptography 45.x wheel
+# (user-reported: "RuntimeError: cryptography package required for
+# encrypt_secret()" surfaced via Save Paper Keys). Sticking to 42.x/43.x
+# while we re-validate 44.x+ on the live image.
+cryptography>=42.0.0,<44.0.0
+
+# cffi — cryptography's transitive C-FFI dependency. Pinned EXPLICITLY so
+# pip resolves it as a wheel even when the cryptography wheel doesn't
+# pull it in correctly. Observed failure mode on Nixpacks Python 3.12:
+# `from cryptography.hazmat.primitives.ciphers.aead import AESGCM` raises
+# `ModuleNotFoundError: No module named '_cffi_backend'` at runtime,
+# auth.py's bare except swallows it, _HAS_AESGCM=False, every saved
+# credential becomes unreadable. Pinning cffi here forces pip to install
+# the manylinux wheel which ships the _cffi_backend.so binary.
+cffi>=1.16.0,<2.0.0
 
 # zxcvbn — password strength estimator (Dropbox). Pure-Python, no ffi.
 # Used in auth.create_user / change_password to reject weak passwords

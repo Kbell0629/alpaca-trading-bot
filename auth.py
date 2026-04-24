@@ -299,11 +299,36 @@ def needs_rehash(stored_hash):
 # PLAIN-fallback was retired along with MASTER_KEY-fallback; the module
 # now raises at import if the key is missing, and encrypt_secret raises
 # if AES-GCM is unavailable.
+#
+# Round-61 pt.13: when this import fails on a deployment, every saved
+# credential becomes inaccessible (decrypt returns "" → /account
+# returns 401 → dashboard shows $0). Capture the actual failure into
+# `_AESGCM_IMPORT_ERROR` so encrypt_secret + the boot log can show the
+# real cause (missing cffi, ABI mismatch, etc.) instead of a generic
+# "cryptography package required" message.
+_AESGCM_IMPORT_ERROR = ""
 try:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     _HAS_AESGCM = True
-except Exception:
+except BaseException as _aesgcm_imp_exc:  # noqa: BLE001 — pyo3 PanicException is BaseException
     _HAS_AESGCM = False
+    try:
+        _AESGCM_IMPORT_ERROR = f"{type(_aesgcm_imp_exc).__name__}: {_aesgcm_imp_exc}"[:400]
+    except Exception:
+        _AESGCM_IMPORT_ERROR = "unknown import failure"
+    # Print to stderr so the boot log on Railway shows the real cause
+    # rather than silently degrading to a 401-everywhere state.
+    try:
+        import sys as _sys
+        print(
+            f"[auth] CRITICAL: cryptography.AESGCM import failed: "
+            f"{_AESGCM_IMPORT_ERROR}. Encrypted credentials will be "
+            f"INACCESSIBLE until this is resolved. Check the cryptography "
+            f"package install on the deployment.",
+            file=_sys.stderr, flush=True,
+        )
+    except Exception:
+        pass
 
 # zxcvbn password strength estimator — optional pip dep. Silently falls
 # back to the 8-char minimum if not installed so dev envs aren't blocked.
@@ -425,9 +450,19 @@ def encrypt_secret(plaintext):
             "encrypt_secret called without MASTER_ENCRYPTION_KEY set."
         )
     if not _HAS_AESGCM:
+        # Round-61 pt.13: include the actual import failure so the user
+        # can see WHY cryptography didn't load (missing cffi, ABI
+        # mismatch, etc.) instead of a generic "install it" message
+        # that doesn't apply when the package IS in requirements.txt
+        # but failed to load at runtime.
+        detail = (f" Import failed at boot with: {_AESGCM_IMPORT_ERROR}."
+                  if _AESGCM_IMPORT_ERROR else "")
         raise RuntimeError(
-            "cryptography package required for encrypt_secret(). Install "
-            "it (pip install 'cryptography>=42.0.0')."
+            "cryptography package required for encrypt_secret() but "
+            "did not load." + detail + " On Railway: check the build "
+            "log for the cryptography wheel install + redeploy. If the "
+            "package IS installed, this is usually a missing system lib "
+            "(cffi backend) or a Python/cryptography ABI mismatch."
         )
     key = _derive_aesgcm_key_v3(MASTER_KEY)
     aes = AESGCM(key)
