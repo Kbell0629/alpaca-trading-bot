@@ -56,3 +56,8 @@ htmlcov/
 email_queue_dlq.json
 daily_loss_alert_stamp.txt
 _counter.json
+
+# Round-61 pt.8: vitest + jsdom for the dashboard JS test suite.
+# package.json + package-lock.json are committed (CI uses npm ci).
+node_modules/
+coverage/js/

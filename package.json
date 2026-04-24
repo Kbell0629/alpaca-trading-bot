@@ -1,0 +1,15 @@
+{
+  "name": "alpaca-trading-bot-dashboard-tests",
+  "private": true,
+  "description": "Vitest + jsdom test harness for the inline JS in templates/dashboard.html. Round-61 pt.8 — closes the JS coverage gap left by Python-only pytest-cov.",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^2.1.4",
+    "jsdom": "^25.0.1",
+    "vitest": "^2.1.4"
+  }
+}

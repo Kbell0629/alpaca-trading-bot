@@ -52,3 +52,20 @@ jobs:
             --cov-report=term-missing \
             --cov-fail-under=48 \
             --tb=short
+
+      # Round-61 pt.8 — JS test suite for templates/dashboard.html.
+      # The dashboard ships ~7000 LOC of inline JS that pytest-cov
+      # can't see. Vitest + jsdom drive the pure helpers (esc, jsStr,
+      # fmtMoney, _occParse, parseSchedTs, etc.) so a regression in
+      # the JS path can't sneak through Python-only CI.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install JS deps
+        run: npm ci
+
+      - name: Run vitest
+        run: npm test
