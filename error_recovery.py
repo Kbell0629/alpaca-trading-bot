@@ -611,13 +611,40 @@ def main():
                 "status": "active",
             })
 
-    # Send notification for orphans found
+    # Send notification for orphans found.
+    # Round-61 pt.20: switched from "alert" to "info" severity. Finding
+    # orphans is normal when adoption just ran — the bot detecting and
+    # fixing them is expected, not alarming. The old "alert" level
+    # triggered the warning-chrome push notification every 10 minutes,
+    # spamming the user with what's really a routine heartbeat. Also
+    # added dedup against the last run's orphan set — if the same list
+    # of orphans appears two runs in a row (e.g. user has a permanently-
+    # unadoptable position), don't re-fire the same notification.
     if orphans_found:
+        dedup_path = os.path.join(DATA_DIR, ".orphan_notif_last.json")
+        dedup_key = sorted(orphans_found)
+        last_key = None
         try:
-            subprocess.Popen([sys.executable, os.path.join(BASE_DIR, "notify.py"), "--type", "alert",
-                f"Error recovery found {len(orphans_found)} orphan positions: {', '.join(orphans_found)}"])
-        except Exception as e:
-            print(f"  Warning: Could not send orphan notification: {e}")
+            if os.path.exists(dedup_path):
+                with open(dedup_path) as _df:
+                    last_key = (json.load(_df) or {}).get("symbols")
+        except (OSError, ValueError):
+            last_key = None
+        if dedup_key != last_key:
+            try:
+                subprocess.Popen([sys.executable, os.path.join(BASE_DIR, "notify.py"), "--type", "info",
+                    f"Error recovery adopted {len(orphans_found)} orphan position(s): {', '.join(orphans_found)}"])
+            except Exception as e:
+                print(f"  Warning: Could not send orphan notification: {e}")
+            try:
+                with open(dedup_path, "w") as _df:
+                    json.dump({"symbols": dedup_key,
+                               "last_notified": now_et().isoformat()}, _df)
+            except OSError as e:
+                print(f"  Warning: Could not persist orphan dedup state: {e}")
+        else:
+            print(f"  Skipped notification — same {len(orphans_found)} "
+                  f"orphan(s) as previous run (dedup).")
 
     # ---- Check 2: Missing Stop-Loss ----
     print("\n--- Check 2: Missing Stop-Loss Orders ---")
