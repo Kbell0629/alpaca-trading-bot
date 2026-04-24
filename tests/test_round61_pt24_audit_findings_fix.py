@@ -122,10 +122,14 @@ def test_close_ghost_strategies_marks_ghost_file_closed(
     assert "closed_reason" in after
 
 
-def test_close_ghost_strategies_skips_recently_modified_files(
+def test_close_ghost_strategies_closes_recently_modified_files(
         http_harness, monkeypatch, tmp_path):
-    """A file modified in the last 10 min must be skipped (grace
-    period for fresh closes where monitor may still be updating)."""
+    """Round-61 pt.25: removed the 10-min grace period from the
+    user-triggered cleanup path. User clicking the button is
+    asserting intent — they've seen the audit and want these
+    specific files retired. The scheduled error_recovery.py Check 3
+    keeps its grace period for autonomous safety, but the manual
+    button honors the click."""
     http_harness.create_user()
     import auth
     user_dir = auth.user_data_dir(1)
@@ -135,16 +139,17 @@ def test_close_ghost_strategies_skips_recently_modified_files(
     with open(recent_path, "w") as f:
         json.dump({"symbol": "FRESH", "strategy": "breakout",
                     "status": "active"}, f)
-    # mtime is "now" — well within the 10-min grace.
+    # mtime is "now" — pt.25 ignores this on the manual path.
     import server
     monkeypatch.setattr(server, "_fetch_live_alpaca_state",
                         lambda *a, **kw: ({}, [], [], []))
     resp = http_harness.post("/api/close-ghost-strategies", body={})
     assert resp["status"] == 200
-    assert "breakout_FRESH.json" not in resp["body"]["closed"]
-    # But it IS reported as skipped with reason.
+    # Pt.25: file should be closed despite fresh mtime.
+    assert "breakout_FRESH.json" in resp["body"]["closed"]
+    # And it should NOT appear in skipped.
     skipped_files = [s["file"] for s in resp["body"]["skipped"]]
-    assert "breakout_FRESH.json" in skipped_files
+    assert "breakout_FRESH.json" not in skipped_files
 
 
 def test_close_ghost_strategies_skips_files_with_matching_position(

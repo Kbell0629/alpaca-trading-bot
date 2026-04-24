@@ -1525,25 +1525,31 @@ def process_short_strategy(user, filepath, strat, state, rules):
     # set in the strategy file. Fix: query the order; if it's
     # canceled/rejected/expired, reset cover_order_id=None so this tick
     # places a fresh one.
+    # Round-61 pt.25: fix pt.24's unreachable elif. Alpaca error
+    # responses come back as dicts with an "error" key, so the old
+    # `elif isinstance(existing_order, dict)` branch never fired
+    # (first branch already matched). Restructure: check "error"
+    # FIRST inside the dict branch.
     existing_cover_id = state.get("cover_order_id")
     if existing_cover_id:
         existing_order = user_api_get(user, f"/orders/{existing_cover_id}")
         if isinstance(existing_order, dict):
-            existing_status = str(existing_order.get("status") or "").lower()
-            # Alpaca's dead statuses for an order that never filled.
-            if existing_status in ("canceled", "cancelled", "rejected",
-                                    "expired", "replaced", "done_for_day"):
-                log(f"[{user['username']}] {symbol}: stale cover_order_id "
-                    f"{existing_cover_id} is {existing_status} — resetting "
-                    "so next placement can retry.", "monitor")
+            if "error" in existing_order:
+                # Alpaca returned an error looking up the order —
+                # most commonly 404 (order id doesn't exist).
+                log(f"[{user['username']}] {symbol}: cover_order_id "
+                    f"{existing_cover_id} not found at Alpaca — "
+                    "resetting.", "monitor")
                 state["cover_order_id"] = None
-        elif isinstance(existing_order, dict) and "error" in existing_order:
-            # Alpaca returned an error looking up the order — most
-            # commonly 404 (order id doesn't exist). Reset so we retry.
-            log(f"[{user['username']}] {symbol}: cover_order_id "
-                f"{existing_cover_id} not found at Alpaca — resetting.",
-                "monitor")
-            state["cover_order_id"] = None
+            else:
+                existing_status = str(existing_order.get("status") or "").lower()
+                # Dead statuses — order never filled.
+                if existing_status in ("canceled", "cancelled", "rejected",
+                                        "expired", "replaced", "done_for_day"):
+                    log(f"[{user['username']}] {symbol}: stale cover_order_id "
+                        f"{existing_cover_id} is {existing_status} — resetting "
+                        "so next placement can retry.", "monitor")
+                    state["cover_order_id"] = None
     if not state.get("cover_order_id"):
         stop_pct = rules.get("stop_loss_pct", 0.08)
         entry_stop = entry * (1 + stop_pct)
@@ -1797,22 +1803,27 @@ def process_strategy_file(user, filepath, strat, extended_hours=False):
     # a rejected/canceled stop leaves a stale id in state that
     # prevents re-placement. Reset when dead so the next block
     # places fresh.
+    # Round-61 pt.25: normalized error-check structure (same shape
+    # as the short-side cover fix) — check "error" FIRST to avoid
+    # the gotcha where an error-dict has empty status and could be
+    # missed in the wrong conditional order.
     existing_stop_id = state.get("stop_order_id")
     if existing_stop_id and not extended_hours:
         existing = user_api_get(user, f"/orders/{existing_stop_id}")
         if isinstance(existing, dict):
-            ex_status = str(existing.get("status") or "").lower()
-            if ex_status in ("canceled", "cancelled", "rejected",
-                              "expired", "replaced", "done_for_day"):
-                log(f"[{user['username']}] {symbol}: stale stop_order_id "
-                    f"{existing_stop_id} is {ex_status} — resetting.",
-                    "monitor")
-                state["stop_order_id"] = None
-            elif "error" in existing:
+            if "error" in existing:
                 log(f"[{user['username']}] {symbol}: stop_order_id "
                     f"{existing_stop_id} not found at Alpaca — resetting.",
                     "monitor")
                 state["stop_order_id"] = None
+            else:
+                ex_status = str(existing.get("status") or "").lower()
+                if ex_status in ("canceled", "cancelled", "rejected",
+                                  "expired", "replaced", "done_for_day"):
+                    log(f"[{user['username']}] {symbol}: stale stop_order_id "
+                        f"{existing_stop_id} is {ex_status} — resetting.",
+                        "monitor")
+                    state["stop_order_id"] = None
     if not extended_hours and not state.get("stop_order_id"):
         stop_pct = rules.get("stop_loss_pct", 0.10)
         entry_stop = entry * (1 - stop_pct)
