@@ -5909,8 +5909,12 @@ function renderDashboard() {
             '<div class="metric"><div class="label">Equity</div><div class="value">' + fmtMoney(equity) + '</div></div>' +
             '<div class="metric"><div class="label">Daily P&L</div><div class="value ' + pnlClass(dailyPnl) + '">' + fmtMoney(dailyPnl) + ' (' + fmtPct(dailyPnlPct) + ')</div></div>' +
         '</div>' +
-        buildGuardrailMeters(dailyPnlPct, portfolioValue, lastEquity) +
-        buildNextActionsPanel(d) +
+        buildGuardrailMeters(dailyPnlPct, portfolioValue, lastEquity, guardrailsData) +
+        buildNextActionsPanel(d, {
+            autoDeployerEnabled: autoDeployerEnabled,
+            killSwitchActive: killSwitchActive,
+            guardrails: guardrailsData,
+        }) +
         buildTodaysClosesPanel(d) +
         '</div>' +
         '<div id="section-picks">' +
