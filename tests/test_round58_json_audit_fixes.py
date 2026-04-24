@@ -32,14 +32,23 @@ from __future__ import annotations
 def test_correlation_warning_resolves_option_underlying():
     """HIMS260508P00027000 (OCC put) must be grouped under Healthcare
     (HIMS underlying), not "Other". Source-level grep — the real
-    integration test is run via update_scorecard below."""
+    integration test is run via update_scorecard below.
+
+    Round-61 pt.7: the correlation-guard logic now lives in
+    scorecard_core.build_correlation_warning; update_scorecard still
+    injects position_sector.annotate_sector into the wrapper. Grep
+    both files so a refactor that removes the mechanism anywhere
+    fails loudly.
+    """
     with open("update_scorecard.py") as f:
-        src = f.read()
-    # The correlation guard must import annotate_sector from position_sector
-    assert "from position_sector import annotate_sector" in src
-    # And must use _underlying / _sector fields for the grouping
-    assert '_sector' in src
-    assert '_underlying' in src
+        us_src = f.read()
+    with open("scorecard_core.py") as f:
+        core_src = f.read()
+    # update_scorecard.py must still inject the annotator
+    assert "from position_sector import annotate_sector" in us_src
+    # The core module must use _underlying / _sector fields for grouping
+    assert "_sector" in core_src
+    assert "_underlying" in core_src
 
 
 def test_correlation_end_to_end_groups_option_by_underlying():

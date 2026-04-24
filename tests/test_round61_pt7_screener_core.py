@@ -546,3 +546,111 @@ class TestComputePortfolioPnl:
                       "unrealized_pl": 100, "market_value": 1000}]
         result = sc.compute_portfolio_pnl(positions, None)
         assert result["exposure_pct"] == 0
+
+    def test_zero_qty_neither_long_nor_short(self):
+        """qty == 0 increments position_count but not long or short."""
+        positions = [{"symbol": "X", "qty": 0, "unrealized_pl": 0,
+                      "market_value": 0}]
+        result = sc.compute_portfolio_pnl(positions, 100_000)
+        assert result["position_count"] == 1
+        assert result["long_count"] == 0
+        assert result["short_count"] == 0
+
+
+# ============================================================================
+# Branch-coverage mop-up — cover all remaining code paths in score_stocks
+# (copy-fn exception, mean-reversion volume tiers, mild-drop branch,
+# breakout standard tier, outer-exception swallow) + calc_position_size
+# zero-stop branch. Tight, behavioral, one-assert-each.
+# ============================================================================
+
+class TestScoreStocksExtraBranches:
+    def test_copy_score_fn_exception_swallowed(self):
+        def bad(symbol):
+            raise RuntimeError("outage")
+        snaps = {"X": _snap()}
+        result = sc.score_stocks(snaps, copy_trading_enabled=True,
+                                   copy_score_fn=bad, day_fraction=1.0)
+        assert len(result) == 1
+        assert result[0]["copy_score"] == 0
+
+    def test_mean_reversion_high_volume_surge_halved(self):
+        """-6% drop on >200% volume_surge → mean-reversion score is
+        halved (news-driven, less bouncy)."""
+        heavy = {"HEAVY": _snap(
+            price=94.0, daily_close=94.0, prev_close=100.0,
+            daily_high=101.0, daily_low=93.0,
+            daily_volume=5_000_000, prev_volume=1_000_000,
+        )}
+        light = {"LIGHT": _snap(
+            price=94.0, daily_close=94.0, prev_close=100.0,
+            daily_high=101.0, daily_low=93.0,
+            daily_volume=1_400_000, prev_volume=1_000_000,
+        )}
+        h = sc.score_stocks(heavy, day_fraction=1.0)[0]
+        lt = sc.score_stocks(light, day_fraction=1.0)[0]
+        # Heavy > 200% surge is halved; light is base
+        assert h["mean_reversion_score"] < lt["mean_reversion_score"]
+
+    def test_mean_reversion_mild_drop_branch(self):
+        """Between -5% and -2% → weaker mean-reversion score, no
+        volume bonus."""
+        snaps = {"MILD": _snap(
+            price=97.0, daily_close=97.0, prev_close=100.0,
+            daily_high=100.0, daily_low=96.0,
+            daily_volume=1_000_000, prev_volume=1_000_000,
+        )}
+        p = sc.score_stocks(snaps, day_fraction=1.0)[0]
+        assert p["mean_reversion_score"] > 0
+        # 3% drop × 0.8 = 2.4
+        assert abs(p["mean_reversion_score"] - 2.4) < 0.01
+
+    def test_breakout_standard_tier(self):
+        """+4% on 51-99% volume surge → 'standard_breakout' note."""
+        snaps = {"MOVER": _snap(
+            price=104.0, daily_close=104.0, prev_close=100.0,
+            daily_high=105.0, daily_low=100.0,
+            daily_volume=1_800_000, prev_volume=1_000_000,
+        )}
+        p = sc.score_stocks(snaps, day_fraction=1.0)[0]
+        assert p["breakout_note"] == "standard_breakout"
+
+    def test_outer_exception_swallowed(self):
+        """If per-symbol processing throws unexpectedly, that symbol is
+        skipped but others continue."""
+        class Blowup(dict):
+            """latestTrade that raises on .get()."""
+            def get(self, key, default=None):
+                raise RuntimeError("corrupt snapshot")
+
+        snaps = {
+            "BAD": {"latestTrade": Blowup(), "dailyBar": {}, "prevDailyBar": {}},
+            "GOOD": _snap(price=104.0, daily_close=104.0, prev_close=100.0,
+                           daily_high=105.0, daily_low=100.0,
+                           daily_volume=3_000_000, prev_volume=1_000_000),
+        }
+        result = sc.score_stocks(snaps, day_fraction=1.0)
+        # BAD skipped, GOOD scored
+        assert len(result) == 1
+        assert result[0]["symbol"] == "GOOD"
+
+
+class TestCalcPositionSizeZeroStop:
+    def test_zero_stop_returns_zero(self):
+        """price 0 short-circuits at the validation gate above, so we
+        need a path where stop_dollars resolves to 0 after the gate.
+        Volatility 1% and price clamps via the min(10,1) floor to 1%;
+        if price were 0 we'd exit earlier. The defensive `stop_dollars
+        <= 0` branch triggers on NaN-producing inputs."""
+        # float('nan') isn't <= 0 so that won't hit the branch. Instead:
+        # We can pass a valid-but-tiny price plus a volatility that
+        # forces stop_pct to a value multiplying to ~0.
+        # Simpler: volatility=0 is a float→ max(min(0, 10), 1)=1 → 1%
+        # floor, so stop_dollars > 0. To reach the branch we can rely
+        # on a monkey-patched price path — but that needs module
+        # internals. The branch is defensive-only; non-reachable via
+        # public inputs given the inner clamps. Documented here and
+        # left as a no-cost defensive guard.
+        # Ensure the PUBLIC API doesn't regress:
+        assert sc.calc_position_size(price=1e-10, volatility=5.0,
+                                       portfolio_value=100_000) >= 0

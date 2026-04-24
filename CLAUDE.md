@@ -31,7 +31,7 @@ auto-deploys top picks across 6 strategies, manages exits, handles kill-switch
 1. `git checkout main && git pull --ff-only`
 2. `cat CLAUDE.md` (this file), `cat README.md`, `cat CHANGELOG.md`
 3. `MASTER_ENCRYPTION_KEY=$(python3 -c 'print("e"*64)') python3 -m pytest tests/ --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json --deselect tests/test_auth.py::test_password_strength_rejects_weak --deselect tests/test_audit_round12_scheduler_latent.py::test_ruff_clean_on_real_bug_rules -q`
-   — expect **1337 passing, 3 deselected** after round-61 pt.6 + follow-ups (PRs #116 + #117).
+   — expect **1484 passing, 3 deselected** after round-61 pt.7 close-out.
 4. `ruff check .` — clean.
 5. Validate dashboard JS: `awk '/^<script>/,/^<\/script>/' templates/dashboard.html | grep -v '^<script>' | grep -v '^</script>' > /tmp/dash.js && node --check /tmp/dash.js`
 
@@ -58,18 +58,32 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-24 — round 61 pt.7 in progress)
+## Current session state (2026-04-24 — round 61 pt.7 CLOSE-OUT)
 
-**Pt.7 kickoff (#119) merged to main.** `screener_core.py` extracted
-from `update_dashboard.py` with 7 pure functions — `pick_best_entry_strategy`,
-`trading_day_fraction_elapsed`, `score_stocks` (the 190-line heart
-of the screener), `apply_market_regime`, `apply_sector_diversification`,
-`calc_position_size`, `compute_portfolio_pnl`. Update_dashboard.py
-stays in the `omit` list (still I/O-heavy) but `screener_core.py`
-is NOT omitted so pytest-cov can see the pure math. **Still to do
-in pt.7**: behavioral tests for screener_core + extract
-`scorecard_core.py` from `update_scorecard.py`. Test count still
-~1392 (CI green; no behavior change from the extraction).
+**Pt.7 kickoff (#119) + follow-up (claude/continue-pt7-xEG9a) both
+landed.** `screener_core.py` and `scorecard_core.py` both exist,
+both are outside the coverage omit list, both have dedicated
+behavioral test files:
+  * `tests/test_round61_pt7_screener_core.py` — 62 tests covering
+    `pick_best_entry_strategy`, `trading_day_fraction_elapsed`,
+    `score_stocks` (breakout/wheel/mean-reversion tiers, volatility
+    soft-cap, injected copy + pead score-fns with exception swallow,
+    sector + sort), `apply_market_regime`,
+    `apply_sector_diversification`, `calc_position_size`,
+    `compute_portfolio_pnl`. 98% line+branch coverage.
+  * `tests/test_round61_pt7_scorecard_core.py` — 85 tests covering
+    Decimal helpers, status counts, win/loss stats, profit factor,
+    max drawdown (three-way peak), Sharpe + Sortino, strategy
+    breakdown, A/B testing, correlation-warning (injected annotator),
+    readiness, snapshot retention, full orchestrator via
+    `calculate_metrics` + `take_daily_snapshot`. 99% line+branch.
+  * Round-58 pin (`test_correlation_warning_resolves_option_underlying`)
+    updated to grep both files — update_scorecard.py for the
+    injected annotator import, scorecard_core.py for the
+    `_underlying`/`_sector` grouping logic.
+  * **Coverage 51.04% → ~53%; CI floor 45 → 48.** Floor leaves
+    headroom above local measurements for CI-environment drift.
+  * Test count 1392 → **1484** (3 deselected unchanged).
 
 ### What landed in round 61
 
@@ -250,39 +264,32 @@ For admin tests, use the **admin-and-target pattern** (see
 create admin1 + target user, logout, re-auth as admin so admin
 endpoints have a real target user ID to operate on.
 
-### pt.7 IN PROGRESS — screener_core.py landed, more extraction + tests next
+### pt.7 DONE — screener_core + scorecard_core both extracted + tested
 
-**Kickoff (#119) SHIPPED:** `screener_core.py` now hosts the pure
-scoring math extracted from `update_dashboard.py`. Functions:
+**Both cores shipped:**
+  * `screener_core.py` (7 pure fns, extracted #119, 98% coverage via
+    62 tests in `tests/test_round61_pt7_screener_core.py`)
+  * `scorecard_core.py` (17 pure fns, extracted in the pt.7 follow-up,
+    99% coverage via 85 tests in
+    `tests/test_round61_pt7_scorecard_core.py`)
 
-  * `pick_best_entry_strategy(scores, entry_strategies)` — argmax
-  * `trading_day_fraction_elapsed(now=None)` — session time math
-  * `score_stocks(snapshots, *, entry_strategies, sector_map,
-                    min_price, min_volume, copy_trading_enabled,
-                    pead_enabled, day_fraction=None,
-                    pead_score_fn=None, copy_score_fn=None)`
-    — the 190-line heart of the screener. External deps
-    (pead, capitol_trades) injected as callables so the core module
-    has zero network/disk dependencies.
-  * `apply_market_regime(picks, regime)` — bias annotation
-  * `apply_sector_diversification(picks, max_per_sector, top_n)`
-  * `calc_position_size(price, volatility, portfolio_value, max_risk_pct)`
-  * `compute_portfolio_pnl(positions, portfolio_value)`
+`update_dashboard.py` and `update_scorecard.py` stay in `omit` list
+(both still serve as subprocess entry points); both import from the
+respective core modules via thin compat wrappers that inject
+production dependencies (`now_et`, `constants.SECTOR_MAP`,
+`position_sector.annotate_sector`).
 
-`update_dashboard.py` still in `omit` list — imports from
-`screener_core` via thin compat wrappers. `screener_core.py` is NOT
-omitted — pytest-cov sees every statement.
+**Coverage impact:** 51.04% → ~53%. CI floor ratcheted 45 → 48.
+Test count 1392 → 1484.
 
-**Still to do in pt.7:**
-1. Write behavioral tests for `screener_core.py` (pure functions, so
-   cheap — should hit 90%+ coverage in one test file, adding
-   ~3-5 percentage points to total coverage)
-2. Extract `scorecard_core.py` from `update_scorecard.py` using the
-   same pattern; add tests (~2-3 more points)
-3. Measure total coverage impact; ratchet CI floor 45 → 48-50
-
-**Payoff when complete:** total coverage 51% → ~56-60%. Remaining
-gap to 80% filled by pt.8 (Vitest for dashboard JS).
+**For the next agent — how to extend this pattern:** if you need to
+test previously-omitted subprocess logic, mirror the pt.7 approach:
+extract pure math into a new `*_core.py` module, pass external deps
+as callable parameters, have the caller wrap the core function and
+inject production dependencies. The caller stays in `omit` (it's
+still subprocess-driven), the core module is NOT omitted, and
+pytest-cov sees the math. Behavior stays identical because the
+wrapper is a 1:1 passthrough.
 
 ### Structural limits (won't go away with more Python tests)
 
@@ -296,13 +303,19 @@ gap to 80% filled by pt.8 (Vitest for dashboard JS).
   on server.py from here need either pt.7 (refactor) or more happy-
   path tests that drive Alpaca-facing code (stubbed).
 
-### Picking up pt.7 (checklist for next session)
+### Picking up pt.8 / pt.9 (checklist for next session)
 
 1. `git pull --ff-only origin main`
 2. `cat CLAUDE.md` (this section first — it's the current plan)
 3. `cat CHANGELOG.md` (skim last 3 rounds)
-4. Confirm tests pass: `MASTER_ENCRYPTION_KEY=$(python3 -c 'print("a"*64)') pytest tests/ --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json --deselect tests/test_auth.py::test_password_strength_rejects_weak --deselect tests/test_audit_round12_scheduler_latent.py::test_ruff_clean_on_real_bug_rules -q` — expect **1337 passing, 3 deselected**
-5. Start pt.7 work (refactor `update_dashboard.py` + `update_scorecard.py` to extract pure scoring into `screener_core.py` / `scorecard_core.py`; un-omit from coverage). This is a source refactor — read the "pt.7 specific handoff" section above BEFORE touching production logic.
+4. Confirm tests pass: `MASTER_ENCRYPTION_KEY=$(python3 -c 'print("a"*64)') pytest tests/ --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json --deselect tests/test_auth.py::test_password_strength_rejects_weak --deselect tests/test_audit_round12_scheduler_latent.py::test_ruff_clean_on_real_bug_rules -q` — expect **1484 passing, 3 deselected**
+5. Decide next step. Options:
+   * **pt.8** (Vitest for dashboard JS, ~6000 LOC currently invisible
+     to pytest-cov — adds JS coverage, pushes total past ~78%)
+   * **pt.9** (deeper `cloud_scheduler.py` — still ~31%; pt.6 hit the
+     HTTP surface but left 60+ scheduler fns behind)
+   * Source-level refactors of other subprocess-driven files (e.g.
+     `capital_check.py`) using the same `*_core.py` extract pattern.
 
 ### Previously in-flight (now merged)
 Rounds 54-60 all merged via PRs #97-#101, 2026-04-22 / 2026-04-23.
