@@ -300,13 +300,27 @@ The bot has **4 entry strategies** (Breakout, Mean Reversion, Wheel, PEAD), **1 
 
 **In plain English:** Trailing Stop is **not an entry strategy you pick** — it's automatically attached to every Breakout and Mean Reversion entry as the exit. The bot sets a floor price below the entry, and as the stock climbs the floor ratchets up with it (never down). When the stock drops to the floor, it sells.
 
-**Example on a Breakout entry:**
-- Bot buys NVDA at $200 (Breakout signal)
-- Floor starts at $190 (5% stop-loss for breakouts)
-- NVDA rises to $250 → +25% activates trailing → floor moves up to $237.50
-- NVDA drops to $237.50 → auto-sell for +18.75% profit
+**Round-61 pt.18: stepped trailing stop (professional-grade risk management).** The trail distance now changes as your profit grows — wider when you just entered (to survive normal pullbacks), tighter as the position builds gain, with an explicit **break-even lock** once you're +5% up.
 
-**Why universal:** Every long entry needs an exit. Trailing Stop handles it consistently across strategies, so the monitor only manages one exit shape regardless of how the position was opened.
+| Your profit | Stop placement | What it protects |
+|---|---|---|
+| 0% to +5% | 8% below highest seen | Breathing room for the initial test of the breakout |
+| **+5% to +10%** | **EXACTLY AT ENTRY** | **No-loss guarantee — you cannot lose money on this trade from here** |
+| +10% to +20% | 6% below highest | Locks in some gain while allowing pullbacks |
+| +20%+ | 4% below highest | Rides the big move — protects tight because the more it runs, the more asymmetric a giveback becomes |
+
+**Example on a Breakout entry (NVDA at $200):**
+- Floor starts at $184 (8% stop-loss)
+- NVDA climbs to $210 (+5% profit) → **stop JUMPS to $200** (entry). Notification fires: "NVDA: Tier 2 (BREAK-EVEN LOCKED)"
+- NVDA climbs to $225 (+12.5%) → stop moves to $225 × 0.94 = $211.50
+- NVDA climbs to $260 (+30%) → stop tightens to $260 × 0.96 = $249.60
+- NVDA pulls back to $249.60 → auto-sell for +24.8% profit
+
+**Shorts get the mirror treatment:** once a short is +5% in profit (price dropped 5% below entry), the cover-stop locks at entry. Further drops tighten the trail the same way.
+
+**Opt-out:** if a strategy ever needs the old flat trail (e.g. a new experimental strategy still being validated), its rules can set `stepped_trail: false`. Default is ON for everything.
+
+**Why universal:** Every long and short entry needs an exit. The stepped trailing stop handles both consistently, so the monitor only manages one exit shape regardless of how the position was opened.
 
 ### 1. Wheel Strategy 🟣 (Get paid to wait)
 
