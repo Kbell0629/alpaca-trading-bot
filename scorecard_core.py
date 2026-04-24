@@ -237,16 +237,19 @@ def total_return_pct(portfolio_value: Decimal,
 # Strategy breakdown + A/B testing
 # ============================================================================
 
-STRATEGY_BUCKETS: tuple = (
-    "trailing_stop", "copy_trading", "wheel",
-    "mean_reversion", "breakout", "pead",
-    # Round-61 pt.19: short_sell was missing from this tuple, which
-    # silently dropped every closed short-sell trade from the
-    # performance attribution panel. User-reported: had closed short
-    # positions but no short_sell row in the breakdown. Add here so
-    # the scorecard + A/B testing cover all deployed strategies.
-    "short_sell",
-)
+# Round-61 pt.21: derive from constants.STRATEGY_NAMES so this list
+# stays in sync with every other consumer. Prior to pt.21, pt.19 had
+# to add "short_sell" explicitly because someone (pt.19 ago) forgot
+# when they added the short strategy. Now there's only one place to
+# update when a new strategy is added.
+try:
+    from constants import STRATEGY_NAMES as _STRAT_NAMES
+    STRATEGY_BUCKETS: tuple = tuple(sorted(_STRAT_NAMES))
+except ImportError:
+    STRATEGY_BUCKETS: tuple = (
+        "trailing_stop", "copy_trading", "wheel",
+        "mean_reversion", "breakout", "pead", "short_sell",
+    )
 
 
 def build_strategy_breakdown(trades: Sequence[dict]) -> dict:

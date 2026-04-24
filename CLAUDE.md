@@ -61,9 +61,77 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-24 — round 61 pt.10-18 SHIPPED)
+## Current session state (2026-04-24 — round 61 pt.10-21 SHIPPED)
 
-**Pt.18 in flight (PR #144):** professional stepped trailing stop —
+**Pt.21 in flight (PR #147):** consolidated cleanup + audit
+infrastructure. User requested a way to prevent the key-drift
+bug class that spawned pt.16/19/20, plus fix two production data
+issues from the JSON audit (DKNG + HIMS OCC options mis-routed
+through the short_sell path). Five-part change:
+
+  1. **`constants.STRATEGY_NAMES` + `CLOSED_STATUSES`** —
+     single source of truth imported by `server._mark_auto_deployed`,
+     `error_recovery.list_strategy_files`, `scorecard_core.STRATEGY_BUCKETS`.
+     Prior to pt.21 these were three independent hard-coded lists
+     that had to be updated in lockstep; pt.19/20 each landed because
+     someone missed a spot. Now there's one place.
+
+  2. **`error_recovery.migrate_legacy_short_sell_option_files`** —
+     boot-time retrofit. Scans STRATEGIES_DIR for legacy
+     `short_sell_<OCC>.json` files, creates matching
+     `wheel_<UNDERLYING>.json` (in `stage_1_put_active` for puts,
+     `stage_2_call_active` for covered calls) with active_contract
+     populated from the OCC parse, and marks the old file
+     `status: "migrated"` so it stops being picked up by either the
+     dashboard labeller or the short-sell monitor. Idempotent — runs
+     every error_recovery invocation, no-ops if nothing to migrate.
+     Fixes user-reported DKNG + HIMS mis-routing.
+
+  3. **`/api/audit` endpoint + `audit_core.run_audit`** — pure
+     helper that cross-checks positions / orders / strategy files /
+     trade journal / scorecard for 7 categories of inconsistency
+     (orphan position, legacy OCC mis-routing, ghost strategy file,
+     missing stop, invalid stop price relative to current, unknown
+     strategy name in journal, stale scorecard). Returns structured
+     severity-grouped findings. Endpoint lives at `/api/audit` with
+     a 🔍 Audit button in the Positions section header — one click
+     surfaces every inconsistency in plain English.
+
+  4. **Dashboard audit modal** — modal with HIGH/MEDIUM/LOW pills
+     and colour-coded findings. No need to grep log files.
+
+  5. **`migrate_auto_deployer_strategies_round61_pt21`** — per-user
+     boot migration widens `auto_deployer_config.strategies` from
+     the historical `[trailing_stop, mean_reversion, breakout]` to
+     include all 7 strategies (adds wheel, pead, short_sell,
+     copy_trading). Idempotent, never removes user-added strategies.
+
+  +26 tests in `tests/test_round61_pt21_audit_and_migration.py`.
+
+**Pt.20 landed (PR #146):** dashboard strategy-label map missing
+the `'short_sell'` key (backend writes that; map had `'short'`).
+Also switched orphan-found notifications from `warning` to `info`
+severity + dedup by symbol set. Affected users: anyone with a
+SHORT position saw AUTO badge without the SHORT SELL pill.
+  +8 tests.
+
+**Pt.19 landed (PR #145):** three user-reported issues from the
+pt.17/18 deploy:
+  1. SOXL adopted (AUTO) but no BUY stop. Monitor's initial
+     cover-stop placement used `entry * (1 + stop_pct)` which
+     was below current market for the underwater short → Alpaca
+     rejected every placement. Fix: adaptive formula
+     `max(entry*(1+pct), current*1.05)`.
+  2. HIMS short put still MANUAL after "Adopt" click. Grace-
+     period filter treated the user's manual BUY stop as an
+     "in-progress entry" and skipped adoption. Fix: exempt
+     shorts + OCC options from the grace-period filter.
+  3. `short_sell` was missing from `scorecard_core.STRATEGY_BUCKETS`
+     → every closed short trade silently dropped from performance
+     attribution.
+  +9 tests.
+
+**Pt.18 landed (PR #144):** professional stepped trailing stop —
 replaces the flat `highest * (1 - trail)` formula with tier-based
 risk management used by institutional trend-following systems.
 
@@ -749,6 +817,33 @@ singular/plural contract noun. 11 tests. Math (%, $, sort) untouched.
 ---
 
 ## Architectural invariants (CRITICAL — don't regress)
+
+### Post-61 pt.21 (consistency audit + constants single-source)
+- `constants.STRATEGY_NAMES`, `CLOSED_STATUSES`, `ACTIVE_STATUSES`,
+  `STRATEGY_FILE_PREFIXES` are the SINGLE source of truth. Every
+  consumer MUST import from there. Adding a new strategy = add the
+  name to the constants frozenset and every downstream reader
+  (dashboard badge, scorecard bucket, orphan-scanner, wheel monitor)
+  picks it up automatically.
+- `error_recovery.migrate_legacy_short_sell_option_files` MUST run
+  every error_recovery invocation BEFORE the orphan-scan loop — the
+  migrated wheel file needs to be in place when the orphan scanner
+  checks `strategy_symbol_map` for the underlying. Marking the
+  legacy file `status: "migrated"` (not `closed`) is deliberate —
+  both `_mark_auto_deployed` (server.py) and
+  `list_strategy_files` (error_recovery.py) treat "migrated" the same
+  as closed so the legacy file stops claiming the symbol.
+- `audit_core.run_audit` is pure — no side effects, no file writes,
+  no network. Takes an in-memory snapshot (positions, orders,
+  strategy_files, journal, scorecard) and returns a findings list.
+  Unit-test it in isolation; the `/api/audit` endpoint is just the
+  HTTP glue.
+- `audit_core._parse_strategy_filename` MUST try longest-prefix
+  match against `STRATEGY_FILE_PREFIXES` before falling back to
+  `stem.partition("_")`. A naive `rpartition("_")` splits
+  `short_sell_SOXL` into `short_sell` / `SOXL` correctly, but would
+  break on any multi-word strategy that has an underscore in the
+  symbol. Longest-match is safer.
 
 ### Post-61 pt.18 (professional stepped trailing stop)
 - `cloud_scheduler._compute_stepped_stop(entry, extreme, default_trail,

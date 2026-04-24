@@ -3668,6 +3668,89 @@ async function forceAutoDeploy() {
     }
 }
 
+// Round-61 pt.21: state-consistency audit. Cross-checks Alpaca
+// positions, orders, strategy files, trade journal, and scorecard —
+// surfaces every inconsistency in plain English so the user can see
+// why something's labeled wrong without grepping files or reading
+// the scheduler log.
+async function runStateAudit() {
+    toast('Running state audit...', 'info');
+    try {
+        var resp = await fetch(API_BASE + '/api/audit', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {'Content-Type': 'application/json', 'X-CSRF-Token': getCSRFToken()},
+            body: '{}'
+        });
+        var data = await resp.json();
+        if (!resp.ok) {
+            toast('Audit failed: ' + (data.error || 'unknown'), 'error');
+            return;
+        }
+        var report = data.report || {};
+        var findings = report.findings || [];
+        var counts = report.counts || {HIGH: 0, MEDIUM: 0, LOW: 0};
+
+        // Build modal-style HTML string.
+        var html = '<div class="modal-backdrop" onclick="closeAuditModal(event)" id="auditModalBackdrop">';
+        html += '<div class="modal" onclick="event.stopPropagation()" style="max-width:720px;max-height:80vh;overflow-y:auto">';
+        html += '<div class="modal-header"><h3>State Audit</h3>';
+        html += '<button type="button" class="modal-close" onclick="closeAuditModal()">&times;</button></div>';
+        html += '<div class="modal-body">';
+        html += '<div style="margin-bottom:12px;color:var(--text-dim);font-size:12px">';
+        html += 'Checked ' + (data.position_count || 0) + ' position(s), ';
+        html += (data.order_count || 0) + ' open order(s), ';
+        html += (data.file_count || 0) + ' strategy file(s).';
+        html += '</div>';
+        if (report.clean) {
+            html += '<div style="padding:16px;background:rgba(16,185,129,0.10);border:1px solid rgba(16,185,129,0.4);border-radius:8px;color:var(--green)">';
+            html += '<strong>✓ All consistent</strong><br>';
+            html += 'No inconsistencies between Alpaca positions, strategy files, and the journal.';
+            html += '</div>';
+        } else {
+            html += '<div style="margin-bottom:12px">';
+            if (counts.HIGH) html += '<span class="strategy-pill" style="background:rgba(239,68,68,0.20);color:var(--red);margin-right:6px">HIGH: ' + counts.HIGH + '</span>';
+            if (counts.MEDIUM) html += '<span class="strategy-pill" style="background:rgba(245,158,11,0.20);color:var(--orange);margin-right:6px">MEDIUM: ' + counts.MEDIUM + '</span>';
+            if (counts.LOW) html += '<span class="strategy-pill" style="background:rgba(100,116,139,0.20);color:var(--text-dim);margin-right:6px">LOW: ' + counts.LOW + '</span>';
+            html += '</div>';
+            for (var i = 0; i < findings.length; i++) {
+                var f = findings[i];
+                var color = f.severity === 'HIGH' ? 'var(--red)'
+                          : f.severity === 'MEDIUM' ? 'var(--orange)'
+                          : 'var(--text-dim)';
+                var bg = f.severity === 'HIGH' ? 'rgba(239,68,68,0.10)'
+                       : f.severity === 'MEDIUM' ? 'rgba(245,158,11,0.10)'
+                       : 'rgba(100,116,139,0.10)';
+                html += '<div style="padding:10px;margin-bottom:8px;background:' + bg
+                     + ';border-left:3px solid ' + color + ';border-radius:4px">';
+                html += '<div style="font-size:10px;font-weight:700;color:' + color
+                     + ';text-transform:uppercase;margin-bottom:4px">'
+                     + esc(f.severity) + ' · ' + esc(f.category || 'issue');
+                if (f.symbol) html += ' · ' + esc(f.symbol);
+                html += '</div>';
+                html += '<div style="font-size:13px;line-height:1.5">' + esc(f.message || '') + '</div>';
+                html += '</div>';
+            }
+        }
+        html += '</div></div></div>';
+
+        // Inject into the app container.
+        var existing = document.getElementById('auditModalBackdrop');
+        if (existing) existing.remove();
+        var holder = document.createElement('div');
+        holder.innerHTML = html;
+        document.body.appendChild(holder.firstChild);
+    } catch(e) {
+        toast('Audit error: ' + e.message, 'error');
+    }
+}
+
+function closeAuditModal(ev) {
+    if (ev && ev.target && ev.target.id !== 'auditModalBackdrop') return;
+    var modal = document.getElementById('auditModalBackdrop');
+    if (modal) modal.remove();
+}
+
 // Round-61 pt.15: convert every MANUAL position to AUTO by synthesizing
 // the missing strategy file (trailing_stop_<SYM>.json for longs,
 // short_sell_<SYM>.json for shorts). The bot's monitor_strategies loop
@@ -6109,6 +6192,7 @@ function renderDashboard() {
                         // placing + maintaining stops immediately. Also
                         // runs automatically every 10 min during market
                         // hours.
+                        '<button type="button" class="btn-ghost btn-sm" onclick="runStateAudit()" title="Cross-check positions, orders, strategy files, journal, and scorecard for inconsistencies">🔍 Audit</button>' +
                         '<button type="button" class="btn-ghost btn-sm" onclick="adoptOrphanPositions()" title="Put every MANUAL position under AUTO bot management (places stops, enables profit-ladders)">🤖 Adopt MANUAL → AUTO</button>' +
                         '<a class="btn-ghost btn-sm" href="/api/export/positions.csv" download="positions.csv" style="text-decoration:none" title="Download positions as CSV">⬇ CSV</a>' +
                     '</span>' +

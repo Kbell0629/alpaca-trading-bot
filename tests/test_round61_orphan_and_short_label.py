@@ -87,11 +87,23 @@ class TestMarkAutoDeployedSkipsClosed:
         with open("server.py") as f:
             src = f.read()
         assert '_mark_auto_deployed' in src or 'def _mark_auto_deployed' in src
-        # The skip logic for closed/stopped/cancelled/etc.
-        assert '"closed", "stopped", "cancelled", "canceled"' in src, (
-            "_mark_auto_deployed must skip strategy files whose "
-            "status is closed/stopped/cancelled — otherwise stale "
-            "files claim a symbol and mis-label the active strategy")
+        # Round-61 pt.21: skip-closed logic delegated to
+        # constants.is_closed_status (shared source of truth with
+        # error_recovery.list_strategy_files). The literal string-match
+        # pin is obsolete; pin the delegation instead.
+        assert "is_closed_status" in src, (
+            "_mark_auto_deployed must use constants.is_closed_status "
+            "to skip stale strategy files — otherwise stale files claim "
+            "a symbol and mis-label the active strategy. Pt.21 moved "
+            "the closed-status list into constants.py.")
+        # Also verify constants.py has the canonical list (single
+        # source of truth).
+        with open("constants.py") as f:
+            cs = f.read()
+        for expected in ("closed", "stopped", "cancelled", "canceled",
+                         "exited", "filled_and_closed"):
+            assert f'"{expected}"' in cs, (
+                f"constants.CLOSED_STATUSES missing {expected!r}")
 
     def test_mark_auto_deployed_short_sell_priority(self):
         """short_sell should get the same priority bucket as

@@ -224,3 +224,88 @@ Q_PATTERN = re.compile(r'\bQ[1-4]\b')
 HTTP_TIMEOUT_FAST = 5
 HTTP_TIMEOUT_DEFAULT = 10
 HTTP_TIMEOUT_SLOW = 20
+
+
+# ============================================================================
+# Round-61 pt.21: single source of truth for strategy names + lifecycle
+# ============================================================================
+#
+# Prior to pt.21, the same strings were duplicated across server.py,
+# error_recovery.py, scorecard_core.py, cloud_scheduler.py, and
+# templates/dashboard.html. Every time a new strategy was added (e.g.
+# round-19 short_sell) one of the consumers forgot to update its copy,
+# and a whole class of "why isn't my position labeled?" bugs followed
+# (see pt.16, pt.19, pt.20 close-outs). Importing from here guarantees
+# the sets stay in sync.
+
+# All strategy names the bot produces. Any code path that reads or
+# writes a strategy-file prefix, a journal `strategy` field, or a
+# dashboard badge MUST use one of these. New strategies start here.
+STRATEGY_NAMES: frozenset = frozenset({
+    "trailing_stop",   # universal exit, applied to every long
+    "breakout",        # breakout entries
+    "mean_reversion",  # oversold-dip entries
+    "wheel",           # options wheel (short put → assignment → covered call)
+    "short_sell",      # equity shorting entries
+    "pead",            # post-earnings announcement drift
+    "copy_trading",    # congressional / insider mirror
+})
+
+# Statuses that mean "this strategy file is no longer live." Any code
+# that scans strategy files for active management MUST skip these —
+# server._mark_auto_deployed (round-61 #110),
+# error_recovery.list_strategy_files (round-61 pt.16), and the
+# monitor_strategies active-side filter all agree on this list.
+# Case-insensitive compare at the call site.
+CLOSED_STATUSES: frozenset = frozenset({
+    "closed",
+    "stopped",
+    "cancelled",
+    "canceled",
+    "exited",
+    "filled_and_closed",
+})
+
+# Statuses that mean "this strategy file is ACTIVELY managed by the
+# monitor loop." Counterpart to CLOSED_STATUSES — used by
+# monitor_strategies + wheel_strategy.
+ACTIVE_STATUSES: frozenset = frozenset({
+    "active",
+    "awaiting_fill",
+})
+
+# Filename prefix tuple used by orphan-detection + dashboard-label
+# parsing. All prefixes here must be keys in STRATEGY_NAMES.
+STRATEGY_FILE_PREFIXES: tuple = (
+    "trailing_stop",
+    "breakout",
+    "mean_reversion",
+    "wheel",
+    "short_sell",
+    "pead",
+    "copy_trading",
+)
+
+
+def is_closed_status(status) -> bool:
+    """Case-insensitive check for 'this strategy file is no longer
+    live'. Handles None, "", mixed-case ('Closed'/'CLOSED')."""
+    if not status:
+        return False
+    return str(status).strip().lower() in CLOSED_STATUSES
+
+
+def is_active_status(status) -> bool:
+    """Case-insensitive check for 'monitor should touch this file'."""
+    if not status:
+        return False
+    return str(status).strip().lower() in ACTIVE_STATUSES
+
+
+def is_known_strategy(name) -> bool:
+    """Does this strategy name match one of the canonical entries?
+    Used by dashboard badge-rendering and scorecard-bucket logic to
+    gate on known names."""
+    if not name:
+        return False
+    return str(name).strip().lower() in STRATEGY_NAMES
