@@ -371,9 +371,14 @@ def test_dashboard_handler_mixin_decomposition(isolated_data_dir):
     # 3310 (round-61 pt.12 — new /api/test-saved-alpaca-keys route
     # for diagnosing dashboard-shows-$0 without re-typing keys.
     # Legitimately belongs at the route-dispatch layer).
+    # 3340 (round-61 pt.13 — _fetch_live_alpaca_state surfaces the
+    # cryptography-import status into api_errors when AESGCM is
+    # unavailable, so the dashboard banner can point at the real
+    # deploy-side fix instead of leaving the user re-pasting keys
+    # that will fail to save for the same reason).
     import os
     server_lines = sum(1 for _ in open(server.__file__))
-    assert server_lines < 3310, \
+    assert server_lines < 3340, \
         f"server.py too large ({server_lines} lines) — handler methods leaked back in"
 
 

@@ -27,7 +27,17 @@
 # we just need it visible at /usr/lib/. One ln -s in the install phase
 # is all it takes — no env vars, no shell wrappers, no Nix surgery.
 [phases.setup]
-nixPkgs = ["python312"]
+# Round-61 pt.13: added libffi so cryptography (specifically its cffi
+# backend) has the system shared library it needs at import time. The
+# cffi wheel ships a compiled _cffi_backend.so but it dlopen()s
+# libffi.so.8 from the system, and the Nixpacks slim image doesn't
+# install libffi by default → cryptography import raises
+# ModuleNotFoundError: No module named '_cffi_backend' (the actual root
+# cause is dlopen failure on libffi, but cffi reports it as a missing
+# module). Once libffi is on the build image, the wheel resolves and
+# cryptography loads. Without this, every saved Alpaca credential is
+# inaccessible because decrypt_secret returns "" → /account → 401.
+nixPkgs = ["python312", "libffi"]
 
 [phases.install]
 # Nixpacks default install + a NARROW native-libs dir for numpy.
@@ -47,5 +57,9 @@ nixPkgs = ["python312"]
 # venv and preserves it; /usr/lib does not.
 cmds = [
     "python -m venv --copies /opt/venv && . /opt/venv/bin/activate && pip install -r requirements.txt",
-    "mkdir -p /opt/venv/native-libs && ln -sf /usr/lib/x86_64-linux-gnu/libstdc++.so.6 /opt/venv/native-libs/libstdc++.so.6 && ln -sf /usr/lib/x86_64-linux-gnu/libz.so.1 /opt/venv/native-libs/libz.so.1",
+    # Round-61 pt.13: also symlink libffi.so.8 so cffi's _cffi_backend
+    # can dlopen() it at runtime. Same pattern as libstdc++/libz: lib
+    # IS in the runtime image (apt's libffi8:amd64), just not on the
+    # default loader search path.
+    "mkdir -p /opt/venv/native-libs && ln -sf /usr/lib/x86_64-linux-gnu/libstdc++.so.6 /opt/venv/native-libs/libstdc++.so.6 && ln -sf /usr/lib/x86_64-linux-gnu/libz.so.1 /opt/venv/native-libs/libz.so.1 && (ln -sf /usr/lib/x86_64-linux-gnu/libffi.so.8 /opt/venv/native-libs/libffi.so.8 2>/dev/null || true)",
 ]

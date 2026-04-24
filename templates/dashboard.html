@@ -5916,6 +5916,23 @@ function renderDashboard() {
                 'Check API keys in Settings → Alpaca API. Last error: <code>' + esc(errs[0]) + '</code></span>' +
             '</div>';
         })()) +
+        // Round-61 pt.13: dedicated banner for the cryptography-broken
+        // case. Distinct fix path from a normal account-fetch failure:
+        // the user can't re-save keys because the encrypt path is also
+        // broken — they need a deploy-side fix (rebuild with a working
+        // cryptography wheel), not a key-form action.
+        ((function () {
+            var cryptoErrs = (d.api_errors || []).filter(function(e) {
+                return String(e || '').toLowerCase().indexOf('encryption:') === 0;
+            });
+            if (cryptoErrs.length === 0) return '';
+            return '<div class="kill-switch-active-banner" style="background:rgba(220,38,38,0.18);border-color:rgba(220,38,38,0.5);color:var(--red)">' +
+                '<span><strong>⛔ Encryption broken on this deployment</strong> — the cryptography package failed to load, ' +
+                'so saved Alpaca keys cannot be decrypted AND new keys cannot be saved. ' +
+                'This is a deploy-side fix (rebuild on Railway with a working cryptography wheel), not something to fix in the keys form. ' +
+                'Detail: <code>' + esc(cryptoErrs[0]) + '</code></span>' +
+            '</div>';
+        })()) +
         econBannerHtml +
         pnlAlertHtml +
         navTabs +

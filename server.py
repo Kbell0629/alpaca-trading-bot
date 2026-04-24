@@ -358,6 +358,28 @@ def _fetch_live_alpaca_state(api_endpoint, api_headers):
     if isinstance(orders, dict) and "error" in orders:
         errors.append("orders: " + str(orders.get("error", "")))
 
+    # Round-61 pt.13: when cryptography fails to import, every saved
+    # credential decrypts to "" and Alpaca returns 401 on every /account
+    # request. Surface the underlying cause so the dashboard banner
+    # points at the real fix (Railway redeploy with a working
+    # cryptography wheel) instead of the user re-pasting keys that
+    # WILL fail to save for the same reason.
+    try:
+        import auth as _auth_for_crypto_check
+        if not getattr(_auth_for_crypto_check, "_HAS_AESGCM", False):
+            err_detail = getattr(_auth_for_crypto_check,
+                                 "_AESGCM_IMPORT_ERROR", "")
+            errors.append(
+                "encryption: cryptography package failed to load on this "
+                "deployment — saved Alpaca keys cannot be decrypted "
+                "(every /account request returns 401 as a result). "
+                "Action: redeploy with a working cryptography install. "
+                + (f"Boot-time import error: {err_detail}"
+                   if err_detail else "")
+            )
+    except Exception:
+        pass
+
     return account, positions, orders, errors
 
 
