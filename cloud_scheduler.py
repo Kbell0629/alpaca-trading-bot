@@ -1542,6 +1542,70 @@ def process_short_strategy(user, filepath, strat, state, rules, extended_hours=F
         save_json(filepath, strat)
         return
 
+    # Round-61 pt.30: position-drift guard. State says we're short
+    # ``shares``, but the real Alpaca position may have been closed
+    # externally (manual cover, margin call, broker force-cover). User-
+    # reported: SOXL stuck retrying a cover-stop every monitor tick with
+    # Alpaca returning HTTP 403 "insufficient qty available for order
+    # (requested: 29, available: 0)". Pt.24/25/26 already handle stale
+    # ORDER ids; pt.30 extends the pattern to stale POSITION state.
+    #
+    # Query /positions/{symbol}. We only act on POSITIVE evidence of
+    # drift — either a specific 404-style error (Alpaca says "position
+    # does not exist"), OR a dict that explicitly carries a ``qty``
+    # field we can parse. Generic error strings (circuit breaker open,
+    # rate limited, unexpected 5xx) DO NOT trigger the close — we
+    # fail open and try again next tick. Otherwise a transient
+    # outage could silently close every live strategy. For shorts
+    # Alpaca reports qty as a negative string (e.g. "-29"), hence
+    # the ``abs()``.
+    pos = user_api_get(user, f"/positions/{symbol}")
+    pos_missing = False
+    if isinstance(pos, dict) and "error" in pos:
+        err_lower = str(pos.get("error") or "").lower()
+        pos_missing = (
+            "404" in err_lower
+            or "not found" in err_lower
+            or "does not exist" in err_lower
+            or "position not found" in err_lower
+        )
+    pos_qty = None
+    if isinstance(pos, dict) and "error" not in pos and "qty" in pos:
+        try:
+            pos_qty = abs(int(float(pos.get("qty", 0))))
+        except (TypeError, ValueError):
+            pos_qty = None
+    if pos_missing or pos_qty == 0:
+        for oid_key in ("cover_order_id", "target_order_id"):
+            oid = state.get(oid_key)
+            if oid:
+                user_api_delete(user, f"/orders/{oid}")
+                state[oid_key] = None
+        pnl = (entry - price) * shares  # short pnl = entry - cover
+        strat["status"] = "closed"
+        state["exit_reason"] = "closed_externally"
+        state["exit_price"] = price
+        state["shares_shorted"] = 0
+        state["total_shares_held"] = 0
+        log(f"[{user['username']}] {symbol}: SHORT position not found at "
+            f"Alpaca (state said {shares}). Marking strategy closed. "
+            f"Approx P&L ${pnl:.2f} at last price ${price:.2f}.", "monitor")
+        notify_user(user,
+                    f"Short on {symbol} closed externally (position not "
+                    f"found at broker). Approx P&L ${pnl:.2f}.", "exit")
+        record_trade_close(user, symbol, strat.get("strategy", "short_sell"),
+                            price, pnl, "closed_externally",
+                            qty=shares, side="buy")
+        save_json(filepath, strat)
+        return
+    if pos_qty is not None and pos_qty < shares:
+        log(f"[{user['username']}] {symbol}: SHORT position drift — "
+            f"Alpaca reports {pos_qty}, state says {shares}. "
+            f"Syncing state to broker truth.", "monitor")
+        state["shares_shorted"] = pos_qty
+        state["total_shares_held"] = pos_qty
+        shares = pos_qty
+
     # Place initial stop-buy (cover) ABOVE entry — closes short if price rises
     # Round-61 pt.19: adaptive stop distance so an already-underwater short
     # still gets an Alpaca-accepted stop. Previous logic
@@ -1613,10 +1677,79 @@ def process_short_strategy(user, filepath, strat, state, rules, extended_hours=F
         log(f"[{user['username']}] {symbol}: placing SHORT cover-stop "
             f"qty={shares} entry=${entry:.2f} current=${price:.2f} "
             f"stop=${stop_price:.2f}", "monitor")
-        order = user_api_post(user, "/orders", {
-            "symbol": symbol, "qty": str(shares), "side": "buy",
-            "type": "stop", "stop_price": str(stop_price), "time_in_force": "gtc"
-        })
+
+        def _place_cover_stop():
+            return user_api_post(user, "/orders", {
+                "symbol": symbol, "qty": str(shares), "side": "buy",
+                "type": "stop", "stop_price": str(stop_price),
+                "time_in_force": "gtc",
+            })
+
+        order = _place_cover_stop()
+        # Round-61 pt.30: Alpaca "insufficient qty available" retry.
+        # User-reported: SOXL short -29 IS live at Alpaca, but cover-
+        # stop placement returns HTTP 403 / alpaca_code=40310000
+        # "insufficient qty available for order (requested: 29,
+        # available: 0)" every monitor tick. Root cause: some hidden
+        # open BUY order on the symbol is reserving all 29 shares.
+        # Most likely suspects:
+        #   * ``target_order_id`` — a profit-target BUY limit placed
+        #     during RTH that's still live. Pt.24/25/26 added liveness
+        #     checks for ``cover_order_id`` but never for
+        #     ``target_order_id``.
+        #   * An orphan cancel-in-flight that hasn't propagated.
+        #   * A manually-placed cover order the bot didn't record.
+        # Both target + cover reserve the same 29 shares, so they're
+        # mutually exclusive in terms of qty_available. When
+        # placement fails with the qty error, flush ALL open BUY
+        # orders for the symbol (they're all trying to cover the same
+        # short) and retry placement once. Cleared target_order_id
+        # will be re-placed on the next RTH tick.
+        def _looks_like_qty_error(resp):
+            if not isinstance(resp, dict):
+                return False
+            err_s = str(resp.get("error") or "").lower()
+            return (
+                "40310000" in err_s
+                or "insufficient qty" in err_s
+                or "qty available" in err_s
+                or "available: 0" in err_s
+            )
+
+        if (not (isinstance(order, dict) and "id" in order)
+                and _looks_like_qty_error(order)):
+            log(f"[{user['username']}] {symbol}: cover-stop failed with "
+                f"qty-available error — flushing stale BUY reservations "
+                f"and retrying once.", "monitor")
+            open_for_sym = user_api_get(
+                user, f"/orders?status=open&symbols={symbol}&limit=50")
+            canceled_ids = []
+            if isinstance(open_for_sym, list):
+                for o in open_for_sym:
+                    if not isinstance(o, dict):
+                        continue
+                    # Only cancel BUY orders on the symbol (they're
+                    # competing for the same short-cover qty). SELL
+                    # orders on a short position should never exist
+                    # anyway — belt-and-suspenders.
+                    if str(o.get("side", "")).lower() != "buy":
+                        continue
+                    oid = o.get("id")
+                    if not oid:
+                        continue
+                    user_api_delete(user, f"/orders/{oid}")
+                    canceled_ids.append(oid)
+            # Clear any state ids pointing at now-canceled orders.
+            if state.get("cover_order_id") in canceled_ids:
+                state["cover_order_id"] = None
+            if state.get("target_order_id") in canceled_ids:
+                state["target_order_id"] = None
+            log(f"[{user['username']}] {symbol}: canceled "
+                f"{len(canceled_ids)} stale BUY orders "
+                f"({canceled_ids}). Retrying cover-stop placement.",
+                "monitor")
+            order = _place_cover_stop()
+
         if isinstance(order, dict) and "id" in order:
             state["cover_order_id"] = order["id"]
             state["current_stop_price"] = stop_price
@@ -1872,6 +2005,60 @@ def process_strategy_file(user, filepath, strat, extended_hours=False):
     if not price:
         save_json(filepath, strat)
         return
+
+    # Round-61 pt.30: position-drift guard (long mirror of the short-
+    # side guard in process_short_strategy). State says we hold
+    # ``shares``, but the real Alpaca position may have been reduced
+    # or closed externally (user sold manually, margin call, partial
+    # fill on some other stop we don't know about). Without this
+    # check, the next sell-stop we try to place fails with Alpaca's
+    # 403 "insufficient qty available for order" — same loop that
+    # motivated pt.30 on the short side. Fail-open on transient errors;
+    # only close on a 404-style "position does not exist" message or
+    # an explicit ``qty`` field we can parse.
+    pos = user_api_get(user, f"/positions/{symbol}")
+    pos_missing = False
+    if isinstance(pos, dict) and "error" in pos:
+        err_lower = str(pos.get("error") or "").lower()
+        pos_missing = (
+            "404" in err_lower
+            or "not found" in err_lower
+            or "does not exist" in err_lower
+            or "position not found" in err_lower
+        )
+    pos_qty = None
+    if isinstance(pos, dict) and "error" not in pos and "qty" in pos:
+        try:
+            pos_qty = abs(int(float(pos.get("qty", 0))))
+        except (TypeError, ValueError):
+            pos_qty = None
+    if pos_missing or pos_qty == 0:
+        stop_oid = state.get("stop_order_id")
+        if stop_oid:
+            user_api_delete(user, f"/orders/{stop_oid}")
+            state["stop_order_id"] = None
+        pnl = (price - entry) * shares  # long pnl = exit - entry
+        strat["status"] = "closed"
+        state["exit_reason"] = "closed_externally"
+        state["exit_price"] = price
+        state["total_shares_held"] = 0
+        log(f"[{user['username']}] {symbol}: LONG position not found at "
+            f"Alpaca (state said {shares}). Marking strategy closed. "
+            f"Approx P&L ${pnl:.2f} at last price ${price:.2f}.", "monitor")
+        notify_user(user,
+                    f"Long on {symbol} closed externally (position not "
+                    f"found at broker). Approx P&L ${pnl:.2f}.", "exit")
+        record_trade_close(user, symbol, strategy_type,
+                            price, pnl, "closed_externally",
+                            qty=shares, side="sell")
+        save_json(filepath, strat)
+        return
+    if pos_qty is not None and pos_qty < shares:
+        log(f"[{user['username']}] {symbol}: LONG position drift — "
+            f"Alpaca reports {pos_qty}, state says {shares}. "
+            f"Syncing state to broker truth.", "monitor")
+        state["total_shares_held"] = pos_qty
+        shares = pos_qty
 
     # Place initial stop (regular-hours only — don't spam AH quotes)
     # Round-61 pt.19: adaptive stop distance for longs too. A long whose
