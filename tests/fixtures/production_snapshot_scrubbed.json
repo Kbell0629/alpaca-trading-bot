@@ -1,0 +1,153 @@
+{
+  "_scrubbed_notes": "Scrubbed copy of a production /api/data response captured 2026-04-24 13:39 ET. Account number, asset IDs, order IDs, and user-identifying strings (username, email, ntfy_topic) replaced with placeholders. All financial numbers + strategy state kept intact. This fixture is used by tests/test_round61_pt22_production_snapshot.py to assert that audit_core.run_audit would flag the known-bad issues from this snapshot (DKNG mis-routed, HIMS orphan, SOXL missing stop, stale scorecard) and to regression-test future audit-rule additions.",
+  "account": {
+    "id": "SCRUBBED-ACCOUNT-ID",
+    "account_number": "SCRUBBED",
+    "status": "ACTIVE",
+    "buying_power": "180977.08",
+    "cash": "98412.82",
+    "portfolio_value": "103133.02",
+    "equity": "103133.02",
+    "multiplier": "2",
+    "shorting_enabled": true,
+    "pattern_day_trader": false,
+    "trading_blocked": false
+  },
+  "positions": [
+    {
+      "symbol": "CRDO",
+      "asset_class": "us_equity",
+      "qty": "18",
+      "avg_entry_price": "189.15",
+      "side": "long",
+      "current_price": "196.57",
+      "_auto_deployed": true,
+      "_strategy": "breakout",
+      "_underlying": "CRDO",
+      "_sector": "Tech"
+    },
+    {
+      "symbol": "DKNG260515P00021000",
+      "asset_class": "us_option",
+      "qty": "-1",
+      "avg_entry_price": "1",
+      "side": "short",
+      "current_price": "0.94",
+      "_auto_deployed": true,
+      "_strategy": "short_sell",
+      "_underlying": "DKNG",
+      "_sector": "Tech"
+    },
+    {
+      "symbol": "HIMS260508P00027000",
+      "asset_class": "us_option",
+      "qty": "-1",
+      "avg_entry_price": "2.05",
+      "side": "short",
+      "current_price": "1.15",
+      "_auto_deployed": false,
+      "_strategy": "",
+      "_underlying": "HIMS",
+      "_sector": "Healthcare"
+    },
+    {
+      "symbol": "INTC",
+      "asset_class": "us_equity",
+      "qty": "63",
+      "avg_entry_price": "66.657143",
+      "side": "long",
+      "current_price": "81.215",
+      "_auto_deployed": true,
+      "_strategy": "breakout",
+      "_underlying": "INTC",
+      "_sector": "Tech"
+    },
+    {
+      "symbol": "SOXL",
+      "asset_class": "us_equity",
+      "qty": "-29",
+      "avg_entry_price": "110.645685",
+      "side": "short",
+      "current_price": "128.465",
+      "_auto_deployed": true,
+      "_strategy": "short_sell",
+      "_underlying": "SOXL",
+      "_sector": "Tech"
+    }
+  ],
+  "open_orders": [
+    {
+      "id": "SCRUBBED-ID-INTC-1",
+      "symbol": "INTC",
+      "asset_class": "us_equity",
+      "qty": "63",
+      "order_type": "stop",
+      "type": "stop",
+      "side": "sell",
+      "stop_price": "79.56",
+      "status": "new"
+    },
+    {
+      "id": "SCRUBBED-ID-CRDO-1",
+      "symbol": "CRDO",
+      "asset_class": "us_equity",
+      "qty": "18",
+      "order_type": "stop",
+      "type": "stop",
+      "side": "sell",
+      "stop_price": "181.72",
+      "status": "new"
+    },
+    {
+      "id": "SCRUBBED-ID-SOXL-1",
+      "symbol": "SOXL",
+      "asset_class": "us_equity",
+      "qty": "29",
+      "order_type": "limit",
+      "type": "limit",
+      "side": "buy",
+      "limit_price": "94.05",
+      "status": "new"
+    },
+    {
+      "id": "SCRUBBED-ID-DKNG-1",
+      "symbol": "DKNG260515P00021000",
+      "asset_class": "us_option",
+      "qty": "1",
+      "order_type": "stop",
+      "type": "stop",
+      "side": "buy",
+      "stop_price": "1.1",
+      "status": "new"
+    },
+    {
+      "id": "SCRUBBED-ID-HIMS-1",
+      "symbol": "HIMS260508P00027000",
+      "asset_class": "us_option",
+      "qty": "1",
+      "order_type": "stop",
+      "type": "stop",
+      "side": "buy",
+      "stop_price": "2.25",
+      "status": "new"
+    }
+  ],
+  "scorecard": {
+    "start_date": "2026-04-15",
+    "starting_capital": 100000.0,
+    "current_value": 102559.98,
+    "total_return_pct": 2.56,
+    "total_trades": 9,
+    "open_trades": 7,
+    "closed_trades": 2,
+    "last_updated": "2026-04-22T16:05:30.421407-04:00",
+    "strategy_breakdown": {
+      "trailing_stop": {"trades": 0, "wins": 0, "pnl": 0.0},
+      "copy_trading": {"trades": 0, "wins": 0, "pnl": 0.0},
+      "wheel": {"trades": 2, "wins": 0, "pnl": -7.0},
+      "mean_reversion": {"trades": 0, "wins": 0, "pnl": 0.0},
+      "breakout": {"trades": 7, "wins": 0, "pnl": -214.65},
+      "pead": {"trades": 0, "wins": 0, "pnl": 0.0}
+    }
+  }
+}

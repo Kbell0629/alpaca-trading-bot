@@ -2102,6 +2102,27 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
   </div>
 </div>
 
+<!-- Round-61 pt.22: State Audit modal. Uses the shared `.modal-overlay`
+     pattern + openModal()/closeModal() helpers so the CSS fade-in
+     triggers correctly. pt.21 used a custom `modal-backdrop` class
+     that didn't exist in the stylesheet — modal rendered invisibly. -->
+<div class="modal-overlay" id="auditModal">
+  <div class="modal" style="--modal-w:720px;max-width:720px;max-height:85vh">
+    <h2 style="display:flex;align-items:center;gap:8px">🔍 State Audit</h2>
+    <div class="modal-subtitle">
+      Cross-check of Alpaca positions vs. strategy files vs. journal vs. scorecard.
+      HIGH = money-at-risk, MEDIUM = data integrity, LOW = hygiene.
+    </div>
+    <div id="auditModalBody" style="max-height:60vh;overflow-y:auto;margin:12px 0">
+      Loading...
+    </div>
+    <div class="modal-actions">
+      <button class="btn-ghost" onclick="runStateAudit()">Re-run Audit</button>
+      <button class="btn-primary" onclick="closeModal('auditModal')">Close</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="killSwitchModal">
   <div class="modal" style="--modal-w:540px;max-width:540px">
     <h2 style="color:var(--red)">EMERGENCY KILL SWITCH</h2>
@@ -3687,68 +3708,60 @@ async function runStateAudit() {
             toast('Audit failed: ' + (data.error || 'unknown'), 'error');
             return;
         }
-        var report = data.report || {};
-        var findings = report.findings || [];
-        var counts = report.counts || {HIGH: 0, MEDIUM: 0, LOW: 0};
-
-        // Build modal-style HTML string.
-        var html = '<div class="modal-backdrop" onclick="closeAuditModal(event)" id="auditModalBackdrop">';
-        html += '<div class="modal" onclick="event.stopPropagation()" style="max-width:720px;max-height:80vh;overflow-y:auto">';
-        html += '<div class="modal-header"><h3>State Audit</h3>';
-        html += '<button type="button" class="modal-close" onclick="closeAuditModal()">&times;</button></div>';
-        html += '<div class="modal-body">';
-        html += '<div style="margin-bottom:12px;color:var(--text-dim);font-size:12px">';
-        html += 'Checked ' + (data.position_count || 0) + ' position(s), ';
-        html += (data.order_count || 0) + ' open order(s), ';
-        html += (data.file_count || 0) + ' strategy file(s).';
-        html += '</div>';
-        if (report.clean) {
-            html += '<div style="padding:16px;background:rgba(16,185,129,0.10);border:1px solid rgba(16,185,129,0.4);border-radius:8px;color:var(--green)">';
-            html += '<strong>✓ All consistent</strong><br>';
-            html += 'No inconsistencies between Alpaca positions, strategy files, and the journal.';
-            html += '</div>';
-        } else {
-            html += '<div style="margin-bottom:12px">';
-            if (counts.HIGH) html += '<span class="strategy-pill" style="background:rgba(239,68,68,0.20);color:var(--red);margin-right:6px">HIGH: ' + counts.HIGH + '</span>';
-            if (counts.MEDIUM) html += '<span class="strategy-pill" style="background:rgba(245,158,11,0.20);color:var(--orange);margin-right:6px">MEDIUM: ' + counts.MEDIUM + '</span>';
-            if (counts.LOW) html += '<span class="strategy-pill" style="background:rgba(100,116,139,0.20);color:var(--text-dim);margin-right:6px">LOW: ' + counts.LOW + '</span>';
-            html += '</div>';
-            for (var i = 0; i < findings.length; i++) {
-                var f = findings[i];
-                var color = f.severity === 'HIGH' ? 'var(--red)'
-                          : f.severity === 'MEDIUM' ? 'var(--orange)'
-                          : 'var(--text-dim)';
-                var bg = f.severity === 'HIGH' ? 'rgba(239,68,68,0.10)'
-                       : f.severity === 'MEDIUM' ? 'rgba(245,158,11,0.10)'
-                       : 'rgba(100,116,139,0.10)';
-                html += '<div style="padding:10px;margin-bottom:8px;background:' + bg
-                     + ';border-left:3px solid ' + color + ';border-radius:4px">';
-                html += '<div style="font-size:10px;font-weight:700;color:' + color
-                     + ';text-transform:uppercase;margin-bottom:4px">'
-                     + esc(f.severity) + ' · ' + esc(f.category || 'issue');
-                if (f.symbol) html += ' · ' + esc(f.symbol);
-                html += '</div>';
-                html += '<div style="font-size:13px;line-height:1.5">' + esc(f.message || '') + '</div>';
-                html += '</div>';
-            }
-        }
-        html += '</div></div></div>';
-
-        // Inject into the app container.
-        var existing = document.getElementById('auditModalBackdrop');
-        if (existing) existing.remove();
-        var holder = document.createElement('div');
-        holder.innerHTML = html;
-        document.body.appendChild(holder.firstChild);
+        renderAuditReport(data);
+        // Round-61 pt.22: use the shared `openModal()` helper so the
+        // `.modal-overlay.active` CSS kicks in (previous pt.21 used a
+        // nonexistent `.modal-backdrop` class → modal rendered
+        // invisibly, toast said "Running..." but nothing appeared).
+        openModal('auditModal');
     } catch(e) {
         toast('Audit error: ' + e.message, 'error');
     }
 }
 
-function closeAuditModal(ev) {
-    if (ev && ev.target && ev.target.id !== 'auditModalBackdrop') return;
-    var modal = document.getElementById('auditModalBackdrop');
-    if (modal) modal.remove();
+function renderAuditReport(data) {
+    var report = (data && data.report) || {};
+    var findings = report.findings || [];
+    var counts = report.counts || {HIGH: 0, MEDIUM: 0, LOW: 0};
+    var body = document.getElementById('auditModalBody');
+    if (!body) return;
+
+    var html = '<div style="margin-bottom:12px;color:var(--text-dim);font-size:12px">';
+    html += 'Checked ' + (data.position_count || 0) + ' position(s), ';
+    html += (data.order_count || 0) + ' open order(s), ';
+    html += (data.file_count || 0) + ' strategy file(s).';
+    html += '</div>';
+    if (report.clean) {
+        html += '<div style="padding:16px;background:rgba(16,185,129,0.10);border:1px solid rgba(16,185,129,0.4);border-radius:8px;color:var(--green)">';
+        html += '<strong>✓ All consistent</strong><br>';
+        html += 'No inconsistencies between Alpaca positions, strategy files, and the journal.';
+        html += '</div>';
+    } else {
+        html += '<div style="margin-bottom:12px">';
+        if (counts.HIGH) html += '<span class="strategy-pill" style="background:rgba(239,68,68,0.20);color:var(--red);margin-right:6px">HIGH: ' + counts.HIGH + '</span>';
+        if (counts.MEDIUM) html += '<span class="strategy-pill" style="background:rgba(245,158,11,0.20);color:var(--orange);margin-right:6px">MEDIUM: ' + counts.MEDIUM + '</span>';
+        if (counts.LOW) html += '<span class="strategy-pill" style="background:rgba(100,116,139,0.20);color:var(--text-dim);margin-right:6px">LOW: ' + counts.LOW + '</span>';
+        html += '</div>';
+        for (var i = 0; i < findings.length; i++) {
+            var f = findings[i];
+            var color = f.severity === 'HIGH' ? 'var(--red)'
+                      : f.severity === 'MEDIUM' ? 'var(--orange)'
+                      : 'var(--text-dim)';
+            var bg = f.severity === 'HIGH' ? 'rgba(239,68,68,0.10)'
+                   : f.severity === 'MEDIUM' ? 'rgba(245,158,11,0.10)'
+                   : 'rgba(100,116,139,0.10)';
+            html += '<div style="padding:10px;margin-bottom:8px;background:' + bg
+                 + ';border-left:3px solid ' + color + ';border-radius:4px">';
+            html += '<div style="font-size:10px;font-weight:700;color:' + color
+                 + ';text-transform:uppercase;margin-bottom:4px">'
+                 + esc(f.severity) + ' · ' + esc(f.category || 'issue');
+            if (f.symbol) html += ' · ' + esc(f.symbol);
+            html += '</div>';
+            html += '<div style="font-size:13px;line-height:1.5">' + esc(f.message || '') + '</div>';
+            html += '</div>';
+        }
+    }
+    body.innerHTML = html;
 }
 
 // Round-61 pt.15: convert every MANUAL position to AUTO by synthesizing

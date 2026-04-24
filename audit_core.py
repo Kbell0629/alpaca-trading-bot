@@ -65,7 +65,14 @@ def _occ_underlying(sym):
 
 def _parse_strategy_filename(fname: str):
     """Reverse of `{prefix}_{SYMBOL}.json`. Returns (prefix, symbol)
-    or (None, None) if unparseable."""
+    or (None, None) if unparseable.
+
+    Round-61 pt.22: also handles the indexed wheel pattern
+    `wheel_<UNDERLYING>__<CONTRACT_SUFFIX>.json` for multi-contract
+    wheel positions. In that case the returned symbol is the
+    underlying (anything before the double-underscore), not the
+    contract suffix — callers want to look up by underlying.
+    """
     if not fname.endswith(".json"):
         return None, None
     stem = fname[:-5]
@@ -83,7 +90,11 @@ def _parse_strategy_filename(fname: str):
                     "copy_trading", "breakout", "wheel", "pead")
     for p in prefixes:
         if stem.startswith(p + "_"):
-            return p, stem[len(p) + 1:]
+            remainder = stem[len(p) + 1:]
+            # pt.22: handle `wheel_HIMS__<contract>` → symbol="HIMS".
+            if "__" in remainder:
+                remainder = remainder.split("__", 1)[0]
+            return p, remainder
     # Fallback: first-underscore partition.
     prefix, _, sym = stem.partition("_")
     return prefix, sym
