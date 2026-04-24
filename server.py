@@ -475,7 +475,21 @@ def _mark_auto_deployed(positions, strats_dir, user_dir=None):
                 with open(journal_path) as _jf:
                     _journal = json.load(_jf) or {}
                 _auto_deployers = (
-                    "cloud_scheduler", "wheel_strategy", "error_recovery")
+                    # Equity auto-deploys write this directly from
+                    # cloud_scheduler.run_auto_deployer (see line ~2676).
+                    "cloud_scheduler",
+                    # Dedicated module for wheel options — the module name
+                    # itself, kept for backward-compat with any older
+                    # journal entries.
+                    "wheel_strategy",
+                    # Backfill entries for auto-recovered orphan positions.
+                    "error_recovery",
+                    # Round-61 pt.8 fix: wheel_strategy.py:791 writes this
+                    # string when the wheel sells a cash-secured put.
+                    # Without this in the allowed list, every DKNG / HIMS
+                    # wheel-put position showed up as "MANUAL" in the
+                    # dashboard even though the wheel auto-deployed them.
+                    "wheel_auto_deploy")
                 # Walk newest -> oldest so we pick up the most recent
                 # open per-symbol (positions can be re-opened after a
                 # close; we want the CURRENT open's strategy, not a

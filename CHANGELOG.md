@@ -8,6 +8,70 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.8 batch-2 — more JS helpers + AUTO/MANUAL mislabel fix
+
+Continues the pt.8 coverage push from #122 (kickoff).
+
+**New JS tests (+31, total now 99 passing across 7 files):**
+  * `tests/js/atomicReplaceChildren.test.js` (9 tests) — pins every
+    one of the 5 jitter-fix failure modes from CLAUDE.md. Null-guard
+    no-ops, atomic `<template>` + `replaceChildren` swap, scroll
+    preservation on `.sched-log-box`, data-attribute preservation,
+    nested-structure preservation.
+  * `tests/js/freshnessChip.test.js` (12 tests) — pins the post-60
+    `data-label="..."` architectural invariant (mobile in-place patch
+    relies on it), plus age-tier classes (`stale` at >2min,
+    `very-stale` at >5min), rollover thresholds (Xs/Xm/Xh), clamp of
+    negative ages to 0s, XSS escape on label, numeric unix-seconds
+    input path.
+  * `tests/js/focusables.test.js` (10 tests) — `_focusablesIn` under
+    every modal-keyboard-accessibility branch. Enabled/disabled
+    buttons, anchors with/without href, tabindex 0 vs -1, document
+    order preservation (critical for Tab cycling), nested containers.
+
+**Loader improvements:**
+  * Loader now stubs `setTimeout` alongside `setInterval` so the
+    dashboard's delayed `measureStickyHeader(…)` callback doesn't
+    fire after the jsdom environment tears down. Silences the
+    "document is not defined" async uncaught-exception noise that
+    was tagging every batch with a spurious "1 error" summary.
+  * Exposes `freshnessChip` + `_focusablesIn` on the test API.
+
+**User-reported AUTO/MANUAL mislabel fix:**
+User screenshot showed 5 positions all tagged MANUAL (CRDO long,
+DKNG 5/15 $21 short put, HIMS 5/8 $27 short put, INTC long, SOXL
+short) despite the bot having auto-deployed them. Root cause for
+the two wheel puts: `wheel_strategy.py:791` writes
+`deployer="wheel_auto_deploy"` to the trade journal, but
+`server._mark_auto_deployed`'s allowlist only recognized
+`("cloud_scheduler", "wheel_strategy", "error_recovery")`. Every
+wheel-sold put therefore fell through the journal-fallback guard
+and got the MANUAL label.
+
+Fix: add `"wheel_auto_deploy"` to the tuple (with docstring calling
+out which producer writes the value). Two new pins in
+`tests/test_round61_auto_manual_journal_fallback.py`:
+  * `test_wheel_auto_deploy_is_recognized_as_auto` — source-pin on
+    both `server.py` (allowlist) and `wheel_strategy.py` (producer)
+    so removing either side without the other fails CI.
+  * `test_behavior_wheel_put_labeled_auto_via_journal` — end-to-end
+    behavioral check: empty strats_dir + journal with
+    `deployer="wheel_auto_deploy"` → position gets `_auto_deployed=
+    True` with `_strategy="wheel"`.
+
+(Equity positions like CRDO/INTC/SOXL use `deployer="cloud_scheduler"`
+which was already in the allowlist — if those still show MANUAL it's
+a stale-strategy-file + trimmed-journal edge case, not a label-bug.)
+
+**Results:**
+  * JS tests: 68 → 99 (+31 across 3 new files).
+  * Python tests: 1484 → 1486 (+2 for the wheel_auto_deploy pins).
+  * Ruff clean. `node --check` clean.
+  * Dashboard redeploy surfaces the AUTO labels on next /api/data
+    tick.
+
+---
+
 ## 🆕 Round-61 pt.8 — Vitest + jsdom for dashboard JS (kickoff)
 
 Stands up the JS test infrastructure that pt.5/6/7 couldn't reach.

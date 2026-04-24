@@ -89,14 +89,21 @@ export function loadDashboardJs(stubs = {}) {
   if (typeof globalThis.marked === 'undefined') {
     globalThis.marked = { parse: (s) => s };
   }
-  // Stop the in-script `setInterval`s + `requestAnimationFrame`s from
-  // actually scheduling. Tests can re-enable per-call by injecting
-  // their own stubs after load.
+  // Stop the in-script `setInterval` / `setTimeout` /
+  // `requestAnimationFrame` callbacks from actually scheduling. The
+  // dashboard's top-level setup fires two delayed `measureStickyHeader()`
+  // calls (100ms + 500ms) that reference `document`; if they fire
+  // AFTER vitest tears down the jsdom environment we get a late
+  // "document is not defined" uncaught exception that flags as an
+  // error in the test run. No-op the schedulers so those never fire.
+  // Tests that need timers can install fakeTimers via vitest's `vi`.
   if (typeof globalThis.setInterval === 'function') {
-    const origSetInterval = globalThis.setInterval;
-    globalThis.setInterval = (fn, ms) => 0;
-    // Stash so a future test can restore if needed
-    globalThis.__origSetInterval = origSetInterval;
+    globalThis.__origSetInterval = globalThis.setInterval;
+    globalThis.setInterval = () => 0;
+  }
+  if (typeof globalThis.setTimeout === 'function') {
+    globalThis.__origSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = () => 0;
   }
   if (typeof globalThis.requestAnimationFrame === 'undefined') {
     globalThis.requestAnimationFrame = () => 0;
@@ -143,6 +150,9 @@ export function loadDashboardJs(stubs = {}) {
     'esc', 'jsStr',
     // Formatting helpers
     'fmtMoney', 'fmtPct', 'pnlClass', 'fmtUpdatedET',
+    // Freshness chip — dashboard's "last updated Xs ago" widget.
+    // Pinned by post-60 architectural invariant (data-label attr).
+    'freshnessChip',
     // OCC option-symbol parser
     '_occParse',
     // Scheduler timestamp helpers
@@ -152,7 +162,7 @@ export function loadDashboardJs(stubs = {}) {
     // Toast / log helpers
     'toast', 'addLog', 'renderLog',
     // Modal helpers
-    'openModal', 'closeModal',
+    'openModal', 'closeModal', '_focusablesIn',
     // Scroll helpers
     'scrollToTop', 'scrollToSection',
   ];
