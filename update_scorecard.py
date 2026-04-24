@@ -9,51 +9,45 @@ Run: python3 "/Users/kevinbell/Alpaca Trading/update_scorecard.py"
 """
 
 import json
-import math
 import os
 import tempfile
 import time
 import urllib.request
 import urllib.error
-from datetime import datetime, timezone, timedelta
-from decimal import Decimal, ROUND_HALF_EVEN
 from et_time import now_et
 
+# Round-61 pt.7: pure scorecard math extracted to scorecard_core.py so
+# pytest-cov can see it. This file still lives in coverage's `omit` list
+# (it's a one-shot CLI spawned as a subprocess), so moving the math out
+# was the only way to get it under coverage.
+from scorecard_core import (
+    _dec, _to_cents_float,
+    calculate_metrics as _calc_metrics,
+    take_daily_snapshot as _take_daily_snapshot,
+)
 
-# Phase 2 of the float->Decimal migration (see docs/DECIMAL_MIGRATION_PLAN.md).
-# Money aggregates (profit factor sums, strategy breakdown totals, peak/current
-# portfolio value, largest win/loss) now run in Decimal. Ratios and percentages
-# (sharpe, sortino, return%, win_rate%) stay as float — they're proportional,
-# not money, and Decimal's lack of native exp/sqrt makes it a poor fit for
-# statistical formulas. Return-dict types are unchanged: every consumer still
-# sees float values on the JSON boundary.
-_CENT = Decimal("0.01")
 
+def calculate_metrics(journal, scorecard, account, positions):
+    """Thin compat wrapper — real logic in scorecard_core.calculate_metrics.
 
-def _dec(v, default=Decimal("0")):
-    """Coerce to Decimal WITHOUT going through float.
-
-    Decimal(float_x) preserves IEEE 754 imprecision into the Decimal
-    value; Decimal(str(x)) gets the human-readable form. Always use str.
+    Passes the production `now_et` + `position_sector.annotate_sector` +
+    `constants.SECTOR_MAP` dependencies; the core module is dependency-free
+    by default so tests can run without them.
     """
-    if v is None or v == "":
-        return default
-    if isinstance(v, Decimal):
-        return v
     try:
-        return Decimal(str(v))
+        from position_sector import annotate_sector as _annotate
     except Exception:
-        return default
+        _annotate = None
+    return _calc_metrics(journal, scorecard, account, positions,
+                         now_fn=now_et,
+                         sector_map=SECTOR_MAP,
+                         annotate_fn=_annotate)
 
 
-def _to_cents_float(v):
-    """Quantize a Decimal to cents (banker's rounding) and emit a float
-    for JSON serialisation. The rounded float representation carries at
-    most 2 dp of meaningful precision so the IEEE 754 boundary crossing
-    is bounded well below $0.01."""
-    if not isinstance(v, Decimal):
-        v = _dec(v)
-    return float(v.quantize(_CENT, rounding=ROUND_HALF_EVEN))
+def take_daily_snapshot(journal, account, positions, scorecard):
+    """Thin compat wrapper — real logic in scorecard_core.take_daily_snapshot."""
+    return _take_daily_snapshot(journal, account, positions, scorecard,
+                                now_fn=now_et)
 
 
 def load_dotenv():
@@ -166,378 +160,6 @@ def is_market_open():
         else:
             return False, f"Market CLOSED (opens {next_open})"
     return False, f"Could not determine market hours: {result.get('error', 'unknown')}"
-
-
-def calculate_metrics(journal, scorecard, account, positions):
-    """Calculate all performance metrics from trade journal and account data.
-
-    Phase-2 migration note: money aggregates run in Decimal internally, ratios
-    stay as float. Return-dict types unchanged — every caller still sees
-    rounded float values on the JSON boundary.
-    """
-    trades = journal.get("trades", [])
-    snapshots = journal.get("daily_snapshots", [])
-
-    # Current account values — Decimal-internal; serialised at output.
-    _pv_raw = _dec(account.get("portfolio_value", 0))
-    starting_capital_d = _dec(scorecard.get("starting_capital", 100000))
-    portfolio_value_d = _pv_raw if _pv_raw != Decimal("0") else starting_capital_d
-    cash_d = _dec(account.get("cash", 0))
-    starting_capital = _to_cents_float(starting_capital_d)  # kept as float for downstream
-
-    # Count trades
-    total_trades = len(trades)
-    open_trades = sum(1 for t in trades if t.get("status") == "open")
-    closed_trades = sum(1 for t in trades if t.get("status") == "closed")
-
-    # Win/loss analysis on closed trades
-    closed = [t for t in trades if t.get("status") == "closed" and t.get("pnl") is not None]
-    winning_trades = sum(1 for t in closed if t["pnl"] > 0)
-    losing_trades = sum(1 for t in closed if t["pnl"] <= 0)
-
-    win_rate = (winning_trades / closed_trades * 100) if closed_trades > 0 else 0
-
-    # Average win/loss percentages (percentages are proportional, stay float).
-    wins = [t for t in closed if t["pnl"] > 0]
-    losses = [t for t in closed if t["pnl"] <= 0]
-
-    avg_win_pct = (sum(t.get("pnl_pct", 0) for t in wins) / len(wins)) if wins else 0
-    avg_loss_pct = (sum(t.get("pnl_pct", 0) for t in losses) / len(losses)) if losses else 0
-
-    # Profit factor — Decimal sum avoids compounding float drift across many
-    # closed trades. The ratio itself is dimensionless so stays float.
-    total_wins_d = sum((_dec(t["pnl"]) for t in wins), Decimal("0"))
-    total_losses_d = abs(sum((_dec(t["pnl"]) for t in losses), Decimal("0")))
-    if total_losses_d > 0:
-        profit_factor = float(total_wins_d / total_losses_d)
-    elif total_wins_d > 0:
-        profit_factor = float(total_wins_d)
-    else:
-        profit_factor = 0
-
-    # Largest win/loss — pick the max Decimal, serialise to cents on output.
-    largest_win_d = max((_dec(t["pnl"]) for t in wins), default=Decimal("0"))
-    largest_loss_d = min((_dec(t["pnl"]) for t in losses), default=Decimal("0"))
-
-    # Average holding days
-    holding_days = []
-    for t in closed:
-        if t.get("timestamp") and t.get("exit_timestamp"):
-            try:
-                entry_dt = datetime.fromisoformat(t["timestamp"].replace("Z", "+00:00"))
-                exit_dt = datetime.fromisoformat(t["exit_timestamp"].replace("Z", "+00:00"))
-                holding_days.append((exit_dt - entry_dt).total_seconds() / 86400)
-            except (ValueError, TypeError):
-                pass
-    avg_holding = (sum(holding_days) / len(holding_days)) if holding_days else 0
-
-    # Max drawdown from daily snapshots — peak tracked as Decimal so the
-    # compared values stay exact; drawdown % itself is float (proportional).
-    peak_d = starting_capital_d
-    max_dd = 0.0
-    for snap in snapshots:
-        val_d = _dec(snap.get("portfolio_value", 0))
-        if val_d > peak_d:
-            peak_d = val_d
-        if peak_d > 0:
-            dd = float((peak_d - val_d) / peak_d) * 100
-            if dd > max_dd:
-                max_dd = dd
-
-    # Also check current value against peak
-    peak_value_d = max(peak_d, portfolio_value_d,
-                        _dec(scorecard.get("peak_value", starting_capital)))
-    if peak_value_d > 0:
-        current_dd = float((peak_value_d - portfolio_value_d) / peak_value_d) * 100
-        max_dd = max(max_dd, current_dd)
-
-    # Sharpe and Sortino ratios from daily returns
-    daily_returns = []
-    if len(snapshots) >= 2:
-        for i in range(1, len(snapshots)):
-            prev_val = snapshots[i - 1].get("portfolio_value", 0)
-            curr_val = snapshots[i].get("portfolio_value", 0)
-            if prev_val > 0:
-                daily_returns.append(curr_val / prev_val - 1)
-
-    n = len(daily_returns)
-    sharpe = 0
-    sortino = 0
-    if n >= 2:
-        rf_daily = 0.00016  # ~4% annual risk-free rate / 252
-        mean_ret = sum(daily_returns) / n
-        variance = sum((r - mean_ret) ** 2 for r in daily_returns) / (n - 1)  # sample variance
-        std_ret = math.sqrt(variance) if variance > 0 else 0
-
-        if std_ret > 0:
-            sharpe = ((mean_ret - rf_daily) / std_ret) * math.sqrt(252)
-
-        # Sortino: only downside deviation (divide by total N, not len(neg_returns))
-        neg_returns = [r for r in daily_returns if r < 0]
-        if neg_returns:
-            neg_variance = sum(r ** 2 for r in neg_returns) / n  # divide by total N
-            neg_std = math.sqrt(neg_variance)
-            if neg_std > 0:
-                sortino = ((mean_ret - rf_daily) / neg_std) * math.sqrt(252)
-
-    # Total return — Decimal math eliminates the compounding drift seen
-    # on long-running accounts; percentage serialised as float.
-    if starting_capital_d > 0:
-        total_return_pct = float(
-            (portfolio_value_d - starting_capital_d) / starting_capital_d
-        ) * 100
-    else:
-        total_return_pct = 0
-
-    # Strategy breakdown — per-strategy PnL accumulates across many trades,
-    # so this is one of the places float drift shows up most visibly.
-    # Internal pnl field stays as Decimal until final serialisation.
-    strategy_breakdown = {
-        "trailing_stop": {"trades": 0, "wins": 0, "pnl": Decimal("0")},
-        "copy_trading": {"trades": 0, "wins": 0, "pnl": Decimal("0")},
-        "wheel": {"trades": 0, "wins": 0, "pnl": Decimal("0")},
-        "mean_reversion": {"trades": 0, "wins": 0, "pnl": Decimal("0")},
-        "breakout": {"trades": 0, "wins": 0, "pnl": Decimal("0")},
-        # Round-10: PEAD (Post-Earnings Drift) — without this bucket,
-        # every PEAD trade routes through record_trade_close with
-        # strategy="pead" and the `if strat in strategy_breakdown`
-        # filter silently drops it, skewing win-rate math and making
-        # PEAD invisible in the scorecard CLI summary.
-        "pead": {"trades": 0, "wins": 0, "pnl": Decimal("0")},
-    }
-    # Normalize strategy name to match the canonical lowercase-underscore
-    # form used as keys above. Without this, a journal entry with
-    # strategy="Copy Trading" or "trailing-stop" falls through the bucket
-    # and that trade never shows up in the per-strategy breakdown —
-    # silently undercounting performance for weeks before anyone notices.
-    # Round-7 audit find.
-    def _normalize_strategy_name(s):
-        if not s:
-            return ""
-        return str(s).strip().lower().replace(" ", "_").replace("-", "_")
-
-    for t in trades:
-        strat = _normalize_strategy_name(t.get("strategy", ""))
-        if strat in strategy_breakdown:
-            strategy_breakdown[strat]["trades"] += 1
-            if t.get("status") == "closed" and t.get("pnl") is not None:
-                strategy_breakdown[strat]["pnl"] += _dec(t["pnl"])
-                if t["pnl"] > 0:
-                    strategy_breakdown[strat]["wins"] += 1
-
-    # Normalise strategy_breakdown pnl to cents-rounded float for the
-    # consumer (dashboard JS, scorecard CSV, Sentry tag). This is the
-    # phase-2 JSON-boundary contract.
-    for _name, _row in strategy_breakdown.items():
-        _row["pnl"] = _to_cents_float(_row["pnl"])
-
-    # A/B Testing: compare strategy pairs with 5+ trades each
-    ab_testing = {}
-    strat_names = list(strategy_breakdown.keys())
-    for i in range(len(strat_names)):
-        for j in range(i + 1, len(strat_names)):
-            a_name = strat_names[i]
-            b_name = strat_names[j]
-            a = strategy_breakdown[a_name]
-            b = strategy_breakdown[b_name]
-            if a["trades"] >= 5 and b["trades"] >= 5:
-                a_win_rate = (a["wins"] / a["trades"] * 100) if a["trades"] > 0 else 0
-                b_win_rate = (b["wins"] / b["trades"] * 100) if b["trades"] > 0 else 0
-                a_avg_pnl = a["pnl"] / a["trades"] if a["trades"] > 0 else 0
-                b_avg_pnl = b["pnl"] / b["trades"] if b["trades"] > 0 else 0
-
-                if a_avg_pnl > b_avg_pnl:
-                    winner = a_name
-                elif b_avg_pnl > a_avg_pnl:
-                    winner = b_name
-                else:
-                    winner = "tie"
-
-                ab_testing[f"{a_name}_vs_{b_name}"] = {
-                    a_name: {"trades": a["trades"], "win_rate": round(a_win_rate, 1), "avg_pnl": round(a_avg_pnl, 2)},
-                    b_name: {"trades": b["trades"], "win_rate": round(b_win_rate, 1), "avg_pnl": round(b_avg_pnl, 2)},
-                    "better_avg_pnl": winner,
-                }
-
-    # Correlation Guard (Improvement 9)
-    # Round-58: resolve OCC option symbols to their underlying for sector
-    # lookup. Before this, an option like "HIMS260508P00027000" wasn't in
-    # SECTOR_MAP so it fell through to "Other" and triggered false "3+
-    # positions in Other sector" warnings when mixed with other sector-
-    # unmapped equities. For display, surface the underlying (e.g. "HIMS")
-    # rather than the 17-char OCC symbol which nobody recognises.
-    correlation_warning = None
-    if positions and isinstance(positions, list):
-        try:
-            from position_sector import annotate_sector as _annotate
-            _annotated = _annotate([dict(p) for p in positions])  # copy; don't mutate scorecard input
-        except Exception:
-            _annotated = None
-
-        sector_positions = {}
-        for idx, p in enumerate(positions):
-            sym = p.get("symbol", "")
-            if _annotated and idx < len(_annotated):
-                ap = _annotated[idx]
-                sector = ap.get("_sector") or "Other"
-                display_sym = ap.get("_underlying") or sym
-            else:
-                sector = SECTOR_MAP.get(sym, "Other")
-                display_sym = sym
-            sector_positions.setdefault(sector, []).append(display_sym)
-
-        concentrated_sectors = {s: syms for s, syms in sector_positions.items() if len(syms) >= 3}
-        if concentrated_sectors:
-            warnings = []
-            for sector, syms in concentrated_sectors.items():
-                warnings.append(f"{sector}: {', '.join(syms)} ({len(syms)} positions)")
-            correlation_warning = {
-                "warning": "Sector concentration detected (3+ positions in same sector)",
-                "sectors": concentrated_sectors,
-                "details": warnings,
-            }
-
-    # Readiness score
-    days_tracked = len(snapshots)
-    readiness_score = 0
-    criteria = scorecard.get("readiness_criteria", {})
-
-    if days_tracked >= criteria.get("min_days", 30):
-        readiness_score += 20
-    if win_rate >= criteria.get("min_win_rate", 50):
-        readiness_score += 20
-    if max_dd < criteria.get("max_drawdown", 10):
-        readiness_score += 20
-    if profit_factor >= criteria.get("min_profit_factor", 1.5):
-        readiness_score += 20
-    if sharpe >= criteria.get("min_sharpe", 0.5):
-        readiness_score += 20
-
-    ready_for_live = readiness_score >= 80
-
-    # Build updated scorecard — emit money fields through _to_cents_float
-    # so the JSON boundary stays stable (float with 2dp).
-    now_str = now_et().isoformat()
-    updated = {
-        "start_date": scorecard.get("start_date", "2026-04-15"),
-        "starting_capital": starting_capital,
-        "current_value": _to_cents_float(portfolio_value_d),
-        "total_return_pct": round(total_return_pct, 2),
-        "total_trades": total_trades,
-        "open_trades": open_trades,
-        "closed_trades": closed_trades,
-        "winning_trades": winning_trades,
-        "losing_trades": losing_trades,
-        "win_rate_pct": round(win_rate, 1),
-        "avg_win_pct": round(avg_win_pct, 2),
-        "avg_loss_pct": round(avg_loss_pct, 2),
-        "profit_factor": round(profit_factor, 2),
-        "largest_win": _to_cents_float(largest_win_d),
-        "largest_loss": _to_cents_float(largest_loss_d),
-        "max_drawdown_pct": round(max_dd, 2),
-        "peak_value": _to_cents_float(peak_value_d),
-        "sharpe_ratio": round(sharpe, 2),
-        "sortino_ratio": round(sortino, 2),
-        "avg_holding_days": round(avg_holding, 1),
-        "strategy_breakdown": strategy_breakdown,
-        "ab_testing": ab_testing,
-        "ready_for_live": ready_for_live,
-        "readiness_score": readiness_score,
-        "readiness_criteria": criteria if criteria else scorecard.get("readiness_criteria", {}),
-        "last_updated": now_str,
-    }
-
-    if correlation_warning:
-        updated["correlation_warning"] = correlation_warning
-
-    return updated
-
-
-def take_daily_snapshot(journal, account, positions, scorecard):
-    """Create a daily snapshot and append to journal."""
-    today = now_et().strftime("%Y-%m-%d")
-    snapshots = journal.get("daily_snapshots", [])
-
-    # Don't duplicate today's snapshot
-    if snapshots and snapshots[-1].get("date") == today:
-        print(f"  Snapshot for {today} already exists, updating it.")
-        snapshots.pop()
-
-    portfolio_value = float(account.get("portfolio_value", 0))
-    cash = float(account.get("cash", 0))
-    positions_count = len(positions) if isinstance(positions, list) else 0
-
-    # Calculate daily P&L
-    starting_capital = scorecard.get("starting_capital", 100000)
-    prev_value = starting_capital
-    if snapshots:
-        prev_value = snapshots[-1].get("portfolio_value", starting_capital)
-
-    daily_pnl = portfolio_value - prev_value
-    daily_pnl_pct = (daily_pnl / prev_value * 100) if prev_value > 0 else 0
-
-    total_pnl = portfolio_value - starting_capital
-    total_pnl_pct = (total_pnl / starting_capital * 100) if starting_capital > 0 else 0
-
-    # Max drawdown
-    peak = max(starting_capital, scorecard.get("peak_value", starting_capital))
-    for s in snapshots:
-        v = s.get("portfolio_value", 0)
-        if v > peak:
-            peak = v
-    if portfolio_value > peak:
-        peak = portfolio_value
-    max_dd = (peak - portfolio_value) / peak * 100 if peak > 0 else 0
-
-    # Count trades closed today
-    trades = journal.get("trades", [])
-    closed_today = sum(
-        1 for t in trades
-        if t.get("status") == "closed"
-        and t.get("exit_timestamp", "").startswith(today)
-    )
-    wins_today = sum(
-        1 for t in trades
-        if t.get("status") == "closed"
-        and t.get("exit_timestamp", "").startswith(today)
-        and t.get("pnl", 0) > 0
-    )
-    losses_today = sum(
-        1 for t in trades
-        if t.get("status") == "closed"
-        and t.get("exit_timestamp", "").startswith(today)
-        and t.get("pnl", 0) <= 0
-    )
-    open_trade_count = sum(1 for t in trades if t.get("status") == "open")
-
-    snapshot = {
-        "date": today,
-        "portfolio_value": round(portfolio_value, 2),
-        "cash": round(cash, 2),
-        "positions_count": positions_count,
-        "daily_pnl": round(daily_pnl, 2),
-        "daily_pnl_pct": round(daily_pnl_pct, 2),
-        "total_pnl": round(total_pnl, 2),
-        "total_pnl_pct": round(total_pnl_pct, 2),
-        "max_drawdown_pct": round(max_dd, 2),
-        "open_trades": open_trade_count,
-        "closed_today": closed_today,
-        "wins_today": wins_today,
-        "losses_today": losses_today,
-    }
-
-    snapshots.append(snapshot)
-    # Retention: daily_snapshots appends one row per run (minutes-scale
-    # cadence from the scheduler). Unbounded growth here has produced
-    # multi-MB journal files in long-running deployments, which slows the
-    # load+dump on every tick. Cap to the last ~2 years of dailies so the
-    # Performance tab still has enough history for charts without blowing
-    # up disk / CPU.
-    MAX_SNAPSHOTS = 800
-    if len(snapshots) > MAX_SNAPSHOTS:
-        snapshots = snapshots[-MAX_SNAPSHOTS:]
-    journal["daily_snapshots"] = snapshots
-    return snapshot
 
 
 def main():

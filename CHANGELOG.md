@@ -8,6 +8,90 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.7 follow-up — scorecard_core.py + behavioral tests
+
+Completes the pt.7 coverage push started in #119:
+
+**Behavioral tests for `screener_core.py`** (+62 tests) —
+`tests/test_round61_pt7_screener_core.py` drives every branch of the
+seven extracted functions: `pick_best_entry_strategy`,
+`trading_day_fraction_elapsed`, `score_stocks` (breakout / wheel /
+mean-reversion tiers, volatility soft-cap, copy + pead score-fn
+injection + exception swallow, sector + sort), `apply_market_regime`,
+`apply_sector_diversification`, `calc_position_size`, and
+`compute_portfolio_pnl`. `screener_core.py` goes from 0% (it only
+existed in the omit-listed caller) to **98% line + branch coverage**.
+
+**Extract `scorecard_core.py` from `update_scorecard.py`** — same
+pattern as #119: `update_scorecard.py` stays in the `omit` list (it's
+still a subprocess entry point + dotenv loader + Alpaca HTTP client),
+but the pure math moves to `scorecard_core.py` which is NOT omitted.
+
+Functions extracted:
+  * `_dec`, `_to_cents_float` — Decimal helpers (Phase-2 migration
+    contract)
+  * `normalize_strategy_name` — lowercase-underscore canonicalisation
+    (Round-7 audit fix)
+  * `count_trade_statuses`, `split_wins_losses`, `win_rate_pct`,
+    `avg_pnl_pct`, `profit_factor`, `largest_win_loss`,
+    `avg_holding_days`
+  * `max_drawdown(snapshots, starting_capital, portfolio_value,
+                    scorecard_peak)` — three-way peak reconciliation
+  * `daily_returns_from_snapshots`, `sharpe_sortino` — annualised
+    ratios with downside-deviation Sortino
+  * `total_return_pct`, `build_strategy_breakdown`, `build_ab_testing`
+  * `build_correlation_warning(positions, sector_map=..., annotate_fn=...)`
+    — Round-58 OCC-option-to-underlying sector resolver (dependency
+    injected so tests run without `position_sector`)
+  * `compute_readiness` — 5-criterion scoring with configurable
+    thresholds
+  * `apply_snapshot_retention(snapshots, max_count=800)` — 2-year cap
+  * `calculate_metrics(journal, scorecard, account, positions, *,
+                          now_fn=None, sector_map=None, annotate_fn=None)` —
+    orchestrator mirroring `update_scorecard.calculate_metrics`
+  * `take_daily_snapshot(journal, account, positions, scorecard, *,
+                            now_fn=None, max_snapshots=800)` — orchestrator
+    mirroring `update_scorecard.take_daily_snapshot`
+
+`update_scorecard.py` now holds two thin compat wrappers that inject
+production dependencies (`now_et`, `constants.SECTOR_MAP`,
+`position_sector.annotate_sector`); every existing call site still
+works unchanged.
+
+**Behavioral tests** (+85 tests) —
+`tests/test_round61_pt7_scorecard_core.py` covers every branch:
+Decimal helpers, status-bucketing, win/loss stats, profit-factor
+no-losses path, max-drawdown three-way peak, Sharpe/Sortino with
+zero-variance and only-positive-returns branches, strategy breakdown
+with unknown-name drop, A/B testing with tie + winner-swap paths,
+correlation-warning with injected annotator + fallback, readiness
+scoring with custom criteria, snapshot retention. `scorecard_core.py`
+lands at **99% line + branch coverage**.
+
+Also: **Round-58 pin** (`tests/test_round58_json_audit_fixes.py::
+test_correlation_warning_resolves_option_underlying`) updated to
+grep BOTH `update_scorecard.py` (for the injected annotator import)
+AND `scorecard_core.py` (for the `_underlying`/`_sector` grouping
+logic) so a future refactor that removes the mechanism anywhere
+fails loudly.
+
+**Results:**
+  * Total tests: **1392 → 1484** (+92, 3 deselected unchanged)
+  * Total coverage: **51.04% → ~53%** (both modules now visible)
+  * CI floor ratcheted: **45 → 48** (.github/workflows/ci.yml)
+  * `screener_core.py` 98%, `scorecard_core.py` 99% — both well
+    above the floor with room for future modifications
+
+No behavior changes. Ruff clean. CI green locally.
+
+**Still to do for pt.8/9** (future):
+  * Vitest for dashboard JS (~6000 LOC) — caps Python-only coverage
+    at ~75-80%
+  * Deeper `cloud_scheduler.py` coverage (still ~31%; pt.6 moved
+    the HTTP surface but not the scheduler internals)
+
+---
+
 ## 🆕 Round-61 pt.7 kickoff — extract screener_core.py (PR #119)
 
 `update_dashboard.py` (2608 lines) has been in the `omit` list since
