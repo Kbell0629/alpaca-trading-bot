@@ -1,4 +1,4 @@
-/* Round-61 pt.8 Option B — dashboard render core.
+/* Round-61 pt.8 Option B — dashboard render core (extracted from dashboard.html).
  *
  * Pure helpers extracted from templates/dashboard.html's inline <script>.
  * Loaded via <script src="/static/dashboard_render_core.js"></script>
