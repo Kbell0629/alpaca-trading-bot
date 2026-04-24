@@ -58,7 +58,46 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-24 — round 61 pt.7 CLOSE-OUT)
+## Current session state (2026-04-24 — round 61 pt.8 KICKOFF)
+
+**Pt.8 (Vitest + jsdom for dashboard JS) kicked off on
+`claude/round-61-pt8-vitest`.** Lands the JS test infrastructure
+that pt.5/6/7 couldn't reach: ~7000 LOC of inline JS in
+`templates/dashboard.html` is finally testable.
+
+  * `package.json` + `vitest.config.js` + `tests/js/loadDashboardJs.js`
+    — extracts the inline `<script>` from dashboard.html, runs it in
+    jsdom via `vm.runInThisContext` so its top-level `function`
+    declarations attach to the global scope. Stubs out Chart/marked
+    CDN libs, no-op-ifies setInterval, scaffolds toastContainer/app/
+    logPanel DOM nodes, swallows the auto-`fetch()` so `init()`
+    doesn't pollute test output.
+  * 4 starter test files (68 tests passing): esc/jsStr (XSS escapes),
+    fmtMoney/fmtPct/pnlClass/fmtUpdatedET (format helpers), `_occParse`
+    (OCC option-symbol parser), parseSchedTs/latestForTask
+    (scheduler timestamp helpers).
+  * CI extended: `.github/workflows/ci.yml` adds Node 20 setup +
+    `npm ci` + `npm test` step after the existing pytest job.
+
+**Two user-reported regressions piggybacked in this PR:**
+  * Mobile admin → Users table: buttons stacked vertically (40px
+    each × 6 actions = 240px+ per row). Wrapped in `.admin-actions`
+    flex-wrap container, hide Email/Logins on mobile, hide
+    Role/Last-Login on ultra-narrow.
+  * Paper-vs-Live "Win Rate 0%" anchored on missing
+    `win_rate_reliable` API field. Both panels now defensive: derive
+    reliability from `closed_trades >= 5` directly so the post-60
+    invariant ("show N=X, Need 5+ when sample is small") holds even
+    when the backend field is missing/wrong.
+
+**Pt.8 follow-ups (next PRs):** ratchet JS coverage by adding more
+test files (renderDashboard core, openClosePositionModal OCC math,
+atomicReplaceChildren scroll preservation). Then add a JS coverage
+threshold to CI similar to Python's `--cov-fail-under`.
+
+---
+
+## Previous session state (2026-04-24 — round 61 pt.7 CLOSE-OUT)
 
 **Pt.7 kickoff (#119) + follow-up (claude/continue-pt7-xEG9a) both
 landed.** `screener_core.py` and `scorecard_core.py` both exist,

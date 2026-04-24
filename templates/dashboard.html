@@ -125,6 +125,17 @@ button:active { transform: translateY(0); }
 .btn-ghost { background: rgba(255,255,255,0.06); color: var(--text-dim); border: 1px solid var(--border); }
 .btn-sm { padding: 4px 10px; font-size: 11px; }
 
+/* Admin user table — action button container. Round-61 pt.8 mobile fix.
+   Buttons are flex-wrapped instead of being inline-block which made each
+   long-label button (Reset Password, Revoke Admin) collapse onto its own
+   line on narrow viewports. With this layout they sit side-by-side at
+   desktop and wrap to a second/third row on phones — see the mobile
+   media query below for the per-screen-size column-hiding pins. */
+.admin-actions { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.admin-actions .btn-sm { margin: 0; }
+.admin-actions a.btn-sm { text-decoration: none; }
+.mobile-hide-md, .mobile-hide-sm { /* visible by default; mobile media queries hide */ }
+
 /* Header */
 .header {
     display: flex; justify-content: space-between; align-items: center;
@@ -1771,9 +1782,23 @@ input[type="range"]:focus {
 
     /* Admin user list — the Deactivate/Reactivate + Reset buttons
        should stack on a second row, not try to fit beside long
-       usernames on one line. */
+       usernames on one line.
+
+       Round-61 pt.8 mobile fix: action buttons now live in a flex-wrap
+       container (.admin-actions). They sit side-by-side and wrap to a
+       second/third row as the cell narrows, instead of one-per-line
+       which produced 7-row-tall cells on phones. The Email and Logins
+       columns drop out at <768px (`mobile-hide-md`), and Role +
+       Last-Login also drop at <480px (`mobile-hide-sm`) to give the
+       Actions column enough room. */
     .admin-users-table td:last-child { white-space: normal; }
-    .admin-users-table .btn-sm { margin-bottom: 4px; }
+    .admin-users-table .btn-sm {
+        margin: 0;
+        padding: 6px 8px;
+        font-size: 11px;
+        white-space: nowrap;
+    }
+    .admin-users-table .mobile-hide-md { display: none; }
 
     /* Backtest chart — Chart.js canvas; let it shrink to container. */
     .backtest-section canvas { max-width: 100%; height: auto !important; }
@@ -1811,6 +1836,17 @@ input[type="range"]:focus {
         padding: 4px 8px; font-size: 11px; min-height: 36px;
     }
     .pos-action-btns .btn-sm { padding: 4px 6px; font-size: 10px; }
+
+    /* Round-61 pt.8 mobile fix: drop the Role + Last-Login columns from
+       the admin-users table on iPhone SE / Galaxy-portrait widths. The
+       Email + Logins columns are already hidden at <=768px. With these
+       four columns gone we keep only User / Status / Actions, which
+       leaves enough room for the flex-wrapped action buttons to sit in
+       a 2x4 grid instead of 7 stacked rows. */
+    .admin-users-table .mobile-hide-sm { display: none; }
+    .admin-users-table .btn-sm {
+        padding: 4px 8px; font-size: 11px; min-height: 36px;
+    }
 }
 
 /* Round-35: force the positions-table action buttons to stay on a
@@ -6356,14 +6392,23 @@ function renderDashboard() {
             /* Round-60: honour the round-58 win_rate_pct_display field.
                Show "N=X" when total closed trades < 5 instead of the
                alarmist "0%" — avoids readers anchoring on a 0% win rate
-               when the sample is 2 trades. */
-            '<div class="readiness-metric"><div class="rm-label">Win Rate</div>' +
-              (sc.win_rate_reliable === false
-                ? '<div class="rm-value" style="font-size:14px">N=' + (sc.win_rate_sample_size||0) + '</div>' +
-                  '<div class="rm-target" style="color:var(--orange)" title="' + esc(sc.win_rate_display_note||'') + '">Need 5+ closed</div>'
-                : '<div class="rm-value">' + (sc.win_rate_pct||0) + '%</div>' +
-                  '<div class="rm-target">Target: ' + (criteria.min_win_rate||50) + '%</div>') +
-            '</div>' +
+               when the sample is 2 trades.
+
+               Round-61 pt.8: defensive — also derive reliability from
+               `closed_trades < 5` so a missing/wrong API field can't
+               flip this back to the alarmist "0%" branch. */
+            (function () {
+              var _ct = parseInt(sc.closed_trades) || 0;
+              var _reliable = _ct >= 5 && sc.win_rate_reliable !== false;
+              var _sample = sc.win_rate_sample_size != null ? sc.win_rate_sample_size : _ct;
+              return '<div class="readiness-metric"><div class="rm-label">Win Rate</div>' +
+                (_reliable
+                  ? '<div class="rm-value">' + (sc.win_rate_pct||0) + '%</div>' +
+                    '<div class="rm-target">Target: ' + (criteria.min_win_rate||50) + '%</div>'
+                  : '<div class="rm-value" style="font-size:14px">N=' + _sample + '</div>' +
+                    '<div class="rm-target" style="color:var(--orange)" title="' + esc(sc.win_rate_display_note||'Not enough closed trades for a reliable win rate.') + '">Need 5+ closed</div>') +
+              '</div>';
+            })() +
             '<div class="readiness-metric"><div class="rm-label">Max Drawdown</div><div class="rm-value">' + (sc.max_drawdown_pct||0).toFixed(1) + '%</div><div class="rm-target">Max: ' + (criteria.max_drawdown||10) + '%</div></div>' +
             '<div class="readiness-metric"><div class="rm-label">Profit Factor</div><div class="rm-value">' + (sc.profit_factor||0).toFixed(2) + '</div><div class="rm-target">Target: ' + (criteria.min_profit_factor||1.5) + '</div></div>' +
             '<div class="readiness-metric"><div class="rm-label">Sharpe Ratio</div><div class="rm-value">' + (sc.sharpe_ratio||0).toFixed(2) + '</div><div class="rm-target">Target: ' + (criteria.min_sharpe||0.5) + '</div></div>' +
@@ -8253,44 +8298,60 @@ async function loadAdminUsers() {
             // Restore previous selection if still valid
             userFilterSel.value = prev;
         }
-        var html = '<table class="data-table"><thead><tr>' +
-            '<th>User</th><th>Email</th><th>Role</th><th>Status</th>' +
-            '<th>Last Login</th><th>Logins</th><th>Actions</th>' +
+        // Mobile fix: `admin-users-table` class engages the responsive
+        // CSS (compact buttons, hide Email/Logins/Last-Login on narrow
+        // screens). `mobile-hide-md` / `mobile-hide-sm` mark columns
+        // that drop out as the viewport shrinks so the Actions cell
+        // gets enough room for its flex-wrapped buttons.
+        var html = '<table class="data-table admin-users-table"><thead><tr>' +
+            '<th>User</th>' +
+            '<th class="mobile-hide-md">Email</th>' +
+            '<th class="mobile-hide-sm">Role</th>' +
+            '<th>Status</th>' +
+            '<th class="mobile-hide-sm">Last Login</th>' +
+            '<th class="mobile-hide-md">Logins</th>' +
+            '<th>Actions</th>' +
             '</tr></thead><tbody>';
         for (var i = 0; i < users.length; i++) {
             var u = users[i];
             var statusCls = u.is_active ? 'positive' : 'negative';
             var statusTxt = u.is_active ? 'Active' : 'Inactive';
             var lastLogin = u.last_login ? fmtUpdatedET(u.last_login) : '—';
-            var actions = '';
+            // Action buttons live in a flex-wrap container so they sit
+            // side-by-side at desktop and wrap to a second/third row on
+            // narrow viewports — instead of each button stacking on its
+            // own line which produced the 7-row-tall cells reported on
+            // mobile (round-61 pt.8 mobile fix).
+            var actions = '<div class="admin-actions">';
             if (u.is_active) {
-                actions += '<button class="btn-warning btn-sm" onclick="adminSetActive(' + u.id + ', false)">Deactivate</button> ';
+                actions += '<button class="btn-warning btn-sm" onclick="adminSetActive(' + u.id + ', false)">Deactivate</button>';
             } else {
-                actions += '<button class="btn-primary btn-sm" onclick="adminSetActive(' + u.id + ', true)">Reactivate</button> ';
+                actions += '<button class="btn-primary btn-sm" onclick="adminSetActive(' + u.id + ', true)">Reactivate</button>';
             }
-            actions += '<button class="btn-ghost btn-sm" onclick="adminResetPassword(' + Number(u.id) + ', \'' + jsStr(u.username) + '\')">Reset Password</button> ';
+            actions += '<button class="btn-ghost btn-sm" onclick="adminResetPassword(' + Number(u.id) + ', \'' + jsStr(u.username) + '\')">Reset</button>';
             // Round-37: edit username / email.  Opens a modal pre-filled
             // with the current values.  Uniqueness + format are validated
             // server-side.
-            actions += '<button class="btn-ghost btn-sm" onclick="adminOpenEditUser(' + Number(u.id) + ', \'' + jsStr(u.username) + '\', \'' + jsStr(u.email) + '\')">Edit</button> ';
+            actions += '<button class="btn-ghost btn-sm" onclick="adminOpenEditUser(' + Number(u.id) + ', \'' + jsStr(u.username) + '\', \'' + jsStr(u.email) + '\')">Edit</button>';
             // Round-36: promote / demote admin. Server-side guard prevents
             // demoting the last active admin; UI just sends the request.
             if (u.is_admin) {
-                actions += '<button class="btn-ghost btn-sm" onclick="adminSetAdmin(' + Number(u.id) + ', \'' + jsStr(u.username) + '\', false)">Revoke Admin</button>';
+                actions += '<button class="btn-ghost btn-sm" onclick="adminSetAdmin(' + Number(u.id) + ', \'' + jsStr(u.username) + '\', false)">Revoke</button>';
             } else {
-                actions += '<button class="btn-ghost btn-sm" onclick="adminSetAdmin(' + Number(u.id) + ', \'' + jsStr(u.username) + '\', true)">Make Admin</button>';
+                actions += '<button class="btn-ghost btn-sm" onclick="adminSetAdmin(' + Number(u.id) + ', \'' + jsStr(u.username) + '\', true)">Promote</button>';
             }
             // Round-40: GDPR export + permanent delete. Export is safe;
             // delete is destructive and confirms via typed-username modal.
-            actions += ' <a class="btn-ghost btn-sm" style="text-decoration:none" href="/api/admin/export-user-data?user_id=' + Number(u.id) + '" title="Download all data for this user as a ZIP">📦 Export</a>';
-            actions += ' <button class="btn-danger btn-sm" onclick="adminDeleteUser(' + Number(u.id) + ', \'' + jsStr(u.username) + '\')" title="Permanently delete this user + all their data">🗑 Delete</button>';
+            actions += '<a class="btn-ghost btn-sm admin-action-export" href="/api/admin/export-user-data?user_id=' + Number(u.id) + '" title="Download all data for this user as a ZIP">📦</a>';
+            actions += '<button class="btn-danger btn-sm" onclick="adminDeleteUser(' + Number(u.id) + ', \'' + jsStr(u.username) + '\')" title="Permanently delete this user + all their data">🗑</button>';
+            actions += '</div>';
             html += '<tr>' +
                 '<td><strong>' + esc(u.username) + '</strong>' + (u.is_admin ? ' <span class="paper-badge" style="font-size:9px">ADMIN</span>' : '') + '</td>' +
-                '<td>' + esc(u.email) + '</td>' +
-                '<td>' + (u.is_admin ? 'Admin' : 'User') + '</td>' +
+                '<td class="mobile-hide-md">' + esc(u.email) + '</td>' +
+                '<td class="mobile-hide-sm">' + (u.is_admin ? 'Admin' : 'User') + '</td>' +
                 '<td class="' + statusCls + '">' + statusTxt + '</td>' +
-                '<td style="font-size:11px">' + lastLogin + '</td>' +
-                '<td>' + (u.login_count || 0) + '</td>' +
+                '<td class="mobile-hide-sm" style="font-size:11px">' + lastLogin + '</td>' +
+                '<td class="mobile-hide-md">' + (u.login_count || 0) + '</td>' +
                 '<td>' + actions + '</td>' +
                 '</tr>';
         }
@@ -9472,13 +9533,22 @@ function buildComparisonPanel(d) {
     // Round-60: honour the round-58 win_rate_pct_display field.
     // Shows "N=X" when closed_trades < 5 so a 0% win-rate on a tiny
     // sample doesn't anchor the user's live-readiness decision.
-    var winRateReliable = sc.win_rate_reliable !== false;
+    //
+    // Round-61 pt.8: defensive — also gate on `closed_trades < 5` directly.
+    // Previously the panel trusted `win_rate_reliable !== false`, which
+    // defaults to "reliable" when the field is missing from the API. A
+    // user with 0 closed trades + open-position unrealized profit was
+    // seeing "Win Rate 0%, target 50%+" instead of "N=0, Need 5+".
+    var closedTrades = parseInt(sc.closed_trades) || 0;
+    var winRateReliable = closedTrades >= 5 && sc.win_rate_reliable !== false;
+    var winRateSample = sc.win_rate_sample_size != null
+        ? sc.win_rate_sample_size : closedTrades;
     var winRate = sc.win_rate_pct || 0;
     var winRateHtml = winRateReliable
         ? '<div style="font-size:18px;font-weight:700">' + winRate.toFixed(0) + '%</div>' +
           '<div style="font-size:9px;color:var(--text-dim);margin-top:2px">target 50%+</div>'
-        : '<div style="font-size:14px;font-weight:700;color:var(--orange)">N=' + (sc.win_rate_sample_size||0) + '</div>' +
-          '<div style="font-size:9px;color:var(--text-dim);margin-top:2px" title="' + esc(sc.win_rate_display_note||'') + '">Need 5+ trades</div>';
+        : '<div style="font-size:14px;font-weight:700;color:var(--orange)">N=' + winRateSample + '</div>' +
+          '<div style="font-size:9px;color:var(--text-dim);margin-top:2px" title="' + esc(sc.win_rate_display_note||'Not enough closed trades for a reliable win rate.') + '">Need 5+ trades</div>';
     var readiness = sc.readiness_score || 0;
     var readyForLive = readiness >= 80;
 

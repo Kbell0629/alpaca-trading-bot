@@ -8,6 +8,95 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.8 — Vitest + jsdom for dashboard JS (kickoff)
+
+Stands up the JS test infrastructure that pt.5/6/7 couldn't reach.
+`templates/dashboard.html` ships ~7000 LOC of inline JS that was
+invisible to `pytest-cov`; the whole Python-only coverage push was
+capped at ~78% because of it. This PR lands the harness + a starter
+batch of tests and wires CI; subsequent PRs ratchet coverage up
+toward 80% total.
+
+**Infrastructure:**
+  * `package.json` + `package-lock.json` (npm-managed) with
+    `vitest`, `jsdom`, `@vitest/coverage-v8` as devDeps. The npm
+    deps are dev-only — Python is still the only runtime.
+  * `vitest.config.js` configures jsdom environment, scopes test
+    discovery to `tests/js/**/*.test.js`, writes coverage to
+    `coverage/js/` so it doesn't collide with `coverage/`.
+  * `tests/js/loadDashboardJs.js` extracts the inline `<script>`
+    block from `templates/dashboard.html` and runs it in
+    `vm.runInThisContext` so its top-level `function` declarations
+    attach to the jsdom global. Stubs the absent `Chart` /
+    `marked` CDN libs, no-op-ifies `setInterval`, scaffolds the
+    `#toastContainer` / `#app` / `#logPanel` DOM nodes the
+    auto-init `init()` expects, and swallows the auto-`fetch()`
+    via a 200/{} default. Tests can override stubs at load time
+    via the `stubs` argument.
+  * `.github/workflows/ci.yml` adds Node 20 setup + `npm ci` +
+    `npm test` after the existing pytest step.
+
+**Starter tests (68 passing across 4 files):**
+  * `tests/js/esc.test.js` (18) — XSS escape helpers (`esc`,
+    `jsStr`). Pin every dangerous-character path: `<`, `>`, `"`,
+    `'`, `` ` ``, `\`. Includes combined-payload smoke tests.
+  * `tests/js/format.test.js` (21) — money / pct / pnl-class /
+    `fmtUpdatedET`. Pins `$NaN` / `+NaN%` regression guards (every
+    helper already short-circuits via `isFinite()`), banker's
+    rounding boundary, AM/PM ET extraction.
+  * `tests/js/occ.test.js` (13) — OCC option-symbol parser
+    (`_occParse`). Pins valid HIMS/AAPL/TQQQ/F symbols, lowercase
+    rejection, truncation rejection, DTE clamp at 0 for past
+    expirations + positive DTE for future expirations.
+  * `tests/js/scheduler.test.js` (16) — `parseSchedTs` + 
+    `latestForTask`. Pins bare-YYYY-MM-DD-with-task-fire-time
+    behavior (auto_deployer 9:45, daily_close 16:05), exact-match
+    vs prefix-match precedence, garbage-value skipping.
+
+**Mobile fix piggybacked in this PR (user-reported regression):**
+  * Admin → Users table on mobile was rendering each action button
+    on its own line (Deactivate / Reset Password / Edit / Revoke
+    Admin / Export / Delete = 6 stacked rows × 40px tap target =
+    240px+ per user row). Wrapped actions in a flex-wrap container
+    `.admin-actions`, added `admin-users-table` class so the
+    existing CSS pin actually takes effect, hid Email + Logins
+    columns at <=768px via `mobile-hide-md`, hid Role +
+    Last-Login at <=380px via `mobile-hide-sm`. Also shortened
+    long button labels ("Reset Password" → "Reset", "Revoke
+    Admin" → "Revoke", "Make Admin" → "Promote") and switched
+    Export/Delete to icon-only on mobile.
+
+**Win-rate display fix (user-reported regression):**
+  * User reported "Win Rate 0%" on the Paper-vs-Live comparison
+    panel despite having portfolio gains. Root cause: the panel
+    used `sc.win_rate_reliable !== false` which defaults to "true"
+    when the API field is missing, then renders `(sc.win_rate_pct
+    || 0) + '%'` → "0%" anchoring the user on a misleading
+    number. Defensive fix: both the Paper-vs-Live panel and the
+    Readiness card now compute reliability from
+    `closed_trades >= 5 && win_rate_reliable !== false` so a
+    missing/wrong API field can't override the sample-size guard.
+    Falls back to "N=X, Need 5+ trades" when the sample is too
+    small — matches the post-60 architectural invariant.
+
+**Results so far:**
+  * 68 JS tests passing (4 files), all in <500ms.
+  * Mobile admin table usable on phones again.
+  * Win-rate display matches the post-60 invariant under all API
+    response shapes.
+  * Python suite unchanged: 1484 passing.
+  * Ruff clean, dashboard `node --check` clean.
+
+**Still to do for pt.8 (follow-up PRs):**
+  * Coverage push: the harness can drive ~50% of the dashboard JS
+    pure-helper surface without touching DOM. Each follow-up PR
+    targets 1-2 panels (renderDashboard core, openClosePositionModal
+    OCC math, atomicReplaceChildren scroll preservation, etc.).
+  * Add JS coverage threshold to CI (similar to Python's
+    `--cov-fail-under`) once we have a stable floor.
+
+---
+
 ## 🆕 Round-61 pt.7 follow-up — scorecard_core.py + behavioral tests
 
 Completes the pt.7 coverage push started in #119:
