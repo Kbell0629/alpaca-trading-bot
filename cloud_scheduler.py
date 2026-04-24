@@ -1550,11 +1550,32 @@ def process_short_strategy(user, filepath, strat, state, rules):
                         f"{existing_cover_id} is {existing_status} — resetting "
                         "so next placement can retry.", "monitor")
                     state["cover_order_id"] = None
+    # Round-61 pt.26: aggressive cross-check against Alpaca's
+    # open-orders list. The pt.24/pt.25 per-order status lookup works
+    # for canceled/rejected/expired, but misses edge cases where the
+    # cover_order_id in state points to an order that's in some
+    # non-dead-but-also-not-open status (e.g. "accepted",
+    # "pending_new" that later expired without our /orders/{id}
+    # lookup catching it). If cover_order_id is set but NOT in the
+    # /orders?status=open list for this symbol, reset + retry.
+    if state.get("cover_order_id"):
+        open_orders = user_api_get(user, f"/orders?status=open&symbols={symbol}&limit=50")
+        if isinstance(open_orders, list):
+            open_ids = {o.get("id") for o in open_orders if isinstance(o, dict)}
+            if state["cover_order_id"] not in open_ids:
+                log(f"[{user['username']}] {symbol}: cover_order_id "
+                    f"{state['cover_order_id']} NOT in Alpaca open-orders "
+                    f"list (found {len(open_ids)} open orders) — resetting.",
+                    "monitor")
+                state["cover_order_id"] = None
     if not state.get("cover_order_id"):
         stop_pct = rules.get("stop_loss_pct", 0.08)
         entry_stop = entry * (1 + stop_pct)
         current_stop = price * 1.05
         stop_price = round(max(entry_stop, current_stop), 2)
+        log(f"[{user['username']}] {symbol}: placing SHORT cover-stop "
+            f"qty={shares} entry=${entry:.2f} current=${price:.2f} "
+            f"stop=${stop_price:.2f}", "monitor")
         order = user_api_post(user, "/orders", {
             "symbol": symbol, "qty": str(shares), "side": "buy",
             "type": "stop", "stop_price": str(stop_price), "time_in_force": "gtc"
@@ -1564,6 +1585,13 @@ def process_short_strategy(user, filepath, strat, state, rules):
             state["current_stop_price"] = stop_price
             log(f"[{user['username']}] {symbol}: SHORT cover-stop placed at ${stop_price} (adaptive)", "monitor")
             notify_user(user, f"Short cover-stop on {symbol} at ${stop_price:.2f}", "info")
+        else:
+            # Round-61 pt.26: log placement failure loudly so the
+            # audit's "missing_stop" finding has a diagnosable cause.
+            err = (order.get("error") if isinstance(order, dict)
+                   else str(order))
+            log(f"[{user['username']}] {symbol}: SHORT cover-stop placement "
+                f"FAILED — Alpaca returned: {err}", "monitor")
 
     # Place profit target (limit buy below entry)
     if not state.get("target_order_id"):
@@ -1824,11 +1852,25 @@ def process_strategy_file(user, filepath, strat, extended_hours=False):
                         f"{existing_stop_id} is {ex_status} — resetting.",
                         "monitor")
                     state["stop_order_id"] = None
+    # Pt.26: aggressive cross-check (same as the short-side).
+    if state.get("stop_order_id") and not extended_hours:
+        open_orders_long = user_api_get(user, f"/orders?status=open&symbols={symbol}&limit=50")
+        if isinstance(open_orders_long, list):
+            open_ids_long = {o.get("id") for o in open_orders_long
+                              if isinstance(o, dict)}
+            if state["stop_order_id"] not in open_ids_long:
+                log(f"[{user['username']}] {symbol}: stop_order_id "
+                    f"{state['stop_order_id']} NOT in Alpaca open-orders "
+                    "list — resetting.", "monitor")
+                state["stop_order_id"] = None
     if not extended_hours and not state.get("stop_order_id"):
         stop_pct = rules.get("stop_loss_pct", 0.10)
         entry_stop = entry * (1 - stop_pct)
         current_stop = price * 0.95
         stop_price = round(min(entry_stop, current_stop), 2)
+        log(f"[{user['username']}] {symbol}: placing LONG sell-stop "
+            f"qty={shares} entry=${entry:.2f} current=${price:.2f} "
+            f"stop=${stop_price:.2f}", "monitor")
         order = user_api_post(user, "/orders", {
             "symbol": symbol, "qty": str(shares), "side": "sell",
             "type": "stop", "stop_price": str(stop_price), "time_in_force": "gtc"
@@ -1838,6 +1880,11 @@ def process_strategy_file(user, filepath, strat, extended_hours=False):
             state["current_stop_price"] = stop_price
             log(f"[{user['username']}] {symbol}: Stop-loss placed at ${stop_price} (adaptive)", "monitor")
             notify_user(user, f"Stop-loss placed on {symbol} at ${stop_price:.2f}", "info")
+        else:
+            err = (order.get("error") if isinstance(order, dict)
+                   else str(order))
+            log(f"[{user['username']}] {symbol}: LONG sell-stop placement "
+                f"FAILED — Alpaca returned: {err}", "monitor")
 
     # Trailing-stop exit — applied to every non-wheel entry strategy.
     # Round-10 architecture: trailing_stop is an exit policy, not an
