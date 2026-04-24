@@ -61,7 +61,46 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-24 — round 61 pt.9 CLOSE-OUT / pt.10 in flight)
+## Current session state (2026-04-24 — round 61 pt.10/11/12 SHIPPED)
+
+**Pt.12 in flight (PR #138):** URGENT user-reported "Save failed"
+with no detail when re-entering Alpaca keys, even though Test
+Connection PASSED with the same keys. Three fixes:
+  1. `handle_save_alpaca_keys` differentiates HTTP 401/403/429/5xx
+     with hint copy + wraps `auth.save_user_alpaca_creds` in
+     try/except so the user sees the actual exception body.
+  2. New `/api/test-saved-alpaca-keys` endpoint tests the
+     currently-saved keys (instead of asking user to re-paste).
+     Detects MASTER_ENCRYPTION_KEY-rotation case.
+  3. "Test Saved Keys (PAPER)" / "(LIVE)" buttons in Settings →
+     Alpaca API.
+  +11 tests in `tests/test_round61_pt12_alpaca_key_diag.py`.
+  `tests/test_round6.py` LOC cap 3300 → 3310.
+
+**Pt.11 landed (PR #137):** URGENT user-reported "$0.00 + 100%
+drawdown" false alarm. Alpaca `/account` returned an error →
+dashboard rendered $0 everywhere → drawdown calc `(peak - 0)/peak
+= 100%` → red "Approaching max drawdown limit!" banner. Two fixes:
+  1. `buildGuardrailMeters` treats `portfolioValue <= 0` as "no
+     data" — shows "—/10% limit", meter at 0%, suppresses warnings.
+  2. Top-of-page orange banner when `d.api_errors.account` exists,
+     pointing user at Settings → Alpaca API. Server already
+     populated `api_errors` — render layer was dropping it.
+  +4 JS tests. Python 1561 → unchanged. JS 388 → 392.
+
+**Pt.10 landed (PR #136):** more cloud_scheduler helper extractions
++ batch-10 panel renderer extractions. Caught regression: extracted
+`buildNextActionsPanel` reads `window.autoDeployerEnabled` but
+inline `let` doesn't attach to window. Fix: inline callers pass
+opts object explicitly:
+```js
+buildNextActionsPanel(d, {
+    autoDeployerEnabled: autoDeployerEnabled,
+    killSwitchActive: killSwitchActive,
+    guardrails: guardrailsData,
+})
+```
+Python 1536 → 1561 (+25).
 
 **Pt.9 landed (PR #134)**: cloud_scheduler helper coverage + a
 user-reported calibration error-message fix. Python tests 1490 →
@@ -111,10 +150,18 @@ escaped `&` → `&`; the first draft of the extraction missed it.
 Fixed before any inline duplicate was removed. Regression-guard test
 now exists.
 
-**Test counts (on `main` after pt.9):**
-  * Python: **1536 passing**, 3 deselected
-  * JS: **388 passing** across 30 files
+**Test counts (on `main` after pt.11; pt.12 pending merge):**
+  * Python: **1572 passing**, 3 deselected (pt.12 adds +11)
+  * JS: **392 passing** across 31 files (pt.11 added +4)
   * CI coverage floor: 50% Python (ratcheted up from 48% in #133)
+
+**Picking up next session:**
+1. `git pull --ff-only origin main` after #138 merges
+2. Verify Railway deploy: `curl https://stockbott.up.railway.app/api/version`
+3. Have user click "Test Saved Keys (PAPER)" — pinpoints whether
+   keys decrypt + Alpaca accepts them. Most likely cause if it
+   fails: MASTER_ENCRYPTION_KEY rotated on Railway → re-enter keys
+   via Settings → Alpaca API form.
 
 **pt.10 in flight** (branch `claude/round-61-pt10-more-helpers`):
 more `cloud_scheduler.py` helpers + remaining render surface.

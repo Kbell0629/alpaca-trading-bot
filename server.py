@@ -2829,6 +2829,12 @@ class DashboardHandler(
         if path == "/api/test-alpaca-keys":
             self.handle_test_alpaca_keys(body)
             return
+        if path == "/api/test-saved-alpaca-keys":
+            # Round-61 pt.12: ping /account using the stored creds. Lets
+            # the user diagnose why the dashboard shows $0 without
+            # re-entering keys (which they may not have to hand).
+            self.handle_test_saved_alpaca_keys(body)
+            return
         if path == "/api/save-alpaca-keys":
             self.handle_save_alpaca_keys(body)
             return

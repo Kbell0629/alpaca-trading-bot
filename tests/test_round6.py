@@ -368,9 +368,12 @@ def test_dashboard_handler_mixin_decomposition(isolated_data_dir):
     # still records the auto-deploy, label AUTO from the journal.
     # Fixes the user-reported "SOXL + HIMS option labeled MANUAL
     # when they were auto trades" bug).
+    # 3310 (round-61 pt.12 — new /api/test-saved-alpaca-keys route
+    # for diagnosing dashboard-shows-$0 without re-typing keys.
+    # Legitimately belongs at the route-dispatch layer).
     import os
     server_lines = sum(1 for _ in open(server.__file__))
-    assert server_lines < 3300, \
+    assert server_lines < 3310, \
         f"server.py too large ({server_lines} lines) — handler methods leaked back in"
 
 
