@@ -149,7 +149,7 @@ export function loadDashboardJs(stubs = {}) {
     // XSS / encoding helpers
     'esc', 'jsStr',
     // Formatting helpers
-    'fmtMoney', 'fmtPct', 'pnlClass', 'fmtUpdatedET',
+    'fmtMoney', 'fmtPct', 'pnlClass', 'fmtUpdatedET', 'fmtRelative',
     // Freshness chip — dashboard's "last updated Xs ago" widget.
     // Pinned by post-60 architectural invariant (data-label attr).
     'freshnessChip',
@@ -160,7 +160,7 @@ export function loadDashboardJs(stubs = {}) {
     // Atomic DOM swap helper (anti-jitter — see CLAUDE.md)
     'atomicReplaceChildren',
     // Toast / log helpers
-    'toast', 'addLog', 'renderLog',
+    'toast', 'toastFromApiError', 'addLog', 'renderLog',
     // Modal helpers
     'openModal', 'closeModal', '_focusablesIn',
     // Scroll helpers
