@@ -389,11 +389,25 @@ def main():
             if underlying:
                 lookup_sym = underlying
         if lookup_sym not in strategy_symbol_map:
-            # Grace period: skip if there are pending buy orders for this symbol
-            recent_orders = [o for o in all_open_orders if o.get("symbol") == sym and o.get("side") == "buy"]
-            if recent_orders:
-                print(f"  {sym}: Has pending buy orders, skipping orphan check")
-                continue
+            # Grace period: skip if there are pending buy orders for this
+            # symbol — they might be an in-progress entry the bot hasn't
+            # yet written a strategy file for.
+            #
+            # Round-61 pt.19: EXEMPT shorts and OCC options. For a short
+            # equity position, a BUY order on the symbol is risk-mgmt
+            # (cover stop / profit target), not an entry. For an OCC
+            # option (short put / covered call), a BUY order is always
+            # risk-mgmt (buy-to-close). Without this exemption, a user
+            # who manually placed a protective BUY stop on a short
+            # position would be locked out of autonomous adoption.
+            qty_f = float(pos.get("qty", 0))
+            is_short = qty_f < 0
+            is_option = _is_occ_option_symbol(sym)
+            if not is_short and not is_option:
+                recent_orders = [o for o in all_open_orders if o.get("symbol") == sym and o.get("side") == "buy"]
+                if recent_orders:
+                    print(f"  {sym}: Has pending buy orders, skipping orphan check")
+                    continue
             orphans.append((sym, pos))
 
     if not orphans:
