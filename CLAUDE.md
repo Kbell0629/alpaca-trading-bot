@@ -31,9 +31,12 @@ auto-deploys top picks across 6 strategies, manages exits, handles kill-switch
 1. `git checkout main && git pull --ff-only`
 2. `cat CLAUDE.md` (this file), `cat README.md`, `cat CHANGELOG.md`
 3. `MASTER_ENCRYPTION_KEY=$(python3 -c 'print("e"*64)') python3 -m pytest tests/ --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json --deselect tests/test_auth.py::test_password_strength_rejects_weak --deselect tests/test_audit_round12_scheduler_latent.py::test_ruff_clean_on_real_bug_rules -q`
-   — expect **1484 passing, 3 deselected** after round-61 pt.7 close-out.
+   — expect **1490 passing, 3 deselected** after round-61 pt.8 Option B.
 4. `ruff check .` — clean.
 5. Validate dashboard JS: `awk '/^<script>/,/^<\/script>/' templates/dashboard.html | grep -v '^<script>' | grep -v '^</script>' > /tmp/dash.js && node --check /tmp/dash.js`
+6. `npm ci && npx vitest run` — expect **341 JS tests passing** (29 files).
+   Run `node --check static/dashboard_render_core.js` after any edit to
+   the extracted module.
 
 **GitHub MCP reconnects late in some sessions.** Use web UI for PRs when
 `mcp__github__*` tools aren't in the tool list. PRs that modify
@@ -58,23 +61,92 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-24 — round 61 pt.8 BATCH-4)
+## Current session state (2026-04-24 — round 61 pt.8 CLOSE-OUT / batch-10 in flight)
 
-**Pt.8 batch-4 on `claude/round-61-pt8-batch4`.** Pure test-only
-PR. JS tests 136 → **160** (+24) across 2 new files:
-  * `closePositionModal` (15) — wheel-aware OCC math. Short put /
-    short call / long option / equity paths. Pins breakeven,
-    premium math, max-profit/loss, assignment note direction
-    ("below" for put / "above" for call), multi-contract
-    multiplier, Confirm button wiring.
-  * `modal` (9) — `openModal` / `closeModal` lifecycle. Round-12
-    a11y fix: .active class toggle, role=dialog + aria-modal,
-    focus restoration to opener, detached-prev-focus safety.
+**Option B extraction landed (PR #132).** A new file
+`static/dashboard_render_core.js` now holds 19 pure helpers that used
+to live inline in `templates/dashboard.html`. Same pattern pt.7 used
+to extract `screener_core.py` / `scorecard_core.py` from subprocess
+drivers. Loaded via `<script src="/static/dashboard_render_core.js">`
+BEFORE the big inline script; each function attaches to `window` for
+backward compat with the ~9300 lines of inline code that still call
+them as free globals. Test loader (`tests/js/loadDashboardJs.js`)
+reads both files; new direct-import loader (`tests/js/loadRenderCore.js`)
+lets tests hit the extracted module in isolation.
 
-**Pt.8 follow-ups (future PRs):** renderPortfolioImpact.colorFor
-math, renderDashboard.normHash hash-skip invariants (5 jitter-fix
-pins from CLAUDE.md), sell-fraction modal math. Possibly JS
-coverage threshold in CI once a stable floor is established.
+**Extracted so far (19 helpers, 56 direct-import tests):**
+  * XSS: `esc`, `jsStr`
+  * Formatters: `fmtMoney`, `fmtPct`, `pnlClass`, `fmtUpdatedET`,
+    `fmtAuditTime`, `fmtRelative`
+  * OCC parser: `_occParse`
+  * Scheduler: `SCHEDULED_TIME_MAP`, `parseSchedTs`, `latestForTask`,
+    `fmtSchedLast`
+  * Regime / heatmap / freshness: `getMarketRegime`, `heatmapColor`,
+    `freshnessChip`
+  * Preset detection: `detectActivePreset`
+  * README sanitizer: `_sanitizeReadmeHtml` + `_README_ALLOWED_TAGS`
+    + `_README_ALLOWED_ATTRS`
+
+**batch-10 in flight** (branch `claude/round-61-pt8-batch10`):
+extending the extraction to the remaining panel-render helpers —
+`buildGuardrailMeters`, `buildTodaysClosesPanel`, `buildNextActionsPanel`,
+`buildStrategyTemplates`, `buildShortStrategyCard`, `buildComparisonPanel`,
+`sectionHelpButton`, `getHiddenSections` + friends. Each either already
+returns an HTML string OR is trivially wrappable with `opts` defaults
+that pull module-local `guardrailsData` / `autoDeployerEnabled` /
+`killSwitchActive` from `window`. No behavior change. Adds another
+~60-80 direct tests.
+
+**Extraction bug caught during Option B:** the original inline `jsStr`
+escaped `&` → `&`; the first draft of the extraction missed it.
+Fixed before any inline duplicate was removed. Regression-guard test
+now exists.
+
+**Pt.8 follow-ups (future PRs):**
+  * After batch-10 lands, add Vitest `--coverage` with a threshold
+    floor in CI (similar to Python's `--cov-fail-under`).
+  * Pt.9 — deeper `cloud_scheduler.py` coverage (still ~31% after
+    pt.6). 60+ internal functions unexplored.
+
+---
+
+## Previous session state (2026-04-24 — round 61 pt.8 BATCH-9)
+
+Section-visibility helpers (+8, total JS tests 285). Shipped via #131.
+
+## Previous session state (2026-04-24 — round 61 pt.8 BATCH-8)
+
+short-card / comparison / templates / help-button (+36, total 277). #130.
+
+## Previous session state (2026-04-24 — round 61 pt.8 BATCH-7)
+
+sanitize / preset / panels (+36, total 241). #129.
+
+## Previous session state (2026-04-24 — round 61 pt.8 AUDIT)
+
+Full 5-agent tech-stack audit. Results:
+  * Security: CLEAN
+  * DB/concurrency: **2 HIGH bugs — fixed in #127**
+    * `cloud_scheduler.py:run_friday_risk_reduction` RMW without lock
+    * `cloud_scheduler.py:run_monthly_rebalance` RMW without lock
+    Both wrap in `strategy_file_lock(sf_path)` now. Pins in
+    `tests/test_round61_pt8_audit_concurrency_fixes.py`.
+  * Trading logic: CLEAN (all post-55..61 invariants verified)
+  * UX: 3 flags → 2 fixed (a11y label `for=` on signup invite_code +
+    reset password), 1 rejected (hypothetical Chart.js destroy)
+  * Tests/ops: CLEAN
+
+## Previous session state (2026-04-24 — round 61 pt.8 BATCH-6)
+
+toggleAutoDeployer + kill-switch modal + misc (+24, total 205). #128.
+
+## Previous session state (2026-04-24 — round 61 pt.8 BATCH-5)
+
+sell-fraction / cancel-order / fmtSchedLast (+21, total 181). #126.
+
+## Previous session state (2026-04-24 — round 61 pt.8 BATCH-4)
+
+closePositionModal wheel math + modal lifecycle (+24, total 160). #125.
 
 ---
 
