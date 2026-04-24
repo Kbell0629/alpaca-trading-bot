@@ -58,7 +58,32 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-24 — round 61 pt.8 BATCH-2)
+## Current session state (2026-04-24 — round 61 pt.8 BATCH-3)
+
+**Pt.8 batch-3 on `claude/round-61-pt8-batch3`.** Pure test-only
+PR. JS tests 99 → **136** (+37) across 4 new files:
+  * `toast` (16) — info/success/error/warning branches, XSS on
+    message + correlation ID, retry-button callback + removal,
+    retry-throws-swallowed, `toastFromApiError` dispatch paths.
+  * `log` (8) — newest-first order, type→class, XSS escape, 20-
+    entry visible cap, Round-57 hash-skip quiet-tick pin.
+  * `fmtRelative` (8) — "just now" / "Xm" / "Xh" / "Xd" bucket
+    boundaries, unix-seconds input, "future" / "never" / garbage.
+  * `scrollToSection` (5) — Round-53 active-tab + `_activeNavSection`
+    pins.
+
+Loader now exposes `toastFromApiError` + `fmtRelative`. `let`-scoped
+module state (activityLog) still not resetable — tests assert on
+relative position instead of absolute counts.
+
+**Pt.8 follow-ups (future PRs):** renderPortfolioImpact.colorFor
+math, openClosePositionModal OCC breakdown math (short put
+assignment, covered call assignment), possibly JS coverage
+threshold in CI once a stable floor is established.
+
+---
+
+## Previous session state (2026-04-24 — round 61 pt.8 BATCH-2)
 
 **Pt.8 batch-2 on `claude/round-61-pt8-batch2`.** Builds on the
 kickoff (#122). JS tests 68 → 99 (+31) across 3 new files:

@@ -8,6 +8,44 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.8 batch-3 — toast / log / relative / scroll tests
+
+Continues the pt.8 JS coverage push. JS tests 99 → **136** (+37)
+across 4 new files. No behavior changes — test-only PR.
+
+**New JS tests:**
+  * `tests/js/toast.test.js` (16) — toast notification helper. Pins
+    info/success/error/warning class branches, XSS escape on message
+    + correlationId, ref-suffix conditional rendering, retry-button
+    callback + DOM removal on click, retry-throws-swallowed safety.
+    Covers `toastFromApiError` dispatch for null data, data.error,
+    data.correlation_id surfacing, fallback text.
+  * `tests/js/log.test.js` (8) — activity-log renderer. Pins
+    newest-first ordering, type→class mapping, XSS escape on the
+    message, the 20-entry visible-window cap, and the Round-57
+    hash-skip quiet-tick (identical re-render does NOT touch
+    innerHTML — anti-jitter).
+  * `tests/js/fmtRelative.test.js` (8) — general "Xago" renderer
+    used by the activity log + other non-scheduler callers. Pins
+    "just now" / "Xm ago" / "Xh ago" / "Xd ago" bucket boundaries,
+    unix-seconds numeric-input path, "future" return for negative
+    deltas, "never" for null/empty, pass-through for garbage.
+  * `tests/js/scrollToSection.test.js` (5) — nav-tab click handler.
+    Pins Round-53 fix: `.active` class set on the right tab +
+    cleared from prior active tab, `window._activeNavSection`
+    persisted so renderDashboard can restore the highlight across
+    the 10s auto-refresh tick. Missing target is a no-op (no throw).
+
+**Loader additions:**
+  * Exposes `toastFromApiError` and `fmtRelative` on the test API.
+
+**Results:**
+  * JS tests: **99 → 136** (+37 across 4 new files, all <500ms cold).
+  * Python suite unchanged.
+  * Ruff clean. `node --check` clean.
+
+---
+
 ## 🆕 Round-61 pt.8 batch-2 — more JS helpers + AUTO/MANUAL mislabel fix
 
 Continues the pt.8 coverage push from #122 (kickoff).
