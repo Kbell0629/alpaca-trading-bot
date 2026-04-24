@@ -205,12 +205,27 @@ def test_hash_skip_in_place_patch_branch_present():
 
 def test_freshness_chip_emits_data_label():
     """freshnessChip must emit data-label='...' when given a label, so
-    the in-place patch can regenerate just the right chip."""
-    with open("templates/dashboard.html") as f:
-        src = f.read()
-    assert 'data-label="' in src
-    # labelAttr computed in the function body
-    assert "var labelAttr = label" in src
+    the in-place patch can regenerate just the right chip.
+
+    Round-61 pt.8 Option B: freshnessChip moved from inline dashboard.html
+    into static/dashboard_render_core.js. Check the new location; if the
+    function isn't there, also fall back to dashboard.html in case a
+    future refactor inlines it again.
+    """
+    paths = ["static/dashboard_render_core.js", "templates/dashboard.html"]
+    combined = ""
+    for p in paths:
+        try:
+            with open(p) as f:
+                combined += f.read() + "\n"
+        except FileNotFoundError:
+            pass
+    assert 'data-label="' in combined, (
+        "freshnessChip output must include data-label for the in-place "
+        "patch path")
+    assert "var labelAttr = label" in combined, (
+        "The labelAttr computation must live in the function body so the "
+        "data-label is emitted conditionally on the label argument")
 
 
 # ========= Fix 3: Position Correlation mobile scroll =========
