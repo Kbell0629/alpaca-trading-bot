@@ -527,17 +527,23 @@ class ActionsHandlerMixin:
         Read-only audit endpoint stays pure; this is the mutating
         counterpart the user can opt into.
 
-        Also runs `error_recovery.py` Check 3 in-process logic —
-        same rules: skip files modified in the last 10 min (grace
-        period for fresh closes) and skip files with pending sell
-        orders (position may be mid-exit).
+        Round-61 pt.25: removed the 10-min grace-period filter. The
+        scheduled `error_recovery.py` Check 3 keeps its 10-min grace
+        for autonomous safety (protects against races where a
+        position just closed and the file is mid-update), but the
+        manual button path is a human asserting explicit intent —
+        they clicked the button looking at a specific audit finding,
+        no grace needed. Prior version kept skipping CORZ/AXTI
+        because error_recovery's periodic mtime-touch kept pushing
+        them inside the grace window. Pending-sell check remains —
+        a position mid-exit shouldn't be force-closed even on user
+        click.
         """
         if not self.current_user:
             return self.send_json({"error": "Not authenticated"}, 401)
         try:
             import audit_core
             import server
-            import time as _time
             from et_time import now_et
             from constants import is_closed_status
             user = self.build_scoped_user_dict()
@@ -587,25 +593,21 @@ class ActionsHandlerMixin:
                     continue
                 if sym in position_symbols:
                     continue  # not a ghost
-                # Grace period: skip if recently modified.
-                fpath = os.path.join(strats_dir, fname)
-                try:
-                    mtime = os.path.getmtime(fpath)
-                    if _time.time() - mtime < 600:  # 10 min
-                        skipped.append({"file": fname, "reason": "modified_recent"})
-                        continue
-                except OSError:
-                    pass
-                # Skip if there are pending sell orders (position
-                # may be mid-exit).
+                # Pt.25: NO grace period for user-initiated cleanup.
+                # User clicked the button — honor their intent.
+                # Skip only if there are pending sell orders (position
+                # may be mid-exit, premature close would confuse
+                # record_trade_close).
                 if sym in pending_sells:
                     skipped.append({"file": fname, "reason": "pending_sell"})
                     continue
                 # Mark closed.
                 data["status"] = "closed"
                 data["closed_reason"] = ("No position found — marked closed "
-                                          "via /api/close-ghost-strategies")
+                                          "via /api/close-ghost-strategies "
+                                          "(user-triggered, pt.25 no grace)")
                 data["closed_at"] = now_et().isoformat()
+                fpath = os.path.join(strats_dir, fname)
                 try:
                     with open(fpath, "w") as f:
                         _json.dump(data, f, indent=2)
