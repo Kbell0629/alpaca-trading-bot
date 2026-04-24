@@ -516,3 +516,42 @@ class ActionsHandlerMixin:
             })
         except Exception as e:
             self._send_error_safe(e, 500, "force-daily-close")
+
+    def handle_force_orphan_adoption(self, body=None):
+        """Round-61 pt.15: run orphan adoption on-demand. Synthesizes
+        strategy files for every Alpaca position that has no matching
+        file, so `monitor_strategies` starts placing + maintaining
+        stops. User-triggered via the 'Adopt MANUAL Positions' button
+        in the dashboard; also scheduled every 10 min during market
+        hours inside cloud_scheduler's periodic loop.
+
+        Runs synchronously so the caller sees the result immediately
+        and the dashboard can refresh with fresh AUTO labels.
+        """
+        if not self.current_user:
+            return self.send_json({"error": "Not authenticated"}, 401)
+        try:
+            import cloud_scheduler as cs
+            user = self.build_scoped_user_dict()
+            result = cs.run_orphan_adoption(user)
+            if isinstance(result, dict) and result.get("error"):
+                return self.send_json({
+                    "error": f"Adoption failed: {result['error']}",
+                }, 500)
+            created = (result or {}).get("created", 0) if isinstance(result, dict) else 0
+            if created > 0:
+                msg = (f"Adopted {created} MANUAL position(s) into AUTO "
+                       f"management. Refresh the dashboard to see the new "
+                       f"AUTO labels + stop orders.")
+            else:
+                msg = ("No MANUAL positions found that need adoption. All "
+                       "positions are already under AUTO management (or "
+                       "are managed by a wheel strategy that intentionally "
+                       "handles its own stops).")
+            self.send_json({
+                "success": True,
+                "message": msg,
+                "adopted": created,
+            })
+        except Exception as e:
+            self._send_error_safe(e, 500, "force-orphan-adoption")

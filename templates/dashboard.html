@@ -3668,6 +3668,43 @@ async function forceAutoDeploy() {
     }
 }
 
+// Round-61 pt.15: convert every MANUAL position to AUTO by synthesizing
+// the missing strategy file (trailing_stop_<SYM>.json for longs,
+// short_sell_<SYM>.json for shorts). The bot's monitor_strategies loop
+// then picks it up on the next 60s tick and places the appropriate
+// stop + target orders at Alpaca. Already-AUTO positions are skipped.
+// This also runs automatically every 10 min during market hours — the
+// button is a belt-and-suspenders "do it right now" escape hatch.
+async function adoptOrphanPositions() {
+    if (!confirm('Put every MANUAL position under AUTO bot management?\n\n' +
+                 'This will:\n' +
+                 '  - Synthesize a strategy file for each unmanaged position\n' +
+                 '  - Long positions get a trailing-stop 10% below entry\n' +
+                 '  - Short positions get a cover-stop 10% above entry\n' +
+                 '  - Wheel-managed positions are left alone\n\n' +
+                 'Continue?')) return;
+    toast('Adopting MANUAL positions...', 'info');
+    try {
+        var resp = await fetch(API_BASE + '/api/adopt-orphans', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {'Content-Type': 'application/json', 'X-CSRF-Token': getCSRFToken()},
+            body: '{}'
+        });
+        var data = await resp.json();
+        if (resp.ok) {
+            toast(data.message || 'Adoption complete', 'success');
+            addLog('Orphan adoption: ' + (data.adopted || 0) + ' position(s) adopted', 'success');
+            // Refresh so the new AUTO labels + stop orders show up.
+            setTimeout(function() { if (typeof refresh === 'function') refresh(); }, 1500);
+        } else {
+            toast('Adoption failed: ' + (data.error || 'unknown'), 'error');
+        }
+    } catch(e) {
+        toast('Adoption error: ' + e.message, 'error');
+    }
+}
+
 function openKillSwitchModal() {
     openModal('killSwitchModal');
 }
@@ -6048,9 +6085,19 @@ function renderDashboard() {
         '<section id="section-positions" aria-label="Positions and open orders">' +
         '<div class="tables">' +
             '<div class="table-card" aria-label="Open positions">' +
-                '<h3 style="display:flex;justify-content:space-between;align-items:center">' +
+                '<h3 style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">' +
                     '<span>Positions' + sectionHelpButton('positions') + freshnessChip(d.updated_at, 'live') + '</span>' +
-                    '<a class="btn-ghost btn-sm" href="/api/export/positions.csv" download="positions.csv" style="text-decoration:none" title="Download positions as CSV">⬇ CSV</a>' +
+                    '<span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">' +
+                        // Round-61 pt.15: adopt all MANUAL positions into
+                        // AUTO management in one click. Synthesizes
+                        // strategy files for any position that has no
+                        // matching file, so monitor_strategies starts
+                        // placing + maintaining stops immediately. Also
+                        // runs automatically every 10 min during market
+                        // hours.
+                        '<button type="button" class="btn-ghost btn-sm" onclick="adoptOrphanPositions()" title="Put every MANUAL position under AUTO bot management (places stops, enables profit-ladders)">🤖 Adopt MANUAL → AUTO</button>' +
+                        '<a class="btn-ghost btn-sm" href="/api/export/positions.csv" download="positions.csv" style="text-decoration:none" title="Download positions as CSV">⬇ CSV</a>' +
+                    '</span>' +
                 '</h3>' +
                 posSummaryHtml +
                 '<table><thead><tr>' +

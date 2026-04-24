@@ -3171,6 +3171,12 @@ class DashboardHandler(
         elif path == "/api/force-daily-close":
             self.handle_force_daily_close()
 
+        elif path == "/api/adopt-orphans":
+            # Round-61 pt.15: user-triggered orphan adoption. Runs
+            # error_recovery.py per-user so positions with no strategy
+            # file get one synthesized (MANUAL -> AUTO).
+            self.handle_force_orphan_adoption(body)
+
         else:
             self.send_json({"error": "Not found"}, 404)
 
