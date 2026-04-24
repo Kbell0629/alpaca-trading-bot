@@ -144,6 +144,31 @@ def _occ_underlying(sym):
     return m.group(1) if m else None
 
 
+def _occ_parse(sym):
+    """Round-61 pt.17: parse OCC symbol into structured fields so the
+    option-orphan path can synthesize a wheel_<UNDERLYING>.json with
+    the active contract populated (underlying, expiration, right,
+    strike, qty).
+
+    Format: UUUUUUYYMMDD[CP]SSSSSSSS where SSSSSSSS is strike × 1000.
+    Example: HIMS260508P00027000 -> HIMS 2026-05-08 $27.00 PUT.
+
+    Returns None if sym isn't OCC-shaped.
+    """
+    if not _is_occ_option_symbol(sym):
+        return None
+    m = re.match(r"^([A-Z]{1,6})(\d{2})(\d{2})(\d{2})([CP])(\d{8})$", sym)
+    if not m:
+        return None
+    underlying, yy, mm, dd, right, strike_int = m.groups()
+    return {
+        "underlying": underlying,
+        "expiration": f"20{yy}-{mm}-{dd}",
+        "right": "put" if right == "P" else "call",
+        "strike": int(strike_int) / 1000.0,
+    }
+
+
 def list_strategy_files():
     """List all strategy JSON files and parse their contents.
 
@@ -207,14 +232,39 @@ def create_orphan_strategy(symbol, qty, current_price, avg_entry):
     """Create a basic trailing_stop strategy file for an orphan position.
     Round-10: handles SHORT positions by inverting direction so we
     don't write a sell-stop BELOW entry on a short (which would close
-    a winning short on a drop, wrong direction)."""
+    a winning short on a drop, wrong direction).
+
+    Round-61 pt.17: adaptive stop distance so an already-underwater
+    position still gets a REAL protective stop instead of one Alpaca
+    would reject. Old logic: `stop = entry * (1 ± 0.10)` ignoring
+    current price. Problem: a SHORT with entry $110 and current $129
+    ends up with a buy-stop at $121 — BELOW market. Alpaca rejects
+    (or silently holds until price crosses). Same failure mode for
+    a LONG with entry $100 and current $85 (sell-stop at $90 ABOVE
+    market). Fix: pin the stop on the protective side of current
+    price (current × 0.95 for long, current × 1.05 for short) and
+    then clamp to the entry-based stop so a fresh position with
+    current≈entry still gets the tighter loss cap.
+    """
     qty_f = float(qty)
     is_short = qty_f < 0
+    avg_entry_f = float(avg_entry)
+    current_price_f = float(current_price)
     if is_short:
-        stop_price = round(float(avg_entry) * 1.10, 2)  # 10% above entry
+        # Stop must be ABOVE current price for a buy-stop to protect
+        # against further adverse moves. Use entry*1.10 when still
+        # above current (fresh position), else current*1.05.
+        entry_stop = avg_entry_f * 1.10
+        current_stop = current_price_f * 1.05
+        stop_price = round(max(entry_stop, current_stop), 2)
         strategy_name = "short_sell"
     else:
-        stop_price = round(float(avg_entry) * 0.90, 2)
+        # Stop must be BELOW current price for a sell-stop. Use
+        # entry*0.90 when still below current (fresh / winning
+        # position), else current*0.95.
+        entry_stop = avg_entry_f * 0.90
+        current_stop = current_price_f * 0.95
+        stop_price = round(min(entry_stop, current_stop), 2)
         strategy_name = "trailing_stop"
     strategy = {
         "symbol": symbol,
@@ -375,6 +425,123 @@ def main():
                     pass
 
             print(f"\n  ORPHAN: {sym} ({qty} shares, entry ${avg_entry:.2f}, current ${current_price:.2f})")
+
+            # Round-61 pt.17: OCC option orphans can't be stop-managed
+            # like equities — the monitor's short_sell/trailing_stop
+            # paths assume stock tickers + share quantities. For short
+            # options (short put or covered call) the right home is a
+            # wheel_<UNDERLYING>.json in the appropriate stage so the
+            # wheel monitor handles buy-to-close at 50% profit + handles
+            # assignment. Long options are skipped (no strategy exists
+            # in this codebase for long-premium positions — user opened
+            # them manually, keep them manual).
+            if _is_occ_option_symbol(sym):
+                parsed = _occ_parse(sym)
+                if parsed is None or not is_short:
+                    print(f"    SKIPPED: {sym} — long option or unparseable; "
+                          f"leaving MANUAL (no strategy covers long-premium).")
+                    continue
+                underlying = parsed["underlying"]
+                right = parsed["right"]
+                wheel_stage = ("stage_1_put_active" if right == "put"
+                               else "stage_2_call_active")
+                wheel_fname = f"wheel_{underlying}.json"
+                wheel_fpath = os.path.join(STRATEGIES_DIR, wheel_fname)
+                if os.path.exists(wheel_fpath):
+                    # A wheel file for this underlying already exists
+                    # but didn't claim this OCC symbol earlier. Don't
+                    # overwrite — the wheel monitor may already be
+                    # tracking it in active_contract. Just leave it;
+                    # _mark_auto_deployed resolves OCC → underlying
+                    # on the label side.
+                    print(f"    NOTE: {sym} — wheel_{underlying}.json "
+                          "already exists, leaving alone.")
+                    continue
+                qty_contracts = int(abs(float(qty)))
+                wheel = {
+                    "symbol": underlying,
+                    "strategy": "wheel",
+                    "created": now_et().strftime("%Y-%m-%d"),
+                    "updated": now_et().isoformat(),
+                    "stage": wheel_stage,
+                    "shares_owned": 0 if right == "put" else qty_contracts * 100,
+                    "shares_at_open": 0,
+                    "cost_basis": None,
+                    "cycles_completed": 0,
+                    "total_premium_collected": 0.0,
+                    "total_realized_pnl": 0.0,
+                    "active_contract": {
+                        "contract_symbol": sym,
+                        "type": right,
+                        "strike": parsed["strike"],
+                        "expiration": parsed["expiration"],
+                        "dte_at_open": None,
+                        "quantity": qty_contracts,
+                        "premium_received": float(avg_entry) * qty_contracts * 100,
+                        "limit_price_used": float(avg_entry),
+                        "open_order_id": None,
+                        "close_order_id": None,
+                        "opened_at": now_et().isoformat(),
+                        "closed_at": None,
+                        "status": "active",
+                    },
+                    "history": [{
+                        "timestamp": now_et().isoformat(),
+                        "event": "orphan_adopted",
+                        "note": ("Synthesized by error_recovery.py — "
+                                 f"found naked short {right} in Alpaca "
+                                 "with no wheel file."),
+                    }],
+                    "deployer": "error_recovery",
+                    "auto_recovered": True,
+                }
+                safe_save_json(wheel_fpath, wheel)
+                print(f"    FIXED: Created {wheel_fname} "
+                      f"(stage={wheel_stage}, contract={sym}). Wheel "
+                      "monitor will manage buy-to-close + assignment.")
+                # Journal open entry — same rationale as the equity
+                # path (prevents a future close from tagging [orphan]).
+                try:
+                    journal_path = os.path.join(DATA_DIR, "trade_journal.json")
+                    _journal = {}
+                    if os.path.exists(journal_path):
+                        try:
+                            with open(journal_path) as _jf:
+                                _journal = json.load(_jf) or {}
+                        except (OSError, ValueError):
+                            _journal = {}
+                    if not isinstance(_journal, dict):
+                        _journal = {}
+                    _journal.setdefault("trades", [])
+                    _journal["trades"].append({
+                        "timestamp": now_et().isoformat(),
+                        "symbol": sym,
+                        "side": "sell_short",
+                        "qty": qty_contracts,
+                        "price": float(avg_entry),
+                        "strategy": "wheel",
+                        "reason": ("Backfilled by error_recovery — "
+                                   "short option existed in Alpaca "
+                                   "without a wheel file. Wheel state "
+                                   f"synthesized in {wheel_stage}."),
+                        "deployer": "error_recovery",
+                        "status": "open",
+                        "auto_recovered": True,
+                    })
+                    safe_save_json(journal_path, _journal)
+                    print(f"    JOURNAL: recorded open entry for {sym}")
+                except Exception as _je:
+                    print(f"    Warning: journal write failed for {sym}: {_je}")
+                issues_fixed += 1
+                strategy_symbol_map[underlying] = (wheel_fname, {
+                    "path": wheel_fpath,
+                    "data": wheel,
+                    "symbol": underlying,
+                    "strategy": "wheel",
+                    "status": "active",
+                })
+                continue
+
             strategy = create_orphan_strategy(sym, qty, current_price, avg_entry)
             strat_prefix = "short_sell" if is_short else "trailing_stop"
             fname = f"{strat_prefix}_{sym}.json"
@@ -473,15 +640,27 @@ def main():
                 stop_loss_pct = 0.05
 
             is_short = qty < 0
+            # Round-61 pt.17: adaptive stop distance so an already-
+            # underwater position still gets an Alpaca-accepted stop.
+            # Without this, a short at entry $110 with current $129
+            # got a buy-stop at $121 — BELOW market — which Alpaca
+            # rejects. Pin the stop on the protective side of current
+            # price then clamp to the entry-based stop. Same formula
+            # as create_orphan_strategy (keep the two in sync).
+            current_price = float(pos.get("current_price", 0) or avg_entry)
             if is_short:
-                stop_price = round(avg_entry * (1 + stop_loss_pct), 2)
+                entry_stop = avg_entry * (1 + stop_loss_pct)
+                current_stop = current_price * 1.05
+                stop_price = round(max(entry_stop, current_stop), 2)
                 side = "buy"
-                arrow = "above entry (short cover)"
+                arrow = "above entry/current (short cover)"
             else:
-                stop_price = round(avg_entry * (1 - stop_loss_pct), 2)
+                entry_stop = avg_entry * (1 - stop_loss_pct)
+                current_stop = current_price * 0.95
+                stop_price = round(min(entry_stop, current_stop), 2)
                 side = "sell"
-                arrow = "below entry"
-            print(f"\n  MISSING STOP: {sym} ({int(abs(qty))} shares {'short' if is_short else 'long'}, entry ${avg_entry:.2f})")
+                arrow = "below entry/current"
+            print(f"\n  MISSING STOP: {sym} ({int(abs(qty))} shares {'short' if is_short else 'long'}, entry ${avg_entry:.2f}, current ${current_price:.2f})")
             print(f"    Placing stop-loss at ${stop_price:.2f} ({stop_loss_pct*100:.0f}% {arrow})")
 
             result = place_stop_loss_order(sym, abs(qty), stop_price, side=side)
