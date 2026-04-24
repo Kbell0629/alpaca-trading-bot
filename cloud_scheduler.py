@@ -1515,6 +1515,35 @@ def process_short_strategy(user, filepath, strat, state, rules):
     # being in place). Mirror the error_recovery.create_orphan_strategy
     # formula: max(entry*(1+pct), current*1.05) so the stop is ALWAYS on
     # the protective side of current price.
+    #
+    # Round-61 pt.24: also verify the persisted cover_order_id is still
+    # LIVE at Alpaca before trusting it. If a prior placement was
+    # rejected (e.g. invalid-price) or later canceled, the id stays in
+    # state but the order doesn't exist at the broker — monitor never
+    # retried, position stayed unprotected forever. User-reported: SOXL
+    # audit flagged missing BUY stop despite the cover_order_id being
+    # set in the strategy file. Fix: query the order; if it's
+    # canceled/rejected/expired, reset cover_order_id=None so this tick
+    # places a fresh one.
+    existing_cover_id = state.get("cover_order_id")
+    if existing_cover_id:
+        existing_order = user_api_get(user, f"/orders/{existing_cover_id}")
+        if isinstance(existing_order, dict):
+            existing_status = str(existing_order.get("status") or "").lower()
+            # Alpaca's dead statuses for an order that never filled.
+            if existing_status in ("canceled", "cancelled", "rejected",
+                                    "expired", "replaced", "done_for_day"):
+                log(f"[{user['username']}] {symbol}: stale cover_order_id "
+                    f"{existing_cover_id} is {existing_status} — resetting "
+                    "so next placement can retry.", "monitor")
+                state["cover_order_id"] = None
+        elif isinstance(existing_order, dict) and "error" in existing_order:
+            # Alpaca returned an error looking up the order — most
+            # commonly 404 (order id doesn't exist). Reset so we retry.
+            log(f"[{user['username']}] {symbol}: cover_order_id "
+                f"{existing_cover_id} not found at Alpaca — resetting.",
+                "monitor")
+            state["cover_order_id"] = None
     if not state.get("cover_order_id"):
         stop_pct = rules.get("stop_loss_pct", 0.08)
         entry_stop = entry * (1 + stop_pct)
@@ -1763,6 +1792,27 @@ def process_strategy_file(user, filepath, strat, extended_hours=False):
     # sell-stop ABOVE current market, which Alpaca rejects (or would
     # trigger immediately if not rejected). Mirror the short-side +
     # error_recovery formula: min(entry*(1-pct), current*0.95).
+    # Round-61 pt.24: verify stop_order_id is still live at Alpaca
+    # before trusting it. Same pattern as the short-side cover fix —
+    # a rejected/canceled stop leaves a stale id in state that
+    # prevents re-placement. Reset when dead so the next block
+    # places fresh.
+    existing_stop_id = state.get("stop_order_id")
+    if existing_stop_id and not extended_hours:
+        existing = user_api_get(user, f"/orders/{existing_stop_id}")
+        if isinstance(existing, dict):
+            ex_status = str(existing.get("status") or "").lower()
+            if ex_status in ("canceled", "cancelled", "rejected",
+                              "expired", "replaced", "done_for_day"):
+                log(f"[{user['username']}] {symbol}: stale stop_order_id "
+                    f"{existing_stop_id} is {ex_status} — resetting.",
+                    "monitor")
+                state["stop_order_id"] = None
+            elif "error" in existing:
+                log(f"[{user['username']}] {symbol}: stop_order_id "
+                    f"{existing_stop_id} not found at Alpaca — resetting.",
+                    "monitor")
+                state["stop_order_id"] = None
     if not extended_hours and not state.get("stop_order_id"):
         stop_pct = rules.get("stop_loss_pct", 0.10)
         entry_stop = entry * (1 - stop_pct)
