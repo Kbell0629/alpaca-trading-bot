@@ -240,7 +240,11 @@ def test_monitor_catches_top_level_exceptions():
     for everyone). This invariant has been broken in prior audits and
     cost a weekend of missed ticks."""
     src = _src()
-    block = _slice(src, "def monitor_strategies", "def check_profit_ladder")
+    # Round-61 pt.31 inserted ``_shrink_stop_before_partial_exit``
+    # between monitor_strategies and check_profit_ladder, so slice
+    # to the helper boundary instead.
+    block = _slice(src, "def monitor_strategies",
+                    "def _shrink_stop_before_partial_exit")
     # Last ~400 chars of the function should have `except Exception`
     # with log — not a bare `raise`
     tail = block[-600:]

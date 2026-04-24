@@ -1360,6 +1360,59 @@ def monitor_strategies(user, extended_hours=False):
     except Exception as e:
         log(f"[{user['username']}] Monitor error: {e}", "monitor")
 
+def _shrink_stop_before_partial_exit(user, symbol, state, remaining,
+                                      stop_id_key="stop_order_id"):
+    """Round-61 pt.31: shrink (or cancel) the protective stop on a
+    position BEFORE a partial-qty market sell so Alpaca doesn't
+    reject the sell with HTTP 403 / alpaca_code=40310000
+    "insufficient qty available for order".
+
+    Without this step, an existing GTC sell-stop covering all
+    ``shares`` shares reserves the entire position. Placing an
+    additional sell for ``sell_qty`` of those shares fails because
+    ``qty_available`` is 0 — they're all reserved by the stop.
+    User-reported (round-61 pt.31): Friday risk reduction tried to
+    trim 31 of 63 INTC and got 403 Forbidden every Friday at 3:45 PM
+    ET because the trailing-stop-loss reserved all 63 shares.
+
+    Behavior, in order:
+      * If ``remaining <= 0`` (selling everything): cancel the stop
+        completely and clear the state id.
+      * Else attempt PATCH /orders/{id} with new qty ``remaining``.
+        On success the stop atomically shrinks and frees ``sell_qty``
+        for the upcoming sell. State id is unchanged.
+      * On PATCH failure (older Alpaca, replaced state, race),
+        DELETE the stop and clear the state id. Caller MUST re-place
+        a fresh stop on ``remaining`` shares after the partial sell
+        fills, or the remaining position is unprotected.
+
+    Returns one of: "patched", "canceled", "noop". The string lets
+    the caller decide whether re-placement is its responsibility.
+
+    ``stop_id_key`` defaults to ``stop_order_id`` (long path);
+    callers handling shorts pass ``cover_order_id`` so the same
+    helper covers BUY-stop reservations.
+    """
+    old_id = state.get(stop_id_key)
+    if not old_id:
+        return "noop"
+    if remaining <= 0:
+        user_api_delete(user, f"/orders/{old_id}")
+        state[stop_id_key] = None
+        return "canceled"
+    patched = user_api_patch(user, f"/orders/{old_id}",
+                              {"qty": str(remaining)})
+    if isinstance(patched, dict) and "id" in patched:
+        # Alpaca replace-order semantics: PATCH returns a NEW order id
+        # (the old one is cancel-and-replaced). Update state so future
+        # liveness checks (pt.24/26) hit the live order.
+        state[stop_id_key] = patched["id"]
+        return "patched"
+    user_api_delete(user, f"/orders/{old_id}")
+    state[stop_id_key] = None
+    return "canceled"
+
+
 def check_profit_ladder(user, filepath, strat, price, entry, shares):
     """Sell 25% at each profit target: +10%, +20%, +30%, +50%.
 
@@ -1418,6 +1471,17 @@ def check_profit_ladder(user, filepath, strat, price, entry, shares):
             except Exception:
                 pass  # PDT check never blocks on error
 
+        # Round-61 pt.31: shrink the protective stop BEFORE the
+        # partial sell. The stop reserves all ``shares`` shares; a
+        # market sell for ``sell_qty`` would be rejected with
+        # ``qty_available=0`` until the stop is resized to
+        # ``remaining``. See ``_shrink_stop_before_partial_exit``
+        # docstring for details.
+        remaining = shares - sell_qty
+        current_stop_price = state.get("current_stop_price")
+        stop_action = _shrink_stop_before_partial_exit(
+            user, symbol, state, remaining)
+
         # Idempotency: client_order_id lets Alpaca reject duplicate orders if
         # a prior attempt hit the server but the response was lost (timeout /
         # 504). Without this, the next monitor tick would re-enter and place
@@ -1447,44 +1511,26 @@ def check_profit_ladder(user, filepath, strat, price, entry, shares):
         if isinstance(order, dict) and "id" in order:
             takes.append(level)
             state["profit_takes"] = takes
-            remaining = shares - sell_qty
             state["total_shares_held"] = remaining
 
-            # CRITICAL: resize the protective stop to match remaining shares,
-            # otherwise if the stop triggers it sells MORE than we hold and
-            # Alpaca will reject or (with short-enabled accounts) open a short.
-            #
-            # Order: PLACE NEW FIRST, then cancel OLD on success. This avoids
-            # a window where the position is unprotected between cancel and
-            # re-place. If the new stop fails, we KEEP the old stop (which is
-            # now oversized but still protective — Alpaca will just reject if
-            # the remaining share qty is too low at trigger time).
-            old_stop_id = state.get("stop_order_id")
-            current_stop_price = state.get("current_stop_price")
-            if old_stop_id and remaining > 0 and current_stop_price:
-                # Round-10 audit: use PATCH to atomically bump the qty
-                # on the existing stop. The old "place new + cancel
-                # old" path hits Alpaca's duplicate-order 403 (same
-                # bug class as the trailing-stop raise). Fall back to
-                # cancel-then-place if PATCH fails.
-                patched = user_api_patch(user, f"/orders/{old_stop_id}",
-                                          {"qty": str(remaining)})
-                new_stop = patched if (isinstance(patched, dict)
-                                        and "id" in patched) else None
-                if not new_stop:
-                    user_api_delete(user, f"/orders/{old_stop_id}")
-                    new_stop = user_api_post(user, "/orders", {
-                        "symbol": symbol, "qty": str(remaining), "side": "sell",
-                        "type": "stop", "stop_price": str(current_stop_price),
-                        "time_in_force": "gtc"
-                    })
+            # Round-61 pt.31: stop already shrunk pre-sell via the
+            # helper. If PATCH worked, ``stop_order_id`` still points
+            # at the now-correctly-sized stop. If PATCH failed and we
+            # had to cancel, re-place a fresh stop on ``remaining``
+            # so the residual position is protected.
+            if (stop_action == "canceled" and remaining > 0
+                    and current_stop_price):
+                new_stop = user_api_post(user, "/orders", {
+                    "symbol": symbol, "qty": str(remaining), "side": "sell",
+                    "type": "stop", "stop_price": str(current_stop_price),
+                    "time_in_force": "gtc"
+                })
                 if isinstance(new_stop, dict) and "id" in new_stop:
                     state["stop_order_id"] = new_stop["id"]
                 else:
-                    log(f"[{user['username']}] {symbol}: WARN stop resize failed after profit-take. Err: {new_stop}", "monitor")
-            elif old_stop_id and remaining <= 0:
-                user_api_delete(user, f"/orders/{old_stop_id}")
-                state["stop_order_id"] = None
+                    log(f"[{user['username']}] {symbol}: WARN re-place "
+                        f"stop after profit-take cancel-fallback failed. "
+                        f"Err: {new_stop}", "monitor")
 
             # Ensure state is attached to strat before save (defensive)
             strat["state"] = state
@@ -4004,14 +4050,59 @@ def run_friday_risk_reduction(user):
             pass
 
         half_qty = qty // 2
+        remaining = qty - half_qty
+        raw_qty = float(pos.get("qty", 0))
         log(f"[{user['username']}] {symbol}: +{unrealized_plpc:.1f}%, selling {half_qty}/{qty} before weekend", "friday")
+
+        # Round-61 pt.31: shrink any open protective stop on the
+        # symbol BEFORE the trim sell. Without this step, a long
+        # position whose trailing-stop reserves all `qty` shares
+        # (the common case — every active strategy has an
+        # ``stop_order_id`` set) rejects the trim sell with HTTP
+        # 403 / alpaca_code=40310000 "insufficient qty available
+        # for order". User-reported every Friday at 3:45 PM ET on
+        # INTC: 63 shares long, sell-stop reserves all 63, trim of
+        # 31 fails with 403.
+        # The strategy state lives in `_{symbol}.json`; load it,
+        # shrink-or-cancel via the helper, persist, then place
+        # the trim. After the trim fills, re-place a fresh stop
+        # on `remaining` shares if the helper had to cancel
+        # (PATCH fallback path).
+        stop_action = "noop"
+        stop_price_for_replace = None
+        sf_paths_for_symbol = []
+        try:
+            for sf in os.listdir(sdir):
+                if not (sf.endswith(f"_{symbol}.json")
+                        and not sf.startswith("wheel_")):
+                    continue
+                sf_paths_for_symbol.append(os.path.join(sdir, sf))
+        except FileNotFoundError:
+            pass
+        # Pre-sell stop shrink (acts on FIRST matching strategy
+        # file — typical case is one file per symbol). Hold lock
+        # across the Alpaca call so the 60s monitor can't read a
+        # half-updated stop_order_id.
+        for sf_path in sf_paths_for_symbol:
+            with strategy_file_lock(sf_path):
+                strat_pre = load_json(sf_path) or {}
+                state_pre = strat_pre.get("state", {})
+                stop_price_for_replace = state_pre.get("current_stop_price")
+                stop_id_key = ("cover_order_id" if raw_qty < 0
+                                else "stop_order_id")
+                stop_action = _shrink_stop_before_partial_exit(
+                    user, symbol, state_pre, remaining,
+                    stop_id_key=stop_id_key)
+                strat_pre["state"] = state_pre
+                save_json(sf_path, strat_pre)
+            break  # only one strategy file per symbol expected
 
         # Round-11: idempotency key so a timeout-retry doesn't double-trim.
         _today_str = get_et_time().strftime("%Y%m%d")
         order = user_api_post(user, "/orders", {
             "symbol": symbol,
             "qty": str(half_qty),
-            "side": "sell" if float(pos.get("qty", 0)) > 0 else "buy",
+            "side": "sell" if raw_qty > 0 else "buy",
             "type": "market",
             "time_in_force": "day",
             "client_order_id": f"friday-{symbol}-{_today_str}",
@@ -4020,7 +4111,6 @@ def run_friday_risk_reduction(user):
         if isinstance(order, dict) and "id" in order:
             actions_taken += 1
             # Signed position size: long>0, short<0. Profit direction depends on side.
-            raw_qty = float(pos.get("qty", 0))
             if raw_qty > 0:
                 profit = (current - avg_entry) * half_qty
             else:
@@ -4028,23 +4118,18 @@ def run_friday_risk_reduction(user):
                 profit = (avg_entry - current) * half_qty
 
             # Update the matching strategy file so next monitor tick doesn't
-            # try to re-place stops sized for the OLD quantity. Resize any
-            # open stop order to match the remaining qty.
+            # try to re-place stops sized for the OLD quantity.
             # Round-61 pt.8 audit fix: RMW on the strategy file MUST hold
             # `strategy_file_lock` so the 60s monitor loop can't interleave
             # a read between our load and save (clobbers `friday_trims`
             # history + `total_shares_held` reset). Friday trim fires once
             # a week at 3:45 PM ET, so holding the lock across the Alpaca
-            # PATCH/DELETE is acceptable throughput-wise (~200ms, once).
+            # call is acceptable throughput-wise (~200ms, once).
             try:
-                for sf in os.listdir(sdir):
-                    if not (sf.endswith(f"_{symbol}.json") and not sf.startswith("wheel_")):
-                        continue
-                    sf_path = os.path.join(sdir, sf)
+                for sf_path in sf_paths_for_symbol:
                     with strategy_file_lock(sf_path):
                         strat = load_json(sf_path) or {}
                         state = strat.get("state", {})
-                        remaining = qty - half_qty
                         state["total_shares_held"] = remaining
                         state.setdefault("friday_trims", []).append({
                             "ts": now_et().isoformat(),
@@ -4052,29 +4137,30 @@ def run_friday_risk_reduction(user):
                             "remaining_qty": remaining,
                             "estimated_profit": round(profit, 2),
                         })
-                        # Resize stop order if one exists
-                        old_stop = state.get("stop_order_id")
-                        stop_price = state.get("current_stop_price")
-                        if old_stop and remaining > 0 and stop_price:
+                        # Round-61 pt.31: if the pre-sell helper had to
+                        # cancel the stop (PATCH fallback path),
+                        # re-place a fresh stop on the remaining shares
+                        # so the residual position stays protected.
+                        if (stop_action == "canceled" and remaining > 0
+                                and stop_price_for_replace):
                             new_stop_side = "sell" if raw_qty > 0 else "buy"
-                            # Round-10: PATCH qty atomically; fall back to
-                            # cancel-then-place. Previous path hit the
-                            # duplicate-order 403 on every Friday trim.
-                            patched = user_api_patch(user, f"/orders/{old_stop}",
-                                                      {"qty": str(remaining)})
-                            new_stop_resp = patched if (isinstance(patched, dict)
-                                                        and "id" in patched) else None
-                            if not new_stop_resp:
-                                user_api_delete(user, f"/orders/{old_stop}")
-                                new_stop_resp = user_api_post(user, "/orders", {
-                                    "symbol": symbol, "qty": str(remaining),
-                                    "side": new_stop_side,
-                                    "type": "stop", "stop_price": str(stop_price),
-                                    "time_in_force": "gtc",
-                                })
-                            if isinstance(new_stop_resp, dict) and "id" in new_stop_resp:
-                                state["stop_order_id"] = new_stop_resp["id"]
-                            # else: keep old oversized stop — still protective
+                            stop_id_key = ("cover_order_id" if raw_qty < 0
+                                            else "stop_order_id")
+                            new_stop_resp = user_api_post(user, "/orders", {
+                                "symbol": symbol, "qty": str(remaining),
+                                "side": new_stop_side,
+                                "type": "stop",
+                                "stop_price": str(stop_price_for_replace),
+                                "time_in_force": "gtc",
+                            })
+                            if (isinstance(new_stop_resp, dict)
+                                    and "id" in new_stop_resp):
+                                state[stop_id_key] = new_stop_resp["id"]
+                            else:
+                                log(f"[{user['username']}] WARN Friday "
+                                    f"re-place stop on remaining "
+                                    f"{remaining} {symbol} failed: "
+                                    f"{new_stop_resp}", "friday")
                         strat["state"] = state
                         save_json(sf_path, strat)
             except Exception as e:
