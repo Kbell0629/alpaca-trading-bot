@@ -61,20 +61,33 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-24 — round 61 pt.8 CLOSE-OUT / batch-10 in flight)
+## Current session state (2026-04-24 — round 61 pt.9 CLOSE-OUT / pt.10 in flight)
 
-**Option B extraction landed (PR #132).** A new file
-`static/dashboard_render_core.js` now holds 19 pure helpers that used
-to live inline in `templates/dashboard.html`. Same pattern pt.7 used
-to extract `screener_core.py` / `scorecard_core.py` from subprocess
-drivers. Loaded via `<script src="/static/dashboard_render_core.js">`
-BEFORE the big inline script; each function attaches to `window` for
-backward compat with the ~9300 lines of inline code that still call
-them as free globals. Test loader (`tests/js/loadDashboardJs.js`)
-reads both files; new direct-import loader (`tests/js/loadRenderCore.js`)
-lets tests hit the extracted module in isolation.
+**Pt.9 landed (PR #134)**: cloud_scheduler helper coverage + a
+user-reported calibration error-message fix. Python tests 1490 →
+1536 (+46). cloud_scheduler.py coverage ~31% → ~40% locally.
 
-**Extracted so far (19 helpers, 56 direct-import tests):**
+**Pt.9 covered helpers:** `_fmt_money` / `_fmt_pct` / `_fmt_signed_money`,
+`check_correlation_allowed`, deploy-abort round-trip, `should_run_interval`,
+`should_run_daily_at`, `_clear_daily_stamp`, `_within_opening_bell_congestion`,
+`_has_user_tag`, `_build_user_dict_for_mode`, `strategy_file_lock`,
+`is_first_trading_day_of_month`.
+
+**Calibration UX fix (user-reported):** user saw "Equity below $500
+or Alpaca /account returned no data" on a $103k paper account. Root
+cause: the handler lumped THREE failure modes (API error, low equity,
+missing equity field) into one message. `/api/calibration` now
+differentiates + points at the fix location (Settings → Alpaca API).
+Pins in `tests/test_round61_pt9_calibration_error_message.py`.
+
+**Option B extraction landed (#132 + #133).** `static/dashboard_render_core.js`
+now holds **28 pure helpers** (19 from #132 + 9 panel helpers from
+#133). Test loader (`tests/js/loadDashboardJs.js`) reads both files;
+`tests/js/loadRenderCore.js` lets tests hit the extracted module in
+isolation. `templates/dashboard.html` went 9693 → 8866 LOC (-827
+lines of inline duplicated code).
+
+**Extracted helpers (28, ~100 direct-import tests):**
   * XSS: `esc`, `jsStr`
   * Formatters: `fmtMoney`, `fmtPct`, `pnlClass`, `fmtUpdatedET`,
     `fmtAuditTime`, `fmtRelative`
@@ -86,27 +99,32 @@ lets tests hit the extracted module in isolation.
   * Preset detection: `detectActivePreset`
   * README sanitizer: `_sanitizeReadmeHtml` + `_README_ALLOWED_TAGS`
     + `_README_ALLOWED_ATTRS`
-
-**batch-10 in flight** (branch `claude/round-61-pt8-batch10`):
-extending the extraction to the remaining panel-render helpers —
-`buildGuardrailMeters`, `buildTodaysClosesPanel`, `buildNextActionsPanel`,
-`buildStrategyTemplates`, `buildShortStrategyCard`, `buildComparisonPanel`,
-`sectionHelpButton`, `getHiddenSections` + friends. Each either already
-returns an HTML string OR is trivially wrappable with `opts` defaults
-that pull module-local `guardrailsData` / `autoDeployerEnabled` /
-`killSwitchActive` from `window`. No behavior change. Adds another
-~60-80 direct tests.
+  * Section visibility: `getHiddenSections`, `setHiddenSections`,
+    `toggleSectionId`
+  * Section help: `sectionHelpButton`
+  * Panel renderers: `buildGuardrailMeters`, `buildTodaysClosesPanel`,
+    `buildShortStrategyCard`, `buildComparisonPanel`,
+    `buildStrategyTemplates`, `buildNextActionsPanel`
 
 **Extraction bug caught during Option B:** the original inline `jsStr`
 escaped `&` → `&`; the first draft of the extraction missed it.
 Fixed before any inline duplicate was removed. Regression-guard test
 now exists.
 
-**Pt.8 follow-ups (future PRs):**
-  * After batch-10 lands, add Vitest `--coverage` with a threshold
-    floor in CI (similar to Python's `--cov-fail-under`).
-  * Pt.9 — deeper `cloud_scheduler.py` coverage (still ~31% after
-    pt.6). 60+ internal functions unexplored.
+**Test counts (on `main` after pt.9):**
+  * Python: **1536 passing**, 3 deselected
+  * JS: **388 passing** across 30 files
+  * CI coverage floor: 50% Python (ratcheted up from 48% in #133)
+
+**pt.10 in flight** (branch `claude/round-61-pt10-more-helpers`):
+more `cloud_scheduler.py` helpers + remaining render surface.
+Candidates: `user_file` / `user_strategies_dir` / `load_json` / `save_json`
+round-trip tests + any more panel renderers we haven't moved.
+
+**Pt.10 follow-ups (future PRs):**
+  * Add Vitest `--coverage` with a threshold floor in CI.
+  * Orchestrator coverage (`run_auto_deployer`, `run_daily_close`,
+    wheel flow) — needs heavier mocks; save for after pt.10.
 
 ---
 
