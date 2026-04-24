@@ -14,10 +14,18 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 UPDATE_DASHBOARD = REPO_ROOT / "update_dashboard.py"
+SCREENER_CORE = REPO_ROOT / "screener_core.py"
 
 
 def _read_source():
-    return UPDATE_DASHBOARD.read_text()
+    """Round-61 pt.7 moved the scoring math from update_dashboard.py
+    into screener_core.py. These guard tests now concatenate both so
+    the patterns resolve whether they stayed in update_dashboard.py
+    or migrated to screener_core.py."""
+    combined = UPDATE_DASHBOARD.read_text()
+    if SCREENER_CORE.exists():
+        combined += "\n" + SCREENER_CORE.read_text()
+    return combined
 
 
 def test_min_volume_floor_is_at_least_300k(isolated_data_dir):
