@@ -39,6 +39,14 @@ if ('serviceWorker' in navigator) {
         integrity="sha384-zbcZAIxlvJtNE3Dp5nxLXdXtXyxwOdnILY1TDPVmKFhl4r4nSUG1r8bcFXGVa4Te"
         crossorigin="anonymous"
         referrerpolicy="no-referrer"></script>
+
+<!-- Round-61 pt.8 Option B: pure render helpers extracted into a dedicated
+     self-hosted file. Loaded BEFORE the big inline script below so its
+     top-level function declarations can keep calling esc / fmtMoney /
+     _occParse / etc. as free globals (the extracted file attaches them
+     to window for backward compat). Served by the existing /static/
+     route in server.py. -->
+<script src="/static/dashboard_render_core.js"></script>
 <style>
 :root {
     --bg: #0a0e17; --card: #111827; --card-hover: #1a2332; --border: #1e293b;
@@ -2538,37 +2546,9 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
 <button id="backToTopBtn" class="back-to-top-btn" aria-label="Back to top" title="Back to top" onclick="scrollToTop()">&uarr;</button>
 
 <script>
-/* XSS escaping helper for user/API data inserted into innerHTML */
-function esc(s) {
-    // HTML-escape including single/double quotes so the result is safe to
-    // embed in double-quoted AND single-quoted attribute contexts and in
-    // JS string literals built via concatenation.
-    if (s == null) return '';
-    const str = String(s);
-    const d = document.createElement('div');
-    d.textContent = str;
-    return d.innerHTML
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;')
-        .replace(/`/g, '&#96;');
-}
-
-function jsStr(s) {
-    // Encode a string so it's safe to embed inside a single-quoted JS literal
-    // INSIDE an HTML attribute. Handles both HTML entity rendering (browser
-    // HTML-decodes attribute values first, then JS parses the result) and
-    // JS string escaping (quotes, backslash, newline).
-    if (s == null) return '';
-    return String(s)
-        .replace(/\\/g, '\\\\')
-        .replace(/'/g, "\\u0027")
-        .replace(/"/g, "\\u0022")
-        .replace(/</g, "\\u003c")
-        .replace(/>/g, "\\u003e")
-        .replace(/&/g, "\\u0026")
-        .replace(/\n/g, "\\n")
-        .replace(/\r/g, "\\r");
-}
+// esc + jsStr live in /static/dashboard_render_core.js
+// (Round-61 pt.8 Option B — loaded as external script above, attached
+//  to window for backward compat with inline call sites below).
 
 const API_BASE = '';
 
@@ -2956,25 +2936,8 @@ function closeModal(id) {
     }
 }
 
-function fmtMoney(n) {
-    // Guard against undefined/null/NaN → would render "$NaN" otherwise
-    var x = Number(n);
-    if (!isFinite(x)) x = 0;
-    return '$' + x.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
-}
-function fmtPct(n) {
-    var x = Number(n);
-    if (!isFinite(x)) x = 0;
-    return (x>=0?'+':'') + x.toFixed(1) + '%';
-}
-function pnlClass(n) {
-    // Break-even ($0.00) shouldn't be green — it's neither win nor
-    // loss. Only strictly > 0 gets positive styling; strictly < 0 gets
-    // negative; exactly 0 gets the default muted text color.
-    var v = parseFloat(n);
-    if (!isFinite(v) || v === 0) return 'neutral';
-    return v > 0 ? 'positive' : 'negative';
-}
+// fmtMoney + fmtPct + pnlClass live in /static/dashboard_render_core.js
+// (Round-61 pt.8 Option B).
 
 // Round-61 pt.6 prep #5: atomic panel-content swap.
 //
@@ -3042,31 +3005,7 @@ function atomicReplaceChildren(panelEl, newHtml) {
     } catch (_e) { /* best-effort */ }
 }
 
-/* Format a server-emitted timestamp as 12-hour ET. Accepts:
-     - New format: "YYYY-MM-DD HH:MM:SS AM/PM ET" (server emits this directly)
-     - Legacy format: "YYYY-MM-DD HH:MM:SS UTC" (backward compat for any
-       pre-migration strings still cached in dashboard_data.json)
-     - ISO 8601 with offset
-   Returns e.g. "10:51:28 AM ET". Falls back to "N/A" on parse error. */
-function fmtUpdatedET(ts) {
-    if (!ts) return 'N/A';
-    try {
-        var s = String(ts);
-        // If server already tagged it "ET", just extract the time portion
-        if (s.indexOf(' ET') !== -1) {
-            var m = s.match(/\d{1,2}:\d{2}:\d{2}\s*(AM|PM)?\s*ET/i);
-            if (m) return m[0].replace(/\s+/g, ' ');
-        }
-        // Legacy "... UTC" — parse as UTC then re-render in ET
-        var iso = s.replace(' UTC', 'Z').replace(' ', 'T');
-        var d = new Date(iso);
-        if (isNaN(d.getTime())) return 'N/A';
-        return d.toLocaleTimeString('en-US', {
-            hour: 'numeric', minute: '2-digit', second: '2-digit',
-            hour12: true, timeZone: 'America/New_York'
-        }) + ' ET';
-    } catch (e) { return 'N/A'; }
-}
+// fmtUpdatedET lives in /static/dashboard_render_core.js (Round-61 pt.8 Option B).
 
 /* ---- Deploy Modal (enhanced) ---- */
 function openDeployModal(symbol, strategy, qty, price) {
@@ -3315,26 +3254,7 @@ async function executeDeploy() {
 }
 
 /* ---- Close Position Modal (enhanced) ---- */
-// Round-27: OCC regex duplicated here because parseOCCSymbol is
-// scoped inside renderDashboard. Keeping the modal self-contained.
-function _occParse(sym) {
-    var m = /^([A-Z]{1,6})(\d{2})(\d{2})(\d{2})([CP])(\d{8})$/.exec(sym || '');
-    if (!m) return null;
-    var yy = 2000 + parseInt(m[2], 10);
-    var mm = parseInt(m[3], 10);
-    var dd = parseInt(m[4], 10);
-    var monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    var expiry = new Date(yy, mm - 1, dd);
-    var dte = Math.max(0, Math.round((expiry - Date.now()) / 86400000));
-    return {
-        underlying: m[1],
-        type: m[5] === 'C' ? 'call' : 'put',
-        strike: parseInt(m[6], 10) / 1000,
-        expiry: expiry,
-        dte: dte,
-        expiryLabel: monthNames[mm - 1] + ' ' + dd + ', ' + yy,
-    };
-}
+// _occParse lives in /static/dashboard_render_core.js (Round-61 pt.8 Option B).
 
 function openClosePositionModal(symbol, qty, avgEntry, currentPrice, pnl, pnlPct) {
     var occ = _occParse(symbol);
@@ -3847,144 +3767,9 @@ async function loadGuardrails() {
 // calendar day. Task-specific scheduled times (e.g. Weekly Learning =
 // 5 PM ET Fri) are approximated via SCHEDULED_TIME_MAP so "Xh ago"
 // reads more accurately than "local midnight" would.
-var SCHEDULED_TIME_MAP = {
-    auto_deployer: { h: 9,  m: 45 },
-    wheel_deploy:  { h: 9,  m: 40 },
-    monthly_rebalance: { h: 9, m: 45 },
-    daily_close:   { h: 16, m: 5 },
-    friday_reduction: { h: 15, m: 45 },
-    weekly_learning: { h: 17, m: 0 },
-    daily_backup_all: { h: 3, m: 0 },
-    pead_refresh:  { h: 6, m: 0 }
-};
-
-function parseSchedTs(v, taskKey) {
-    if (v == null) return null;
-    if (typeof v === 'number') return v * 1000;
-    if (typeof v !== 'string') return null;
-    var m = v.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (m) {
-        var y = parseInt(m[1], 10), mo = parseInt(m[2], 10) - 1, d = parseInt(m[3], 10);
-        // Use the task's scheduled fire time when known, otherwise noon as
-        // a neutral fallback. Times are interpreted in the BROWSER'S local
-        // TZ — good enough for "Xh ago" readouts; the calendar-day
-        // rollover is what matters.
-        var sched = taskKey && SCHEDULED_TIME_MAP[taskKey];
-        var hh = sched ? sched.h : 12, mm = sched ? sched.m : 0;
-        return new Date(y, mo, d, hh, mm, 0).getTime();
-    }
-    if (v.match(/^\d{4}-\d{2}-\d{2}/)) return new Date(v).getTime();
-    return null;
-}
-
-function latestForTask(lastRuns, taskKey) {
-    var best = null;
-    var bestMs = -1;
-    // 1. Exact-match (system tasks: pead_refresh, email_drain, daily_backup_all)
-    if (Object.prototype.hasOwnProperty.call(lastRuns, taskKey)) {
-        var sms = parseSchedTs(lastRuns[taskKey], taskKey);
-        if (sms != null) { bestMs = sms; best = lastRuns[taskKey]; }
-    }
-    // 2. Prefix walk (per-user tasks)
-    var prefix = taskKey + '_';
-    Object.keys(lastRuns).forEach(function(k) {
-        if (k.indexOf(prefix) !== 0) return;
-        var ms = parseSchedTs(lastRuns[k], taskKey);
-        if (ms == null) return;
-        if (ms > bestMs) { bestMs = ms; best = lastRuns[k]; }
-    });
-    return best;
-}
-
-// fmtRelative kept for non-scheduler callers (logs etc) — still uses
-// the plain `new Date(str)` parse which is correct when the string
-// already carries a time/offset. DO NOT use for bare YYYY-MM-DD
-// scheduler last-runs — use fmtSchedLast instead.
-function fmtRelative(isoOrTs) {
-    if (!isoOrTs) return 'never';
-    var when;
-    if (typeof isoOrTs === 'number') {
-        when = new Date(isoOrTs * 1000);
-    } else if (typeof isoOrTs === 'string' && isoOrTs.match(/^\d{4}-\d{2}-\d{2}/)) {
-        when = new Date(isoOrTs);
-    } else {
-        return String(isoOrTs);
-    }
-    var diff = Date.now() - when.getTime();
-    if (diff < 0) return 'future';
-    var mins = Math.floor(diff / 60000);
-    if (mins < 1) return 'just now';
-    if (mins < 60) return mins + 'm ago';
-    var hrs = Math.floor(mins / 60);
-    if (hrs < 24) return hrs + 'h ago';
-    return Math.floor(hrs / 24) + 'd ago';
-}
-
-// Round-11: scheduler-aware relative time. Treats bare YYYY-MM-DD
-// date stamps as LOCAL midnight + the task's known scheduled time,
-// so a daily task that ran today renders as "today" / "Xh ago"
-// instead of the old UTC-midnight "1d ago" bug.
-function fmtSchedLast(v, taskKey) {
-    if (v == null) return 'never';
-    var ms = parseSchedTs(v, taskKey);
-    if (ms == null) return String(v);
-    var diff = Date.now() - ms;
-    if (diff < 0) return 'scheduled';
-    var mins = Math.floor(diff / 60000);
-    if (mins < 1) return 'just now';
-    if (mins < 60) return mins + 'm ago';
-    var hrs = Math.floor(mins / 60);
-    if (hrs < 24) return hrs + 'h ago';
-    // For date-only entries, also do calendar-day math for a cleaner
-    // "Nd ago" count (hours/24 can round down one short on DST days).
-    if (typeof v === 'string' && v.match(/^\d{4}-\d{2}-\d{2}$/)) {
-        var t = new Date(); var today = new Date(t.getFullYear(), t.getMonth(), t.getDate());
-        var m2 = v.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-        var that = new Date(parseInt(m2[1],10), parseInt(m2[2],10)-1, parseInt(m2[3],10));
-        var days = Math.round((today.getTime() - that.getTime()) / 86400000);
-        if (days === 1) return 'yesterday';
-        if (days > 1) return days + 'd ago';
-    }
-    return Math.floor(hrs / 24) + 'd ago';
-}
-
-// Round-11 UX polish: data freshness chip. Pass the `updated_at`
-// timestamp and get back a styled HTML chip with a pulsing green dot,
-// amber when >2min stale, red when >5min stale. Use alongside section
-// headers so users know at a glance whether the data they're looking
-// at is current.
-function freshnessChip(updatedAt, label) {
-    if (!updatedAt) return '';
-    var ms = null;
-    try {
-        // Handles ISO strings, "2026-04-18 10:45:00 AM ET"-style, numbers
-        if (typeof updatedAt === 'number') {
-            ms = updatedAt * 1000;
-        } else if (typeof updatedAt === 'string') {
-            // "YYYY-MM-DD HH:MM:SS PP ET" — strip " ET" if present
-            var cleaned = updatedAt.replace(/\s+ET$/i, '').trim();
-            var parsed = new Date(cleaned);
-            if (!isNaN(parsed.getTime())) ms = parsed.getTime();
-        }
-    } catch(_e) { ms = null; }
-    if (ms === null) return '';
-    var diffSec = Math.floor((Date.now() - ms) / 1000);
-    if (diffSec < 0) diffSec = 0;
-    var ageStr;
-    if (diffSec < 60) ageStr = diffSec + 's ago';
-    else if (diffSec < 3600) ageStr = Math.floor(diffSec / 60) + 'm ago';
-    else ageStr = Math.floor(diffSec / 3600) + 'h ago';
-    var cls = '';
-    if (diffSec > 300) cls = 'very-stale';
-    else if (diffSec > 120) cls = 'stale';
-    var prefix = label ? esc(label) + ' ' : '';
-    // Round-60: stash the label in a data-attr so the mobile-jitter
-    // in-place rerender path (renderDashboard hash-skip quiet branch)
-    // can regenerate just this chip without rebuilding the whole DOM.
-    var labelAttr = label ? ' data-label="' + esc(label) + '"' : '';
-    return '<span class="data-freshness ' + cls + '"' + labelAttr + ' title="Last updated: ' +
-        esc(updatedAt) + '"><span class="dot"></span>' + prefix + ageStr + '</span>';
-}
+// SCHEDULED_TIME_MAP + parseSchedTs + latestForTask + fmtRelative +
+// fmtSchedLast + freshnessChip all live in /static/dashboard_render_core.js
+// (Round-61 pt.8 Option B).
 
 // Round-11 Item 1: Performance Attribution panel.
 async function refreshPerfAttribution() {
@@ -4759,15 +4544,7 @@ function ariaSort(col) {
     return screenerSortDir === -1 ? 'descending' : 'ascending';
 }
 
-function getMarketRegime(data) {
-    if (data.market_regime) return data.market_regime;
-    const picks = data.picks || [];
-    if (picks.length === 0) return 'neutral';
-    const avgChange = picks.slice(0,20).reduce((s,p) => s + (p.daily_change||0), 0) / Math.min(picks.length,20);
-    if (avgChange > 1) return 'bull';
-    if (avgChange < -1) return 'bear';
-    return 'neutral';
-}
+// getMarketRegime lives in /static/dashboard_render_core.js (Round-61 pt.8 Option B).
 
 function buildGuardrailMeters(dailyPnlPct, portfolioValue, lastEquity) {
     const gr = guardrailsData || {};
@@ -4993,24 +4770,7 @@ function buildNextActionsPanel(d) {
     '</div>';
 }
 
-function detectActivePreset(d) {
-    // Match current guardrails/config against presets to determine which is active
-    var g = d.guardrails || {};
-    var c = d.auto_deployer_config || {};
-    var stopPct = (c.risk_settings && c.risk_settings.default_stop_loss_pct) || 0.10;
-    var maxPos = c.max_positions || g.max_positions || 5;
-    var maxPerStock = g.max_position_pct || 0.10;
-    var allowed = (g.strategies_allowed || []).slice().sort().join(',');
-
-    // Preset signatures.
-    // Round-20: moderate's per-stock cap moved 0.10 → 0.07; allow either
-    // value to match so users running the auto-migrated 0.07 still
-    // detect as Moderate (not Custom).
-    if (stopPct === 0.05 && maxPos === 3 && maxPerStock === 0.05) return 'conservative';
-    if (stopPct === 0.10 && maxPos === 5 && (maxPerStock === 0.07 || maxPerStock === 0.10)) return 'moderate';
-    if (stopPct === 0.05 && maxPos >= 8 && maxPerStock >= 0.15) return 'aggressive';
-    return 'custom';
-}
+// detectActivePreset lives in /static/dashboard_render_core.js (Round-61 pt.8 Option B).
 
 function buildStrategyTemplates(d) {
     var active = detectActivePreset(d);
@@ -8160,20 +7920,7 @@ async function loadAdminInvites() {
     }
 }
 
-/* Format an ISO timestamp as 12-hour ET for the audit log + backup list.
-   Timezone-aware: input may carry any offset; output is always ET. */
-function fmtAuditTime(iso) {
-    if (!iso) return '—';
-    try {
-        var d = new Date(iso);
-        if (isNaN(d.getTime())) return iso;
-        return d.toLocaleString('en-US', {
-            month: 'short', day: 'numeric',
-            hour: 'numeric', minute: '2-digit', second: '2-digit',
-            hour12: true, timeZone: 'America/New_York'
-        }) + ' ET';
-    } catch (e) { return iso; }
-}
+// fmtAuditTime lives in /static/dashboard_render_core.js (Round-61 pt.8 Option B).
 
 async function loadAdminAuditLog() {
     var listEl = document.getElementById('adminAuditList');
@@ -9049,58 +8796,10 @@ async function loadReadme() {
     }
 }
 
-// Allowlist of tags/attributes we permit in rendered README HTML. Anything
-// else (script, iframe, on*-handlers, javascript:/data: URIs, style) gets
-// stripped. Defense-in-depth — we trust the README source but the markdown
-// renderer (marked) has had XSS CVEs historically and we pull content over
-// HTTP, so sanitising the rendered output costs little.
-var _README_ALLOWED_TAGS = new Set([
-    'A','B','BLOCKQUOTE','BR','CODE','DEL','DIV','EM','H1','H2','H3',
-    'H4','H5','H6','HR','I','IMG','LI','OL','P','PRE','SPAN','STRONG',
-    'SUB','SUP','TABLE','TBODY','TD','TH','THEAD','TR','UL',
-]);
-var _README_ALLOWED_ATTRS = {
-    'A': new Set(['href','title','id']),
-    'IMG': new Set(['src','alt','title','width','height']),
-    '*': new Set(['id','class']),
-};
-function _sanitizeReadmeHtml(html) {
-    var doc = new DOMParser().parseFromString('<div>' + html + '</div>', 'text/html');
-    var root = doc.body.firstChild;
-    function walk(node) {
-        // Iterate a snapshot — we may remove children during traversal
-        var kids = Array.prototype.slice.call(node.childNodes);
-        kids.forEach(function(child) {
-            if (child.nodeType !== 1) { return; }  // non-element: keep
-            var tag = child.tagName;
-            if (!_README_ALLOWED_TAGS.has(tag)) {
-                // Unwrap — replace the disallowed element with its text
-                var txt = document.createTextNode(child.textContent || '');
-                child.parentNode.replaceChild(txt, child);
-                return;
-            }
-            // Strip disallowed attributes + defang URI schemes
-            var allowed = _README_ALLOWED_ATTRS[tag] || _README_ALLOWED_ATTRS['*'];
-            var globalAllowed = _README_ALLOWED_ATTRS['*'];
-            Array.prototype.slice.call(child.attributes).forEach(function(attr) {
-                var name = attr.name.toLowerCase();
-                if (!allowed.has(name) && !globalAllowed.has(name)) {
-                    child.removeAttribute(attr.name);
-                    return;
-                }
-                if (name === 'href' || name === 'src') {
-                    var v = (attr.value || '').trim().toLowerCase();
-                    if (v.indexOf('javascript:') === 0 || v.indexOf('data:') === 0 || v.indexOf('vbscript:') === 0) {
-                        child.removeAttribute(attr.name);
-                    }
-                }
-            });
-            walk(child);
-        });
-    }
-    walk(root);
-    return root.innerHTML;
-}
+// _sanitizeReadmeHtml + _README_ALLOWED_TAGS + _README_ALLOWED_ATTRS
+// live in /static/dashboard_render_core.js (Round-61 pt.8 Option B).
+// Loaded as a separate <script> above, attached to window for backward
+// compat with inline callers.
 
 function renderReadme(markdown) {
     var content = document.getElementById('readmeContent');
@@ -9400,16 +9099,7 @@ async function loadHeatmap() {
     }
 }
 
-function heatmapColor(pct) {
-    if (pct === null || pct === undefined) return 'empty';
-    if (pct < -2) return 'loss-big';
-    if (pct < -0.5) return 'loss';
-    if (pct < -0.05) return 'loss-small';
-    if (pct < 0.05) return 'flat';
-    if (pct < 0.5) return 'win-small';
-    if (pct < 2) return 'win';
-    return 'win-big';
-}
+// heatmapColor lives in /static/dashboard_render_core.js (Round-61 pt.8 Option B).
 
 function renderHeatmap(data) {
     var el = document.getElementById('heatmapContent');

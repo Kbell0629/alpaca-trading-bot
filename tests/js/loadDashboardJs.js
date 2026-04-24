@@ -28,6 +28,11 @@ import vm from 'node:vm';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DASHBOARD_PATH = join(__dirname, '..', '..', 'templates', 'dashboard.html');
+// Round-61 pt.8 Option B: pure helpers (esc, jsStr, fmtMoney, etc.) live
+// in /static/dashboard_render_core.js and are loaded as a separate
+// <script src=...> in production. The test harness loads them explicitly
+// BEFORE the inline script so globals are available.
+const RENDER_CORE_PATH = join(__dirname, '..', '..', 'static', 'dashboard_render_core.js');
 
 let _cachedSource = null;
 
@@ -133,6 +138,18 @@ export function loadDashboardJs(stubs = {}) {
   ensureNode('toastContainer');
   ensureNode('app');
   ensureNode('logPanel');
+
+  // Round-61 pt.8 Option B: load the extracted render-core module FIRST so
+  // its IIFE attaches esc / fmtMoney / _occParse / etc. to window. The
+  // inline script below now relies on these being already present.
+  try {
+    const renderCoreSrc = readFileSync(RENDER_CORE_PATH, 'utf-8');
+    vm.runInThisContext(renderCoreSrc, { filename: 'dashboard_render_core.js' });
+  } catch (e) {
+    // Non-fatal in development — tests that only poke inline-only functions
+    // can still run. Most tests will fail loud later if a helper is missing.
+    console.warn('[loadDashboardJs] render-core not loaded:', e.message);
+  }
 
   // Run the dashboard JS as a top-level script so its `function` declarations
   // attach to the global object (jsdom's window). An IIFE wrapper would make
