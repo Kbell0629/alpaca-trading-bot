@@ -145,22 +145,42 @@ def _occ_underlying(sym):
 
 
 def list_strategy_files():
-    """List all strategy JSON files and parse their contents."""
+    """List all strategy JSON files and parse their contents.
+
+    Round-61 pt.16: filter out strategy files whose status is closed
+    / stopped / cancelled / exited / filled_and_closed. The dashboard's
+    `_mark_auto_deployed` in server.py already skips these (round-61
+    #110), so a position with ONLY a stale closed file on disk shows
+    MANUAL in the UI — but error_recovery was returning the stale
+    file from here, seeing it in `strategy_symbol_map`, and deciding
+    the position was already managed. Result: user clicks "Adopt
+    MANUAL -> AUTO" and gets told "No orphans found" even though the
+    dashboard clearly shows MANUAL on their position. Match the
+    dashboard's filter so the two code paths agree.
+    """
     strategies = {}
     if not os.path.isdir(STRATEGIES_DIR):
         return strategies
 
+    _CLOSED_STATUSES = {"closed", "stopped", "cancelled", "canceled",
+                        "exited", "filled_and_closed"}
     for fname in os.listdir(STRATEGIES_DIR):
         if fname.endswith(".json"):
             path = os.path.join(STRATEGIES_DIR, fname)
             data = load_json(path)
             if data:
+                status = str(data.get("status") or "").lower()
+                if status in _CLOSED_STATUSES:
+                    # Stale file — dashboard's _mark_auto_deployed
+                    # ignores it too. Treat as not-a-strategy so the
+                    # orphan scan adopts the live Alpaca position.
+                    continue
                 strategies[fname] = {
                     "path": path,
                     "data": data,
                     "symbol": data.get("symbol"),
                     "strategy": data.get("strategy", ""),
-                    "status": data.get("status", ""),
+                    "status": status,
                 }
     return strategies
 
