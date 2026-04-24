@@ -1039,6 +1039,94 @@ def record_trade_close(user, symbol, strategy, exit_price, pnl, exit_reason,
 # ============================================================================
 # TASK 2: STRATEGY MONITOR (per user)
 # ============================================================================
+# ============================================================================
+# Round-61 pt.18: STEPPED TRAILING STOP (professional risk management)
+# ============================================================================
+# Classic flat-trail behaviour (8% below highest, move up only) gives back
+# too much gain on a winner that reverses. Institutional systems use a
+# stepped trail: wide cushion while the breakout is testing, then tight
+# as profit accumulates, with an explicit break-even lock once +5% is
+# reached. This function is the single source of truth for what the
+# stop should be at any given profit level — both the long-trailing and
+# short-trailing paths in monitor_strategies call it so the tier logic
+# stays in one place.
+#
+# Tiers (profit % measured from entry using highest_seen for longs /
+# lowest_seen for shorts):
+#   Tier 1 (0 to +5%):   default trail (usually 8%) — breathing room
+#                        for the breakout retest.
+#   Tier 2 (+5 to +10%): STOP LOCKED TO ENTRY — no-loss guarantee.
+#   Tier 3 (+10 to +20%): 6% trail — lock in some gain, allow pullbacks.
+#   Tier 4 (+20%+):       4% trail — ride the big move tight.
+#
+# Opt-out: strategy file can set rules.stepped_trail=false to revert to
+# the flat trail (e.g. for strategies where the stepped logic has not
+# been validated yet). Default True for breakout / trailing_stop /
+# short_sell / copy_trading / pead.
+def _compute_stepped_stop(entry, extreme_price, default_trail, is_short=False):
+    """Compute the protective stop price for a position given the
+    current profit level.
+
+    Args:
+      entry:         avg entry price (float).
+      extreme_price: highest_price_seen (long) or lowest_price_seen
+                     (short). This is the "favorable" extreme the
+                     trailing logic tracks.
+      default_trail: fallback trail pct when in Tier 1 (e.g. 0.08).
+                     Read from rules.trailing_distance_pct so users
+                     can tune the tier-1 width per strategy without
+                     changing the whole tier table.
+      is_short:      True for short positions — stop is computed ABOVE
+                     the lowest-seen price instead of below highest.
+
+    Returns:
+      (new_stop_price, tier_number, trail_pct_used)
+      `trail_pct_used` is None in Tier 2 (stop is fixed at entry, not
+      derived from a trail distance).
+    """
+    if entry is None or entry <= 0:
+        # Defensive: no entry price → can't compute tiers. Fall back
+        # to flat trail off the extreme so we still place SOMETHING.
+        if is_short:
+            return round(extreme_price * (1 + default_trail), 2), 1, default_trail
+        return round(extreme_price * (1 - default_trail), 2), 1, default_trail
+
+    if is_short:
+        # Short profit = (entry - lowest) / entry. Positive when price
+        # has dropped below entry (favorable for short).
+        profit_pct = (entry - extreme_price) / entry
+    else:
+        profit_pct = (extreme_price - entry) / entry
+
+    if profit_pct < 0.05:
+        # Tier 1: let the position breathe. Default trail below/above
+        # the favorable extreme.
+        if is_short:
+            return round(extreme_price * (1 + default_trail), 2), 1, default_trail
+        return round(extreme_price * (1 - default_trail), 2), 1, default_trail
+
+    if profit_pct < 0.10:
+        # Tier 2: BREAK-EVEN lock. Stop at entry — if this trade
+        # reverses from +5% back to +0%, you exit flat instead of
+        # giving back the whole cushion.
+        return round(entry, 2), 2, None
+
+    if profit_pct < 0.20:
+        # Tier 3: 6% trail. Lock in some gain while still allowing a
+        # pullback to shake weak hands before the next leg up.
+        trail = 0.06
+        if is_short:
+            return round(extreme_price * (1 + trail), 2), 3, trail
+        return round(extreme_price * (1 - trail), 2), 3, trail
+
+    # Tier 4: 4% trail. Big winner — protect the gain tightly because
+    # the further it runs the more asymmetric the giveback is.
+    trail = 0.04
+    if is_short:
+        return round(extreme_price * (1 + trail), 2), 4, trail
+    return round(extreme_price * (1 - trail), 2), 4, trail
+
+
 def monitor_strategies(user, extended_hours=False):
     """Monitor + manage existing positions.
 
@@ -1445,17 +1533,40 @@ def process_short_strategy(user, filepath, strat, state, rules):
             log(f"[{user['username']}] {symbol}: SHORT target-buy placed at ${target_price}", "monitor")
 
     # Trailing stop for shorts: track LOWEST price, lower the stop as price falls
+    # Round-61 pt.18: stepped trailing (mirror of the long path). Short
+    # profit = (entry - lowest) / entry; tier boundaries match (+5/+10/+20).
     lowest = state.get("lowest_price_seen") or entry
     if price < lowest:
         state["lowest_price_seen"] = price
         lowest = price
         activation_pct = rules.get("short_trail_activation_pct", 0.05)
         trail_pct = rules.get("short_trail_distance_pct", 0.05)
+        stepped = rules.get("stepped_trail", True)
         if not state.get("trailing_activated") and lowest <= entry * (1 - activation_pct):
             state["trailing_activated"] = True
             log(f"[{user['username']}] {symbol}: SHORT trailing activated", "monitor")
         if state.get("trailing_activated"):
-            new_stop = round(lowest * (1 + trail_pct), 2)
+            if stepped:
+                new_stop, tier, tier_trail = _compute_stepped_stop(
+                    entry, lowest, default_trail=trail_pct, is_short=True,
+                )
+                prev_tier = state.get("profit_tier", 0)
+                if tier != prev_tier:
+                    state["profit_tier"] = tier
+                    tier_msg = {
+                        1: f"Tier 1 (short — {int(trail_pct*100)}% trail above lowest)",
+                        2: "Tier 2 (SHORT BREAK-EVEN LOCKED — cover at entry)",
+                        3: "Tier 3 (+10% short profit — tightened to 6% trail)",
+                        4: "Tier 4 (+20% short profit — tightened to 4% trail)",
+                    }.get(tier, f"Tier {tier}")
+                    log(f"[{user['username']}] {symbol}: stepped trail {tier_msg}", "monitor")
+                    if tier >= 2:
+                        notify_user(user, f"{symbol}: {tier_msg}", "info")
+                    if tier == 2 and not state.get("break_even_triggered"):
+                        state["break_even_triggered"] = True
+            else:
+                new_stop = round(lowest * (1 + trail_pct), 2)
+                tier = None
             current_stop = state.get("current_stop_price", 99999) or 99999
             # For shorts: stop moves DOWN as price falls (locks in gains)
             if new_stop < current_stop:
@@ -1653,6 +1764,10 @@ def process_strategy_file(user, filepath, strat, extended_hours=False):
     # Round-10 architecture: trailing_stop is an exit policy, not an
     # entry, so breakout / pead / copy_trading / legacy-trailing_stop
     # all share the same floor-raising logic.
+    # Round-61 pt.18: stepped trailing — the flat `highest * (1 - trail)`
+    # formula is replaced by `_compute_stepped_stop` which returns a
+    # tier-aware stop (wide at entry, break-even at +5%, tighter as
+    # profit accumulates). Opt-out via rules.stepped_trail=false.
     if strategy_type in ("trailing_stop", "breakout", "copy_trading", "pead"):
         highest = state.get("highest_price_seen") or entry
         if price > highest:
@@ -1660,11 +1775,37 @@ def process_strategy_file(user, filepath, strat, extended_hours=False):
             highest = price
         activation = rules.get("trailing_activation_pct", 0.10 if strategy_type != "breakout" else 0)
         trail = rules.get("trailing_distance_pct", 0.05)
+        stepped = rules.get("stepped_trail", True)
         if not state.get("trailing_activated") and highest >= entry * (1 + activation):
             state["trailing_activated"] = True
             log(f"[{user['username']}] {symbol}: Trailing activated", "monitor")
         if state.get("trailing_activated"):
-            new_stop = round(highest * (1 - trail), 2)
+            if stepped:
+                new_stop, tier, tier_trail = _compute_stepped_stop(
+                    entry, highest, default_trail=trail, is_short=False,
+                )
+                # First time we enter a new tier, emit an audit log +
+                # user-visible notification. The subsequent Alpaca
+                # PATCH/place still fires only when new_stop raises
+                # above current_stop — tier transitions that DON'T
+                # change the stop price stay quiet.
+                prev_tier = state.get("profit_tier", 0)
+                if tier != prev_tier:
+                    state["profit_tier"] = tier
+                    tier_msg = {
+                        1: f"Tier 1 (breathing room, {int(trail*100)}% trail)",
+                        2: "Tier 2 (BREAK-EVEN LOCKED — stop moved to entry)",
+                        3: "Tier 3 (+10% profit — tightened to 6% trail)",
+                        4: "Tier 4 (+20% profit — tightened to 4% trail)",
+                    }.get(tier, f"Tier {tier}")
+                    log(f"[{user['username']}] {symbol}: stepped trail {tier_msg}", "monitor")
+                    if tier >= 2:
+                        notify_user(user, f"{symbol}: {tier_msg}", "info")
+                    if tier == 2 and not state.get("break_even_triggered"):
+                        state["break_even_triggered"] = True
+            else:
+                new_stop = round(highest * (1 - trail), 2)
+                tier = None
             current_stop = state.get("current_stop_price", 0) or 0
             if new_stop > current_stop:
                 old_id = state.get("stop_order_id")

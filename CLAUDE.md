@@ -61,9 +61,63 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-24 — round 61 pt.10/11/12/13/14/15 SHIPPED)
+## Current session state (2026-04-24 — round 61 pt.10-18 SHIPPED)
 
-**Pt.15 in flight (PR #141):** user-reported SOXL short labeled
+**Pt.18 in flight (PR #144):** professional stepped trailing stop —
+replaces the flat `highest * (1 - trail)` formula with tier-based
+risk management used by institutional trend-following systems.
+
+Tiers (measured from entry using highest_seen for longs / lowest_seen
+for shorts):
+  * **Tier 1 (0 to +5%)** — default trail (usually 8%) for breathing
+    room during the breakout retest
+  * **Tier 2 (+5 to +10%)** — **STOP LOCKED TO ENTRY** — no-loss
+    guarantee from here. One-time user notification fires + state
+    records `break_even_triggered: true`.
+  * **Tier 3 (+10 to +20%)** — 6% trail: lock in some gain while
+    still allowing a pullback.
+  * **Tier 4 (+20%+)** — 4% trail: ride the big move tight.
+
+Single source of truth: `cloud_scheduler._compute_stepped_stop(entry,
+extreme, default_trail, is_short)`. Used by BOTH the long trailing
+path (`process_strategy_file`) and short trailing path
+(`process_short_strategy`) so tier logic stays in one place.
+
+Opt-out: strategy files with `rules.stepped_trail=false` revert to
+flat trail. Default `True` — users get professional behaviour
+without explicit enablement.
+
+State tracks `profit_tier` + `break_even_triggered` for audit. Tier
+transitions log + notify on first entry into Tier 2/3/4 per position.
+
+  +23 tests in `tests/test_round61_pt18_stepped_trail.py`.
+
+**Pt.17 landed (PR #143):** adaptive stops + OCC-option orphan
+adoption. Two bugs from pt.15 deploy:
+  1. SOXL's cookie-cutter `stop = entry*1.10` put buy-stop BELOW
+     current market (short was deeply underwater). Fix: adaptive
+     formula `max(entry*1.10, current*1.05)` (short) /
+     `min(entry*0.90, current*0.95)` (long). Applied in both
+     `create_orphan_strategy` AND Check 2 Missing Stop-Loss.
+  2. HIMS OCC short-put was routed to `short_sell_<OCC>.json` which
+     monitor_strategies' equity short path can't handle. Fix: new
+     `_occ_parse(sym)` helper; OCC orphans route to
+     `wheel_<UNDERLYING>.json` in `stage_1_put_active` (short put)
+     or `stage_2_call_active` (covered call). Long options skipped
+     (no strategy for long premium).
+  +14 tests in `tests/test_round61_pt17_adaptive_stops_and_options.py`.
+
+**Pt.16 landed (PR #142):** URGENT — pt.15's "Adopt MANUAL → AUTO"
+button returned "No MANUAL positions found" even though the
+dashboard clearly showed MANUAL. Root cause: `error_recovery.list_strategy_files`
+was returning ALL files (including closed ones) while the dashboard's
+`_mark_auto_deployed` filters closed files (round-61 #110). Fix:
+match the same closed-status set in both code paths (case-insensitive).
+monitor_strategies already filters on the active side so both files
+can coexist.
+  +6 tests in `tests/test_round61_pt16_orphan_closed_skip.py`.
+
+**Pt.15 landed (PR #141):** user-reported SOXL short labeled
 MANUAL despite being opened by the auto-deployer. Root cause:
 `error_recovery.py` (orphan adoption → synthesizes strategy files
 for positions without one) only ran ONCE per day inside
@@ -695,6 +749,56 @@ singular/plural contract noun. 11 tests. Math (%, $, sort) untouched.
 ---
 
 ## Architectural invariants (CRITICAL — don't regress)
+
+### Post-61 pt.18 (professional stepped trailing stop)
+- `cloud_scheduler._compute_stepped_stop(entry, extreme, default_trail,
+  is_short)` is the SINGLE source of truth for what the stop should
+  be at any given profit level. Both `process_strategy_file` (longs)
+  AND `process_short_strategy` (shorts) MUST call it — do not inline
+  the tier table.
+- Tier boundaries are `0%`, `+5%`, `+10%`, `+20%`. Changing these
+  changes every open position's exit plan. Product-level decision,
+  not a refactor.
+- Tier 2 MUST return `entry` (not a trail-derived value) so the
+  break-even lock is EXACT. Rounding a derived tier-2 value would
+  leave a few cents below entry and defeat the no-loss guarantee.
+- Tier 2 notification fires ONCE per position via
+  `state["break_even_triggered"]` guard. Re-firing on every 60s
+  monitor tick would spam the user's notification feed.
+- Opt-out: `rules.stepped_trail=false` reverts to flat trail. This
+  is intentional — some strategies may test alternative trail logic
+  without globally disabling the tier system.
+- `_compute_stepped_stop` MUST produce monotonically-increasing
+  stops for longs (monotonically-decreasing for shorts) across all
+  profit levels. The unit test
+  `test_stops_monotonically_increase_with_profit_long` pins this —
+  a tier-boundary edit that violates it gives back protection.
+
+### Post-61 pt.17 (adaptive orphan stops + OCC option support)
+- `error_recovery.create_orphan_strategy` and Check-2 "Missing
+  Stop-Loss" MUST use `max(entry*1.10, current*1.05)` for shorts /
+  `min(entry*0.90, current*0.95)` for longs. Without this, an
+  already-underwater position gets an Alpaca-rejected stop.
+- OCC option orphan symbols MUST route to `wheel_<UNDERLYING>.json`
+  with an appropriate stage (`stage_1_put_active` for short put,
+  `stage_2_call_active` for covered call), NOT to
+  `short_sell_<OCC>.json`. The equity short-sell monitor doesn't
+  understand contracts vs shares.
+- Existing `wheel_<UNDERLYING>.json` files MUST NOT be overwritten
+  by orphan adoption — the wheel monitor owns that state.
+- `_occ_parse(sym)` is the canonical OCC parser for the orphan
+  path. Returns `{underlying, expiration, right, strike}`. Return
+  `None` on non-OCC input.
+
+### Post-61 pt.15/16 (autonomous orphan adoption)
+- `cloud_scheduler.run_orphan_adoption(user)` is the per-user entry
+  point. Both the scheduled 10-min tick and the on-demand dashboard
+  button MUST call it (not duplicate the subprocess invocation).
+- `error_recovery.list_strategy_files` MUST filter the same
+  closed-status set as `server._mark_auto_deployed`: `closed`,
+  `stopped`, `cancelled`, `canceled`, `exited`, `filled_and_closed`.
+  Case-insensitive. If the two lists drift, the dashboard will
+  disagree with the adoption logic about what's MANUAL.
 
 ### Post-61 (money-path test coverage — Option A)
 - `tests/test_round61_*.py` pin money-path invariants at the source-string

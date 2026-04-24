@@ -8,6 +8,163 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.18 — professional stepped trailing stop (+23 tests)
+
+User feedback on pt.17 deploy: on CRDO (long, entry $189.15, current
+$197.74), the flat 8% trailing stop sat at $181.72 — still a ~4%
+loss from entry if triggered. The "flat trail" design gave back too
+much gain on any winner that reversed before really running. User
+requested: "would like this to be a professional system".
+
+Replaced the flat `highest * (1 - trail)` formula with a tier-based
+stop that mirrors how institutional trend-following systems (Turtle
+Traders, Linda Raschke, CTA systems) manage risk as profit grows.
+
+**Tiers (profit measured from entry):**
+
+| Tier | Profit | Stop placement | Purpose |
+|---|---|---|---|
+| 1 | 0% to +5% | default trail (8% below highest) | Breathing room for the breakout test |
+| 2 | +5% to +10% | **ENTRY (break-even lock)** | No-loss guarantee |
+| 3 | +10% to +20% | 6% below highest | Lock in some gain |
+| 4 | +20%+ | 4% below highest | Ride the monster tight |
+
+**Single source of truth:** `cloud_scheduler._compute_stepped_stop(
+entry, extreme_price, default_trail, is_short)`. Both
+`process_strategy_file` (longs) and `process_short_strategy` (shorts)
+call it — the tier table lives in one place so every code path
+agrees.
+
+**Short-side mirror:** same tiers, same boundaries, direction
+inverted. Profit % = `(entry - lowest_seen) / entry`; stop is
+`lowest * (1 + trail)` for Tier 1/3/4 and `entry` for Tier 2.
+
+**Tier transitions:** `state["profit_tier"]` tracks the last fired
+tier so transitions log + notify exactly once per position. Tier 2
+entry additionally sets `state["break_even_triggered"]` for audit /
+scorecard use. Notification copy on Tier 2:
+`"<SYMBOL>: Tier 2 (BREAK-EVEN LOCKED — stop moved to entry)"`.
+
+**Opt-out:** `rules.stepped_trail=false` reverts to flat trail for
+backward compat / experimental strategies. Default `True`.
+
+### Results
+- Python tests: 1616 → **1639 (+23)**
+- JS tests: 392 unchanged
+- Ruff: clean
+
+### Practical impact for existing positions
+Next 60s monitor tick after Railway redeploys will re-evaluate
+every open position against the tier table. No user action required.
+
+---
+
+## 🆕 Round-61 pt.17 — adaptive orphan stops + OCC option support (+14 tests)
+
+User-reported on pt.15/pt.16 deploy:
+1. SOXL short adopted by pt.15 but no protective stop ever placed.
+   Root cause: cookie-cutter `stop = entry * 1.10 = $121.72` put the
+   buy-stop BELOW current market ($129.31). Alpaca rejects those.
+2. HIMS short put (OCC `HIMS260508P00027000`) got labeled MANUAL
+   after clicking the Adopt button. Root cause: orphan loop routed
+   OCC symbols to `short_sell_<OCC>.json`, but `monitor_strategies`
+   short-sell path expects equity tickers + share quantities.
+
+### Fixes
+- **Adaptive stop formula** in `create_orphan_strategy` AND Check 2
+  Missing Stop-Loss:
+  - Short: `max(entry * 1.10, current * 1.05)` — always above current
+  - Long: `min(entry * 0.90, current * 0.95)` — always below current
+- New `_occ_parse(sym)` helper.
+- OCC orphan branch routes short put → `wheel_<UNDERLYING>.json` in
+  `stage_1_put_active`; covered call → `stage_2_call_active`; long
+  option skipped. Never overwrites existing wheel files.
+
+### Results
+- Python tests: 1602 → **1616 (+14)**
+
+---
+
+## 🆕 Round-61 pt.16 — error_recovery skips closed strategy files (+6 tests)
+
+Pt.15's "Adopt MANUAL → AUTO" button returned "No MANUAL positions
+found" even though dashboard showed MANUAL. Root cause:
+`error_recovery.list_strategy_files` returned ALL files while
+`server._mark_auto_deployed` (round-61 #110) skips closed files.
+Fix: match the same closed-status filter in both paths.
+
+### Results
+- Python tests: 1596 → **1602 (+6)**
+
+---
+
+## 🆕 Round-61 pt.15 — autonomous orphan-position adoption (+10 tests)
+
+SOXL short labeled MANUAL despite being opened by the auto-deployer.
+Root cause: `error_recovery.py` only ran once per day inside
+`run_daily_close`. Between 4:05 PM ET closes, unmanaged positions
+sat for up to 23.5 hours.
+
+### Fix
+- `cloud_scheduler.run_orphan_adoption(user)` — per-user wrapper.
+- Scheduled every 10 min during market hours.
+- On-demand `/api/adopt-orphans` endpoint + "🤖 Adopt MANUAL → AUTO"
+  button in Positions header.
+
+### Results
+- Python tests: 1586 → **1596 (+10)**
+
+---
+
+## 🆕 Round-61 pt.14 — start.sh uses venv python (+4 tests)
+
+Pt.13's red banner pinpointed: `ModuleNotFoundError: No module
+named 'cryptography'` at boot even though `requirements.txt` pins
+it. Root cause: `start.sh` ran bare `python3` which resolved to
+Nix's system interpreter (no access to `/opt/venv/lib/.../
+site-packages`).
+
+### Fix
+`start.sh` prefers `/opt/venv/bin/python` with loud WARNING fallback.
+Added boot-time AESGCM smoke check for build-log visibility.
+
+---
+
+## 🆕 Round-61 pt.13 — crypto import diagnostics (+10 tests)
+
+`MASTER_ENCRYPTION_KEY` unchanged but Save still failed. Root cause:
+cryptography import silently failing (pyo3 `PanicException` is
+`BaseException`, not `Exception`, so bare `except Exception`
+swallowed it).
+
+### Fixes
+`except BaseException`, capture `_AESGCM_IMPORT_ERROR`, stderr
+critical log, surfaced in `/api/data.api_errors` + dedicated red
+dashboard banner. Pinned `cryptography<44.0.0` + added `cffi`
+explicitly. Added `libffi` to `nixpacks.toml`.
+
+---
+
+## 🆕 Round-61 pt.12 — Alpaca key save/test diagnostics (+11 tests)
+
+"Save failed" with no detail, even though Test Connection PASSED.
+Three fixes:
+1. `handle_save_alpaca_keys` differentiates HTTP 401/403/429/5xx
+   with hint copy + wraps persist in try/except.
+2. New `/api/test-saved-alpaca-keys` endpoint.
+3. "Test Saved Keys (PAPER)" / "(LIVE)" buttons in Settings.
+
+---
+
+## 🆕 Round-61 pt.11 — "$0.00 + 100% drawdown" false-alarm fix (+4 JS tests)
+
+Dashboard rendered `$0.00` + red "Approaching max drawdown limit!"
+because `/account` error fell through to `parseFloat(... || 0)`.
+- `buildGuardrailMeters` treats `portfolioValue <= 0` as "no data".
+- Top-of-page orange banner when `d.api_errors.account` exists.
+
+---
+
 ## 🆕 Round-61 pt.8 batch-7 — sanitize / preset / panels (+60)
 
 Continues the pt.8 coverage push. JS tests 205 → **241** (+36). Test-only.
