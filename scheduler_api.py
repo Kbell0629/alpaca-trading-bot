@@ -174,6 +174,106 @@ def _rl_acquire(user, wait_max=2.0):
         time.sleep(0.15)
 
 
+def _parse_alpaca_error_body(he):
+    """Read and parse Alpaca's HTTP error response body.
+
+    Round-61 pt.29: Alpaca returns structured JSON on 4xx errors
+    (``{"code": 40310000, "message": "asset SOXL is not shortable"}``).
+    Without reading the body, all we see is the HTTP status text
+    (``he.reason``, e.g. ``"Forbidden"``) — useless for distinguishing
+    ``"asset is not shortable"`` from ``"API key invalid"`` from
+    ``"extended hours order type not supported"``. pt.26 added "loud
+    placement-failure logging" but the logged string only carried the
+    status code + reason, so operators still had to SSH to Alpaca's
+    dashboard to diagnose.
+
+    Returns ``(summary, parsed)``:
+
+    * ``summary`` — human-readable tail for the error string, e.g.
+      ``"asset SOXL is not shortable alpaca_code=40310000"``. Empty
+      string when nothing useful could be extracted.
+    * ``parsed`` — the JSON dict Alpaca returned, or ``None`` when the
+      body was empty / not JSON / not a dict.
+    """
+    try:
+        raw = he.read()
+    except Exception:
+        return "", None
+    if not raw:
+        return "", None
+    try:
+        data = json.loads(raw.decode())
+    except Exception:
+        text = raw.decode("utf-8", errors="replace").strip()
+        return (text[:200], None) if text else ("", None)
+    if not isinstance(data, dict):
+        return str(data)[:200], None
+    parts = []
+    msg = data.get("message") or data.get("error") or data.get("reject_reason")
+    code = data.get("code")
+    if msg:
+        parts.append(str(msg))
+    if code is not None:
+        parts.append(f"alpaca_code={code}")
+    summary = " ".join(parts) if parts else str(data)[:200]
+    return summary, data
+
+
+def _format_http_error(he):
+    """Build the ``{"error": ...}`` string returned by user_api_* helpers.
+
+    Combines HTTP status + Alpaca-specific detail from the response
+    body. Example output:
+    ``"HTTP 403: Forbidden — asset SOXL is not shortable alpaca_code=40310000"``.
+
+    Returns ``(err_str, parsed_body)`` — the parsed body is handed back
+    so the caller can decide whether the failure is a true auth/cred
+    problem (401, or 403 with no structured detail) vs a business-logic
+    rejection (403 with an Alpaca error code / asset-restriction msg).
+    """
+    summary, parsed = _parse_alpaca_error_body(he)
+    base = f"HTTP {he.code}: {he.reason}"
+    return (f"{base} — {summary}" if summary else base), parsed
+
+
+_BUSINESS_LOGIC_403_KEYWORDS = (
+    "shortable", "shorting", "not tradable", "inactive asset",
+    "insufficient", "buying power", "extended hours",
+    "order type", "restricted from trading", "restricted asset",
+    "pdt", "day trade", "day-trade", "pattern day",
+    "position", "qty", "quantity",
+)
+
+
+def _is_auth_failure(code, parsed):
+    """Is this 401/403 an actual credentials/authorization failure?
+
+    401 is always auth. 403 is ambiguous — Alpaca returns 403 for both
+    (a) invalid API key / insufficient API permission AND (b) business
+    rules like "asset not shortable" or "extended hours stops not
+    allowed". Only the former warrants the daily "credentials
+    rejected" critical_alert — firing on business-logic 403s spams
+    users with false cred-rotation prompts every time they hit an
+    Alpaca business rule.
+
+    Heuristic: if Alpaca returned a structured error body with a
+    numeric ``code`` or a message that mentions an asset/order-type
+    restriction, treat as business-logic. Empty or unstructured 403 →
+    fall back to assuming auth (preserves pre-pt.29 behaviour for the
+    "bad key" case that motivated the alert in Round-15).
+    """
+    if code == 401:
+        return True
+    if not isinstance(parsed, dict):
+        return True
+    if parsed.get("code") is not None:
+        return False
+    msg = str(parsed.get("message") or parsed.get("error") or "").lower()
+    if not msg:
+        return True
+    return not any(k in msg for k in _BUSINESS_LOGIC_403_KEYWORDS)
+
+
 def _alert_alpaca_auth_failure(user, code, reason):
     """Round-15: 401/403 → critical_alert once per user per ET day.
     Lazy imports so this module stays free of et_time / observability
@@ -249,7 +349,12 @@ def user_api_get(user, url_path, timeout=10, retries=2):
                 continue
             if 500 <= e.code < 600:
                 _cb_record_failure(user)
-            return {"error": f"HTTP {e.code}"}
+            # Round-61 pt.29: surface Alpaca's response body so
+            # diagnostic detail (e.g. "asset not shortable",
+            # "account restricted") reaches the caller's log
+            # instead of just a bare status code.
+            err_str, _parsed = _format_http_error(e)
+            return {"error": err_str}
         except Exception:
             if attempt < retries:
                 time.sleep(0.5 * (2 ** attempt))
@@ -281,12 +386,13 @@ def user_api_post(user, url_path, data, timeout=10):
             _cb_record_success(user)
             return body
     except urllib.error.HTTPError as he:
+        err_str, parsed = _format_http_error(he)
         if 400 <= he.code < 500:
-            if he.code in (401, 403):
+            if he.code in (401, 403) and _is_auth_failure(he.code, parsed):
                 _alert_alpaca_auth_failure(user, he.code, he.reason)
-            return {"error": f"HTTP {he.code}: {he.reason}"}
+            return {"error": err_str}
         _cb_record_failure(user)
-        return {"error": f"HTTP {he.code}: {he.reason}"}
+        return {"error": err_str}
     except Exception as e:
         _cb_record_failure(user)
         return {"error": str(e)}
@@ -311,14 +417,18 @@ def user_api_delete(user, url_path, timeout=10):
             _cb_record_success(user)
             return json.loads(body.decode()) if body else {}
     except urllib.error.HTTPError as he:
+        err_str, parsed = _format_http_error(he)
         if 400 <= he.code < 500:
             # Round-19: 401/403 on DELETE means creds are bad. Same
             # dedup as POST so we don't spam on a cancel storm.
-            if he.code in (401, 403):
+            # pt.29: only true auth failures (empty body / no Alpaca
+            # error code) fire the alert — business-logic 403s
+            # surface their reason in err_str instead.
+            if he.code in (401, 403) and _is_auth_failure(he.code, parsed):
                 _alert_alpaca_auth_failure(user, he.code, he.reason)
-            return {"error": f"HTTP {he.code}: {he.reason}"}
+            return {"error": err_str}
         _cb_record_failure(user)
-        return {"error": f"HTTP {he.code}: {he.reason}"}
+        return {"error": err_str}
     except Exception as e:
         _cb_record_failure(user)
         return {"error": str(e)}
@@ -350,14 +460,17 @@ def user_api_patch(user, url_path, data, timeout=10):
             _cb_record_success(user)
             return body
     except urllib.error.HTTPError as he:
+        err_str, parsed = _format_http_error(he)
         if 400 <= he.code < 500:
             # Round-19: 401/403 on PATCH means creds are bad — alert
-            # once per ET-day just like POST does.
-            if he.code in (401, 403):
+            # once per ET-day just like POST does. pt.29: only true
+            # auth failures fire the alert — business-logic 403s
+            # surface their Alpaca detail in err_str instead.
+            if he.code in (401, 403) and _is_auth_failure(he.code, parsed):
                 _alert_alpaca_auth_failure(user, he.code, he.reason)
-            return {"error": f"HTTP {he.code}: {he.reason}"}
+            return {"error": err_str}
         _cb_record_failure(user)
-        return {"error": f"HTTP {he.code}: {he.reason}"}
+        return {"error": err_str}
     except Exception as e:
         _cb_record_failure(user)
         return {"error": str(e)}
