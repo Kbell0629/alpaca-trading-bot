@@ -379,9 +379,12 @@ def test_dashboard_handler_mixin_decomposition(isolated_data_dir):
     # 3360 (round-61 pt.21 — /api/audit route + constants.is_closed_status
     # import + migrated-status check in _mark_auto_deployed, plus the
     # handle_state_audit handler delegation one-liner).
+    # 3380 (round-61 pt.24 — /api/close-ghost-strategies route + the
+    # handle_close_ghost_strategies delegation one-liner. Belongs at
+    # the route-dispatch layer; the actual logic is in the mixin).
     import os
     server_lines = sum(1 for _ in open(server.__file__))
-    assert server_lines < 3360, \
+    assert server_lines < 3380, \
         f"server.py too large ({server_lines} lines) — handler methods leaked back in"
 
 
