@@ -5209,21 +5209,35 @@ function renderDashboard() {
         // backend). Color matches the strategy-card accent used
         // elsewhere in the UI.
         const stratRaw = (p._strategy || '').toLowerCase();
+        // Round-61 pt.20: the backend writes the strategy key derived
+        // from the filename prefix or trade_journal entry. Known
+        // values: trailing_stop, wheel, breakout, mean_reversion,
+        // pead, short_sell, copy_trading. The pre-pt.20 map had
+        // `'short'` but the backend writes `'short_sell'` — so SOXL
+        // and every other auto-deployed short showed AUTO with no
+        // strategy badge. Added `short_sell` + `wheel_strategy` as
+        // aliases so any journal-deployer drift stays labeled.
         const stratLabelMap = {
             'trailing_stop': 'Trailing Stop',
             'wheel': 'Wheel',
+            'wheel_strategy': 'Wheel',
+            'wheel_auto_deploy': 'Wheel',
             'breakout': 'Breakout',
             'mean_reversion': 'Mean Reversion',
             'pead': 'PEAD',
-            'short': 'Short Selling',
+            'short_sell': 'Short Sell',
+            'short': 'Short Sell',
             'copy_trading': 'Copy Trading'
         };
         const stratColorMap = {
             'trailing_stop': '#3b82f6',
             'wheel': '#8b5cf6',
+            'wheel_strategy': '#8b5cf6',
+            'wheel_auto_deploy': '#8b5cf6',
             'breakout': '#ef4444',
             'mean_reversion': '#f59e0b',
             'pead': '#06b6d4',
+            'short_sell': '#10b981',
             'short': '#10b981',
             'copy_trading': '#10b981'
         };
