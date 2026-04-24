@@ -58,7 +58,38 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-24 — round 61 pt.8 KICKOFF)
+## Current session state (2026-04-24 — round 61 pt.8 BATCH-2)
+
+**Pt.8 batch-2 on `claude/round-61-pt8-batch2`.** Builds on the
+kickoff (#122). JS tests 68 → 99 (+31) across 3 new files:
+`atomicReplaceChildren` (9, pins all 5 jitter-fix failure modes),
+`freshnessChip` (12, pins the post-60 `data-label` invariant +
+age-tier classes + XSS escape), `focusables` (10, `_focusablesIn`
+for modal keyboard accessibility).
+
+**Loader fix:** stubs `setTimeout` alongside `setInterval` so the
+dashboard's delayed `measureStickyHeader(500ms)` doesn't fire after
+jsdom teardown. Silences the "document is not defined" async
+uncaught-exception noise that was flagging every batch with a
+spurious "1 error" summary.
+
+**User-reported AUTO/MANUAL fix:** screenshot showed CRDO / DKNG put
+/ HIMS put / INTC / SOXL all labeled MANUAL. Root cause for the
+wheel puts: `wheel_strategy.py:791` writes
+`deployer="wheel_auto_deploy"` to the journal, but
+`server._mark_auto_deployed`'s allowlist only recognized three
+values. Added `"wheel_auto_deploy"` to the tuple + source + behavioral
+pins. Equity positions use `"cloud_scheduler"` (already in list) —
+if still MANUAL it's a stale-file + trimmed-journal edge case.
+
+**Pt.8 follow-ups (next PRs):** renderDashboard core path,
+openClosePositionModal wheel option math (short put assignment,
+covered call), scroll helpers, toast / log. Add JS coverage
+threshold to CI once we have a stable floor.
+
+---
+
+## Previous session state (2026-04-24 — round 61 pt.8 KICKOFF)
 
 **Pt.8 (Vitest + jsdom for dashboard JS) kicked off on
 `claude/round-61-pt8-vitest`.** Lands the JS test infrastructure
