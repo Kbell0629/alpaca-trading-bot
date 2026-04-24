@@ -19,7 +19,7 @@ button { width:100%; padding:14px; background:var(--accent); color:white; border
 <h1>Reset Your Password</h1>
 <p>Enter a new password below.</p>
 <form id="resetForm">
-<label>New Password</label>
+<label for="password">New password</label>
 <input type="password" id="password" required minlength="10" autocomplete="new-password" placeholder="min 10 characters — a passphrase works great" oninput="updatePwStrength(this.value)">
 <div id="pwStrengthBar" style="height:6px;margin-top:-8px;margin-bottom:10px;background:#2a3142;border-radius:3px;overflow:hidden"><div id="pwStrengthFill" style="height:100%;width:0%;background:#ef4444;transition:all 150ms"></div></div>
 <div id="pwStrengthLabel" style="font-size:11px;color:var(--text-dim);margin-top:-6px;margin-bottom:10px;min-height:14px"></div>
