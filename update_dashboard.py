@@ -1266,6 +1266,25 @@ def fetch_all_data():
             except Exception as _tf_err:
                 print(f"  Trend filter failed: {_tf_err}. Continuing.")
 
+            # Round-61 pt.58: graduated gap penalty. Picks with 3-8%
+            # daily_change get their best_score multiplied by 0.85
+            # (~15% demotion) — they're still eligible to deploy but
+            # rank below cleaner setups. Hard-block at >8% is handled
+            # separately by chase_block at deploy time.
+            try:
+                from screener_core import apply_gap_penalty
+                _before_penalised = sum(1 for p in top_candidates
+                                          if p.get("_gap_penalty_applied"))
+                apply_gap_penalty(top_candidates)
+                _after_penalised = sum(1 for p in top_candidates
+                                         if p.get("_gap_penalty_applied"))
+                _newly = _after_penalised - _before_penalised
+                if _newly > 0:
+                    print(f"  Gap penalty: demoted {_newly} pick(s) "
+                          f"with 3-8% intraday move (score x0.85)")
+            except Exception as _gp_err:
+                print(f"  Gap penalty failed: {_gp_err}. Continuing.")
+
             # Round-61 pt.40: multi-day breakout confirmation. Require
             # today's close AND yesterday's close to BOTH be above their
             # respective 20-day highs before treating a Breakout pick

@@ -3107,6 +3107,10 @@ def run_auto_deployer(user):
                 base_qty=qty, strategy=best_strat,
                 symbol=symbol, journal=_journal_for_kelly,
                 existing_positions=existing_positions,
+                # Round-61 pt.58: pass the pick dict so the
+                # confluence multiplier can read sentiment +
+                # insider + multi-timeframe signals.
+                pick=pick,
             )
             if _size["qty"] != qty:
                 log(f"[{user['username']}] {symbol}: Kelly+corr sizing "
@@ -3523,6 +3527,8 @@ def run_auto_deployer(user):
                         base_qty=short_qty, strategy="short_sell",
                         symbol=short_symbol, journal=_journal_for_kelly,
                         existing_positions=existing_positions,
+                        # Round-61 pt.58: short-side confluence too.
+                        pick=sc,
                     )
                     if _size["qty"] != short_qty:
                         log(f"[{user['username']}] {short_symbol}: "

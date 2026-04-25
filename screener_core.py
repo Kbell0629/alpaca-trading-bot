@@ -416,6 +416,68 @@ def apply_trend_filter(picks: list, bars_map: Optional[Mapping[str, list]],
     return picks
 
 
+# ============================================================================
+# Round-61 pt.58: graduated pre-market gap penalty
+# ============================================================================
+
+GAP_PENALTY_THRESHOLD_PCT: float = 3.0
+GAP_PENALTY_BLOCK_THRESHOLD_PCT: float = 8.0
+GAP_PENALTY_MULTIPLIER: float = 0.85
+
+
+def apply_gap_penalty(picks: list,
+                        *,
+                        threshold_pct: float = GAP_PENALTY_THRESHOLD_PCT,
+                        block_threshold_pct: float = GAP_PENALTY_BLOCK_THRESHOLD_PCT,
+                        multiplier: float = GAP_PENALTY_MULTIPLIER) -> list:
+    """Round-61 pt.58: penalize picks with a 3-8% intraday gap.
+
+    The pt.45 chase_block already hard-blocks picks with daily_change
+    > 8%. The gap between 3-8% is a grey zone — sometimes a real
+    breakout, often "the screener was too late and we'd be buying
+    the local high". This applies a graduated penalty:
+
+    * daily_change <  threshold_pct  → no change
+    * threshold_pct <= daily_change < block_threshold_pct → multiply
+        best_score by `multiplier` (default 0.85, ~15% demotion)
+    * daily_change >= block_threshold_pct → leave alone (chase_block
+        will hard-block at deploy time)
+
+    Tags affected picks with `_gap_penalty_applied: True` so the
+    dashboard can show the "deploy-time chip" pattern.
+
+    Mutates each pick's `best_score`. Returns the (re-sorted) list.
+    """
+    if not picks:
+        return []
+    for p in picks:
+        if not isinstance(p, dict):
+            continue
+        try:
+            dc = float(p.get("daily_change") or 0)
+        except (TypeError, ValueError):
+            continue
+        if threshold_pct <= dc < block_threshold_pct:
+            try:
+                bs = float(p.get("best_score") or 0)
+            except (TypeError, ValueError):
+                continue
+            p["best_score"] = round(bs * multiplier, 2)
+            p["_gap_penalty_applied"] = True
+            p["_gap_penalty_pct"] = round(dc, 2)
+    # Sort, defending against non-dict entries / non-numeric scores
+    # the caller may have mixed in (we tolerate them silently above).
+    def _key(p):
+        if not isinstance(p, dict):
+            return 0.0
+        try:
+            return float(p.get("best_score") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    picks.sort(key=_key, reverse=True)
+    return picks
+
+
 def apply_sector_diversification(picks: list, max_per_sector: int = 2,
                                     top_n: int = 5) -> list:
     """Return the top `top_n` picks with at most `max_per_sector` per

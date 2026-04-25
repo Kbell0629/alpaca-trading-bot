@@ -302,6 +302,82 @@ def correlation_size_multiplier(correlated_count: int,
 
 
 # ============================================================================
+# Round-61 pt.58: confluence multiplier
+# ============================================================================
+# More-confirming-signals → bigger size; weak/single-factor picks
+# → smaller size. Counts up to 5 binary "this signal is on" flags
+# from the pick dict and maps the count to a multiplier in
+# [0.7, 1.5]. Designed to ride pt.49's Kelly + correlation —
+# applied as another step in compute_full_size.
+#
+# Signals (each adds 1 to confluence_count):
+#   * `best_score >= 80`  — high-conviction screener pick
+#   * `news_sentiment == "positive"` — keyword-based news scan
+#   * `llm_sentiment_score > 3` — Gemini/LLM read says bullish
+#   * `(insider_data or {}).get("has_cluster_buy")` — SEC Form 4 cluster
+#   * `mtf_alignment == "aligned"` — daily + weekly trend agree
+# Two missing mappings:
+#   * 0–1 signals  → 0.7×  (down-size)
+#   * 2 signals    → 1.0×  (no change)
+#   * 3 signals    → 1.2×
+#   * 4–5 signals  → 1.5×
+
+CONFLUENCE_MULT_FLOOR: float = 0.7
+CONFLUENCE_MULT_CEILING: float = 1.5
+
+CONFLUENCE_HIGH_SCORE_THRESHOLD: float = 80.0
+CONFLUENCE_POSITIVE_LLM_THRESHOLD: float = 3.0
+
+
+def count_confluence_signals(pick: Optional[Mapping]) -> int:
+    """Count binary positive signals on the pick dict. Returns 0..5."""
+    if not isinstance(pick, Mapping):
+        return 0
+    count = 0
+    try:
+        if float(pick.get("best_score") or 0) >= CONFLUENCE_HIGH_SCORE_THRESHOLD:
+            count += 1
+    except (TypeError, ValueError):
+        pass
+    if (pick.get("news_sentiment") or "").lower() == "positive":
+        count += 1
+    try:
+        if float(pick.get("llm_sentiment_score") or 0) > CONFLUENCE_POSITIVE_LLM_THRESHOLD:
+            count += 1
+    except (TypeError, ValueError):
+        pass
+    insider = pick.get("insider_data") or {}
+    if isinstance(insider, Mapping) and insider.get("has_cluster_buy"):
+        count += 1
+    if (pick.get("mtf_alignment") or "").lower() == "aligned":
+        count += 1
+    return count
+
+
+def confluence_size_multiplier(count: int,
+                                 *,
+                                 floor: float = CONFLUENCE_MULT_FLOOR,
+                                 ceiling: float = CONFLUENCE_MULT_CEILING) -> float:
+    """Map confluence-signal count to a size multiplier:
+        0–1 signals → floor (default 0.7×)
+        2 signals   → 1.0×
+        3 signals   → 1.2×
+        4–5 signals → ceiling (default 1.5×)
+    """
+    try:
+        n = int(count)
+    except (TypeError, ValueError):
+        return 1.0
+    if n <= 1:
+        return floor
+    if n == 2:
+        return 1.0
+    if n == 3:
+        return 1.2
+    return ceiling
+
+
+# ============================================================================
 # End-to-end wrapper
 # ============================================================================
 
@@ -312,10 +388,18 @@ def compute_full_size(*,
                        journal: Optional[Mapping] = None,
                        existing_positions: Optional[Iterable] = None,
                        sector_map: Optional[Mapping] = None,
+                       pick: Optional[Mapping] = None,
                        enable_kelly: bool = True,
                        enable_correlation: bool = True,
+                       enable_confluence: bool = True,
                        ) -> dict:
-    """Apply Kelly + correlation multipliers on top of `base_qty`.
+    """Apply Kelly + correlation + confluence multipliers on top of
+    `base_qty`. Round-61 pt.58 added the confluence step which reads
+    the pick dict (`best_score`, `news_sentiment`,
+    `llm_sentiment_score`, `insider_data.has_cluster_buy`,
+    `mtf_alignment`) and counts up to 5 positive signals. More
+    signals → bigger size, fewer signals → smaller. Independent of
+    Kelly (compounds multiplicatively).
 
     Returns:
       {
@@ -323,6 +407,8 @@ def compute_full_size(*,
         "base_qty": int,                   # what the caller passed in
         "kelly_multiplier": float,         # 1.0 if disabled or ineligible
         "correlation_multiplier": float,   # 1.0 if disabled or no correlation
+        "confluence_multiplier": float,    # 1.0 if pick=None or disabled
+        "confluence_count": int,           # 0..5 signals lit
         "edge": {...},                     # the per-strategy edge dict
         "correlated_count": int,           # how many correlated positions
         "rationale": str,                  # human-readable explanation
@@ -336,6 +422,7 @@ def compute_full_size(*,
         return {
             "qty": 0, "base_qty": 0,
             "kelly_multiplier": 1.0, "correlation_multiplier": 1.0,
+            "confluence_multiplier": 1.0, "confluence_count": 0,
             "edge": {}, "correlated_count": 0,
             "rationale": "base_qty <= 0 — no sizing applied",
         }
@@ -350,7 +437,12 @@ def compute_full_size(*,
         correlated = count_correlated_positions(
             symbol, existing_positions, sector_map=sector_map)
         c_mult = correlation_size_multiplier(correlated)
-    final_float = bq * k_mult * c_mult
+    confluence_count = 0
+    f_mult = 1.0
+    if enable_confluence and pick is not None:
+        confluence_count = count_confluence_signals(pick)
+        f_mult = confluence_size_multiplier(confluence_count)
+    final_float = bq * k_mult * c_mult * f_mult
     final_qty = max(1, int(final_float))
     rationale_bits = []
     if k_mult != 1.0:
@@ -361,12 +453,17 @@ def compute_full_size(*,
     if c_mult != 1.0:
         rationale_bits.append(
             f"correlation {c_mult:.2f}× ({correlated} correlated)")
+    if f_mult != 1.0:
+        rationale_bits.append(
+            f"confluence {f_mult:.2f}× ({confluence_count}/5 signals)")
     if not rationale_bits:
         rationale_bits.append("base size (no adjustment)")
     return {
         "qty": final_qty, "base_qty": bq,
         "kelly_multiplier": round(k_mult, 4),
         "correlation_multiplier": round(c_mult, 4),
+        "confluence_multiplier": round(f_mult, 4),
+        "confluence_count": confluence_count,
         "edge": edge,
         "correlated_count": correlated,
         "rationale": "; ".join(rationale_bits),
