@@ -8,6 +8,57 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.33 — Vitest JS coverage threshold ratchet (lines 0% → 92% floor)
+
+**Date:** 2026-04-25
+
+Pt.22 set up the threshold infrastructure with V8 provider but the
+floor stayed at 0% because `vm.runInThisContext` (the evaluation
+primitive used by `tests/js/loadRenderCore.js` to load the extracted
+render-core module) bypasses V8's coverage instrumentation. Pt.33
+fixes this end-to-end so JS coverage is measured + ratcheted just
+like Python coverage.
+
+### What landed
+
+1. **Provider switch:** `vitest.config.js` switched from `v8` →
+   `istanbul`. Istanbul instruments at parse time (we drive the
+   instrumenter manually); V8 only sees code that goes through
+   Node's module loader, which `vm.runInThisContext` skips.
+2. **Manual instrumentation in the loader:**
+   `tests/js/loadRenderCore.js` now imports `createInstrumenter`
+   from `istanbul-lib-instrument` (new devDependency), instruments
+   the read source string, then `vm.runInThisContext`-evaluates the
+   instrumented output. The instrumented code writes coverage
+   probes to a global on every function call.
+3. **Vitest's expected coverage global:** the default istanbul
+   `coverageVariable` is `__coverage__` — but vitest's `takeCoverage()`
+   reads from `globalThis.__VITEST_COVERAGE__` per its
+   `COVERAGE_STORE_KEY` constant. Pt.33 configures the instrumenter
+   with `coverageVariable: '__VITEST_COVERAGE__'` so vitest collects
+   the probes as expected.
+4. **Realistic thresholds:** measured locally at lines=96.09%,
+   functions=100%, branches=86.85%, statements=93.12%. Floor set
+   to lines=92, functions=95, branches=80, statements=90 with
+   ~3-5% headroom for environment drift.
+
+### Why it matters
+The 392 JS tests already exercise the dashboard render core
+thoroughly — but until pt.33 the measurement showed 0%, so any
+regression that dropped a function from the test suite would go
+unnoticed. Now CI fails any PR that drops below the ratcheted
+floor, the same guarantee Python coverage has.
+
+### Tests
++0 new tests — 392 existing tests now feed the threshold check.
+
+### Touched files
+- `vitest.config.js` (provider + thresholds)
+- `tests/js/loadRenderCore.js` (instrumentation pipeline)
+- `package.json` + `package-lock.json` (`istanbul-lib-instrument` dep)
+
+---
+
 ## 🆕 Round-61 pt.32 — orchestrator coverage (+26 tests)
 
 **Date:** 2026-04-24
