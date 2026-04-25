@@ -8,6 +8,83 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.34 — capital_check core extraction (+47 tests)
+
+**Date:** 2026-04-25
+
+Mirrors the pt.7 pattern (screener_core.py + scorecard_core.py
+extracted from update_dashboard.py + update_scorecard.py): pure math
+moves out of the subprocess-driven entry point so pytest-cov can
+actually see it.
+
+### Why
+`capital_check.py` is invoked exclusively as a subprocess from
+`cloud_scheduler.run_auto_deployer`, so pytest-cov never sees its
+line execution. Before pt.34 the capital-sustainability math —
+including the security-critical `$1000/share fallback floor` from
+round-12 — was untested at the unit level. Any regression in the
+warning thresholds, sustainability score, or recommendation tiers
+would have to be caught by the production scheduler running it,
+which is too late.
+
+### What landed
+
+* **`capital_check_core.py`** — new module exporting:
+  * `compute_reserved_by_orders` (moved from capital_check, signature
+    unchanged) — full pricing-ladder coverage: explicit
+    limit/stop/notional, live last-trade fallback, position avg
+    entry fallback, `$1000/share` security floor.
+  * `position_avg_cost_map` — symbol-uppercase normalization for
+    the fallback ladder.
+  * `compute_capital_metrics(account, positions, orders, guardrails,
+    fetch_last, now_iso)` — pure version of `check_capital()`'s math:
+    portfolio_value, total_position_value, reserved_by_orders,
+    free_cash, pct_invested/reserved/free, max_positions,
+    additional_trades_possible, can_trade, sustainability_score,
+    warnings, recommendation. Schema matches the legacy output 1:1.
+  * `_LAST_RESORT_PRICE_PER_SHARE` constant (1000) re-exported for
+    callers that imported it directly.
+
+* **`capital_check.py`** thinned: `check_capital()` is now a
+  coordinator that fetches Alpaca + reads guardrails + delegates
+  every line of math to `capital_check_core.compute_capital_metrics`.
+  Saves the result via the round-10 per-user `CAPITAL_STATUS_PATH`
+  override.
+
+* **Backwards compat**: `_compute_reserved_by_orders` re-export +
+  `_LAST_RESORT_PRICE_PER_SHARE` re-export so any caller that
+  imported the underscore-prefix names from capital_check still
+  works (round-15 audit-fix tests still pass unchanged).
+
+### Tests
++47 in `tests/test_round61_pt34_capital_check_core.py` covering:
+* Every pricing-ladder branch in `compute_reserved_by_orders`
+  (explicit price, notional, live quote, avg entry, $1000 floor).
+* Every Alpaca data shape edge (None orders, malformed qty,
+  fetch_last raising, mixed BUY/SELL, multiple orders summed).
+* `position_avg_cost_map` symbol normalization + missing fields.
+* `compute_capital_metrics` full schema, error-passthrough,
+  `portfolio_value=0` defensive math, `max_positions` defaults +
+  guardrails override, `can_trade` true/false branches,
+  `additional_trades_possible` capped by `max_positions - num_held`,
+  divide-by-zero on `max_position_pct=0`.
+* All five warning thresholds (HIGH EXPOSURE, MODERATE EXPOSURE,
+  LOW CAPITAL, MAX POSITIONS REACHED, HEAVY ORDER BOOK).
+* Sustainability score breakpoints (100 healthy, -1/pct above 50%
+  invested, -20 at max positions, -30 on low cash, floor at 0).
+* All three recommendation tiers (Healthy ≥80, Caution 50-79,
+  Critical <50) plus free-cash $-format.
+* `now_iso` passthrough so the timestamp field decouples from
+  et_time.
+* Backwards-compat alias from capital_check.py.
+
+### Touched files
+- `capital_check_core.py` (new, 222 LOC pure math)
+- `capital_check.py` (thinned 130-line monolith → 60-line coordinator)
+- `tests/test_round61_pt34_capital_check_core.py` (new)
+
+---
+
 ## 🆕 Round-61 pt.33 — Vitest JS coverage threshold ratchet (lines 0% → 92% floor)
 
 **Date:** 2026-04-25
