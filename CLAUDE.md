@@ -61,9 +61,52 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-25 — round 61 pt.10-46 SHIPPED)
+## Current session state (2026-04-25 — round 61 pt.10-47 SHIPPED)
 
-**Pt.46 in flight:** Analytics Hub — unified read-only dashboard
+**Pt.47 in flight:** five-in-one accuracy batch closing the deferred
+wiring + adding the missing meta-validation:
+  1. **Pt.44b — learned_params consumer.** New
+     `strategy_params.py` resolver with precedence
+     `learned > tier > fallback`. Wired into the auto-deployer's
+     rules-construction (long + short paths) so the next-tick
+     screener's `learned_params.json` (written by pt.44 weekly)
+     actually gets read back at deploy time. Single-call helper
+     `resolve_rules_dict(strategy=..., base_rules=..., tier_cfg=...,
+     learned_params=...)` returns a copy with stop_loss_pct /
+     profit_target_pct / max_hold_days resolved.
+  2. **Pt.38b — TIER_STRATEGY_PARAMS consumer.** Same resolver
+     (above) layers TIER_STRATEGY_PARAMS in BELOW learned_params
+     but ABOVE the legacy hardcoded defaults. A $500 cash-micro
+     account no longer takes the same 12% stops as a $100k
+     margin-standard one — each tier+strategy combo gets its own
+     value via `portfolio_calibration.get_strategy_param`.
+  3. **Walk-forward backtest validation.** New
+     `backtest_core.run_walk_forward_backtest` slides a (train_days,
+     test_days) window forward by step_days; picks the best param
+     variant on each train slice and evaluates on the immediately-
+     following test slice. Reports per-fold + aggregate test-window
+     metrics + an `overfit_ratio` (train_expectancy /
+     test_expectancy). >1.5 ⇒ self-learning is overfitting.
+  4. **Slippage + commission in backtest.** `_simulate_symbol`
+     now accepts `slippage_bps` (applied to entry + exit prices,
+     working against you on both sides) and `commission_per_trade`
+     (subtracted from pnl per round-trip). Default 0 → bit-
+     identical to pt.37 behaviour. Production should pass realistic
+     values (e.g. 10 bps + $1) so backtest expectancy doesn't
+     over-promise.
+  5. **Score-to-outcome correlation panel.** New
+     `analytics_core.compute_score_outcome` bins closed trades by
+     their `_screener_score` (now embedded at deploy time) into
+     5 quintile buckets and reports win-rate / expectancy per
+     bucket + monotonic-winrate / monotonic-expectancy flags. New
+     panel in the Analytics Hub renders the buckets + green/red
+     pills. The meta-validation pt.46 was missing: did higher-
+     scored picks actually win more often?
++22 tests in `tests/test_round61_pt47_strategy_params.py`
++28 tests in `tests/test_round61_pt47_walk_forward_slippage.py`
++19 tests in `tests/test_round61_pt47_score_outcome.py`
+
+**Pt.46 landed (PR #173):** Analytics Hub — unified read-only dashboard
 that consolidates KPIs, equity curve, drawdown, distributions,
 top symbols, best/worst trades, exit-reason analysis, per-strategy
 breakdown, and screener filter summary into a single tab. User
