@@ -98,13 +98,15 @@ def test_long_tier4_4pct_at_plus_20_percent():
     assert new_stop == 115.2  # 120 × 0.96
 
 
-def test_long_tier4_at_plus_50_percent():
+def test_long_tier5_at_plus_50_percent():
+    """Round-61 pt.64 added Tier 5 at +30% profit (3% trail). At +50%
+    profit we're firmly in Tier 5 territory, not Tier 4."""
     import cloud_scheduler as cs
     new_stop, tier, _ = cs._compute_stepped_stop(
         entry=100.0, extreme_price=150.0, default_trail=0.08, is_short=False,
     )
-    assert tier == 4
-    assert new_stop == 144.0  # 150 × 0.96
+    assert tier == 5
+    assert new_stop == 145.5  # 150 × 0.97 (3% Tier-5 trail)
 
 
 def test_stops_monotonically_increase_with_profit_long():
