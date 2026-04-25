@@ -3203,6 +3203,14 @@ class DashboardHandler(
             # and surfaces every inconsistency in plain English.
             self.handle_state_audit(body)
 
+        elif path == "/api/trades":
+            # Round-61 pt.36: filterable + sortable view of the trade
+            # journal for the Trades dashboard tab. Read-only; powers
+            # the per-strategy summary cards + per-trade post-mortem
+            # detail. See handlers/actions_mixin.handle_trades_view
+            # for the filter/sort schema.
+            self.handle_trades_view(body)
+
         elif path == "/api/close-ghost-strategies":
             # Round-61 pt.24: mutating counterpart to /api/audit —
             # marks active strategy files with no matching Alpaca

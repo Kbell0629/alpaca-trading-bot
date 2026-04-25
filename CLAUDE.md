@@ -61,7 +61,49 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-25 — round 61 pt.10-34 SHIPPED)
+## Current session state (2026-04-25 — round 61 pt.10-36 SHIPPED)
+
+**Pt.36 landed (PR #163):** Trades dashboard + post-mortem panel.
+Closes the user-facing visibility gap — until pt.36 the user could
+see strategy-level totals (Performance Attribution panel) but not
+the per-trade detail needed to diagnose what's working. Three parts:
+  1. **`trades_analysis_core.py`** — pure analysis module with
+     `enrich_trade` (adds pnl_class / hold_days / OCC underlying /
+     human exit-reason), `filter_trades` (status/strategy/win-loss/
+     symbol/exit-reason/side/date-range/pnl-bounds), `sort_trades`
+     (numeric/date/string with missing-last semantics),
+     `compute_strategy_summary` + `compute_overall_summary`
+     (count/wins/losses/win_rate/total_pnl/expectancy/best/worst/
+     avg_hold_days), and `build_trades_view` end-to-end glue.
+  2. **`/api/trades` endpoint** in `handlers/actions_mixin.py`.
+     POST-only, read-only, JSON in/out. Filters + sort_by +
+     descending in body. Returns the build_trades_view payload.
+  3. **Trades dashboard tab** in `templates/dashboard.html`:
+     filter row (status / win-loss / symbol search / strategy
+     chips), top-line summary cards (Total Trades / Win Rate /
+     Total P&L / Expectancy / Best / Worst), per-strategy summary
+     cards, sortable table (click any column header), per-row
+     post-mortem expand showing entry signal + exit context +
+     realized P&L. Mobile-friendly via `overflow-x:auto` table
+     wrapper.
++64 unit tests (`test_round61_pt36_trades_analysis_core.py`) +
++19 endpoint/source-pin tests (`test_round61_pt36_trades_endpoint.py`).
+
+**Pt.35 landed (PR #162):** block leveraged + inverse ETFs from
+short-sell entries. User-reported SOXL incident: the screener
+picked SOXL (3x leveraged semis) for a short-sell, position lost
+~$500 in 9 days from a normal-sized adverse move. Two structural
+problems with shorting leveraged/inverse ETFs:
+  1. **Decay** — daily-reset products lose value to volatility drag
+     even when the underlying is FLAT.
+  2. **Inverse logic error** — shorting an INVERSE ETF (SOXS, SQQQ,
+     SDOW) is effectively going LONG the underlying.
+  **Fix:** new `LEVERAGED_OR_INVERSE_ETFS` frozenset + helper
+  `is_leveraged_or_inverse_etf()` in `constants.py` (round-21 SSOT
+  pattern). `short_strategy.identify_short_candidates` checks at the
+  TOP of the loop — short-circuits before any score logic runs. Logs
+  one summary line per screener run when symbols are blocked.
++20 tests in `tests/test_round61_pt35_block_leveraged_short.py`.
 
 **Pt.34 landed (PR #160):** capital_check core extraction. Mirrors
 the pt.7 pattern (screener_core.py + scorecard_core.py): pure math

@@ -8,6 +8,133 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.36 — Trades dashboard + post-mortem panel (+83 tests)
+
+**Date:** 2026-04-25
+
+User-requested: "a place to see all my completed trades and the
+results with the strategies and all the information possible so I
+can see what is performing and what is not at a glance, filterable,
+mobile-ready, with a per-trade post-mortem." Closes the visibility
+gap between the existing Performance Attribution panel
+(strategy-level totals only) and the trade-level detail that
+informs strategy decisions.
+
+### What landed
+
+* **`trades_analysis_core.py`** — new pure-analysis module:
+  * `enrich_trade(trade)` — adds derived fields: pnl_class
+    (win/loss/flat/open), is_winner, is_open, hold_days,
+    exit_reason_human, occ_underlying.
+  * `filter_trades(trades, filters)` — supports status,
+    strategy[], win_loss, symbol substring (matches OCC
+    underlying too), exit_reason[], side (long/short),
+    date_from / date_to, min_pnl / max_pnl.
+  * `sort_trades(trades, sort_by, descending)` — stable sort with
+    numeric/date/string awareness; missing values ALWAYS sort last
+    regardless of direction (split-and-concat).
+  * `compute_strategy_summary(trades)` — per-strategy aggregates:
+    count, wins, losses, win_rate, total_pnl, avg_pnl,
+    avg_win_pnl, avg_loss_pnl, expectancy, best_pnl, worst_pnl,
+    avg_hold_days.
+  * `compute_overall_summary(trades)` — top-line equivalents.
+  * `build_trades_view(journal, filters, sort_by, descending)` —
+    end-to-end glue.
+  * `EXIT_REASON_LABELS` — pretty-print map for every exit-reason
+    code the scheduler writes.
+
+* **`/api/trades` POST endpoint** in
+  `handlers/actions_mixin.handle_trades_view`. Read-only; auth
+  required. Body: `{ filters, sort_by, descending }`. Returns the
+  build_trades_view payload.
+
+* **Trades dashboard tab** in `templates/dashboard.html`:
+  * Nav-tab "Trades" between Positions and Screener.
+  * Filter row: status select, win/loss select, symbol search
+    input, strategy chips (toggle multiple), Reset button.
+  * Top-line summary cards: Total Trades, Win Rate, Total P&L,
+    Expectancy, Best, Worst — derived over the FILTERED set so
+    they reflect the user's current view.
+  * Per-strategy summary cards (one per strategy): total P&L,
+    trade count, win rate, avg P&L, avg hold days. Borders
+    color-coded green/red on aggregate P&L sign.
+  * Sortable table (click any column header to flip direction):
+    Date / Symbol / Strategy / Side / Qty / Entry / Exit / P&L $ /
+    P&L % / Hold / Why exited.
+  * Click any row to expand the **post-mortem detail**: entry
+    context (symbol, qty, entry price, signal/reason text,
+    deployer), exit context (price, why exited, hold duration,
+    realized P&L). Option contracts show the OCC parse explicitly.
+  * Mobile-friendly: table wrapper has `overflow-x:auto` +
+    `min-width:680px`, filter chips wrap.
+
+### Tests
++64 in `tests/test_round61_pt36_trades_analysis_core.py` covering
+every helper / filter / sort / summary case.
++19 in `tests/test_round61_pt36_trades_endpoint.py` covering the
+HTTP route registration, auth gate, payload shape, filter
+plumbing, seeded-journal end-to-end, and dashboard JS surface
+(nav tab, section anchor, refresh handler, filter controls,
+post-mortem render, summary cards, sortable headers).
+
+### Touched files
+- `trades_analysis_core.py` (new, 380 LOC pure analysis)
+- `handlers/actions_mixin.py` (handle_trades_view added)
+- `server.py` (route /api/trades)
+- `templates/dashboard.html` (Trades tab + section + render JS)
+- `tests/test_round61_pt36_trades_analysis_core.py` (new)
+- `tests/test_round61_pt36_trades_endpoint.py` (new)
+
+---
+
+## 🆕 Round-61 pt.35 — block leveraged + inverse ETFs from short-sell (+20 tests)
+
+**Date:** 2026-04-25
+
+User-reported SOXL incident (round-61 pt.30): the screener picked
+SOXL (3x leveraged semis) as a short-sell candidate; the position
+lost ~$500 in 9 paper-trading days from a normal-sized adverse move.
+Pt.35 prevents this class of pick.
+
+### Why leveraged/inverse ETFs are bad shorts
+
+1. **Decay** — daily-reset products lose value to volatility drag
+   even when the underlying is FLAT. Shorting SOXL "expecting
+   nothing to happen" still loses money because the product itself
+   rolls daily.
+2. **Inverse logic error** — shorting an INVERSE ETF (SOXS, SQQQ,
+   SDOW) is effectively going LONG the underlying. The screener's
+   "bearish on SOXS" thesis is the SAME as "bullish on semis" but
+   executed via a short. Always wrong on signal alignment.
+
+### What landed
+
+* **`constants.LEVERAGED_OR_INVERSE_ETFS`** — frozenset of all
+  known 2x/3x leveraged longs, leveraged inverses, 1x inverses,
+  single-stock leveraged ETFs (TSLL/NVDL/etc.), volatility products
+  (VXX/UVXY/VIXY), and leveraged crypto ETFs.
+* **`constants.is_leveraged_or_inverse_etf(symbol)`** —
+  case-insensitive helper.
+* **`short_strategy.identify_short_candidates`** — checks the
+  blocklist at the TOP of the per-pick loop, short-circuiting
+  before any score logic runs. Emits a one-line summary log when
+  symbols are filtered (operator visibility).
+
+### Tests
++20 in `tests/test_round61_pt35_block_leveraged_short.py` covering
+the blocklist contents (SOXL/TQQQ/SQQQ/UVXY/single-stock pinned),
+the helper (case insensitivity, empty input), filter behaviour
+(SOXL/SOXS/VXX dropped, AMD/INTC pass), filter-runs-before-score,
+log emission, source-pin (uses `constants` module not a private
+copy).
+
+### Touched files
+- `constants.py` (new blocklist + helper)
+- `short_strategy.py` (filter at top of loop)
+- `tests/test_round61_pt35_block_leveraged_short.py` (new)
+
+---
+
 ## 🆕 Round-61 pt.34 — capital_check core extraction (+47 tests)
 
 **Date:** 2026-04-25
