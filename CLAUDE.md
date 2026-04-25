@@ -61,7 +61,26 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-24 — round 61 pt.10-32 SHIPPED)
+## Current session state (2026-04-25 — round 61 pt.10-33 SHIPPED)
+
+**Pt.33 landed (PR #159):** Vitest JS coverage threshold ratchet.
+Pt.22 set up the threshold infrastructure with V8 provider but
+floor stayed at 0% because `vm.runInThisContext` (the loader's
+evaluation primitive for the extracted render-core file) bypasses
+V8's coverage instrumentation. Pt.33 fixes this end-to-end:
+  1. Switch provider from `v8` → `istanbul` in vitest.config.js.
+  2. Add `istanbul-lib-instrument` as a dev dep + use it in
+     `tests/js/loadRenderCore.js` to instrument the source string
+     BEFORE `vm.runInThisContext` runs it.
+  3. Configure the instrumenter's `coverageVariable` to
+     `__VITEST_COVERAGE__` (vitest's expected key from
+     `@vitest/coverage-istanbul/dist/constants-*.js`). The default
+     `__coverage__` is what `nyc` reads — vitest's takeCoverage()
+     looks at a different global.
+  4. Set thresholds to lines=92, functions=95, branches=80,
+     statements=90 — measured 96/100/87/93 with ~3-5% headroom.
++0 new tests (existing 392 already exercise the surface);
+unblocks the floor-only-moves-up rule.
 
 **Pt.32 landed (PR #158):** orchestrator coverage. Source-pin tests
 for the four scheduler orchestrators that drive every live trade —
