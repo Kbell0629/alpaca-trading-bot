@@ -6046,6 +6046,28 @@ function renderDashboard() {
         if (p.has_bullish_catalyst) {
             chipsHtml += '<span class="pick-chip bullish" title="Bullish news catalyst detected: ' + esc((p.bullish_keywords || []).join(', ')) + '">\u{1F4C8} BULL</span>';
         }
+        // Round-61 pt.45: render filter_reasons as orange chips so the
+        // user can see WHY a high-scored pick was demoted (chase_block,
+        // already_held, below_50ma, breakout_unconfirmed, etc).
+        // Critical for explaining "why isn't POET in the Top 3 even
+        // though it's #1 by score?".
+        const _filterReasons = Array.isArray(p.filter_reasons) ? p.filter_reasons : [];
+        const _reasonLabels = {
+            'already_held': '🚫 Held',
+            'below_50ma': '⤓ <50MA',
+            'above_50ma': '⤒ >50MA',
+            'breakout_unconfirmed': '? 1-day',
+        };
+        if (_filterReasons.length) {
+            for (let r of _filterReasons) {
+                let label = _reasonLabels[r] || r;
+                // chase_block / volatility_block include the value in the
+                // string so just wrap them
+                if (r.startsWith('chase_block')) label = '🏃 ' + r.replace('chase_block ', '');
+                else if (r.startsWith('volatility_block')) label = '⚡ ' + r.replace('volatility_block ', '');
+                chipsHtml += '<span class="pick-chip" style="background:rgba(245,158,11,0.15);border-color:rgba(245,158,11,0.4);color:var(--orange)" title="Filtered: ' + esc(r) + ' — pick won\'t be auto-deployed">' + esc(label) + '</span>';
+            }
+        }
         const symCell = '<strong>' + esc(p.symbol) + '</strong>' +
             (chipsHtml ? '<div class="pick-factor-chips">' + chipsHtml + '</div>' : '');
         scrHtml += '<tr' + hl + '>' +
