@@ -8,6 +8,72 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.38 — per-strategy tier-aware risk params (+17 tests)
+
+**Date:** 2026-04-25
+
+User-requested follow-up to round-50's tier system: "per-strategy
+stop% / target% should also tier" — rationale being a $500 cash
+account can't take the same 12% stops as a $100k margin account
+without limiting itself to 4-5 losses before blowing out.
+
+### What landed
+
+* **`portfolio_calibration.TIER_STRATEGY_PARAMS`** — new data table
+  keyed `{tier_name: {strategy: {param: value}}}`. Covers all six
+  tiers (cash_micro / cash_small / cash_standard / margin_small /
+  margin_standard / margin_whale) × every strategy enabled on
+  each tier. Skips short_sell entries on cash tiers (the round-50
+  invariant) and wheel entries on tiers where `wheel_enabled=False`.
+
+* **`portfolio_calibration.get_strategy_param(tier_cfg, strategy,
+  param_name, default)`** — pure helper. Returns the tier-specific
+  value if present in the table, else the caller's default.
+  Defensive: handles None / non-dict tier_cfg, missing `name` key,
+  orphan strategy names, missing param names. Cleanly returns 0
+  values from the table (avoids the classic `or default` bug).
+
+### Design intent
+
+| Tier             | Breakout stop | Breakout target | Hold |
+|------------------|---------------|-----------------|------|
+| Cash Micro       | 5%            | 20%             | 10d  |
+| Cash Small       | 7%            | 25%             | 14d  |
+| Cash Standard    | 10%           | 30%             | 21d  |
+| Margin Small     | 7%            | 22%             | 14d  |
+| Margin Standard  | 10%           | 30%             | 21d  |
+| Margin Whale     | 12%           | 35%             | 30d  |
+
+Smaller accounts: tighter stops, smaller targets, shorter holds.
+Larger accounts: wider stops (avoid noise whipsaws), bigger
+targets, longer holds.
+
+### Tests
++17 in `tests/test_round61_pt38_per_strategy_tier.py` covering:
+* Every tier × enabled-strategy combination is present in the
+  table (no silent fallbacks for some strategies).
+* Risk-budget invariants — micro stops ≤ small ≤ standard,
+  targets grow with size, max-hold grows with size.
+* Short_sell only on margin tiers, wheel only where
+  `wheel_enabled=True`.
+* `get_strategy_param` happy path + missing-tier / missing-strategy
+  / missing-param fallback / non-dict input / 0-value-not-default.
+* No orphan tier names in the params table; every TIER_DEFAULTS
+  tier has a corresponding entry.
+
+### Wiring (deferred to pt.38b)
+Data + helper are in place; the auto-deployer + monitor consumers
+still read stop/target from `guardrails.json` directly. Follow-up
+PR will route them through `get_strategy_param` so each new
+strategy file's rules dict gets tier-aware defaults at creation
+time. Pt.38 is the infrastructure; pt.38b is the wiring.
+
+### Touched files
+- `portfolio_calibration.py` (TIER_STRATEGY_PARAMS + helper)
+- `tests/test_round61_pt38_per_strategy_tier.py` (new)
+
+---
+
 ## 🆕 Round-61 pt.36 — Trades dashboard + post-mortem panel (+83 tests)
 
 **Date:** 2026-04-25

@@ -164,6 +164,125 @@ TIER_DEFAULTS = [
 ]
 
 
+# Round-61 pt.38: per-strategy stop / target / max-hold-days
+# overrides keyed by tier name. Lets the auto-deployer pick risk
+# parameters that match the user's account size — micro accounts
+# get tighter risk-per-trade (~5%) so a single loss doesn't blow
+# out the account, while standard accounts get wider stops (~10-12%)
+# to avoid getting whipsawed out of valid setups.
+#
+# Usage: ``get_strategy_param(tier_cfg, strategy, param_name,
+# default)`` returns the tier-specific value if present, falling
+# back to ``default``. Consumers (cloud_scheduler.run_auto_deployer,
+# capital_check, monitor_strategies) pass the already-loaded
+# ``tier_cfg`` so this lookup is O(1) per call.
+#
+# Schema: {tier_name: {strategy_name: {param_name: value}}}.
+# Strategies absent from a tier's table fall through to the global
+# DEFAULT_STRATEGY_PARAMS below. Same for params absent on a
+# present-strategy entry.
+#
+# Why these specific values:
+#   * **Micro tier** (Cash $500-$2k): 5-6% stops to limit absolute
+#     dollar loss per trade ($25 on $500 risk). Smaller targets
+#     (15-20%) since the account can't afford many drawdowns.
+#     Shorter hold (10 days) to free capital faster.
+#   * **Small tier** ($2k-$25k cash, $2k-$25k margin): 7-8% stops,
+#     20-25% targets. Goldilocks zone — enough capital to wait
+#     out drawdowns, not so much that wide stops are wasteful.
+#   * **Standard tier** ($25k+): 10-12% stops, 25-35% targets.
+#     Wider stops to avoid noise-driven whipsaws on the larger
+#     positions a $25k+ account can afford.
+#
+# Adding a new strategy here is the single edit point — one place
+# to set tier-aware defaults. User overrides in guardrails.json
+# still win (apply_user_overrides happens AFTER calibration so the
+# user can flatten any of these).
+TIER_STRATEGY_PARAMS = {
+    "cash_micro": {
+        "breakout":       {"stop_loss_pct": 0.05, "profit_target_pct": 0.20, "max_hold_days": 10},
+        "mean_reversion": {"stop_loss_pct": 0.06, "profit_target_pct": 0.10, "max_hold_days": 7},
+        "trailing_stop":  {"stop_loss_pct": 0.06, "trail_distance_pct": 0.05},
+        "pead":           {"stop_loss_pct": 0.08, "max_hold_days": 30},
+        "short_sell":     {"stop_loss_pct": 0.05, "profit_target_pct": 0.10, "max_hold_days": 7},
+    },
+    "cash_small": {
+        "breakout":       {"stop_loss_pct": 0.07, "profit_target_pct": 0.25, "max_hold_days": 14},
+        "mean_reversion": {"stop_loss_pct": 0.07, "profit_target_pct": 0.12, "max_hold_days": 10},
+        "trailing_stop":  {"stop_loss_pct": 0.08, "trail_distance_pct": 0.06},
+        "pead":           {"stop_loss_pct": 0.08, "max_hold_days": 45},
+        "copy_trading":   {"stop_loss_pct": 0.08, "max_hold_days": 30},
+    },
+    "cash_standard": {
+        "breakout":       {"stop_loss_pct": 0.10, "profit_target_pct": 0.30, "max_hold_days": 21},
+        "mean_reversion": {"stop_loss_pct": 0.08, "profit_target_pct": 0.15, "max_hold_days": 14},
+        "trailing_stop":  {"stop_loss_pct": 0.10, "trail_distance_pct": 0.07},
+        "pead":           {"stop_loss_pct": 0.08, "max_hold_days": 60},
+        "copy_trading":   {"stop_loss_pct": 0.10, "max_hold_days": 45},
+        "wheel":          {"profit_target_pct": 0.50, "max_hold_days": 45},
+    },
+    "margin_small": {
+        "breakout":       {"stop_loss_pct": 0.07, "profit_target_pct": 0.22, "max_hold_days": 14},
+        "mean_reversion": {"stop_loss_pct": 0.07, "profit_target_pct": 0.12, "max_hold_days": 10},
+        "trailing_stop":  {"stop_loss_pct": 0.08, "trail_distance_pct": 0.06},
+        "pead":           {"stop_loss_pct": 0.08, "max_hold_days": 45},
+        "copy_trading":   {"stop_loss_pct": 0.08, "max_hold_days": 30},
+        "short_sell":     {"stop_loss_pct": 0.07, "profit_target_pct": 0.15, "max_hold_days": 10},
+    },
+    "margin_standard": {
+        "breakout":       {"stop_loss_pct": 0.10, "profit_target_pct": 0.30, "max_hold_days": 21},
+        "mean_reversion": {"stop_loss_pct": 0.08, "profit_target_pct": 0.15, "max_hold_days": 14},
+        "trailing_stop":  {"stop_loss_pct": 0.10, "trail_distance_pct": 0.07},
+        "pead":           {"stop_loss_pct": 0.08, "max_hold_days": 60},
+        "copy_trading":   {"stop_loss_pct": 0.10, "max_hold_days": 45},
+        "short_sell":     {"stop_loss_pct": 0.08, "profit_target_pct": 0.18, "max_hold_days": 14},
+        "wheel":          {"profit_target_pct": 0.50, "max_hold_days": 45},
+    },
+    "margin_whale": {
+        "breakout":       {"stop_loss_pct": 0.12, "profit_target_pct": 0.35, "max_hold_days": 30},
+        "mean_reversion": {"stop_loss_pct": 0.10, "profit_target_pct": 0.18, "max_hold_days": 21},
+        "trailing_stop":  {"stop_loss_pct": 0.12, "trail_distance_pct": 0.08},
+        "pead":           {"stop_loss_pct": 0.10, "max_hold_days": 60},
+        "copy_trading":   {"stop_loss_pct": 0.10, "max_hold_days": 45},
+        "short_sell":     {"stop_loss_pct": 0.10, "profit_target_pct": 0.20, "max_hold_days": 14},
+        "wheel":          {"profit_target_pct": 0.50, "max_hold_days": 45},
+    },
+}
+
+
+def get_strategy_param(tier_cfg, strategy, param_name, default=None):
+    """Round-61 pt.38: return the tier-aware value for
+    ``param_name`` on ``strategy``, or ``default`` if no tier
+    override exists.
+
+    ``tier_cfg`` — the dict returned by ``apply_user_overrides`` (or
+        ``detect_tier``). Must carry a ``name`` key (e.g.
+        ``"cash_standard"``); falls open to ``default`` otherwise.
+    ``strategy`` — strategy name (one of constants.STRATEGY_NAMES).
+    ``param_name`` — e.g. ``"stop_loss_pct"``, ``"profit_target_pct"``,
+        ``"max_hold_days"``, ``"trail_distance_pct"``.
+    ``default`` — fallback value when the tier or param isn't in
+        the table.
+
+    User overrides applied via ``apply_user_overrides`` LIVE on the
+    tier_cfg dict as top-level keys (round-50 schema). They WIN over
+    the per-strategy table — caller pattern is:
+        guardrails.get(name) or get_strategy_param(...) or default
+
+    See cloud_scheduler.run_auto_deployer for the wiring.
+    """
+    if not isinstance(tier_cfg, dict):
+        return default
+    name = tier_cfg.get("name")
+    if not name:
+        return default
+    tier_table = TIER_STRATEGY_PARAMS.get(name) or {}
+    strat_params = tier_table.get(strategy) or {}
+    if param_name in strat_params:
+        return strat_params[param_name]
+    return default
+
+
 def detect_tier(account: dict) -> dict:
     """Given an Alpaca /v2/account response dict, return the matching
     tier-defaults dict (deep-copied — safe to mutate). Returns None if
