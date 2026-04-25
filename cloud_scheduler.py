@@ -2890,6 +2890,28 @@ def run_auto_deployer(user):
         log(f"[{user['username']}] event_calendar check failed ({_e}); "
             "deploying without event-day adjustment.", "deployer")
 
+    # Round-61 pt.66: post-event momentum lean-in. The day(s) AFTER
+    # FOMC / CPI / NFP / PCE the market often resolves into a 1-3 day
+    # continuation. Lower the score threshold's effective bar so we
+    # capture more of that drift. Boost is multiplicative on the
+    # existing event-day raise so this never overrides a same-day
+    # block.
+    POST_EVENT_BOOST = 1.0
+    POST_EVENT_LABEL = None
+    try:
+        import post_event_momentum as _pem
+        _today_dt = now_et().date()
+        _boost, _lbl = _pem.post_event_boost(_today_dt)
+        if _boost > 1.0 and _lbl:
+            POST_EVENT_BOOST = _boost
+            POST_EVENT_LABEL = _lbl
+            log(f"[{user['username']}] {_lbl} — score threshold "
+                f"lowered by {1.0/_boost:.2%} for new deploys.",
+                "deployer")
+    except Exception as _pe:
+        log(f"[{user['username']}] post_event_momentum check failed "
+            f"({_pe}); deploying without lean-in.", "deployer")
+
     positions = user_api_get(user, "/positions")
     existing_syms = set()
     existing_positions = []

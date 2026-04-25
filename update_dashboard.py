@@ -1285,6 +1285,31 @@ def fetch_all_data():
             except Exception as _gp_err:
                 print(f"  Gap penalty failed: {_gp_err}. Continuing.")
 
+            # Round-61 pt.66: sector-momentum filter. Block long
+            # deploys in sectors trending DOWN >10% MoM. Best-effort:
+            # caller supplies sector_returns built from sector-ETF
+            # snapshots; if unavailable, the filter is a no-op. Short
+            # picks pass through (a downtrending sector is a good
+            # short setup).
+            try:
+                import sector_momentum as _sm
+                _sector_returns = locals().get("sector_returns") or {}
+                if _sector_returns:
+                    _before_blocked = sum(1 for p in top_candidates
+                                            if p.get("_sector_downtrend"))
+                    _sm.apply_sector_momentum_filter(
+                        top_candidates, _sector_returns)
+                    _after_blocked = sum(1 for p in top_candidates
+                                           if p.get("_sector_downtrend"))
+                    _newly_blocked = _after_blocked - _before_blocked
+                    if _newly_blocked > 0:
+                        print(f"  Sector momentum: blocked "
+                              f"{_newly_blocked} long pick(s) in "
+                              "down-trending sectors (>10% MoM down)")
+            except Exception as _sm_err:
+                print(f"  Sector momentum filter failed: {_sm_err}. "
+                      "Continuing.")
+
             # Round-61 pt.40: multi-day breakout confirmation. Require
             # today's close AND yesterday's close to BOTH be above their
             # respective 20-day highs before treating a Breakout pick
@@ -1877,6 +1902,12 @@ def fetch_all_data():
         # Pt.45: bridge pt.40 breakout-confirmation tag.
         if p.get("_breakout_unconfirmed"):
             reasons.append("breakout_unconfirmed")
+        # Pt.66: bridge sector-momentum filter into reasons (pure
+        # module already appended "sector_downtrend" if it ran;
+        # this is here so the unified bridge stays consistent).
+        if (p.get("_sector_downtrend")
+                and "sector_downtrend" not in reasons):
+            reasons.append("sector_downtrend")
         p["filter_reasons"] = reasons
         p["will_deploy"] = not reasons
 
