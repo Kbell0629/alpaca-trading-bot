@@ -450,14 +450,46 @@ class ActionsHandlerMixin:
                 cancelled, retry_err = _cancel_pending_sell_orders(
                     self, symbol)
                 if cancelled > 0:
-                    # Retry the close.
-                    result2 = self.user_api_delete(
-                        f"{self.user_api_endpoint}/positions/{symbol}")
-                    if isinstance(result2, dict) and "error" in result2:
+                    # Pt.69: Alpaca's order cancellation is async — the
+                    # broker takes ~250-1000ms to actually release the
+                    # reserved qty/buying-power after the cancel ACK.
+                    # If we retry DELETE immediately we get the same
+                    # "insufficient qty" error. Poll up to 4 times with
+                    # exponential backoff so the retry catches the
+                    # release window.
+                    result2 = None
+                    last_err2 = None
+                    for _attempt, _delay in enumerate((0.3, 0.6, 1.0, 1.5)):
+                        time.sleep(_delay)
+                        result2 = self.user_api_delete(
+                            f"{self.user_api_endpoint}/positions/{symbol}")
+                        if isinstance(result2, dict) and "error" in result2:
+                            _e2 = (result2.get("error") or "").lower()
+                            last_err2 = result2["error"]
+                            # Same insufficient-qty error → cancel hasn't
+                            # propagated yet; keep retrying.
+                            if ("insufficient qty" in _e2
+                                    or "available: 0" in _e2):
+                                continue
+                            # Different error → surface it now.
+                            return self.send_json({
+                                "error": (result2["error"]
+                                           + f" (cancelled {cancelled} "
+                                           "pending order(s) before retry)")
+                            }, 400)
+                        # Success — break out of the retry loop.
+                        last_err2 = None
+                        break
+                    if last_err2:
+                        # All retries exhausted with same error — Alpaca
+                        # is unusually slow or there's something else
+                        # holding the qty. Surface a clear hint.
                         return self.send_json({
-                            "error": (result2["error"]
-                                       + f" (cancelled {cancelled} "
-                                       "pending order(s) before retry)")
+                            "error": (last_err2
+                                       + f" (cancelled {cancelled} pending "
+                                       "order(s) but Alpaca is still "
+                                       "reporting qty unavailable after "
+                                       "~3.5s — try again in a moment)")
                         }, 400)
                     # Pt.67: settled-funds bridge after retry close.
                     _record_close_to_settled_funds(
@@ -466,7 +498,7 @@ class ActionsHandlerMixin:
                     return self.send_json({
                         "success": True, "symbol": symbol,
                         "message": (f"Cancelled {cancelled} pending "
-                                     f"sell order(s) on {symbol}, "
+                                     f"order(s) on {symbol}, "
                                      "then closed."),
                         "order": result2,
                     })
