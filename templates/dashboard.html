@@ -4054,6 +4054,321 @@ function renderMultiStrategyBacktest(d) {
     panel.innerHTML = html;
 }
 
+// Round-61 pt.46: Analytics Hub.
+// Single-screen view of all the bot's performance data — KPIs,
+// equity curve, drawdown, per-strategy + per-period + per-symbol +
+// per-exit-reason aggregates, hold-time + P&L distributions,
+// best/worst trades, filter summary. Loads from /api/analytics.
+
+async function refreshAnalyticsPanel() {
+    var panel = document.getElementById('analyticsPanel');
+    if (!panel) return;
+    try {
+        var resp = await fetch(API_BASE + '/api/analytics', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        var d = await resp.json();
+        renderAnalyticsPanel(d);
+    } catch (e) {
+        panel.innerHTML = '<div class="empty-state error"><div class="icon">⚠</div>' +
+            '<div class="title">Analytics unavailable</div>' +
+            '<div class="subtitle">' + esc(e.message) + '</div></div>';
+    }
+}
+
+function _analyticsFmtMoney(n) {
+    var v = (typeof n === 'number') ? n : Number(n);
+    if (isNaN(v)) return '—';
+    var sign = v >= 0 ? '+' : '−';
+    return sign + '$' + Math.abs(v).toLocaleString(undefined,
+        { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function _analyticsFmtPct(n, decimals) {
+    if (decimals === undefined) decimals = 1;
+    var v = (typeof n === 'number') ? n : Number(n);
+    if (isNaN(v)) return '—';
+    return (v >= 0 ? '+' : '') + v.toFixed(decimals) + '%';
+}
+
+function _analyticsPnlClass(n) {
+    var v = (typeof n === 'number') ? n : Number(n);
+    if (isNaN(v) || Math.abs(v) < 0.005) return '';
+    return v > 0 ? 'pnl-pos' : 'pnl-neg';
+}
+
+function _analyticsKpiCard(title, value, subtitle, valueClass, tooltip) {
+    var t = tooltip ? ' title="' + esc(tooltip) + '"' : '';
+    return '<div class="factor-card"' + t + '>' +
+        '<div class="factor-card-title">' + esc(title) + '</div>' +
+        '<div class="factor-card-value ' + (valueClass || '') + '">' + value + '</div>' +
+        (subtitle ? '<div class="factor-card-sub">' + subtitle + '</div>' : '') +
+    '</div>';
+}
+
+function _analyticsRenderEquityChart(curve, panelId) {
+    // Inline SVG line chart — no Chart.js dependency, mobile-safe.
+    if (!curve || !curve.length) return '';
+    var w = 800, h = 220, pad = 40;
+    var values = curve.map(function(p) { return p.value; });
+    var minV = Math.min.apply(null, values);
+    var maxV = Math.max.apply(null, values);
+    var range = (maxV - minV) || 1;
+    var stepX = (w - pad * 2) / Math.max(curve.length - 1, 1);
+    var pts = curve.map(function(p, i) {
+        var x = pad + i * stepX;
+        var y = h - pad - ((p.value - minV) / range) * (h - pad * 2);
+        return x.toFixed(1) + ',' + y.toFixed(1);
+    }).join(' ');
+    var first = curve[0].value, last = curve[curve.length - 1].value;
+    var totalPctChange = ((last - first) / first) * 100;
+    var lineColor = totalPctChange >= 0 ? 'var(--green)' : 'var(--red)';
+    var fillColor = totalPctChange >= 0 ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.12)';
+    // Build polygon for fill (line + bottom corners)
+    var lastX = pad + (curve.length - 1) * stepX;
+    var fillPts = pts + ' ' + lastX.toFixed(1) + ',' + (h - pad).toFixed(1) +
+                   ' ' + pad.toFixed(1) + ',' + (h - pad).toFixed(1);
+    return '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" ' +
+        'style="width:100%;height:auto;max-height:240px">' +
+        '<polygon points="' + fillPts + '" fill="' + fillColor + '"/>' +
+        '<polyline points="' + pts + '" fill="none" stroke="' + lineColor + '" stroke-width="2"/>' +
+        '<text x="' + pad + '" y="' + (pad - 8) + '" fill="var(--text-dim)" font-size="11">$' + maxV.toLocaleString(undefined, {maximumFractionDigits: 0}) + '</text>' +
+        '<text x="' + pad + '" y="' + (h - pad + 16) + '" fill="var(--text-dim)" font-size="11">$' + minV.toLocaleString(undefined, {maximumFractionDigits: 0}) + '</text>' +
+        '<text x="' + (w - pad) + '" y="' + (h - pad + 16) + '" fill="var(--text-dim)" font-size="11" text-anchor="end">' + esc(curve[curve.length - 1].date) + '</text>' +
+        '<text x="' + pad + '" y="' + (h - pad + 30) + '" fill="var(--text-dim)" font-size="11">' + esc(curve[0].date) + '</text>' +
+    '</svg>';
+}
+
+function _analyticsRenderBarHistogram(items, valueKey, labelKey, color) {
+    // Horizontal bars for distribution-style data.
+    if (!items || !items.length) return '<div style="color:var(--text-dim);font-size:12px;padding:8px">No data</div>';
+    var maxV = 0;
+    items.forEach(function(it) { var v = Number(it[valueKey]) || 0; if (v > maxV) maxV = v; });
+    if (maxV === 0) return '<div style="color:var(--text-dim);font-size:12px;padding:8px">No trades yet</div>';
+    var html = '<div style="display:flex;flex-direction:column;gap:4px">';
+    items.forEach(function(it) {
+        var v = Number(it[valueKey]) || 0;
+        var pct = (v / maxV) * 100;
+        var barColor = color || 'var(--blue)';
+        html += '<div style="display:flex;align-items:center;gap:8px;font-size:11px">' +
+            '<div style="min-width:90px;color:var(--text-dim)">' + esc(it[labelKey]) + '</div>' +
+            '<div style="flex:1;background:rgba(255,255,255,0.04);border-radius:3px;height:18px;overflow:hidden">' +
+                '<div style="width:' + pct.toFixed(1) + '%;background:' + barColor + ';height:100%"></div>' +
+            '</div>' +
+            '<div style="min-width:30px;text-align:right;font-weight:600">' + v + '</div>' +
+        '</div>';
+    });
+    html += '</div>';
+    return html;
+}
+
+function _analyticsRenderPnlBars(items, labelKey, valueKey) {
+    // Bars where the value is dollars — color by sign.
+    if (!items || !items.length) return '<div style="color:var(--text-dim);font-size:12px;padding:8px">No data</div>';
+    var values = items.map(function(it) { return Math.abs(Number(it[valueKey]) || 0); });
+    var maxV = Math.max.apply(null, values);
+    if (maxV === 0) return '<div style="color:var(--text-dim);font-size:12px;padding:8px">No trades yet</div>';
+    var html = '<div style="display:flex;flex-direction:column;gap:4px">';
+    items.forEach(function(it) {
+        var v = Number(it[valueKey]) || 0;
+        var pct = (Math.abs(v) / maxV) * 100;
+        var barColor = v >= 0 ? 'var(--green)' : 'var(--red)';
+        var pnlCls = v >= 0 ? 'pnl-pos' : 'pnl-neg';
+        var sub = (it.count != null) ? ' (' + it.count + ')' : '';
+        html += '<div style="display:flex;align-items:center;gap:8px;font-size:11px">' +
+            '<div style="min-width:90px;color:var(--text-dim)">' + esc(it[labelKey]) + sub + '</div>' +
+            '<div style="flex:1;background:rgba(255,255,255,0.04);border-radius:3px;height:18px;overflow:hidden">' +
+                '<div style="width:' + pct.toFixed(1) + '%;background:' + barColor + ';height:100%"></div>' +
+            '</div>' +
+            '<div class="' + pnlCls + '" style="min-width:80px;text-align:right;font-weight:600">' + _analyticsFmtMoney(v) + '</div>' +
+        '</div>';
+    });
+    html += '</div>';
+    return html;
+}
+
+function renderAnalyticsPanel(d) {
+    var panel = document.getElementById('analyticsPanel');
+    if (!panel) return;
+    var k = d.kpis || {};
+    var equity = d.equity_curve || [];
+    var drawdown = d.drawdown_curve || [];
+    var sb = d.strategy_breakdown || {};
+    var pp = d.pnl_by_period || {};
+    var html = '';
+
+    // ---- HEADLINE KPI CARDS (top row, 8 cards) ----
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:18px">';
+    html += _analyticsKpiCard('Total P&L',
+        _analyticsFmtMoney(k.total_realized_pnl),
+        '+ ' + (k.total_unrealized_pnl >= 0 ? '+' : '') + '$' + Math.abs(k.total_unrealized_pnl||0).toFixed(0) + ' unrealized',
+        _analyticsPnlClass(k.total_realized_pnl),
+        'Realized P&L from all closed trades. Sub: live unrealized P&L from open positions.');
+    html += _analyticsKpiCard('Win Rate',
+        ((k.win_rate||0)*100).toFixed(0) + '%',
+        (k.wins||0) + 'W / ' + (k.losses||0) + 'L (' + (k.closed_trades||0) + ' closed)',
+        '',
+        'Wins / total closed trades.');
+    html += _analyticsKpiCard('Expectancy',
+        _analyticsFmtMoney(k.expectancy),
+        'per trade',
+        _analyticsPnlClass(k.expectancy),
+        'win_rate × avg_win + loss_rate × avg_loss. Positive = bot has edge.');
+    html += _analyticsKpiCard('Avg Win',
+        _analyticsFmtMoney(k.avg_win_pnl),
+        'vs ' + _analyticsFmtMoney(k.avg_loss_pnl) + ' avg loss',
+        'pnl-pos',
+        'Average dollar P&L on winning trades.');
+    html += _analyticsKpiCard('Max DD',
+        (k.max_drawdown_pct != null) ? k.max_drawdown_pct.toFixed(1) + '%' : '—',
+        'peak → trough',
+        'pnl-neg',
+        'Worst peak-to-trough drawdown over the validation window.');
+    html += _analyticsKpiCard('Sharpe',
+        (k.sharpe_ratio != null) ? k.sharpe_ratio.toFixed(2) : '—',
+        'risk-adjusted return',
+        '',
+        'Sharpe ratio from the scorecard. >1 is good, >2 is excellent.');
+    html += _analyticsKpiCard('Avg Hold',
+        (k.avg_hold_days != null) ? k.avg_hold_days.toFixed(1) + 'd' : '—',
+        'days',
+        '',
+        'Mean days held across all closed trades.');
+    html += _analyticsKpiCard('Validation',
+        (k.paper_validation_days_elapsed||0) + 'd',
+        'paper-trading days',
+        '',
+        'Days since paper validation window started (2026-04-15).');
+    html += '</div>';
+
+    // ---- EQUITY CURVE + PER-PERIOD P&L ----
+    html += '<div style="display:grid;grid-template-columns:2fr 1fr;gap:16px;margin-bottom:18px">';
+    // Equity chart card
+    html += '<div class="factor-card">' +
+        '<div class="factor-card-title" style="margin-bottom:8px">Portfolio Value</div>' +
+        (equity.length ? _analyticsRenderEquityChart(equity)
+            : '<div style="color:var(--text-dim);font-size:12px;padding:24px;text-align:center">No daily snapshots yet</div>') +
+        '</div>';
+    // Per-period P&L card
+    html += '<div class="factor-card">' +
+        '<div class="factor-card-title" style="margin-bottom:8px">P&L by Period</div>' +
+        '<div style="display:flex;flex-direction:column;gap:8px">';
+    ['today', '7d', '30d', '90d', 'all'].forEach(function(period) {
+        var p = pp[period] || {pnl: 0, count: 0};
+        var label = {today:'Today', '7d':'Last 7 days', '30d':'Last 30 days', '90d':'Last 90 days', 'all':'All-time'}[period];
+        var cls = _analyticsPnlClass(p.pnl);
+        html += '<div style="display:flex;justify-content:space-between;align-items:baseline;font-size:12px">' +
+            '<span style="color:var(--text-dim)">' + label + '</span>' +
+            '<span><span class="' + cls + '" style="font-weight:600">' + _analyticsFmtMoney(p.pnl) + '</span>' +
+            '<span style="color:var(--text-dim);font-size:10px;margin-left:4px">(' + p.count + ')</span></span>' +
+        '</div>';
+    });
+    html += '</div></div>';
+    html += '</div>';
+
+    // ---- PER-STRATEGY BREAKDOWN ----
+    var stratKeys = Object.keys(sb);
+    if (stratKeys.length) {
+        html += '<div style="margin-bottom:6px;font-size:12px;color:var(--text-dim);font-weight:600">PER-STRATEGY PERFORMANCE</div>';
+        html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:18px">';
+        stratKeys.forEach(function(name) {
+            var s = sb[name];
+            var pnlCls = _analyticsPnlClass(s.total_pnl);
+            var borderColor = (s.total_pnl||0) > 0 ? 'rgba(16,185,129,0.3)' : (s.total_pnl||0) < 0 ? 'rgba(239,68,68,0.3)' : 'var(--border)';
+            html += '<div class="factor-card" style="border-color:' + borderColor + '">' +
+                '<div class="factor-card-title">' + esc(name.toUpperCase().replace(/_/g, ' ')) + '</div>' +
+                '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:6px;margin-top:4px">' +
+                    '<span class="factor-card-value ' + pnlCls + '" style="font-size:18px">' + _analyticsFmtMoney(s.total_pnl) + '</span>' +
+                    '<span style="font-size:11px;color:var(--text-dim)">' + (s.count||0) + ' trades</span>' +
+                '</div>' +
+                '<div style="font-size:11px;color:var(--text-dim);margin-top:6px">' +
+                    'Win: <strong>' + ((s.win_rate||0)*100).toFixed(0) + '%</strong> &nbsp; ' +
+                    'Avg: <strong>' + _analyticsFmtMoney(s.avg_pnl) + '</strong>' +
+                '</div>' +
+                '<div style="font-size:11px;color:var(--text-dim);margin-top:2px">' +
+                    'Best: <span class="pnl-pos">' + _analyticsFmtMoney(s.best) + '</span> &nbsp; ' +
+                    'Worst: <span class="pnl-neg">' + _analyticsFmtMoney(s.worst) + '</span>' +
+                '</div>' +
+            '</div>';
+        });
+        html += '</div>';
+    }
+
+    // ---- DISTRIBUTIONS (P&L + Hold time, side by side) ----
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-bottom:18px">';
+    html += '<div class="factor-card">' +
+        '<div class="factor-card-title" style="margin-bottom:8px">P&L Distribution</div>' +
+        _analyticsRenderBarHistogram(d.pnl_distribution, 'count', 'bucket', 'var(--blue)') +
+        '</div>';
+    html += '<div class="factor-card">' +
+        '<div class="factor-card-title" style="margin-bottom:8px">Hold Time Distribution</div>' +
+        _analyticsRenderBarHistogram(d.hold_time_distribution, 'count', 'bucket', 'var(--purple)') +
+        '</div>';
+    html += '</div>';
+
+    // ---- TOP SYMBOLS + EXIT REASONS ----
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-bottom:18px">';
+    html += '<div class="factor-card">' +
+        '<div class="factor-card-title" style="margin-bottom:8px">Top Symbols by Impact (|P&L|)</div>' +
+        _analyticsRenderPnlBars(d.pnl_by_symbol || [], 'symbol', 'pnl') +
+        '</div>';
+    html += '<div class="factor-card">' +
+        '<div class="factor-card-title" style="margin-bottom:8px">P&L by Exit Reason</div>' +
+        _analyticsRenderPnlBars(d.pnl_by_exit_reason || [], 'exit_reason', 'pnl') +
+        '</div>';
+    html += '</div>';
+
+    // ---- BEST / WORST TRADES ----
+    var bw = d.best_worst_trades || {best: [], worst: []};
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-bottom:18px">';
+    function _renderTradeList(title, trades, isWin) {
+        var inner = '<div class="factor-card">' +
+            '<div class="factor-card-title" style="margin-bottom:8px">' + esc(title) + '</div>';
+        if (!trades.length) {
+            inner += '<div style="color:var(--text-dim);font-size:12px;padding:8px">No trades yet</div>';
+        } else {
+            inner += '<div style="display:flex;flex-direction:column;gap:6px">';
+            trades.forEach(function(t) {
+                var pnlCls = _analyticsPnlClass(t.pnl);
+                var dateShort = (t.exit_timestamp || '').slice(0, 10);
+                inner += '<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.04)">' +
+                    '<div>' +
+                        '<strong>' + esc(t.symbol || '') + '</strong> ' +
+                        '<span style="font-size:10px;color:var(--text-dim);margin-left:4px">' + esc(t.strategy || '') + ' / ' + esc(dateShort) + '</span>' +
+                    '</div>' +
+                    '<div class="' + pnlCls + '" style="font-weight:600">' + _analyticsFmtMoney(t.pnl) + '</div>' +
+                '</div>';
+            });
+            inner += '</div>';
+        }
+        inner += '</div>';
+        return inner;
+    }
+    html += _renderTradeList('🏆 Best Trades', bw.best, true);
+    html += _renderTradeList('🚨 Worst Trades', bw.worst, false);
+    html += '</div>';
+
+    // ---- FILTER SUMMARY ----
+    var fs = d.filter_summary || {};
+    if ((fs.total_picks || 0) > 0) {
+        html += '<div class="factor-card" style="margin-bottom:18px">' +
+            '<div class="factor-card-title" style="margin-bottom:8px">Screener Filter Summary (current picks)</div>' +
+            '<div style="display:flex;gap:18px;font-size:12px;margin-bottom:10px;flex-wrap:wrap">' +
+                '<div><span style="color:var(--text-dim)">Total picks:</span> <strong>' + (fs.total_picks||0) + '</strong></div>' +
+                '<div><span style="color:var(--text-dim)">Deployable:</span> <strong style="color:var(--green)">' + (fs.deployable||0) + '</strong></div>' +
+                '<div><span style="color:var(--text-dim)">Blocked:</span> <strong style="color:var(--orange)">' + (fs.blocked||0) + '</strong></div>' +
+            '</div>' +
+            _analyticsRenderBarHistogram(fs.by_reason || [], 'count', 'reason', 'var(--orange)') +
+        '</div>';
+    }
+
+    panel.innerHTML = html;
+}
+
 async function refreshTradesPanel() {
     var panel = document.getElementById('tradesPanel');
     if (!panel) return;
@@ -6409,6 +6724,7 @@ function renderDashboard() {
         _navBtn('section-overview', 'Overview') +
         _navBtn('section-picks', 'Picks') +
         _navBtn('section-strategies', 'Strategies') +
+        _navBtn('section-analytics', '📊 Analytics') +
         _navBtn('section-positions', 'Positions') +
         _navBtn('section-trades', 'Trades') +
         _navBtn('section-screener', 'Screener') +
@@ -6701,6 +7017,18 @@ function renderDashboard() {
         taxHtml +
         '</section>' +
         // Round-61 pt.36: Trades dashboard section. Loads via
+        // Round-61 pt.46: Analytics Hub. Loads /api/analytics on
+        // first scroll into view; placeholder until refreshAnalyticsPanel()
+        // fills the panel.
+        '<section id="section-analytics" aria-label="Analytics Hub — performance KPIs, equity curve, drawdown, distributions">' +
+            '<div class="card">' +
+                '<h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">' +
+                    '<span>📊 Analytics Hub' + sectionHelpButton('analytics') + '</span>' +
+                    '<button class="btn-ghost btn-sm" onclick="refreshAnalyticsPanel()" title="Re-fetch analytics data">↻ Refresh</button>' +
+                '</h3>' +
+                '<div id="analyticsPanel" style="margin-top:12px"><div style="color:var(--text-dim);padding:24px;text-align:center">Loading analytics…</div></div>' +
+            '</div>' +
+        '</section>' +
         // /api/trades on first scroll/click — initial markup is just
         // the wrapper + a placeholder; refreshTradesPanel() fills it.
         '<section id="section-trades" aria-label="Closed trades + per-strategy performance">' +
@@ -9568,6 +9896,11 @@ async function loadCurrentUser() {
     // users with no creds yet, refreshData fails and renderDashboard never
     // runs, which previously left the Scheduler tab stuck on "Loading...".
     try { refreshSchedulerStatus(); } catch (e) {}
+    // Round-61 pt.46: prefetch Analytics Hub data so the tab is ready
+    // when the user clicks. Best-effort.
+    try { refreshAnalyticsPanel(); } catch (e) {}
+    // Round-61 pt.36: same for Trades tab.
+    try { refreshTradesPanel(); } catch (e) {}
     addLog('Dashboard loaded as ' + (window.currentUsername || 'user'), 'success');
     countdownInterval = setInterval(() => {
         countdown--;

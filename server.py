@@ -3211,6 +3211,14 @@ class DashboardHandler(
             # for the filter/sort schema.
             self.handle_trades_view(body)
 
+        elif path == "/api/analytics":
+            # Round-61 pt.46: Analytics Hub data feed. Returns the
+            # full analytics_core.build_analytics_view payload — KPIs,
+            # equity curve, drawdown, per-strategy/period/symbol/exit
+            # aggregates, distributions, best/worst trades, filter
+            # summary. Read-only.
+            self.handle_analytics_view(body)
+
         elif path == "/api/backtest/run":
             # Round-61 pt.37: 30-day backtest harness. Re-runs each
             # backtestable strategy's entry/exit logic against
