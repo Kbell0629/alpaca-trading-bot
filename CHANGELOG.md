@@ -8,6 +8,105 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.46 — Analytics Hub (+59 tests)
+
+**Date:** 2026-04-25
+
+User said: *"can you make me a really robust and good looking and
+highly functional analytics dashboard with everything I need to know
+and make it user friendly but also useful please test it to make sure
+its fully functional and is fully accurate im going to need this
+right now all the analytics are all over which are fine for their
+area but I need a analytics hub"*.
+
+Pt.46 ships a single Analytics tab that consolidates every
+performance metric the bot already had scattered across the
+Performance Attribution panel, Today's Closes, Scorecard,
+Trades dashboard (pt.36) and Backtest panel (pt.37). One tab,
+one POST, every KPI on screen.
+
+### What landed
+
+Three-piece architecture mirroring pt.7/34/36/37:
+
+1. **`analytics_core.py`** — pure aggregator. No I/O, no
+   subprocess, no Alpaca calls. Every function takes already-
+   loaded dicts and returns a JSON-safe dict:
+   * `compute_headline_kpis(journal, scorecard, account, now)` —
+     count totals, win rate, total/avg/best/worst realized P&L,
+     unrealized P&L, expectancy, Sharpe, max drawdown, paper-
+     validation days elapsed (anchored at 2026-04-15), avg
+     hold days.
+   * `compute_equity_curve(scorecard)` — sorted [{date, value}]
+     from `daily_snapshots`.
+   * `compute_drawdown_curve(equity_curve)` — running peak +
+     drawdown_pct per day.
+   * `compute_pnl_by_period(journal, now)` — today / 7d / 30d
+     / 90d / all-time buckets.
+   * `compute_pnl_by_symbol(journal, top_n=10)` — top |P&L|,
+     OCC option symbols resolved to underlying.
+   * `compute_pnl_by_exit_reason(journal)` — sorted worst-first.
+   * `compute_hold_time_distribution(journal)` — six buckets
+     (<1d / 1-3d / 3-7d / 7-14d / 14-30d / 30d+).
+   * `compute_pnl_distribution(journal)` — six buckets
+     (big_loss / loss / small_loss / small_win / win / big_win).
+   * `compute_best_worst_trades(journal, top_n=5)` — `{best:[],
+     worst:[]}` lists for the leaderboards.
+   * `compute_filter_summary(picks)` — total/deployable/blocked
+     plus per-reason counts (uses the pt.45 filter_reasons tags).
+   * `compute_strategy_breakdown(journal)` — per-strategy
+     `{count, wins, losses, win_rate, total_pnl, avg_pnl, best,
+     worst}`.
+   * `build_analytics_view(journal, scorecard, account, picks,
+     now)` — end-to-end orchestrator.
+
+2. **`/api/analytics` endpoint** — `handle_analytics_view` in
+   `handlers/actions_mixin.py`. POST-only, read-only, JSON in
+   /JSON out. Auth-gated (401 if no session). Loads
+   `trade_journal.json`, `scorecard.json`, `dashboard_data.json`
+   (for picks), and live Alpaca `/account` + `/positions` (best-
+   effort — falls back to None if Alpaca errors). Calls
+   `analytics_core.build_analytics_view`. Never writes a file,
+   never places an order, never records a trade.
+
+3. **Analytics dashboard tab** in `templates/dashboard.html`:
+   * 📊 Analytics nav button between Strategies and Positions.
+   * 8 headline KPI cards: Total P&L, Win Rate (with W/L count),
+     Expectancy, Avg Win, Max DD, Sharpe (annualised), Avg Hold,
+     Validation (days elapsed of paper-trading window).
+   * Equity Value chart — inline SVG with `<polyline>` line +
+     `<polygon>` fill area. No Chart.js dependency. Renders
+     responsively to viewport width.
+   * P&L by Period card (today / 7d / 30d / 90d / all-time).
+   * Per-strategy breakdown grid (one card per strategy with
+     count / win rate / total P&L / expectancy / best / worst).
+   * P&L Distribution histogram (6 buckets).
+   * Hold Time Distribution histogram (6 buckets).
+   * Top Symbols by Impact bar (top 10 |P&L|).
+   * P&L by Exit Reason bar (sorted worst-first).
+   * Best Trades + Worst Trades leaderboards (top 5 each).
+   * Screener Filter Summary (counts of how many picks were
+     blocked by each filter — uses pt.45's tags).
+   * Auto-prefetched during `init()` so the tab is hot on
+     first click.
+
+### Tests
+
+* `tests/test_round61_pt46_analytics_core.py` — 39 unit tests
+  covering every aggregator + edge cases (None inputs, empty
+  journal, OCC underlying resolution, sort order, fail-open
+  on bad data, validation-day anchoring).
+* `tests/test_round61_pt46_analytics_endpoint.py` — 20 source-
+  pin + http_harness tests for the route, handler, read-only
+  invariant, auth requirement, dashboard nav tab, section
+  anchor, refresh handler, endpoint URL, all 8 KPI labels,
+  equity chart presence, distributions, top symbols/exit
+  reasons, best/worst sections, filter summary. (4 use the
+  cryptography-dependent `http_harness` — sandbox-skip,
+  CI-pass.)
+
+---
+
 ## 🆕 Round-61 pt.45 — filter-reason tags on screener picks (+9 tests)
 
 **Date:** 2026-04-25

@@ -677,6 +677,59 @@ class ActionsHandlerMixin:
         except Exception as e:
             self._send_error_safe(e, 500, "state-audit")
 
+    def handle_analytics_view(self, body=None):
+        """Round-61 pt.46: end-to-end Analytics Hub data feed.
+
+        Returns the full payload from
+        ``analytics_core.build_analytics_view``: KPIs + equity curve +
+        drawdown + per-strategy breakdown + per-period P&L +
+        per-symbol + per-exit-reason aggregates + hold-time +
+        P&L distribution + best/worst trades + filter summary.
+
+        Reads:
+          * trade_journal.json     — closed/open trades
+          * scorecard.json         — daily snapshots + sharpe/drawdown
+          * dashboard_data.json    — current screener picks (for
+                                       filter_summary)
+          * Alpaca /account        — portfolio_value + unrealized
+
+        Read-only. No mutations, no order placement.
+        """
+        if not self.current_user:
+            return self.send_json({"error": "Not authenticated"}, 401)
+        try:
+            import server
+            import analytics_core as ac
+            journal = server.load_json(
+                self._user_file("trade_journal.json")) or {}
+            scorecard = server.load_json(
+                self._user_file("scorecard.json")) or {}
+            picks_data = server.load_json(
+                self._user_file("dashboard_data.json")) or {}
+            picks = picks_data.get("picks") or []
+            # Account fetch — best effort. None on error.
+            account = None
+            try:
+                api_endpoint = self.user_api_endpoint
+                api_headers = self.user_headers()
+                account, positions, _orders, _errors = (
+                    server._fetch_live_alpaca_state(
+                        api_endpoint, api_headers))
+                if isinstance(account, dict) and isinstance(positions, list):
+                    account = dict(account)
+                    account["positions"] = positions
+            except Exception:
+                account = None
+            view = ac.build_analytics_view(
+                journal=journal,
+                scorecard=scorecard,
+                account=account,
+                picks=picks,
+            )
+            self.send_json({"success": True, **view})
+        except Exception as e:
+            self._send_error_safe(e, 500, "analytics-view")
+
     def handle_trades_view(self, body=None):
         """Round-61 pt.36: filterable + sortable view of the user's
         trade journal. Powers the new `/api/trades` endpoint and the
