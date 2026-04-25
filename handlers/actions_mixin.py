@@ -140,9 +140,36 @@ class ActionsHandlerMixin:
         if not re.match(r'^[A-Z]{1,10}$', symbol):
             return self.send_json({"error": "Invalid symbol format"}, 400)
 
+        # Round-61 pt.50: surface the actionable cause when Alpaca rejects
+        # the close request. Two common silent failures:
+        #   1. Saved keys decrypted to empty (cryptography import bug
+        #      from pt.13). Every Alpaca call returns 401.
+        #   2. Session is in live mode but user has no live keys saved
+        #      → handler falls back to env keys which may be wrong.
+        # Catch both BEFORE making the API call so we can return a
+        # clear "what to fix" error instead of "Alpaca auth failed".
+        if not (self.user_api_key and self.user_api_secret):
+            return self.send_json({
+                "error": (
+                    "No Alpaca API keys available for this session. "
+                    "Open Settings → Alpaca API and re-save your keys, "
+                    "then click 'Test Saved Keys' to confirm they "
+                    "authenticate. (Mode: "
+                    f"{getattr(self, 'session_mode', 'paper')})"
+                )
+            }, 400)
+
         result = self.user_api_delete(f"{self.user_api_endpoint}/positions/{symbol}")
         if isinstance(result, dict) and "error" in result:
-            self.send_json({"error": result["error"]}, 400)
+            err = result["error"] or ""
+            # Pt.50: enrich the auth-failed message with concrete next step.
+            if "authentication failed" in err.lower():
+                err = (err + " Mode: "
+                        + getattr(self, "session_mode", "paper")
+                        + ". Try Settings → Alpaca API → Test Saved Keys "
+                        "to verify the saved credentials authenticate, "
+                        "then re-save if not.")
+            self.send_json({"error": err}, 400)
         else:
             self.send_json({"success": True, "symbol": symbol, "order": result})
     def handle_sell(self, body):
@@ -158,6 +185,17 @@ class ActionsHandlerMixin:
         if qty < 1 or qty > 10000:
             return self.send_json({"error": "Invalid quantity. Must be 1-10000."}, 400)
 
+        # Pt.50: same key-availability guard as handle_close_position.
+        if not (self.user_api_key and self.user_api_secret):
+            return self.send_json({
+                "error": (
+                    "No Alpaca API keys available for this session. "
+                    "Open Settings → Alpaca API and re-save your keys, "
+                    "then click 'Test Saved Keys'. (Mode: "
+                    f"{getattr(self, 'session_mode', 'paper')})"
+                )
+            }, 400)
+
         result = self.user_api_post(f"{self.user_api_endpoint}/orders", {
             "symbol": symbol,
             "qty": str(qty),
@@ -166,7 +204,13 @@ class ActionsHandlerMixin:
             "time_in_force": "day",
         })
         if isinstance(result, dict) and "error" in result:
-            self.send_json({"error": result["error"]}, 400)
+            err = result["error"] or ""
+            if "authentication failed" in err.lower():
+                err = (err + " Mode: "
+                        + getattr(self, "session_mode", "paper")
+                        + ". Try Settings → Alpaca API → Test Saved Keys "
+                        "to verify the saved credentials authenticate.")
+            self.send_json({"error": err}, 400)
         else:
             self.send_json({"success": True, "symbol": symbol, "qty": qty, "order": result})
     def handle_auto_deployer(self, body):
