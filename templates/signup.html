@@ -91,8 +91,11 @@ button:disabled { opacity:0.5; cursor:not-allowed; transform:none; box-shadow:no
     </div>
     <div class="form-group"><label>Send Notifications To</label><input type="email" id="notification_email" placeholder="leave blank to use your login email"><div class="help-text">Optional override — e.g. a separate inbox just for bot emails.</div></div>
 
-    <div class="section-title">Invite Code</div>
-    <div class="form-group"><label for="invite_code">Invite code</label><input type="text" id="invite_code" placeholder="leave blank if not required" autocomplete="off"><div class="help-text">Required if an admin sent you a single-use invite (auto-filled from the URL) or if the deployment has SIGNUP_INVITE_CODE set.</div></div>
+    <div class="section-title">Invite code</div>
+    <div class="form-group">
+      <input type="text" id="invite_code" placeholder="Leave blank if you don't have one" autocomplete="off">
+      <div class="help-text">Only required if an admin sent you a single-use link.</div>
+    </div>
     <script>
       // Round-26: auto-fill the invite_code field when the signup URL
       // has an ?invite= query param (admin-generated single-use link).
