@@ -61,7 +61,17 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-25 — round 61 pt.10-42 SHIPPED)
+## Current session state (2026-04-25 — round 61 pt.10-43 SHIPPED)
+
+**Pt.43 landed (PR #170):** Trades dashboard hotfix — removed broken
+`getCookie('csrf_token')` calls in `templates/dashboard.html`'s
+`refreshTradesPanel` (pt.36) and `runMultiStrategyBacktest` (pt.37).
+The function was undefined at runtime ("getCookie is not defined"
+console error → "Trades unavailable" empty state). The global fetch
+wrapper at top of inline script auto-injects `X-CSRF-Token` from the
+`csrf` cookie via `readCsrfCookie()`, so no manual header is needed.
++0 tests (surface JS issue not covered by pt.33's render_core-only
+Vitest scope).
 
 **Pt.42 landed (PR #169):** composite-regime weighting. Layered on
 top of the existing 3-bucket `apply_strategy_rotation`, builds a

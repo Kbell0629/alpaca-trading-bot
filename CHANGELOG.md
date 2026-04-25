@@ -8,6 +8,28 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.43 — Trades dashboard CSRF hotfix
+
+**Date:** 2026-04-25
+
+User reported: Trades section in dashboard shows "Trades unavailable
+— getCookie is not defined". Pt.36's `refreshTradesPanel` and pt.37's
+`runMultiStrategyBacktest` both passed `'X-CSRF-Token': getCookie(
+'csrf_token')` in their fetch headers, but `getCookie` was never
+defined at module scope AND the cookie name is `csrf` not
+`csrf_token`.
+
+### Fix
+The dashboard already has a global fetch wrapper at the top of the
+inline script that auto-injects `X-CSRF-Token` from the `csrf`
+cookie via `readCsrfCookie()`. Removed the redundant + broken
+manual header in both call sites.
+
+### Touched files
+- `templates/dashboard.html` (2 single-line fixes + comments)
+
+---
+
 ## 🆕 Round-61 pt.42 — composite-regime weighting (+27 tests)
 
 **Date:** 2026-04-25
@@ -26,11 +48,10 @@ mean-reversion + wheel, strong-bear boosts short.
   breadth_pct, vix)`** — pure classifier. Missing inputs → `choppy`.
 * **`screener_core.apply_regime_weighting(picks, regime)`** —
   multiplies per-strategy scores, recomputes `best_score`, tags
-  every pick with `composite_regime` + `regime_weight_applied`.
-  Re-sorts picks.
+  every pick. Re-sorts.
 * Wired into `update_dashboard.py` after `apply_factor_scores`.
-  SPY 200-MA from existing `spy_long_bars`, breadth from
-  `breadth_data`, VIX from `market_info`. Zero extra API calls.
+  SPY 200-MA from `spy_long_bars`, breadth from `breadth_data`,
+  VIX from `market_info`. Zero extra API calls.
 
 ### Tests
 +27 in `tests/test_round61_pt42_regime_weighting.py`
@@ -41,24 +62,19 @@ mean-reversion + wheel, strong-bear boosts short.
 
 **Date:** 2026-04-25
 
-User-prioritised screener accuracy improvement #3: when a strategy
-is on a losing streak, the bot should get pickier about deploying
-it. When it's hot, deploy more aggressively. Self-correcting feedback
-loop reading the trade journal you already have.
+User-prioritised screener accuracy improvement #3: self-correcting
+feedback loop reading the trade journal. Cold strategies (<40% WR)
+demoted ×0.70, hot strategies (>60% WR) boosted ×1.30.
 
 ### What landed
 
-* **`screener_core.compute_strategy_win_rates(journal, lookback=30)`**
-  — pure helper. Walks journal newest→oldest, caps at lookback per
-  strategy. Skips open trades + unparseable pnl.
-* **`screener_core.get_threshold_multiplier(win_rate, sample_size)`**
-  — pure curve. <5 trades: neutral (1.0). ≤40% WR: 0.70. ≥60% WR:
-  1.30. Linear interp between.
-* **`screener_core.apply_adaptive_thresholds(picks, win_rates)`** —
-  multiplies best_score, annotates pick, re-sorts. Strategy name
-  normalisation handles "Breakout" ↔ "breakout".
-* Wired into `update_dashboard.py` after trend filter. Reads
-  `JOURNAL_PATH` env var (round-9 per-user isolation).
+* `screener_core.compute_strategy_win_rates(journal, lookback=30)` —
+  pure helper.
+* `screener_core.get_threshold_multiplier(win_rate, sample_size)` —
+  pure curve. <5 trades: neutral. ≤40% WR: 0.70. ≥60% WR: 1.30.
+* `screener_core.apply_adaptive_thresholds(picks, win_rates)` —
+  multiplies best_score, annotates, re-sorts.
+* Wired into `update_dashboard.py` after trend filter.
 
 ### Tests
 +29 in `tests/test_round61_pt41_adaptive_thresholds.py`
