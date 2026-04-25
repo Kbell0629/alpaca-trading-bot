@@ -187,9 +187,9 @@ def test_analytics_endpoint_with_seeded_journal(http_harness, tmp_path):
     """Seed a known journal + scorecard and verify the endpoint
     returns the right aggregates."""
     http_harness.create_user()
-    user_dir = http_harness.session_user.get("_data_dir")
-    if not user_dir:
-        return
+    import auth
+    user_dir = auth.user_data_dir(http_harness.user_id)
+    os.makedirs(user_dir, exist_ok=True)
     journal_path = os.path.join(user_dir, "trade_journal.json")
     journal = {
         "trades": [
