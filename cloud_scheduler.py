@@ -4001,6 +4001,69 @@ def run_weekly_learning(user):
     except Exception as e:
         log(f"[{user['username']}] Learning error: {e}", "learn")
 
+    # Round-61 pt.44: backtest-driven self-learning. Sweep parameter
+    # variants per strategy via the pt.37 backtest harness, propose
+    # safe adjustments, and write them to `learned_params.json` for
+    # the screener to pick up on the next tick. Reads the same trade
+    # journal as learn.py to derive the symbol universe.
+    #
+    # Best-effort — never fails the main learning step. The
+    # backtest harness needs OHLCV bars (yfinance) which can fail
+    # on rate limits; the proposal step degrades gracefully.
+    try:
+        from learn_backtest import (
+            run_self_learning, merge_into_learned_params, safe_save_json,
+        )
+        from backtest_core import run_backtest as _bc_run, DEFAULT_PARAMS
+        import backtest_data as _bd
+        # Symbol universe: take recent journal symbols, fall back to
+        # dashboard top picks. Cap at 20 symbols to keep yfinance
+        # rate-limit risk + total run time bounded.
+        _journal_path = user_file(user, "trade_journal.json")
+        _journal = load_json(_journal_path) or {}
+        symbols = _bd.universe_from_journal(_journal) or []
+        if not symbols:
+            try:
+                _picks_path = user_file(user, "dashboard_data.json")
+                _picks = load_json(_picks_path) or {}
+                symbols = _bd.universe_from_dashboard_data(_picks) or []
+            except Exception:
+                symbols = []
+        symbols = symbols[:20]
+        if not symbols:
+            log(f"[{user['username']}] Self-learning skipped — "
+                f"no symbols in journal or picks", "learn")
+            return
+        _data_dir = user.get("_data_dir") or DATA_DIR
+        bars_by_symbol = _bd.fetch_bars_for_symbols(
+            _data_dir, symbols, days=60,
+        )
+        if not bars_by_symbol:
+            log(f"[{user['username']}] Self-learning skipped — "
+                f"OHLCV fetch returned no bars", "learn")
+            return
+        proposal = run_self_learning(
+            bars_by_symbol=bars_by_symbol,
+            run_backtest_fn=_bc_run,
+            current_defaults=DEFAULT_PARAMS,
+        )
+        learned_path = user_file(user, "learned_params.json")
+        existing = load_json(learned_path) or None
+        merged = merge_into_learned_params(existing, proposal)
+        safe_save_json(learned_path, merged)
+        n_adjustments = len(proposal.get("adjustments") or {})
+        n_no_change = len(proposal.get("no_change") or [])
+        log(f"[{user['username']}] Self-learning: {n_adjustments} "
+            f"strategies adjusted, {n_no_change} unchanged "
+            f"(written to {learned_path})", "learn")
+        if n_adjustments > 0:
+            notify_user(user,
+                        f"Self-learning: tuned {n_adjustments} strategy "
+                        f"parameter(s) based on 30-day backtest data",
+                        "learn")
+    except Exception as e:
+        log(f"[{user['username']}] Self-learning error: {e}", "learn")
+
 # ============================================================================
 # TASK 6: FRIDAY RISK REDUCTION (per user)
 # ============================================================================
