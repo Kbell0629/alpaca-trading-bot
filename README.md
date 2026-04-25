@@ -545,14 +545,30 @@ Each stock gets a score for each ENTRY strategy (Trailing Stop is an exit, Copy 
 ### Step 4: Apply Global Filters
 - **Market breadth** — if <40% of stocks advancing, reduce scores 15%
 - **Sector rotation** — boost picks in strong sectors, penalize weak ones
+- **Sector momentum (pt.66/68)** — block long picks in sectors trending DOWN >10% MoM (XLE/XLF/XLK/XLV/etc 20-day return)
 - **Regime weights** — bull/neutral/bear multipliers per strategy
-- **Economic calendar** — reduce scores if FOMC or CPI within 3 days
+- **Economic calendar (event days)** — raise score threshold on FOMC/CPI/NFP/PCE
+- **Post-event lean-in (pt.66)** — slightly LOWER score threshold the 1-3 days AFTER FOMC/CPI/NFP/PCE to catch the documented post-event drift
+- **Bid-ask spread filter (pt.68)** — reject picks where `(ask - bid) / mid > 0.5%` (a "high-volume" small-cap with a 5% spread is a 5% tax on entry)
+- **Volume-confirmed gap penalty (pt.66)** — the 3-8% gap penalty is SKIPPED when relative_volume ≥ 2.0× (institutional confirmation, not a thin pump)
+- **VWAP gate + retest detection (pt.61/68)** — block Breakout entries trading >0.5% above today's VWAP; ALLOW the entry if it's a retest cross-up (price was UNDER VWAP earlier today, just crossed above)
+- **4h breakout confirmation (pt.68)** — Breakout picks must clear the 4-hour 20-bar high; cuts mid-session blips that get rejected at 4h resistance
 
 ### Step 5: Diversification
 Top 5 picks, but no more than 2 stocks from the same sector.
 
 ### Step 6: Deploy at 9:35 AM ET
 Bot picks top 2 and places market buy orders.
+
+### Step 7: Live monitoring (every 60s during RTH)
+- **Live-data divergence sweep (pt.65)** — if the bot's last-seen
+  price for a held position diverges >2% from Alpaca's latest
+  trade, send an alert (deduped per user+symbol per session).
+- **Trailing stops** — ratcheted up at +10%, +20%, +30%, +50%
+  thresholds (Tier 5 = 3% trail at +30% profit, pt.64).
+- **Dead-money cutter (pt.59)** — non-PEAD positions flat for
+  10+ days get auto-closed with a notification explaining WHY
+  (replaces a no-progress slot with a fresh deploy).
 
 ---
 

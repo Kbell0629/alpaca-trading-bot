@@ -31,7 +31,9 @@ auto-deploys top picks across 6 strategies, manages exits, handles kill-switch
 1. `git checkout main && git pull --ff-only`
 2. `cat CLAUDE.md` (this file), `cat README.md`, `cat CHANGELOG.md`
 3. `MASTER_ENCRYPTION_KEY=$(python3 -c 'print("e"*64)') python3 -m pytest tests/ --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json --deselect tests/test_auth.py::test_password_strength_rejects_weak --deselect tests/test_audit_round12_scheduler_latent.py::test_ruff_clean_on_real_bug_rules -q`
-   — expect **1802 passing, 3 deselected** after round-61 pt.32 (1746 + 17 pt.30 + 13 pt.31 + 26 pt.32).
+   — expect ~**2960+ passing, 3 deselected** after pt.69 (baseline grew from
+   1802 at pt.32 through pt.46 +59, pt.47 +69, pt.48 +31, pt.49 +87, pt.50 +22,
+   pt.51 +39, pt.52-57 polish, pt.58-69 batches +280).
 4. `ruff check .` — clean.
 5. Validate dashboard JS: `awk '/^<script>/,/^<\/script>/' templates/dashboard.html | grep -v '^<script>' | grep -v '^</script>' > /tmp/dash.js && node --check /tmp/dash.js`
 6. `npm ci && npx vitest run` — expect **341 JS tests passing** (29 files).
@@ -61,9 +63,115 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-25 — round 61 pt.10-57 SHIPPED)
+## Current session state (2026-04-25 — round 61 pt.10-69 SHIPPED)
 
-**Pt.57 in flight:** four-in-one polish batch making the bot more
+**Latest merged batch (pt.65 → pt.69):** five accuracy + reliability
+PRs closing the 8-item production-readiness list and the SOXL
+short-cover bug.
+
+**Pt.69 (PR #196 — in flight) — retry-with-backoff after cancel.**
+Fixes the user-reported `"insufficient qty available for order
+(requested: 29, available: 0)"` on SOXL short close. Root cause:
+Alpaca's order cancellation is async — the broker takes 250-1000ms
+to release the reserved qty after the cancel ACK. Pt.53's immediate
+retry hit the same error. Pt.69 polls DELETE up to 4 times with
+exponential backoff (0.3s, 0.6s, 1.0s, 1.5s — total ~3.4s).
+Different errors mid-loop surface immediately; same error after
+exhaustion surfaces with a `"try again in a moment"` hint.
++7 source-pin tests in
+`tests/test_round61_pt69_close_retry_backoff.py`.
+
+**Pt.68 (PR #195) — data wiring + spread filter + 4h MTF gate.**
+Three follow-ups closing accuracy gaps from earlier batches:
+  1. **Sector ETF fetcher.** Pt.66's `apply_sector_momentum_filter`
+     was imported but never fired in production because nothing
+     produced `sector_returns`. New `fetch_sector_returns(fetch_bars_fn,
+     lookback_days=20)` in `sector_momentum.py` builds
+     `{sector_name: pct_return}` from XLE/XLF/XLK/XLV/XLY/XLP/XLI/
+     XLB/XLU/XLRE/XLC daily bars over a 20-day window. Wired into
+     `update_dashboard.py` to run before the filter.
+  2. **VWAP retest data feed.** Pt.66 added `detect_vwap_retest`
+     but the call site only passed `price+vwap`, never `prev_price`
+     or `session_low` — so the retest pattern never fired. Pt.68
+     extracts both from the bars already fetched in
+     `cloud_scheduler.py` (min over today's 5-min bar lows for
+     session_low, last 5-min bar close for prev_price) and passes
+     them in. Cross-up retest patterns now ALLOW the entry instead
+     of treating it as a chase. Zero extra API calls.
+  3. **Bid-ask spread filter.** New pure module `spread_filter.py`:
+     `compute_spread_pct`, `is_spread_tight`, `apply_spread_filter`.
+     Rejects picks where `(ask - bid) / mid > 0.5%` — a "high-
+     volume" small-cap with a 5% spread is a 5%-on-entry tax.
+     Reads `latestQuote.bp/ap` from snapshots already fetched.
+  4. **4h MTF breakout confirmation.** A 30-min screener can flag
+     a "breakout" that on the 4-hour chart is just a mid-session
+     blip getting rejected at 4h resistance. New
+     `apply_mtf_breakout_confirmation` in `multi_timeframe.py`
+     HARD-rejects Breakout picks at-or-below their 4h 20-bar high.
+     New `fetch_intraday_bars` + `fetch_intraday_bars_for_symbols`
+     in `update_dashboard.py` for the `4Hour` timeframe.
++42 tests in `tests/test_round61_pt68_data_wiring.py`.
+
+**Pt.67 (PR #194) — mobile responsiveness + settled-funds coverage.**
+Items 7-8 of the 8-item production-readiness sprint:
+  1. **Analytics Hub mobile responsiveness.** New
+     `@media (max-width: 600px)` block in `dashboard.html` targeting
+     `#analyticsPanel` + `#tradesPanel`: equity row migrated from
+     `2fr 1fr` → `auto-fit,minmax(280px,1fr)`, per-strategy grid
+     forced single-column on phones, KPI grid floor 150px → 110px
+     (3 cards/row vs 2-with-orphan), `factor-card` padding 14px →
+     10px, equity SVG `max-height: 200px !important` to keep the
+     chart from dominating the viewport.
+  2. **Settled-funds coverage on user-initiated closes.** New
+     `_record_close_to_settled_funds(handler, symbol, qty, price)`
+     helper bridges the four `actions_mixin.py` close paths (RTH
+     `DELETE /positions`, xh_close limit, MOO queue, retry-after-
+     cancel, partial-sell) into the `settled_funds` ledger. Pt.51
+     wired the auto-deployer's `record_trade_close` but the user
+     "Close" button bypassed the ledger — a cash-account user could
+     re-deploy proceeds same-day → Good Faith Violation. Skips short
+     covers (qty<0) since buy-to-cover doesn't generate proceeds.
++16 tests in `tests/test_round61_pt67_mobile_settled_funds.py`.
+Initial CI failure traced to fresh `auth` re-import without
+`MASTER_ENCRYPTION_KEY` after a sibling http_harness test popped
+auth from sys.modules; fixed with `monkeypatch.setenv` in the
+two affected tests.
+
+**Pt.66 (PR #193) — four-item accuracy refinement batch.**
+Items 3-6 of the 8-item production-readiness sprint:
+  1. **Sector-momentum filter.** New `sector_momentum.py` (pure
+     module): blocks long deploys in sectors trending DOWN >10%
+     MoM. Direction-aware — short_sell picks pass through.
+  2. **VWAP retest detection.** Refines pt.61's gate. New
+     `detect_vwap_retest(price, vwap, prev_price, session_low)`
+     identifies the high-quality cross-up pattern (price spent the
+     morning UNDER VWAP, just crossed above on volume). Returns
+     `is_retest=True` and ALLOWS the entry even at offsets that
+     would otherwise block.
+  3. **Volume-confirmed gap penalty.** `apply_gap_penalty` now
+     skips the 15% score demotion when `relative_volume >= 2.0×`
+     — gap is institutional confirmation, not a thin pump. Tags
+     `_gap_volume_confirmed`.
+  4. **Post-event momentum lean-in.** New `post_event_momentum.py`:
+     captures the 1-3 day post-FOMC/CPI/NFP/PCE drift edge that
+     pt.48's "raise the threshold ON event day" missed. Lowers
+     the effective score threshold by 1.05-1.20×.
++56 tests in `tests/test_round61_pt66_accuracy_refinements.py`.
+
+**Pt.65 (PR #192) — wire pt.63 + pt.64 modules into runtime.**
+Items 1-2 of the 8-item sprint:
+  1. **Live-data divergence sweep** wired into `monitor_strategies`.
+     Sweeps every open position once per RTH cycle, notifies on
+     >2% bot-vs-live divergence. Dedupe via `_last_runs` keyed
+     `divergence_alert_<user>_<symbol>`. Best-effort fail-open.
+  2. **Risk-parity weights** surfaced in `build_analytics_view` via
+     new `_safe_risk_parity_weights(journal)` helper. Read-only,
+     dashboard can render σ-aware allocations without each call site
+     re-implementing the math.
++15 tests in `tests/test_round61_pt65_wire_divergence_riskparity.py`.
+
+**Pt.57 (PR #184) — production-readiness polish:**
+four-in-one polish batch making the bot more
 production-ready:
   1. **Cryptography-sandbox skip pattern.** `http_harness` fixture
      in `tests/conftest.py` now `pytest.skip`s with a clear reason

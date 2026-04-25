@@ -8,6 +8,173 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.69 — retry-with-backoff after cancel for SOXL-style closes (+7 tests)
+
+**Date:** 2026-04-25
+
+User-reported (with screenshot): closing a SOXL short returned
+`422 "insufficient qty available for order (requested: 29,
+available: 0)"` even though pt.53's
+`_cancel_pending_sell_orders` had successfully cancelled the
+pending BUY-stop cover order.
+
+**Root cause:** Alpaca's order cancellation is asynchronous —
+the broker returns a 200 cancel ACK immediately but takes
+~250-1000ms to release the reserved qty / buying-power. Pt.53's
+immediate retry hit the same error.
+
+**Fix:** poll DELETE up to 4 times with exponential backoff
+(0.3s, 0.6s, 1.0s, 1.5s — total ~3.4s) so the retry catches
+the release window. If a DIFFERENT error surfaces mid-loop,
+surface it immediately rather than burning the retry budget.
+Surface a clear `"try again in a moment"` hint if all retries
+exhaust with the same insufficient-qty error.
+
+Also: success message updated from `"sell order(s)"` →
+`"pending order(s)"` since pt.53's helper cancels both buy and
+sell sides (BUY-to-cover for shorts).
+
++7 tests in `tests/test_round61_pt69_close_retry_backoff.py`.
+
+---
+
+## 🆕 Round-61 pt.68 — data wiring + spread filter + 4h MTF gate (+42 tests)
+
+**Date:** 2026-04-25
+
+Three follow-ups closing accuracy gaps from earlier batches:
+
+* **1a — Sector ETF fetcher.** Pt.66 shipped
+  `apply_sector_momentum_filter(picks, sector_returns)` but never
+  produced `sector_returns`, so the filter was a no-op. New
+  `fetch_sector_returns(fetch_bars_fn, lookback_days=20)` in
+  `sector_momentum.py` builds `{sector_name: pct_return}` from
+  XLE/XLF/XLK/XLV/XLY/XLP/XLI/XLB/XLU/XLRE/XLC daily bars over a
+  20-day window. Wired into `update_dashboard.py`.
+* **1b — VWAP retest data feed.** Pt.66 added
+  `detect_vwap_retest` but the call site only passed `price+vwap`,
+  never `prev_price` or `session_low`. Pt.68 extracts both from the
+  bars already fetched in `cloud_scheduler.py` (min over today's
+  5-min bar lows, last 5-min bar close) and passes them into
+  `evaluate_vwap_gate`. Cross-up retest patterns now ALLOW the
+  entry instead of treating it as a chase. Zero extra API calls.
+* **2 — Bid-ask spread filter.** New pure module `spread_filter.py`:
+  `compute_spread_pct`, `is_spread_tight`, `apply_spread_filter`.
+  Rejects picks where `(ask - bid) / mid > 0.5%`. Reads
+  `latestQuote.bp/ap` from snapshots already fetched. Bridges
+  `_wide_spread` → `"wide_spread"` filter_reason.
+* **3 — 4h MTF breakout confirmation.** New
+  `apply_mtf_breakout_confirmation` in `multi_timeframe.py`
+  HARD-rejects Breakout picks at-or-below their 4h 20-bar high.
+  Cuts false-breakout rate from 30-min screener mid-session blips
+  that get rejected at 4h resistance. New `fetch_intraday_bars` +
+  `fetch_intraday_bars_for_symbols` for the `4Hour` timeframe.
+
++42 tests in `tests/test_round61_pt68_data_wiring.py`. Pt.61
+VWAP-block source pins bumped 2500→5000 chars to accommodate the
+inlined retest data extraction.
+
+---
+
+## 🆕 Round-61 pt.67 — Analytics Hub mobile responsiveness + settled-funds coverage on user-initiated closes (+16 tests)
+
+**Date:** 2026-04-25
+
+Items 7-8 of the 8-item production-readiness sprint:
+
+**Item 7 — Analytics Hub mobile responsiveness.** Pt.46 shipped the
+Analytics Hub with desktop-only inline grid styles. On 360-393px
+phones the equity row used `2fr 1fr` (chart got crammed), per-
+strategy cards used `auto-fit, minmax(220px, 1fr)` (slight
+horizontal scroll), 8-card KPI grid at `minmax(150px, 1fr)` left
+an orphan in row 3.
+
+Fix: a `@media (max-width: 600px)` block targeting `#analyticsPanel`
++ `#tradesPanel`:
+  * Equity row migrated to `auto-fit,minmax(280px,1fr)`
+  * Per-strategy grid forced to single-column on phones
+  * KPI grid floor 150px → 110px (3 cards/row instead of 2 + orphan)
+  * `factor-card` padding 14px → 10px
+  * Equity SVG `max-height: 200px !important`
+
+**Item 8 — Settled-funds coverage on user-initiated closes.**
+Pt.51 wired the auto-deployer's `record_trade_close` to update
+`settled_funds`, but the four `actions_mixin.py` close paths
+(RTH `DELETE /positions`, xh_close limit, MOO queue, insufficient-
+qty retry, partial-sell) talked directly to Alpaca and never
+touched the ledger. A cash-account user could click Close, re-
+deploy proceeds same-day → Good Faith Violation.
+
+Fix: new `_record_close_to_settled_funds(handler, symbol, qty,
+price)` helper. Skips short covers (qty<0), zero/None proceeds,
+missing user_id. Best-effort: never raises. Wired into all 4
+success paths.
+
++16 tests in `tests/test_round61_pt67_mobile_settled_funds.py`.
+Initial CI failure (`RuntimeError: MASTER_ENCRYPTION_KEY env var
+is required`) traced to fresh `auth` re-import after a sibling
+http_harness test popped auth from sys.modules. Fixed with
+`monkeypatch.setenv("MASTER_ENCRYPTION_KEY", "a"*64)` in the two
+affected tests.
+
+---
+
+## 🆕 Round-61 pt.66 — four-item accuracy refinement batch (+56 tests)
+
+**Date:** 2026-04-25
+
+Items 3-6 of the 8-item production-readiness sprint:
+
+* **Sector-momentum filter** (`sector_momentum.py`): blocks long
+  deploys in sectors trending DOWN >10% MoM. Direction-aware —
+  `short_sell` picks pass through (downtrend is good for shorts).
+  API: `compute_pct_return`, `build_sector_returns`,
+  `is_sector_in_downtrend`, `apply_sector_momentum_filter`.
+* **VWAP retest pattern** (`vwap_gate.py`): new
+  `detect_vwap_retest(price, vwap, prev_price, session_low)`
+  identifies the high-quality cross-up pattern. `evaluate_vwap_gate`
+  now returns `is_retest=True` and ALLOWS the entry even at offsets
+  that would otherwise block, with reason `vwap_retest_cross_up`.
+* **Volume-confirmed gap penalty** (`screener_core.py`):
+  `apply_gap_penalty` now skips the 15% score demotion when
+  `relative_volume >= 2.0×` — gap is institutional confirmation,
+  not a thin pump. Tags `_gap_volume_confirmed`.
+* **Post-event momentum lean-in** (`post_event_momentum.py`):
+  captures the documented 1-3 day post-FOMC / CPI / NFP / PCE
+  drift edge. Boosts: FOMC 1.20×/1.10×/1.05× for days 1-3, CPI
+  1.15×/1.05× for days 1-2, NFP 1.10× for day 1, PCE 1.05× for
+  day 1. Wired into `cloud_scheduler.run_auto_deployer` to lower
+  the score threshold's effective bar.
+
++56 tests (44 unit + 6 wiring/source-pin + 6 from pt.66 internals).
+
+---
+
+## 🆕 Round-61 pt.65 — wire live_data_monitor + risk_parity into runtime (+15 tests)
+
+**Date:** 2026-04-25
+
+Items 1-2 of the 8-item production-readiness sprint. Both pt.63
+(`live_data_monitor`) and pt.64 (`risk_parity`) shipped as
+library-only modules with no runtime callers. Pt.65 wires them
+into actual code paths.
+
+* **Live-data divergence sweep.** `monitor_strategies` in
+  `cloud_scheduler.py` now sweeps every open position once per
+  cycle (RTH only), notifies on >2% bot-vs-live divergence.
+  Best-effort fail-open. Dedupe via `_last_runs` keyed
+  `divergence_alert_<user>_<symbol>`.
+* **Risk-parity weights in analytics.** `build_analytics_view`
+  (`analytics_core.py`) surfaces `compute_risk_parity_weights(journal)`
+  as a new top-level key via `_safe_risk_parity_weights`. Read-
+  only — wired so the dashboard and downstream consumers can
+  render σ-aware allocations without each call site re-
+  implementing the math.
+
++15 tests in `tests/test_round61_pt65_wire_divergence_riskparity.py`.
+
+---
+
 ## 🆕 Round-61 pt.64 — daily backups + dead-money notification + risk-parity + tier-5 trailing (+24 tests)
 
 **Date:** 2026-04-25
