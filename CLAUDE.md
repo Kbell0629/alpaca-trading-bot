@@ -63,11 +63,36 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-25 — round 61 pt.10-69 SHIPPED)
+## Current session state (2026-04-25 — round 61 pt.10-71 SHIPPED)
 
-**Latest merged batch (pt.65 → pt.69):** five accuracy + reliability
-PRs closing the 8-item production-readiness list and the SOXL
-short-cover bug.
+**Latest merged batch (pt.65 → pt.71):** seven accuracy + reliability
+PRs closing the 8-item production-readiness list, the SOXL short-
+cover bug, and a follow-up batch (news exits + ADV cap + drawdown
+taper).
+
+**Pt.71 (PR #198) — news exits + ADV cap + drawdown taper.** Three
+high-impact accuracy improvements:
+  1. **Position-level news exit triggers.** New
+     `news_exit_monitor.py` (pure module). `monitor_strategies` now
+     sweeps open LONG positions for fresh bearish news (-10 close,
+     -6 warn) using the same vocabulary as the pre-market scan
+     (`news_scanner.score_news_article`). 10-min per-symbol
+     cooldown via `_last_runs`. Sets a `news_exit_close_<user>_
+     <sym>` flag the per-strategy close path picks up and market-
+     sells with `exit_reason="bearish_news"`. Shorts skipped
+     (they benefit from bearish news).
+  2. **Liquidity-aware ADV cap.** New `adv_size_multiplier(price,
+     qty, adv_dollar, cap_pct=5.0)` in `position_sizing.py`. Caps
+     a position at 5% of 20-day average dollar volume so the bot
+     doesn't become its own bad fill. Floor at 0.05× to avoid
+     silently dropping a deploy.
+  3. **Per-strategy drawdown taper.** New
+     `compute_strategy_recent_drawdown` + `drawdown_size_multiplier`
+     in `position_sizing.py`. 30-day per-strategy peak-to-trough
+     drawdown lookup; linear taper from 1.0× at 0% DD to 0.5× at
+     10% DD. Wired into `compute_full_size` between confluence
+     and ADV cap.
++40 tests in `tests/test_round61_pt71_news_adv_drawdown.py`.
 
 **Pt.69 (PR #196 — in flight) — retry-with-backoff after cancel.**
 Fixes the user-reported `"insufficient qty available for order

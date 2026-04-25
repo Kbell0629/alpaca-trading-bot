@@ -784,6 +784,32 @@ class AuthHandlerMixin:
                     }, 400)
             except Exception:
                 pass
+            # Round-61 pt.72: live-mode promotion gate. Even with
+            # readiness >= 80, also enforce: ≥30 closed trades, win
+            # rate ≥ 45%, sharpe ≥ 0.5, drawdown ≤ 15%, no HIGH
+            # audit findings. Override with override_readiness=true.
+            if not body.get("override_readiness"):
+                try:
+                    import live_mode_gate as _lmg
+                    journal = server.load_json(
+                        self._user_file("trade_journal.json")) or {}
+                    sc = server.load_json(
+                        self._user_file("scorecard.json")) or {}
+                    audit = sc.get("audit_findings") or []
+                    gate = _lmg.check_live_mode_readiness(
+                        journal, sc, audit)
+                    if not gate.get("ready"):
+                        return self.send_json({
+                            "error": gate.get("summary"),
+                            "blockers": gate.get("blockers"),
+                            "metrics": gate.get("metrics"),
+                            "warnings": gate.get("warnings"),
+                            "hint": ("Pass override_readiness=true to "
+                                      "force-enable, or wait for the "
+                                      "blockers to clear."),
+                        }, 400)
+                except Exception:
+                    pass  # best-effort — don't block on gate-module error
             max_pos = float(body.get("live_max_position_dollars") or 500)
             auth.set_live_mode(uid, True, max_position_dollars=max_pos)
             msg = (f"LIVE TRADING ENABLED. Max position: ${max_pos:,.0f}. "

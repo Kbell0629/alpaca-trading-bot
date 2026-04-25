@@ -951,6 +951,18 @@ def record_trade_close(user, symbol, strategy, exit_price, pnl, exit_reason,
                 _sf.record_sale(user, symbol, _proceeds)
         except Exception:
             pass  # best-effort — ledger failure must not break trade close
+    # Round-61 pt.72: per-symbol 24h cooldown after stop-out / dead-money /
+    # bearish-news exit. Caller persists the state in _last_runs so the
+    # auto-deployer's next pick scan can check it.
+    try:
+        import symbol_cooldown as _sc
+        _cooldown_state = _last_runs.get("symbol_cooldown", {})
+        if not isinstance(_cooldown_state, dict):
+            _cooldown_state = {}
+        if _sc.record_stop_out(_cooldown_state, symbol, exit_reason):
+            _last_runs["symbol_cooldown"] = _cooldown_state
+    except Exception:
+        pass  # best-effort — cooldown failure must not break trade close
     journal_path = user_file(user, "trade_journal.json")
     try:
         with strategy_file_lock(journal_path):
@@ -3165,6 +3177,22 @@ def run_auto_deployer(user):
         if symbol in existing_syms:
             skip_reasons.append(f"{symbol}: already held")
             continue
+        # Round-61 pt.72: per-symbol 24h cooldown after stop-out.
+        # Prevents re-deploying the same symbol the next morning if
+        # its 30-min screener score recovers — death by a thousand
+        # re-entries on a falling knife.
+        try:
+            import symbol_cooldown as _sc
+            _cd_state = _last_runs.get("symbol_cooldown") or {}
+            if _sc.is_on_cooldown(_cd_state, symbol):
+                _why = _sc.explain_cooldown(_cd_state, symbol)
+                log(f"[{user['username']}] {symbol}: Skipped — "
+                    f"{_why}", "deployer")
+                skip_reasons.append(f"{symbol}: {_why}")
+                continue
+        except Exception as _sc_e:
+            log(f"[{user['username']}] {symbol}: cooldown check "
+                f"failed ({_sc_e}); allowing through.", "deployer")
         # Round-10 audit: PEAD explicitly wants stocks that just beat
         # earnings — blocking on earnings_warning (which fires whenever
         # the news feed contains "earnings"/"Q1 results"/etc.) would
@@ -3539,6 +3567,47 @@ def run_auto_deployer(user):
             except Exception as _fr_e:
                 log(f"[{user['username']}] fractional routing error "
                     f"({_fr_e}) — falling back to whole shares", "deployer")
+
+        # Round-61 pt.72: pre-trade quote-snapshot abort. Right
+        # before placing the order, fetch a fresh latestQuote.
+        # Abort if (a) live spread > 0.5% (microstructure shifted)
+        # or (b) price drifted > 1% from screener time (something
+        # broke). Fail-open on any fetch error — this is insurance,
+        # not a hard prerequisite.
+        try:
+            import pre_trade_check as _ptc
+            _data_ep_ptc = (user.get("_data_endpoint")
+                              or "https://data.alpaca.markets/v2")
+
+            # Use a default-argument capture instead of closing over
+            # the loop variable so ruff's B023 stays clean. The
+            # default is bound at def-time, not call-time.
+            def _fetch_quote_now(sym, _ep=_data_ep_ptc, _u=user):
+                try:
+                    resp = user_api_get(
+                        _u,
+                        f"{_ep}/stocks/{sym}/quotes/latest")
+                    if isinstance(resp, dict):
+                        q = resp.get("quote") or {}
+                        return {
+                            "bid": q.get("bp"), "ask": q.get("ap"),
+                            "last": q.get("ap") or q.get("bp"),
+                        }
+                except Exception:  # allow-silent-except -- best-effort quote
+                    pass
+                return None
+            _ptc_result = _ptc.evaluate_pre_trade_quote(
+                pick, _fetch_quote_now, side="long")
+            if not _ptc_result.get("allow", True):
+                log(f"[{user['username']}] {symbol}: pre-trade abort "
+                    f"— {_ptc_result.get('reason')}", "deployer")
+                skip_reasons.append(
+                    f"{symbol}: pre_trade_abort "
+                    f"({_ptc_result.get('reason')})")
+                continue
+        except Exception as _ptc_err:
+            log(f"[{user['username']}] {symbol}: pre-trade check "
+                f"failed ({_ptc_err}); allowing through.", "deployer")
 
         # Round-11: smart limit-at-mid order with 90s timeout + market
         # fallback. Saves 0.1-0.5% slippage per round-trip when going
