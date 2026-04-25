@@ -1204,6 +1204,45 @@ def fetch_all_data():
                                  data_dir=DATA_DIR)
             print("  RS + Sector factors applied")
 
+            # Round-61 pt.42: composite-regime weighting. Layer on top
+            # of the 3-bucket apply_strategy_rotation. Compute a
+            # 5-tier composite regime from SPY 200-MA + breadth + VIX,
+            # then weight per-strategy scores accordingly. Strong-bull
+            # boosts breakout/PEAD, suppresses MR/short. Choppy boosts
+            # MR/wheel, suppresses breakout. Strong-bear boosts short
+            # & wheel, suppresses breakout/PEAD.
+            try:
+                from screener_core import (
+                    compute_composite_regime,
+                    apply_regime_weighting,
+                    _sma_from_closes,
+                )
+                # SPY trend: close vs 200-day MA from spy_long_bars
+                spy_above_200 = None
+                if spy_long_bars and len(spy_long_bars) >= 100:
+                    spy_closes = [b.get("c") for b in spy_long_bars
+                                   if isinstance(b, dict)]
+                    spy_sma = _sma_from_closes(
+                        spy_closes,
+                        min(200, len(spy_closes) - 1),
+                    )
+                    spy_last = spy_closes[-1] if spy_closes else None
+                    if spy_sma and spy_last:
+                        spy_above_200 = float(spy_last) > spy_sma
+                # Breadth from market_breadth signal computed earlier
+                _breadth_pct = breadth_data.get("breadth_pct") if breadth_data else None
+                # VIX: not directly fetched; use the estimate the
+                # screener already derives from market_info if present
+                _vix = (market_info or {}).get("vix_estimate") or None
+                composite = compute_composite_regime(
+                    spy_above_200, _breadth_pct, _vix)
+                apply_regime_weighting(top_candidates, composite)
+                print(f"  Composite regime: {composite} "
+                      f"(SPY>200MA={spy_above_200}, "
+                      f"breadth={_breadth_pct}, vix={_vix})")
+            except Exception as _rw_err:
+                print(f"  Regime weighting failed: {_rw_err}. Continuing.")
+
             # Round-61 pt.39: trend filter. Block LONG entries whose
             # price is below the 50-day SMA (dead-cat bounces inside a
             # downtrend) and SHORT entries above the 50-day SMA
