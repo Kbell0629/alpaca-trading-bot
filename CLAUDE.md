@@ -61,7 +61,70 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-25 — round 61 pt.10-36 SHIPPED)
+## Current session state (2026-04-25 — round 61 pt.10-38 SHIPPED)
+
+**Pt.38 landed (PR #165):** per-strategy tier-aware risk parameters.
+Round-50's tier system already calibrated max_positions /
+max_position_pct / strategies_enabled per tier; pt.38 adds the
+missing layer: PER-STRATEGY stop_loss_pct / profit_target_pct /
+max_hold_days / trail_distance_pct varying by tier so a $500 cash
+account doesn't take the same 12% stops as a $100k margin account.
+  * **`portfolio_calibration.TIER_STRATEGY_PARAMS`** — schema
+    `{tier_name: {strategy: {param: value}}}` covering all six
+    tiers (cash_micro, cash_small, cash_standard, margin_small,
+    margin_standard, margin_whale) and every strategy enabled per
+    tier (skips short_sell on cash, skips wheel where wheel_enabled
+    is False).
+  * **`portfolio_calibration.get_strategy_param(tier_cfg, strategy,
+    param_name, default)`** — pure helper. Returns tier-specific
+    value if present, else the caller's default. Defensive: handles
+    None / non-dict inputs / missing tier names / orphan strategy
+    names. User overrides via guardrails.json STILL win — caller
+    pattern is `guardrails.get(name) or get_strategy_param(...) or
+    default` (round-50 schema preserved).
+  * Risk-budget invariants pinned: micro stops ≤ small ≤ standard,
+    targets grow with account size, max-hold-days grows with
+    account size. Coverage of every tier × strategy entry.
++17 tests in `tests/test_round61_pt38_per_strategy_tier.py`.
+*Wiring* — the TIER_STRATEGY_PARAMS data is in place but the
+auto-deployer + monitor consumers still call into existing
+guardrails.json. A follow-up PR (pt.38b) will route them through
+`get_strategy_param` for the tier-aware default. Pt.38 is the
+infrastructure, pt.38b is the wiring.
+
+**Pt.37 landed (PR #164):** 30-day backtest harness. Closes the
+"is breakout 0/7 because of THIS strategy or THIS market?" question
+with a real simulator. Three-piece architecture mirroring pt.7/34/36:
+  1. **`backtest_core.py`** — pure simulation engine. RSI / 20-day
+     high+low / volume helpers. Per-strategy entry signals
+     (breakout / mean_reversion / short_sell). Per-symbol simulator
+     with stop / target / max_hold / window-end exits. Aggregation
+     (`_summarize`). End-to-end `run_backtest` + multi-strategy
+     `run_multi_strategy_backtest`. Pt.35 invariant (leveraged ETFs
+     blocked from short-side sims) deferred to `constants` SSOT.
+  2. **`backtest_data.py`** — OHLCV fetcher + on-disk cache.
+     yfinance is the production fetcher (free, no rate-limit
+     headache); tests inject fakes via the `fetcher` parameter.
+     Cache lives at `$DATA_DIR/backtest_cache/<SYMBOL>.json` with a
+     12hr TTL (refetch when stale or insufficient bars). Atomic
+     writes via tempfile+rename. Universe builders pull from the
+     trade journal OR dashboard top picks.
+  3. **`/api/backtest/run` POST endpoint** in
+     `handlers/actions_mixin.handle_backtest_run`. Read-only.
+     Universe priority: explicit body.symbols > journal universe >
+     dashboard picks. Returns per-strategy + overall summaries.
+  4. **Dashboard panel** in the existing Backtest section:
+     "30-Day Strategy Backtest" with day-window selector
+     (14/30/60/90), Run button, top-line summary cards (Total Trades,
+     Win Rate, Hypothetical P&L, Expectancy, Best, Worst), and
+     per-strategy comparison cards. Includes operator-facing
+     "how to read this" explainer.
++40 unit tests in `test_round61_pt37_backtest_core.py` (every
+indicator, signal, simulator branch, aggregation case).
++34 tests in `test_round61_pt37_backtest_data.py` (cache I/O, TTL,
+fetcher injection, force_refresh, universe builders).
++10 tests in `test_round61_pt37_backtest_endpoint.py` (route, auth,
+read-only invariant, universe fallback, dashboard panel surface).
 
 **Pt.36 landed (PR #163):** Trades dashboard + post-mortem panel.
 Closes the user-facing visibility gap — until pt.36 the user could
