@@ -3356,8 +3356,12 @@ def run_auto_deployer(user):
                     strategy="short_sell", param_name="profit_target_pct",
                     fallback=target_pct, tier_cfg=TIER_CFG,
                     learned_params=LEARNED_PARAMS)
-            except Exception:
-                pass
+            except Exception as _e:
+                # Best-effort — stop_pct/target_pct already have sane
+                # legacy defaults from the lines above. Log + carry on.
+                log(f"[{user['username']}] short-side strategy_params "
+                    f"resolve failed ({_e}); legacy defaults retained.",
+                    "deployer")
             _short_max_hold = 14
             try:
                 import strategy_params as _sp
@@ -3365,8 +3369,9 @@ def run_auto_deployer(user):
                     strategy="short_sell", param_name="max_hold_days",
                     fallback=14, tier_cfg=TIER_CFG,
                     learned_params=LEARNED_PARAMS))
-            except Exception:
-                pass
+            except Exception as _e:
+                log(f"[{user['username']}] short-side max_hold_days "
+                    f"resolve failed ({_e}); using 14.", "deployer")
 
             for sc in short_candidates:
                 if current_shorts >= max_shorts:
