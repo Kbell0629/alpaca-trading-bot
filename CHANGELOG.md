@@ -8,6 +8,46 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.71 — news exits + ADV cap + drawdown taper (+40 tests)
+
+**Date:** 2026-04-25
+
+Three high-impact accuracy improvements building on the pt.65-69
+sprint.
+
+* **Position-level news exit triggers.** New pure module
+  `news_exit_monitor.py`. `monitor_strategies` now sweeps open
+  LONG positions for fresh bearish news (default -10 close, -6
+  warn). Uses the same scoring vocabulary as the pre-market
+  `news_scanner.score_news_article` so the pattern set is
+  consistent. 10-min per-symbol cooldown via caller-managed
+  state. Sets a `news_exit_close_<user>_<sym>` flag in
+  `_last_runs`; per-strategy close path picks up the flag and
+  market-sells with `exit_reason="bearish_news"`. Shorts skipped
+  (bearish news benefits them). API:
+  `aggregate_symbol_news_score`, `check_position_news`,
+  `explain_close`.
+* **Liquidity-aware ADV cap.** New `adv_size_multiplier(price,
+  qty, adv_dollar, cap_pct=5.0)` in `position_sizing.py`. Caps
+  positions at 5% of 20-day average dollar volume so the bot
+  doesn't become its own bad fill on a thin name. Floor at 0.05×
+  to avoid silently dropping a deploy. Wired into
+  `compute_full_size` AFTER Kelly + correlation + confluence +
+  drawdown. Auto-deployer call site computes `adv_dollar` from
+  `pick.daily_volume × pick.price`.
+* **Per-strategy drawdown taper.** New
+  `compute_strategy_recent_drawdown(journal, strategy,
+  lookback_days=30)` walks last 30 days of CLOSED trades for
+  `strategy` and computes max peak-to-trough equity drawdown.
+  New `drawdown_size_multiplier(drawdown_pct,
+  halving_threshold_pct=5, floor=0.5)` linearly tapers from 1.0×
+  at 0% DD to 0.5× at 10% DD (floored). Defaults: 5% DD →
+  0.75×, 10% DD → 0.5×.
+
++40 tests in `tests/test_round61_pt71_news_adv_drawdown.py`.
+
+---
+
 ## 🆕 Round-61 pt.69 — retry-with-backoff after cancel for SOXL-style closes (+7 tests)
 
 **Date:** 2026-04-25

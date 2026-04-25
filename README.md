@@ -302,10 +302,11 @@ have an `overfit_ratio` below 1.5 to be promoted into
 the walker can slide several folds. Slippage 10 bps + $1 commission
 also threaded in so simulated expectancy reflects real fill friction.
 
-### Position sizing — fractional Kelly + correlation discount
+### Position sizing — fractional Kelly + correlation + confluence + drawdown + ADV cap
 
 The bot resizes new positions based on the strategy's realised
-edge AND existing portfolio correlation:
+edge AND existing portfolio correlation AND signal-confluence AND
+recent strategy drawdown AND symbol liquidity. Multipliers compose:
 
 - **Kelly multiplier** — strong strategies (high Kelly fraction)
   scale up to 2.0×; weak strategies (low Kelly) scale down to 0.5×.
@@ -314,6 +315,18 @@ edge AND existing portfolio correlation:
 - **Correlation discount** — each same-sector held position cuts
   the new position by 0.5× (floored at 0.25×). 0 correlated = 1.0×;
   1 correlated = 0.5×; 2+ correlated = 0.25×.
+- **Confluence boost (pt.58)** — picks with 3+ corroborating
+  signals (high score, bullish news, insider cluster buy, MTF
+  aligned, low VWAP offset) get up to 1.5× sizing.
+- **Drawdown taper (pt.71)** — when a strategy's last-30-day
+  P&L has a peak-to-trough drawdown ≥ 5%, sizing tapers linearly
+  to 0.75× at 5% DD and 0.5× at 10% DD (floored). Protects
+  against regime shifts where Kelly's lookback window is too
+  long to react.
+- **Liquidity / ADV cap (pt.71)** — position dollars capped at
+  5% of the symbol's 20-day average dollar volume. Stops the
+  bot from being its own bad fill on thin small-caps. Floor at
+  0.05× of original size to avoid silently dropping a deploy.
 
 Layered ON TOP of the screener's `recommended_shares` and BEFORE
 the legacy drawdown multiplier, so all existing caps
@@ -322,7 +335,8 @@ routing) still apply. Each adjustment is logged with rationale so
 you can audit why a particular trade got resized.
 
 API: `position_sizing.compute_full_size(base_qty=..., strategy=...,
-symbol=..., journal=..., existing_positions=...)`.
+symbol=..., journal=..., existing_positions=..., price=...,
+adv_dollar=...)`.
 
 ### Score-health monitoring
 
@@ -569,6 +583,13 @@ Bot picks top 2 and places market buy orders.
 - **Dead-money cutter (pt.59)** — non-PEAD positions flat for
   10+ days get auto-closed with a notification explaining WHY
   (replaces a no-progress slot with a fresh deploy).
+- **Position-level news exit (pt.71)** — every monitor cycle
+  sweeps each LONG position for fresh bearish news (FDA
+  rejection, SEC probe, downgrade, etc.). Aggregate score ≤ -10
+  → market-sell with `exit_reason=bearish_news`. Score in
+  -6..-10 range → "watch list" warning. 10-minute per-symbol
+  cooldown to avoid spam. Shorts skipped (bearish news is good
+  for shorts).
 
 ---
 
