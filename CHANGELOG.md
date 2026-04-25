@@ -8,6 +8,120 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.49 — fractional-Kelly sizing + score-health alerting + pipeline-aware backtest (+87 tests)
+
+**Date:** 2026-04-25
+
+User asked: *"please implement all 3 of those now and dont deferr
+anything"*. Pt.49 ships fractional-Kelly + correlation-aware position
+sizing, daily score-health monitoring, and a pipeline-aware backtest
+that replays historical picks through the full deploy-side gate
+stack.
+
+### 1. Fractional-Kelly + correlation-aware sizing
+
+Replaces the flat sizing model where every strategy/symbol got the
+same `recommended_shares × max_position_pct` treatment. Now the
+size scales with the strategy's realised edge AND with how many
+correlated positions are already on the book.
+
+**`position_sizing.py`** (pure module):
+
+* `kelly_fraction(win_rate, avg_win, avg_loss, *, fraction_of=0.5,
+  max_fraction=0.25)` — half-Kelly by default, capped at 25%.
+  Returns 0 on negative edge / invalid inputs.
+* `compute_strategy_edge(journal, strategy, *, min_trades=10)` —
+  pulls realised win-rate / avg_win / avg_loss for the strategy
+  from the closed-trade journal. Reports `kelly_eligible=False`
+  when sample is too small to trust.
+* `kelly_size_multiplier(edge)` — maps Kelly to a multiplier in
+  `[0.5×, 2.0×]` with `BASELINE_KELLY=0.05` mapping to 1.0×.
+  Strong strategies scale up; weak strategies scale down; non-
+  Kelly-eligible (insufficient sample) returns 1.0× so legacy
+  flow stays in charge.
+* `count_correlated_positions(symbol, existing, *, sector_map=...)`
+  — same-sector tally; "Other" sector skipped to avoid over-
+  discounting unrelated tickers; falls back to
+  `constants.SECTOR_MAP` if no map passed.
+* `correlation_size_multiplier(N)` — `0.5^N` floored at 0.25.
+* `compute_full_size(*, base_qty, strategy, symbol, journal,
+  existing_positions, sector_map=None, ...)` — end-to-end
+  wrapper. Returns `{qty, base_qty, kelly_multiplier,
+  correlation_multiplier, edge, correlated_count, rationale}`.
+
+**Wired into `cloud_scheduler.run_auto_deployer`** at the
+recommended-shares site BEFORE `drawdown_mult`. Long + short
+paths both call `compute_full_size`. Adjusted qty + rationale
+logged for audit. Best-effort — never blocks the deploy on a
+sizing-module error.
+
+### 2. Score-degradation alerting
+
+Pt.47 added the score-to-outcome panel; pt.49 turns it into an
+active monitor. Without alerting, scoring can silently degrade
+and the bot keeps deploying picks the user trusts even though
+the ranking has stopped meaning anything.
+
+* `analytics_core.check_score_degradation(journal, *,
+  min_trades=30, bucket_count=5)` returns
+  `{degraded, warning, tracked_trades, total_closed, headline,
+  detail, monotonic_winrate, monotonic_expectancy, ...}`.
+  Degraded = both monotonic flags False AND tracked >= min.
+  Warning = ONE flag False (soft signal). Below min_trades →
+  `degraded=False, warning=False, headline="insufficient sample"`.
+* `cloud_scheduler.run_score_health_check(user)` runs daily at
+  4:35 PM ET. Notifies on transition INTO degraded state (not
+  every day — `_last_runs[score_health_state_<uid>]` tracks last
+  reported state). Notifies on recovery (degraded → ok) so the
+  user knows it's fixed.
+* `build_analytics_view` now includes `"score_health"` so the
+  dashboard can surface the status pill alongside the bucket
+  grid.
+
+### 3. Pipeline-aware backtest
+
+Pt.37's backtest tests STRATEGY in isolation: "if breakout fired,
+would the trade have been profitable?". The production deploy
+pipeline applies many filters AFTER the strategy signal —
+chase_block, volatility_block, sector cap, trend filter, event-
+day gate, min_score. A pick can pass the strategy and STILL not
+deploy. Pt.49 quantifies that gap.
+
+`pipeline_backtest.py` (pure module):
+
+* `evaluate_gates(pick, *, held_symbols, sector_counts,
+  sector_map, ..., event_label, event_multiplier)` runs a
+  single pick through every gate. Returns `{deploy: bool,
+  block_reasons: [...], sector: ...}`.
+* `run_pipeline_backtest(picks_history, *, sector_map=None,
+  initial_held=None, chase_block_pct=8.0,
+  volatility_block_pct=25.0, max_per_sector=2, min_score=50,
+  event_label_fn=None, simulate_outcomes=False,
+  bars_by_symbol=None)` replays a sequence of historical picks
+  day-by-day. Reports `{total_picks, would_deploy,
+  blocked_by_reason, blocks_by_day, block_rate, deploys}` plus
+  optional `counterfactual` P&L via
+  `backtest_core._simulate_symbol`.
+* Defaults to the production gate thresholds (pt.10-48) so a
+  zero-arg call against a real picks history produces a
+  realistic answer.
+
+### Tests
+
++34 in `tests/test_round61_pt49_kelly_sizing.py`
+(kelly_fraction edge cases, edge aggregation from journal,
+multiplier mapping bounds, correlation count + multiplier,
+end-to-end wrapper, source-pin tests on cloud_scheduler).
++15 in `tests/test_round61_pt49_score_health.py`
+(degraded vs warning vs ok states, transition notification,
+build_analytics_view exposure, source-pin tests on the
+scheduler task).
++38 in `tests/test_round61_pt49_pipeline_backtest.py`
+(per-gate isolation tests, end-to-end replay, sector cap
+intra-day, event_label_fn injection, optional counterfactual).
+
+---
+
 ## 🆕 Round-61 pt.48 — active walk-forward + slippage in self-learning + event-day gate (+31 tests)
 
 **Date:** 2026-04-25

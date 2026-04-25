@@ -61,9 +61,48 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-25 — round 61 pt.10-48 SHIPPED)
+## Current session state (2026-04-25 — round 61 pt.10-49 SHIPPED)
 
-**Pt.48 in flight:** three-in-one accuracy batch making the pt.47
+**Pt.49 in flight:** three-in-one position-sizing + active monitoring
++ pipeline-validation batch:
+  1. **Fractional-Kelly + correlation-aware sizing.** New
+     `position_sizing.py`. Functions:
+     `kelly_fraction(win_rate, avg_win, avg_loss)` (half-Kelly,
+     capped at 25%); `compute_strategy_edge(journal, strategy)`
+     (per-strategy realised stats from the journal);
+     `kelly_size_multiplier(edge)` (maps Kelly to a [0.5×, 2.0×]
+     multiplier with 5% Kelly = 1.0×); `count_correlated_positions`
+     + `correlation_size_multiplier` (each same-sector held
+     position cuts size by 0.5×, floored at 0.25×);
+     `compute_full_size(...)` end-to-end wrapper. Wired into
+     auto-deployer (long + short paths) BEFORE drawdown_mult so
+     all legacy caps still apply on top.
+  2. **Score-degradation alerting.** New
+     `analytics_core.check_score_degradation(journal, min_trades=30)`
+     reads pt.47's score-outcome buckets and returns a
+     {`degraded`, `warning`, `headline`, `detail`} dict.
+     Degraded = both monotonic flags False over ≥30 trades.
+     `cloud_scheduler.run_score_health_check` runs daily at
+     4:35 PM ET, notifies the user once on transition INTO
+     degraded (not every day) and once on recovery, persists
+     state in `_last_runs` to prevent spam. Surfaced as
+     `build_analytics_view["score_health"]` for the dashboard.
+  3. **Pipeline-aware backtest.** New `pipeline_backtest.py`
+     replays a historical picks sequence through every
+     deploy-side gate (chase_block / volatility_block /
+     already_held / below_50ma / above_50ma /
+     breakout_unconfirmed / sector_cap / event_day /
+     min_score). Reports `total_picks`, `would_deploy`,
+     `blocked_by_reason`, `block_rate`, optional
+     `counterfactual` P&L via `backtest_core._simulate_symbol`.
+     Answers "are the gates blocking profitable picks?" — the
+     question pt.45's chips surface visually but never
+     quantified.
++34 tests in `tests/test_round61_pt49_kelly_sizing.py`
++15 tests in `tests/test_round61_pt49_score_health.py`
++38 tests in `tests/test_round61_pt49_pipeline_backtest.py`
+
+**Pt.48 landed (PR #175):** three-in-one accuracy batch making the pt.47
 infrastructure ACTIVE in production:
   1. **Walk-forward in self-learning loop.**
      `learn_backtest.run_self_learning` now accepts
