@@ -313,6 +313,60 @@ def profit_target_hit(symbol: str, strategy: str,
             f"({_fmt_pct(pnl_pct)})"), "\n".join(lines)
 
 
+def dead_money_exit(symbol: str, strategy: str,
+                      entry_price: float, exit_price: float,
+                      shares: int, pnl: float, pnl_pct: float,
+                      hold_days: int) -> tuple[str, str]:
+    """Round-61 pt.64: notification for the pt.59 dead-money cutter.
+
+    Triggered when a position has been held >=10 days without
+    moving >=2% in either direction. Distinct from a stop-loss
+    (which hit a price level) or a target-hit (which hit a profit
+    level) — this is "the trade just stopped doing anything, free
+    the capital".
+    """
+    subj = (f"[Trading Bot] Dead-money exit on {symbol}: "
+             f"{_fmt_signed_money(pnl)} ({_fmt_pct(pnl_pct)}) "
+             f"after {hold_days}d")
+    body_lines = [
+        f"DEAD-MONEY EXIT: {symbol}",
+        "─" * 50,
+        "",
+        f"Strategy:    {strategy}",
+        f"Entry:       {_fmt_money(entry_price)}",
+        f"Exit:        {_fmt_money(exit_price)}",
+        f"Shares:      {shares}",
+        f"P&L:         {_fmt_signed_money(pnl)} ({_fmt_pct(pnl_pct)})",
+        f"Held:        {hold_days} days",
+        "",
+        "WHAT JUST HAPPENED",
+        "─" * 50,
+        ("The bot closed this position because it had been held for "
+         f"{hold_days} days without moving {_fmt_pct(2.0, decimals=0, signed=False)} "
+         "in either direction. This is the dead-money cutter — its "
+         "job is to free up capital tied up in stagnant trades so "
+         "the next strong setup can fund a new position."),
+        "",
+        ("This is NOT a stop-loss (the stock didn't fall). It's NOT "
+         "a profit-target (the stock didn't rise). It's the bot "
+         "saying \"this trade is dead weight — let's redeploy the "
+         "capital somewhere with momentum.\""),
+        "",
+        "WHAT HAPPENS NEXT",
+        "─" * 50,
+        ("The cash from this exit becomes available for the next "
+         "auto-deployer cycle. If a higher-conviction pick is "
+         "waiting in the screener (positive sentiment, fresh "
+         "breakout, etc.), it'll likely take this slot within the "
+         "30-min window. If you want to disable the cutter for "
+         "your account, set `dead_money_disabled: true` in "
+         "guardrails.json."),
+        "",
+        _footer(),
+    ]
+    return subj, "\n".join(body_lines)
+
+
 def stop_loss_triggered(symbol: str, strategy: str,
                          entry_price: float, exit_price: float,
                          shares: int, pnl: float, pnl_pct: float,
