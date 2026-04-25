@@ -557,6 +557,8 @@ def test_build_analytics_view_returns_all_keys():
         "score_outcome",
         # Round-61 pt.49 added score_health.
         "score_health",
+        # Round-61 pt.65 added risk_parity_weights.
+        "risk_parity_weights",
     }
     assert set(out.keys()) == expected_keys
 
