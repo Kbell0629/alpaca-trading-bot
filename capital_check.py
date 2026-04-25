@@ -74,99 +74,38 @@ def api_get_with_retry(url, max_retries=3, timeout=15):
             return {"error": str(e)}
 
 
-# Round-15: extracted pure helper so the fallback ladder (live quote →
-# position avg cost → $1000/share conservative floor) can be unit-tested
-# without needing network or module-level Alpaca endpoints. Security-
-# critical: this is the code that prevents silent over-leverage when a
-# live-quote fetch fails.
-_LAST_RESORT_PRICE_PER_SHARE = 1000.0
-
-
-def _compute_reserved_by_orders(orders, position_avg_cost_by_sym, fetch_last):
-    """Return the total dollar-amount reserved by pending BUY orders.
-    Arguments are decoupled from Alpaca so tests can inject fakes.
-
-    `orders`: list of Alpaca order dicts.
-    `position_avg_cost_by_sym`: {SYMBOL: avg_entry_price} for open positions.
-    `fetch_last`: callable(symbol) -> float, returns the latest trade
-        price or 0.0 on failure.
-
-    Pricing ladder for orders that don't have an explicit limit/stop/notional:
-      1. live last-trade quote via fetch_last(symbol)
-      2. our own avg entry price for any open position in the same symbol
-      3. conservative $1000/share floor — we'd rather refuse an order
-         than under-reserve capital and authorise an overleveraged trade.
-    """
-    reserved = 0.0
-    for o in (orders or []):
-        if o.get("side") != "buy":
-            continue
-        try:
-            price = float(o.get("limit_price") or o.get("stop_price") or 0)
-            qty = float(o.get("qty", 0))
-        except (TypeError, ValueError):
-            continue
-        if price > 0:
-            reserved += price * qty
-            continue
-        try:
-            notional = float(o.get("notional") or 0)
-        except (TypeError, ValueError):
-            notional = 0
-        if notional > 0:
-            reserved += notional
-            continue
-        sym = (o.get("symbol") or "").upper()
-        last = 0.0
-        try:
-            last = float(fetch_last(sym) or 0)
-        except Exception:
-            last = 0.0
-        if last > 0:
-            px = last
-        elif position_avg_cost_by_sym.get(sym, 0) > 0:
-            px = position_avg_cost_by_sym[sym]
-        else:
-            px = _LAST_RESORT_PRICE_PER_SHARE
-        reserved += px * qty
-    return reserved
+# Round-61 pt.34: pure math extracted to capital_check_core.py so it
+# can be unit-tested without subprocess execution. Re-exported here
+# for backwards-compat with any caller that imported the helper
+# directly (kept the underscore-prefix alias for round-15 callers).
+from capital_check_core import (
+    _LAST_RESORT_PRICE_PER_SHARE,
+    compute_reserved_by_orders,
+    compute_capital_metrics,
+)
+_compute_reserved_by_orders = compute_reserved_by_orders
 
 
 def check_capital():
+    """Subprocess entry-point wrapper.
+
+    Round-61 pt.34 thinned this from a 130-line monolith to a
+    coordinator: fetch Alpaca data + read guardrails (the I/O), then
+    delegate every line of math to capital_check_core. Saves the
+    result via the round-10 per-user CAPITAL_STATUS_PATH override.
+    """
     account = api_get_with_retry(f"{API_ENDPOINT}/account")
     positions = api_get_with_retry(f"{API_ENDPOINT}/positions")
     orders = api_get_with_retry(f"{API_ENDPOINT}/orders?status=open")
 
-    if isinstance(account, dict) and "error" in account:
-        return {"error": account["error"]}
+    # Read guardrails
+    guardrails = {}
+    try:
+        with open(os.path.join(DATA_DIR, "guardrails.json")) as f:
+            guardrails = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        pass
 
-    portfolio_value = float(account.get("portfolio_value", 0))
-    cash = float(account.get("cash", 0))
-    buying_power = float(account.get("buying_power", 0))
-    equity = float(account.get("equity", 0))
-
-    positions = positions if isinstance(positions, list) else []
-    orders = orders if isinstance(orders, list) else []
-
-    # Calculate capital in use
-    total_position_value = sum(float(p.get("market_value", 0)) for p in positions)
-    num_positions = len(positions)
-
-    # Calculate capital reserved by open orders (including market orders).
-    # Round-11: for market orders without notional, fall back to
-    # Alpaca's last-trade price for the symbol (cheap GET) rather
-    # than qty * 100 (which over-reserved by 9x for stocks like NVDA).
-    # Round-12 audit fix: the old fallback was `last or 100` — if the
-    # last-trade GET failed, we'd assume $100/share. On a $200+ name
-    # (GOOG/META/NVDA/AMZN) that under-reserved capital by 50-80% and
-    # could theoretically authorize an overleveraged deploy. Fallback
-    # uses the position's average cost for the same symbol (if held), or
-    # falls back to CONSERVATIVE over-reservation ($1000/share) rather
-    # than under-reservation. Better to refuse a trade than over-borrow.
-    _position_avg_cost_by_sym = {
-        (p.get("symbol") or "").upper(): float(p.get("avg_entry_price") or 0)
-        for p in positions
-    }
     def _fetch_last(sym):
         if not sym:
             return 0.0
@@ -177,83 +116,18 @@ def check_capital():
             return float((trade or {}).get("trade", {}).get("p") or 0)
         except Exception:
             return 0.0
-    reserved_by_orders = _compute_reserved_by_orders(
-        orders, _position_avg_cost_by_sym, _fetch_last
+
+    result = compute_capital_metrics(
+        account=account,
+        positions=positions if isinstance(positions, list) else [],
+        orders=orders if isinstance(orders, list) else [],
+        guardrails=guardrails,
+        fetch_last=_fetch_last,
+        now_iso=now_et().isoformat(),
     )
 
-    # Key metrics
-    pct_invested = (total_position_value / portfolio_value * 100) if portfolio_value > 0 else 0
-    pct_reserved = (reserved_by_orders / portfolio_value * 100) if portfolio_value > 0 else 0
-    free_cash = cash - reserved_by_orders
-    pct_free = (free_cash / portfolio_value * 100) if portfolio_value > 0 else 0
-
-    # Read guardrails
-    guardrails = {}
-    try:
-        with open(os.path.join(DATA_DIR, "guardrails.json")) as f:
-            guardrails = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        pass
-
-    max_positions = guardrails.get("max_positions", 5)
-    max_position_pct = guardrails.get("max_position_pct", 0.10)
-
-    # Can we afford another trade?
-    min_trade_size = portfolio_value * 0.03  # Minimum 3% position
-    can_trade = free_cash >= min_trade_size and num_positions < max_positions
-
-    # How many more trades can we afford?
-    avg_position_size = portfolio_value * max_position_pct
-    additional_trades_possible = int(free_cash / avg_position_size) if avg_position_size > 0 else 0
-    additional_trades_possible = min(additional_trades_possible, max_positions - num_positions)
-
-    # Warnings (use elif for overlapping thresholds)
-    warnings = []
-    if pct_invested > 80:
-        warnings.append(f"HIGH EXPOSURE: {pct_invested:.0f}% of portfolio is invested. Consider reducing positions.")
-    elif pct_invested > 60:
-        warnings.append(f"MODERATE EXPOSURE: {pct_invested:.0f}% invested. {pct_free:.0f}% free cash remaining.")
-    if free_cash < min_trade_size:
-        warnings.append(f"LOW CAPITAL: Only ${free_cash:,.2f} free cash. Not enough for a new position.")
-    if num_positions >= max_positions:
-        warnings.append(f"MAX POSITIONS REACHED: {num_positions}/{max_positions}. Close a position before opening new ones.")
-    if reserved_by_orders > cash * 0.5:
-        warnings.append(f"HEAVY ORDER BOOK: ${reserved_by_orders:,.2f} reserved by open orders ({pct_reserved:.0f}% of portfolio).")
-
-    # Sustainability score (0-100)
-    sustainability = 100
-    if pct_invested > 50: sustainability -= (pct_invested - 50)
-    if num_positions >= max_positions: sustainability -= 20
-    if free_cash < min_trade_size: sustainability -= 30
-    sustainability = max(0, min(100, sustainability))
-
-    result = {
-        "timestamp": now_et().isoformat(),
-        "portfolio_value": portfolio_value,
-        "cash": cash,
-        "buying_power": buying_power,
-        "total_position_value": total_position_value,
-        "reserved_by_orders": reserved_by_orders,
-        "free_cash": free_cash,
-        "pct_invested": round(pct_invested, 1),
-        "pct_reserved": round(pct_reserved, 1),
-        "pct_free": round(pct_free, 1),
-        "num_positions": num_positions,
-        "max_positions": max_positions,
-        "additional_trades_possible": additional_trades_possible,
-        "can_trade": can_trade,
-        "sustainability_score": sustainability,
-        "warnings": warnings,
-        "recommendation": ""
-    }
-
-    # Generate recommendation
-    if sustainability >= 80:
-        result["recommendation"] = f"Healthy. {additional_trades_possible} more trades possible. Free cash: ${free_cash:,.2f}"
-    elif sustainability >= 50:
-        result["recommendation"] = f"Caution. Consider tightening stops or taking profits. Free cash: ${free_cash:,.2f}"
-    else:
-        result["recommendation"] = f"Critical. Reduce exposure before opening new positions. Free cash: ${free_cash:,.2f}"
+    if "error" in result:
+        return result
 
     # Save to file (atomic write). Round-10: honor CAPITAL_STATUS_PATH
     # env var so per-user scheduler invocations land in each user's

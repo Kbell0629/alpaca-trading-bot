@@ -61,7 +61,27 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-25 — round 61 pt.10-33 SHIPPED)
+## Current session state (2026-04-25 — round 61 pt.10-34 SHIPPED)
+
+**Pt.34 landed (PR #160):** capital_check core extraction. Mirrors
+the pt.7 pattern (screener_core.py + scorecard_core.py): pure math
+moves to `capital_check_core.py`, the subprocess entry point in
+`capital_check.py` becomes a thin coordinator. Three reasons:
+  1. **Coverage**: capital_check.py is invoked exclusively as a
+     subprocess from `cloud_scheduler.run_auto_deployer`, so
+     pytest-cov never sees its line execution. Until pt.34 the
+     capital-sustainability math was untested at the unit level.
+     Now the math lives in capital_check_core.py and gets 47 unit
+     tests covering every threshold/branch/recommendation tier.
+  2. **Schema stability**: every output field that
+     `check_capital()` historically returned is still present
+     (the pt.34 helper returns the exact same shape). Saving via
+     CAPITAL_STATUS_PATH stays in capital_check.py.
+  3. **Backwards compat**: legacy callers that import the
+     underscore-prefix `_compute_reserved_by_orders` from
+     capital_check still work — capital_check.py re-exports the
+     core function under both names.
++47 tests in `tests/test_round61_pt34_capital_check_core.py`.
 
 **Pt.33 landed (PR #159):** Vitest JS coverage threshold ratchet.
 Pt.22 set up the threshold infrastructure with V8 provider but
