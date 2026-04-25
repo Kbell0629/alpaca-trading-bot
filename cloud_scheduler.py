@@ -2742,6 +2742,27 @@ def run_auto_deployer(user):
     candidates_evaluated = 0
     skip_reasons = []
 
+    # Round-61 pt.48: high-impact event-day gate. On FOMC / CPI / NFP /
+    # PCE release days, the market doesn't have a stable baseline —
+    # entering new positions in the morning is a coin flip on the 8:30
+    # / 2:00 release. We don't BLOCK deploys; we raise the score
+    # threshold by event_score_multiplier (FOMC=2.0x, CPI=1.5x, etc).
+    # Picks below the elevated bar are skipped with reason logged.
+    EVENT_TODAY = None
+    EVENT_MULT = 1.0
+    try:
+        import event_calendar as _ec
+        _today = now_et().date()
+        is_event, evt = _ec.is_high_impact_event_day(_today)
+        if is_event:
+            EVENT_TODAY = evt
+            EVENT_MULT = _ec.event_score_multiplier(evt)
+            log(f"[{user['username']}] {evt} day — score threshold "
+                f"raised by {EVENT_MULT}× for new deploys.", "deployer")
+    except Exception as _e:
+        log(f"[{user['username']}] event_calendar check failed ({_e}); "
+            "deploying without event-day adjustment.", "deployer")
+
     positions = user_api_get(user, "/positions")
     existing_syms = set()
     existing_positions = []
@@ -2861,6 +2882,22 @@ def run_auto_deployer(user):
         symbol = pick.get("symbol")
         best_strat = pick.get("best_strategy", "").lower().replace(" ", "_")
         candidates_evaluated += 1
+
+        # Round-61 pt.48: event-day score gate. EVENT_MULT=1.0 outside
+        # event days, 2.0 on FOMC, 1.5 on CPI/NFP, 1.3 on PCE. The
+        # implicit "good score" threshold is 50 (typical strong pick);
+        # on event days a pick must clear 50*MULT to deploy.
+        if EVENT_TODAY:
+            try:
+                _bs = float(pick.get("best_score") or 0)
+            except (TypeError, ValueError):
+                _bs = 0.0
+            _gate = 50.0 * EVENT_MULT
+            if _bs < _gate:
+                skip_reasons.append(
+                    f"{symbol}: {EVENT_TODAY}-day gate "
+                    f"(score {_bs:.0f} < {_gate:.0f})")
+                continue
 
         if symbol in existing_syms:
             skip_reasons.append(f"{symbol}: already held")
@@ -3341,6 +3378,12 @@ def run_auto_deployer(user):
 
             short_candidates = picks_data.get("short_candidates", [])
             min_score = short_config.get("min_short_score", 15)
+            # Round-61 pt.48: event-day gate raises the short-side
+            # threshold by the same multiplier as the long side.
+            if EVENT_TODAY:
+                min_score = int(min_score * EVENT_MULT)
+                log(f"[{user['username']}] {EVENT_TODAY} day — short "
+                    f"min_score raised to {min_score}.", "deployer")
             stop_pct = short_config.get("stop_loss_pct", 0.08)
             target_pct = short_config.get("profit_target_pct", 0.15)
             max_pct = short_config.get("max_portfolio_pct_per_short", 0.05)
@@ -4102,17 +4145,34 @@ def run_weekly_learning(user):
                 f"no symbols in journal or picks", "learn")
             return
         _data_dir = user.get("_data_dir") or DATA_DIR
+        # Round-61 pt.48: walk-forward needs ≥ train_days + test_days
+        # of timeline. 30 + 30 = 60 minimum; we fetch 120 so the
+        # window can slide several times for a robust OOS estimate.
         bars_by_symbol = _bd.fetch_bars_for_symbols(
-            _data_dir, symbols, days=60,
+            _data_dir, symbols, days=120,
         )
         if not bars_by_symbol:
             log(f"[{user['username']}] Self-learning skipped — "
                 f"OHLCV fetch returned no bars", "learn")
             return
+        # Round-61 pt.48: ACTIVE walk-forward + realistic friction.
+        # Variants must beat baseline on the OOS test slice (not the
+        # in-sample train window) AND have overfit_ratio < 1.5 — see
+        # learn_backtest.run_self_learning docstring. Slippage 10 bps
+        # + $1 commission means simulated expectancy reflects what
+        # live trading actually costs, so the learned params don't
+        # over-promise.
         proposal = run_self_learning(
             bars_by_symbol=bars_by_symbol,
             run_backtest_fn=_bc_run,
             current_defaults=DEFAULT_PARAMS,
+            validation_mode="walk_forward",
+            slippage_bps=10.0,
+            commission_per_trade=1.0,
+            walk_forward_train_days=30,
+            walk_forward_test_days=30,
+            walk_forward_step_days=10,
+            max_overfit_ratio=1.5,
         )
         learned_path = user_file(user, "learned_params.json")
         existing = load_json(learned_path) or None

@@ -295,6 +295,29 @@ the immediately-following test slice. Reports an `overfit_ratio`
 self-learning is overfitting and the in-sample numbers can't be
 trusted. Use this to validate any param-tuning experiment.
 
+**Pt.48 wiring**: the weekly self-learning loop now uses walk-forward
+internally. Variants must beat the baseline on the OOS test slice AND
+have an `overfit_ratio` below 1.5 to be promoted into
+`learned_params.json`. The fetch window grew from 60 to 120 days so
+the walker can slide several folds. Slippage 10 bps + $1 commission
+also threaded in so simulated expectancy reflects real fill friction.
+
+### Event-day awareness
+
+`event_calendar.py` encodes 2026/2027 FOMC / CPI / NFP / PCE release
+days. The auto-deployer raises the score threshold on those days
+(FOMC × 2.0, CPI × 1.5, NFP × 1.5, PCE × 1.3) so the bot needs an
+exceptional setup to enter new positions when the macro tape is
+about to move.
+
+API:
+- `is_high_impact_event_day(date)` → `(bool, label)` where label is
+  `"FOMC"`, `"CPI"`, `"NFP"`, `"PCE"`, or `None`.
+- `next_high_impact_event(date)` → `(label, date)` for the next
+  event ≥ the queried date.
+- `event_score_multiplier(label)` → 2.0/1.5/1.5/1.3 for the
+  recognised labels; 1.0 otherwise.
+
 ### Visual Backtest
 
 Pick any stock from the dropdown. Chart shows:
