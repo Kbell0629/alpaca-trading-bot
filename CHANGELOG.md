@@ -8,6 +8,35 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.42 — composite-regime weighting (+27 tests)
+
+**Date:** 2026-04-25
+
+User-prioritised screener accuracy improvement #4: extend pt.50's
+tier system with a richer composite market regime that weights
+per-strategy scores. Strong-bull boosts breakout, choppy boosts
+mean-reversion + wheel, strong-bear boosts short.
+
+### What landed
+
+* **`screener_core.REGIME_WEIGHTS`** — table mapping five composite
+  regimes (`strong_bull` / `weak_bull` / `choppy` / `weak_bear` /
+  `strong_bear`) to per-strategy multipliers.
+* **`screener_core.compute_composite_regime(spy_above_200ma,
+  breadth_pct, vix)`** — pure classifier. Missing inputs → `choppy`.
+* **`screener_core.apply_regime_weighting(picks, regime)`** —
+  multiplies per-strategy scores, recomputes `best_score`, tags
+  every pick with `composite_regime` + `regime_weight_applied`.
+  Re-sorts picks.
+* Wired into `update_dashboard.py` after `apply_factor_scores`.
+  SPY 200-MA from existing `spy_long_bars`, breadth from
+  `breadth_data`, VIX from `market_info`. Zero extra API calls.
+
+### Tests
++27 in `tests/test_round61_pt42_regime_weighting.py`
+
+---
+
 ## 🆕 Round-61 pt.41 — per-strategy adaptive thresholds (+29 tests)
 
 **Date:** 2026-04-25

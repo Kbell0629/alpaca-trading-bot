@@ -813,3 +813,126 @@ def apply_adaptive_thresholds(picks: list,
     # Re-sort so demoted/boosted picks land in their new positions.
     picks.sort(key=lambda p: float(p.get("best_score") or 0), reverse=True)
     return picks
+
+
+# ============================================================================
+# Round-61 pt.42: composite-regime weighting
+# ============================================================================
+#
+# Existing `apply_strategy_rotation` (in update_dashboard.py) uses a
+# simple 3-bucket regime (bull / neutral / bear). Pt.42 layers on a
+# richer composite regime built from THREE signals:
+#
+#   1. SPY trend — close vs 200-day MA. Positive = secular up-trend.
+#   2. Breadth  — % of S&P stocks above their 50-day MA. >60% =
+#                 broad participation; <40% = narrow leadership.
+#   3. VIX      — volatility regime. <15 = complacent; >25 = stressed.
+#
+# Five composite regimes with hand-calibrated per-strategy weights.
+
+REGIME_WEIGHTS: dict = {
+    "strong_bull": {
+        "Breakout": 1.40, "Mean Reversion": 0.50,
+        "Wheel Strategy": 0.80, "PEAD": 1.30,
+        "Copy Trading": 1.10, "short_sell": 0.20,
+    },
+    "weak_bull": {
+        "Breakout": 1.15, "Mean Reversion": 0.85,
+        "Wheel Strategy": 1.00, "PEAD": 1.10,
+        "Copy Trading": 1.00, "short_sell": 0.50,
+    },
+    "choppy": {
+        "Breakout": 0.70, "Mean Reversion": 1.30,
+        "Wheel Strategy": 1.40, "PEAD": 1.00,
+        "Copy Trading": 1.00, "short_sell": 0.80,
+    },
+    "weak_bear": {
+        "Breakout": 0.55, "Mean Reversion": 1.10,
+        "Wheel Strategy": 1.30, "PEAD": 0.85,
+        "Copy Trading": 0.90, "short_sell": 1.30,
+    },
+    "strong_bear": {
+        "Breakout": 0.30, "Mean Reversion": 0.85,
+        "Wheel Strategy": 1.20, "PEAD": 0.60,
+        "Copy Trading": 0.70, "short_sell": 1.50,
+    },
+}
+
+
+def compute_composite_regime(spy_above_200ma: Optional[bool],
+                              breadth_pct: Optional[float],
+                              vix_estimate: Optional[float]) -> str:
+    """Return one of five composite regime tags. Inputs are
+    independently-derived market signals; missing inputs degrade
+    gracefully toward "choppy" (neutral default)."""
+    if spy_above_200ma is None:
+        spy_above_200ma = True  # benign default
+    breadth = float(breadth_pct) if breadth_pct is not None else 50.0
+    vix = float(vix_estimate) if vix_estimate is not None else 18.0
+
+    # Strong bear: SPY below 200MA + narrow + high VIX
+    if not spy_above_200ma and breadth < 30 and vix > 25:
+        return "strong_bear"
+    if not spy_above_200ma:
+        return "weak_bear"
+    # Strong bull: above 200MA + broad + low VIX
+    if breadth > 60 and vix < 15:
+        return "strong_bull"
+    # Weak bull: above 200MA + (good breadth OR low VIX)
+    if breadth > 50 or vix < 18:
+        return "weak_bull"
+    return "choppy"
+
+
+def apply_regime_weighting(picks: list, regime: str,
+                             weights_table: Optional[Mapping[str, dict]] = None,
+                             ) -> list:
+    """Round-61 pt.42: multiply each pick's per-strategy score by its
+    regime-fit weight. Tags every pick with `composite_regime` and
+    `regime_weight_applied` for dashboard visibility.
+
+    Adjusts breakout/mean_reversion/wheel/pead/copy/short scores.
+    Recomputes `best_score` from the adjusted score for the pick's
+    currently-chosen strategy. Layered ON TOP of
+    `update_dashboard.apply_strategy_rotation`.
+    """
+    weights_table = weights_table or REGIME_WEIGHTS
+    if not picks:
+        return picks
+    weights = weights_table.get(regime) or weights_table.get("choppy", {})
+
+    score_fields = {
+        "Breakout": "breakout_score",
+        "Mean Reversion": "mean_reversion_score",
+        "Wheel Strategy": "wheel_score",
+        "PEAD": "pead_score",
+        "Copy Trading": "copy_score",
+        "short_sell": "short_score",
+    }
+
+    for p in picks:
+        p["composite_regime"] = regime
+        p["regime_weight_applied"] = dict(weights)
+        for strat_name, field in score_fields.items():
+            try:
+                cur = float(p.get(field) or 0)
+            except (TypeError, ValueError):
+                cur = 0.0
+            mult = weights.get(strat_name, 1.0)
+            p[field] = cur * mult
+        chosen = (p.get("best_strategy") or "").strip()
+        chosen_field = score_fields.get(chosen)
+        if chosen_field is None:
+            for name, fld in score_fields.items():
+                if (name.lower().replace(" ", "_") ==
+                        chosen.lower().replace(" ", "_")):
+                    chosen_field = fld
+                    break
+        if chosen_field is not None:
+            try:
+                p["best_score"] = float(p.get(chosen_field) or 0)
+            except (TypeError, ValueError):
+                pass
+
+    picks.sort(key=lambda p: float(p.get("best_score") or 0), reverse=True)
+    return picks
