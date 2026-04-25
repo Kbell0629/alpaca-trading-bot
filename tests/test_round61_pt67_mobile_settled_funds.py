@@ -119,6 +119,7 @@ def test_record_close_handles_missing_user_id(monkeypatch, tmp_path):
 def test_record_close_handles_settled_funds_import_failure(monkeypatch):
     """If settled_funds import or call fails, the close path must
     not raise — best-effort only."""
+    monkeypatch.setenv("MASTER_ENCRYPTION_KEY", "a" * 64)
     from handlers import actions_mixin
     class _H:
         user_id = 999
@@ -129,7 +130,17 @@ def test_record_close_handles_settled_funds_import_failure(monkeypatch):
 
 def test_record_close_writes_to_ledger(monkeypatch, tmp_path):
     """A long close at $100 × 10 shares writes a $1000 entry to
-    the user's settled_funds ledger."""
+    the user's settled_funds ledger.
+
+    Pt.67 follow-up: ensure MASTER_ENCRYPTION_KEY is set BEFORE we
+    touch auth so a sibling test that popped auth from sys.modules
+    (e.g. via http_harness) doesn't cause a fresh auth import to
+    fail with `RuntimeError: MASTER_ENCRYPTION_KEY env var is
+    required` when monkeypatch.setattr("auth.user_data_dir", ...)
+    tries to resolve the target attribute path.
+    """
+    monkeypatch.setenv("MASTER_ENCRYPTION_KEY", "a" * 64)
+    import auth  # noqa: F401 — force a fresh import under the env
     from handlers import actions_mixin
     import settled_funds
     # Stub user_data_dir to point into our tmp dir.
