@@ -63,12 +63,45 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-25 — round 61 pt.10-71 SHIPPED)
+## Current session state (2026-04-25 — round 61 pt.10-72 SHIPPED)
 
-**Latest merged batch (pt.65 → pt.71):** seven accuracy + reliability
+**Latest merged batch (pt.65 → pt.72):** eight accuracy + reliability
 PRs closing the 8-item production-readiness list, the SOXL short-
-cover bug, and a follow-up batch (news exits + ADV cap + drawdown
-taper).
+cover bug, and two follow-up batches (news exits + ADV cap +
+drawdown taper, then pre-trade abort + live-mode gate + per-
+symbol cooldown).
+
+**Pt.72 (PR #199) — pre-trade quote abort + live-mode gate + per-
+symbol cooldown.** Three production-readiness items:
+  1. **Pre-trade quote-snapshot abort.** New
+     `pre_trade_check.py` (pure module). Right before placing a
+     deploy order, fetches a fresh `latestQuote`. Aborts if live
+     spread > 0.5% or price drifted > 1% from screener-time price.
+     Fail-open on any fetch error (microstructure insurance, not
+     a hard prerequisite). Wired into `run_auto_deployer` just
+     before the `smart_orders` / market-fallback POST.
+  2. **Live-mode promotion gate.** New `live_mode_gate.py`
+     (pure module). Paper validation ends ~May 15; right now
+     flipping live is a manual eyeball click. New
+     `check_live_mode_readiness(journal, scorecard,
+     audit_findings)` AUTO-blocks the toggle until ≥30 closed
+     trades + ≥45% win rate + ≥0.5 sharpe + ≤15% DD + 0 HIGH
+     audit findings. Override with `override_readiness=true`.
+     Wired into `handlers/auth_mixin.handle_toggle_live_mode`
+     after the existing readiness ≥80 check.
+  3. **Per-symbol 24h cooldown after stop-out.** New
+     `symbol_cooldown.py` (pure module). Prevents re-deploying
+     the same symbol the next morning if its 30-min screener
+     score recovers. Hooks both ends:
+       * `record_trade_close` calls `record_stop_out(state,
+         symbol, exit_reason)` for `stop_hit` / `stop_loss` /
+         `trailing_stop` / `bearish_news` / `dead_money` (NOT
+         `target_hit` — that's a good close).
+       * Auto-deployer pick loop calls `is_on_cooldown` and skips
+         with `"cooldown_after_<reason>: Xh remaining"`.
+     State persisted in `_last_runs["symbol_cooldown"]`. Default 24h.
++47 tests in
+`tests/test_round61_pt72_quote_abort_live_gate_cooldown.py`.
 
 **Pt.71 (PR #198) — news exits + ADV cap + drawdown taper.** Three
 high-impact accuracy improvements:
