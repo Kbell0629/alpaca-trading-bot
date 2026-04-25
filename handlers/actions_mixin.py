@@ -44,6 +44,37 @@ _FORCE_DEPLOY_LAST: dict[int, float] = {}
 _FORCE_DEPLOY_LOCK = threading.Lock()
 
 
+# Round-61 pt.50: helpers for closed-market order queuing.
+
+def _market_is_closed(handler) -> bool:
+    """Best-effort: True if Alpaca's /clock reports the market is
+    NOT open right now. On any error, fall back to False so we
+    don't accidentally queue orders during regular hours.
+    """
+    try:
+        clock = handler.user_api_get(
+            f"{handler.user_api_endpoint}/clock")
+        if isinstance(clock, dict):
+            return not bool(clock.get("is_open", True))
+    except Exception:
+        pass
+    return False
+
+
+def _position_qty(handler, symbol):
+    """Return the current Alpaca-reported qty for a symbol (positive
+    for long, negative for short). Returns None if no matching
+    position or the lookup fails."""
+    try:
+        pos = handler.user_api_get(
+            f"{handler.user_api_endpoint}/positions/{symbol}")
+        if isinstance(pos, dict) and "qty" in pos:
+            return int(float(pos["qty"]))
+    except Exception:
+        pass
+    return None
+
+
 class ActionsHandlerMixin:
     def handle_refresh(self):
         """Run update_dashboard.py with current user's credentials and return fresh data."""
@@ -159,6 +190,44 @@ class ActionsHandlerMixin:
                 )
             }, 400)
 
+        # Pt.50: detect closed market and queue a Market-On-Open order
+        # instead of letting Alpaca reject our DELETE /positions request
+        # with a 403. MOO uses time_in_force="opg" — Alpaca queues the
+        # order through pre-market and fires it at the opening cross.
+        # User intent for "Close" is "get out at next available price"
+        # which MOO satisfies cleanly.
+        if _market_is_closed(self):
+            qty = _position_qty(self, symbol)
+            if qty is None:
+                # Fall through to the original DELETE — Alpaca will
+                # tell us if the position doesn't exist.
+                pass
+            else:
+                # Sell long → side='sell'; cover short → side='buy'.
+                # qty is signed in Alpaca's response: negative = short.
+                side = "buy" if qty < 0 else "sell"
+                queued = self.user_api_post(
+                    f"{self.user_api_endpoint}/orders", {
+                        "symbol": symbol,
+                        "qty": str(abs(qty)),
+                        "side": side,
+                        "type": "market",
+                        "time_in_force": "opg",  # Market-On-Open
+                    })
+                if isinstance(queued, dict) and "error" in queued:
+                    self.send_json({"error": queued["error"]}, 400)
+                else:
+                    self.send_json({
+                        "success": True, "symbol": symbol,
+                        "queued": True,
+                        "message": (f"Market closed — queued {side} "
+                                     f"{abs(qty)} {symbol} as "
+                                     "Market-On-Open. Will fill at "
+                                     "next 9:30 AM ET open."),
+                        "order": queued,
+                    })
+                return
+
         result = self.user_api_delete(f"{self.user_api_endpoint}/positions/{symbol}")
         if isinstance(result, dict) and "error" in result:
             err = result["error"] or ""
@@ -196,12 +265,14 @@ class ActionsHandlerMixin:
                 )
             }, 400)
 
+        # Pt.50: queue as Market-On-Open if market is closed.
+        tif = "opg" if _market_is_closed(self) else "day"
         result = self.user_api_post(f"{self.user_api_endpoint}/orders", {
             "symbol": symbol,
             "qty": str(qty),
             "side": "sell",
             "type": "market",
-            "time_in_force": "day",
+            "time_in_force": tif,
         })
         if isinstance(result, dict) and "error" in result:
             err = result["error"] or ""
@@ -212,7 +283,17 @@ class ActionsHandlerMixin:
                         "to verify the saved credentials authenticate.")
             self.send_json({"error": err}, 400)
         else:
-            self.send_json({"success": True, "symbol": symbol, "qty": qty, "order": result})
+            queued_msg = None
+            if tif == "opg":
+                queued_msg = (f"Market closed — queued sell {qty} "
+                                f"{symbol} as Market-On-Open. Will fill "
+                                "at next 9:30 AM ET open.")
+            self.send_json({
+                "success": True, "symbol": symbol, "qty": qty,
+                "queued": tif == "opg",
+                "message": queued_msg,
+                "order": result,
+            })
     def handle_auto_deployer(self, body):
         """Toggle the auto-deployer on/off by updating the current user's config file."""
         enabled = body.get("enabled", False)
