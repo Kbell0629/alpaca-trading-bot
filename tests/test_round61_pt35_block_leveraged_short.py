@@ -204,30 +204,38 @@ def test_mixed_picks_filter_only_drops_leveraged():
     assert "INTC" in symbols
 
 
-def test_filter_logs_blocked_symbols(capsys):
+def test_filter_logs_blocked_symbols():
     """Operator visibility: the filter must surface blocked symbols
     in the log output so the user can see WHY a leveraged ETF
-    didn't show up in the short-candidates list."""
+    didn't show up in the short-candidates list. Use io.StringIO
+    redirect rather than pytest's capsys fixture — capsys interacts
+    badly with pytest-cov in some CI environments."""
+    import io, contextlib
     from short_strategy import identify_short_candidates
     picks = [
         _strong_short_pick("SOXL"),
         _strong_short_pick("SQQQ"),
         _strong_short_pick("AMD"),
     ]
-    identify_short_candidates(picks)
-    out, _ = capsys.readouterr()
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        identify_short_candidates(picks)
+    out = buf.getvalue()
     assert "SOXL" in out
     assert "SQQQ" in out
     assert "Skipped leveraged" in out or "leveraged" in out.lower()
 
 
-def test_filter_silent_when_no_blocked_picks(capsys):
+def test_filter_silent_when_no_blocked_picks():
     """If all picks are normal stocks, the filter should NOT emit a
     log line — quiet operation when nothing is filtered."""
+    import io, contextlib
     from short_strategy import identify_short_candidates
     picks = [_strong_short_pick("AMD"), _strong_short_pick("INTC")]
-    identify_short_candidates(picks)
-    out, _ = capsys.readouterr()
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        identify_short_candidates(picks)
+    out = buf.getvalue()
     assert "Skipped leveraged" not in out
 
 
