@@ -14,14 +14,31 @@ _HERE = pathlib.Path(__file__).resolve().parent.parent
 _SIGNUP = (_HERE / "templates" / "signup.html").read_text()
 
 
-def test_invite_code_label_appears_only_once():
-    """The section header is "Invite code"; there must NOT be a
-    redundant <label>Invite code</label> on the input below it."""
-    # Section title still present.
+def test_invite_code_label_visually_hidden_not_duplicated():
+    """The section header is the VISIBLE "Invite code" label. The
+    a11y `<label for="invite_code">` is preserved (pt.8 contract)
+    but its inner text is wrapped in `.pt76-sr-only` so it doesn't
+    duplicate the section header on screen. Pt.8's source-pin in
+    test_round61_pt8_audit_concurrency_fixes still passes."""
+    # Section header still visible.
     assert '<div class="section-title">Invite code</div>' in _SIGNUP
-    # No `<label for="invite_code">Invite code</label>` block.
-    assert '<label for="invite_code">' not in _SIGNUP
-    assert '<label>Invite code</label>' not in _SIGNUP
+    # Label still present (pt.8 a11y contract).
+    assert '<label for="invite_code">' in _SIGNUP
+    # Label text wrapped in sr-only span so it's invisible.
+    assert '<span class="pt76-sr-only">Invite code</span></label>' in _SIGNUP
+    # The hidden-label class itself is defined.
+    assert ".pt76-sr-only" in _SIGNUP
+
+
+def test_pt76_sr_only_class_uses_standard_pattern():
+    """The sr-only utility uses the standard CSS pattern (1px
+    clipped, position absolute) so screen readers still pick it up."""
+    idx = _SIGNUP.find(".pt76-sr-only")
+    assert idx > 0
+    block = _SIGNUP[idx:idx + 400]
+    assert "position:absolute" in block
+    assert "clip:" in block
+    assert "width:1px" in block
 
 
 def test_invite_code_help_text_is_concise():

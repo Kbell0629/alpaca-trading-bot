@@ -28,6 +28,18 @@ button:disabled { opacity:0.5; cursor:not-allowed; transform:none; box-shadow:no
 .auth-links a:hover { text-decoration:underline; }
 .error { background:rgba(239,68,68,0.12); color:var(--red); padding:10px 12px; border-radius:8px; font-size:13px; margin-bottom:14px; display:none; border:1px solid rgba(239,68,68,0.30); }
 .help-text { font-size:11px; color:var(--text-dim); margin-top:4px; line-height:1.4; }
+/* Round-61 pt.76: visually-hidden label for the invite-code input.
+   The section header above the input is the visible label, but
+   screen readers + click-to-focus need an actual <label for=...>
+   association. This class hides it visually while keeping it in
+   the accessibility tree (standard sr-only pattern). */
+.pt76-sr-only {
+  position:absolute !important;
+  width:1px; height:1px;
+  padding:0; margin:-1px;
+  overflow:hidden; clip:rect(0,0,0,0);
+  white-space:nowrap; border:0;
+}
 /* Round-61 pt.74: trust copy + password visibility */
 .pt74-trust-row { display:flex; flex-direction:column; gap:6px; padding:12px 0 4px; font-size:12px; color:var(--text-dim); line-height:1.5; }
 .pt74-trust-row .trust-item { display:inline-flex; align-items:flex-start; gap:8px; }
@@ -93,6 +105,12 @@ button:disabled { opacity:0.5; cursor:not-allowed; transform:none; box-shadow:no
 
     <div class="section-title">Invite code</div>
     <div class="form-group">
+      <!-- Round-61 pt.76: label preserves click-to-focus + screen-
+           reader association (pt.8 a11y contract pins the exact
+           `<label for="invite_code">` opener). The visible text is
+           wrapped in .pt76-sr-only so it doesn't duplicate the
+           section header on screen. -->
+      <label for="invite_code"><span class="pt76-sr-only">Invite code</span></label>
       <input type="text" id="invite_code" placeholder="Leave blank if you don't have one" autocomplete="off">
       <div class="help-text">Only required if an admin sent you a single-use link.</div>
     </div>
