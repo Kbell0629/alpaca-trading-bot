@@ -1346,6 +1346,61 @@ def monitor_strategies(user, extended_hours=False):
         sdir = user_strategies_dir(user)
         if not os.path.isdir(sdir):
             return
+
+        # Round-61 pt.65: live-data divergence sweep (RTH only).
+        # Pt.63 shipped live_data_monitor as a pure module; pt.65
+        # wires it in. For each held position, compare the bot's
+        # last-seen current_price against Alpaca's latest_trade.
+        # If divergent (>= 4% by default), notify the user once
+        # per session per symbol so they can investigate stale
+        # quotes / halts / split mismatches before the next exit
+        # decision runs against bad data. Read-only: never closes
+        # or modifies a position.
+        if not extended_hours:
+            try:
+                import live_data_monitor as _ldm
+                _data_ep = (user.get("_data_endpoint")
+                             or "https://data.alpaca.markets/v2")
+                _live_positions = user_api_get(user, "/positions")
+                if isinstance(_live_positions, list) and _live_positions:
+                    def _latest_trade_fn(sym):
+                        resp = user_api_get(
+                            user,
+                            f"{_data_ep}/stocks/{sym}/trades/latest")
+                        if isinstance(resp, dict):
+                            t = resp.get("trade") or {}
+                            p = t.get("p")
+                            try:
+                                return float(p) if p is not None else None
+                            except (TypeError, ValueError):
+                                return None
+                        return None
+                    _div = _ldm.check_position_divergence(
+                        _live_positions, _latest_trade_fn,
+                        threshold_pct=2.0)
+                    for _alert in _div.get("alerts", []) or []:
+                        _sym = _alert.get("symbol")
+                        _key = f"divergence_alert_{user.get('id')}_{_sym}"
+                        if _last_runs.get(_key):
+                            continue   # already alerted this session
+                        log(f"[{user['username']}] {_sym}: live-data "
+                            f"divergence — bot ${_alert.get('bot_price')} "
+                            f"vs Alpaca ${_alert.get('live_price')} "
+                            f"({_alert.get('delta_pct'):+.2f}%)",
+                            "monitor")
+                        notify_user(
+                            user,
+                            f"Price divergence on {_sym}: bot saw "
+                            f"${_alert.get('bot_price')}, Alpaca "
+                            f"${_alert.get('live_price')} "
+                            f"({_alert.get('delta_pct'):+.2f}%) — "
+                            "verify the position before next exit.",
+                            "alert")
+                        _last_runs[_key] = time.time()
+            except Exception as _ldm_e:
+                log(f"[{user['username']}] divergence sweep failed: "
+                    f"{_ldm_e}", "monitor")
+
         for fname in os.listdir(sdir):
             if not fname.endswith(".json"):
                 continue
