@@ -8,11 +8,43 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.40 — multi-day breakout confirmation (+22 tests)
+
+**Date:** 2026-04-25
+
+User-prioritised screener accuracy improvement #2: single-day
+breakouts have the well-known "Tuesday-fake-Wednesday-collapse"
+failure mode. Academic momentum research consistently shows
+two-bar confirmation lifts win rate ~10-15 points at the cost of
+~20% fewer entries — net positive.
+
+### What landed
+
+* **`screener_core.apply_breakout_confirmation(picks, bars_map,
+  lookback=20)`** — pure helper. Per Breakout-strategy pick,
+  requires both today's close > today's 20-day high AND yesterday's
+  close > yesterday's 20-day high. Confirmed picks tag with
+  `breakout_confirmed=True` + level/above flags. Unconfirmed picks
+  get `_breakout_unconfirmed=True` and BOTH `best_score` AND
+  `breakout_score` halved. Demoted, not eliminated.
+* Wired into `update_dashboard.py` after factor scoring. Zero
+  extra API calls (uses same `factor_bars`).
+* Fail-open: insufficient bars / corrupt data / non-Breakout
+  strategy passes through unchanged.
+
+### Tests
++22 in `tests/test_round61_pt40_breakout_confirmation.py` covering
+`_max_high_window` math, confirmed/unconfirmed branches, strategy
+gating (case-insensitive), fail-open paths, sort order, both score
+fields halved, source-pin wiring.
+
+---
+
 ## 🆕 Round-61 pt.39 — trend filter: block longs below 50-MA, shorts above (+23 tests)
 
 **Date:** 2026-04-25
 
-User-prioritised highest-ROI screener accuracy improvement: most
+User-prioritised highest-ROI screener accuracy improvement. Most
 "fake breakouts" happen on stocks BELOW their 50-day MA — they look
 exciting on the daily but are dead-cat-bouncing inside a downtrend.
 Mirror problem on the short side.
@@ -20,46 +52,16 @@ Mirror problem on the short side.
 ### What landed
 
 * **`screener_core.apply_trend_filter(picks, bars_map, period=50)`**
-  — pure helper. Computes SMA(50) from `bars_map[symbol]` closes,
-  tags every pick with `sma_50` + `above_sma_50`, and gates strategy
-  selection:
-  * **Long strategies** (breakout / trailing_stop / mean_reversion /
-    pead / copy_trading) require `price > SMA(50)`. Otherwise:
-    `best_score → 0`, `will_deploy → False`,
-    `_filtered_by_trend = "below_sma"`, `_filtered_strategy =
-    <original>`. The pick stays in the list with explanatory tags.
-  * **Short strategies** (short_sell) require `price < SMA(50)`.
-    Otherwise: same filter pattern with `"above_sma"`.
-  * **Fail-open** on missing data: picks without enough bars pass
-    through unchanged. Never block a deploy due to a stale snapshot.
-* **Wired into `update_dashboard.py`** after `apply_factor_scores`,
-  using the same `factor_bars` already fetched for RS ranking.
-  Zero extra API calls. Logs `Trend filter: blocked N picks` when
-  filtering occurs.
-
-### Why it matters
-Academic research consistently shows: "buy strength + sell weakness"
-trend-aligned setups have ~10-15 win-rate points over counter-trend
-setups. The bot's breakout strategy's recent 0/7 record may partly
-reflect picks that were structurally below their 50-MA — pt.39
-prevents that class of error before deployment.
+  — pure helper. Computes SMA(50) from bars_map closes, tags every
+  pick with `sma_50` + `above_sma_50`, gates long strategies on
+  `price > SMA(50)`, short strategies on `price < SMA(50)`. Filtered
+  picks tagged with `_filtered_by_trend` (kept in list for dashboard
+  visibility). Fail-open on missing data.
+* Wired into `update_dashboard.py` after `apply_factor_scores`
+  (zero extra API calls).
 
 ### Tests
-+23 in `tests/test_round61_pt39_trend_filter.py` covering:
-* `_sma_from_closes` happy path + insufficient-bars + corrupt input.
-* Long above/at/below 50-MA — pass / filter at boundary / filter.
-* Short above/at/below 50-MA — filter / filter at boundary / pass.
-* Every strategy in `_LONG_STRATEGIES` gets filtered consistently.
-* Fail-open behaviours (no bars, too few bars, zero price, no
-  best_strategy, unknown strategy).
-* Mixed-side picks filter independently.
-* Re-sort: filtered picks drop to the bottom.
-* Source-pin: wired into update_dashboard, runs AFTER factor scoring.
-
-### Touched files
-- `screener_core.py` (new helper + frozensets)
-- `update_dashboard.py` (call site after `apply_factor_scores`)
-- `tests/test_round61_pt39_trend_filter.py` (new)
++23 in `tests/test_round61_pt39_trend_filter.py`
 
 ---
 
