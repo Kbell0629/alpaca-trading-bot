@@ -1,42 +1,65 @@
 <!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>Login - Stock Trading Bot</title>
+<html><head><meta charset="UTF-8"><title>Sign in · Stock Trading Bot</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-:root { --bg:#0a0e17; --card:#111827; --border:#1e293b; --text:#e2e8f0; --text-dim:#94a3b8; --accent:#3b82f6; --green:#10b981; --red:#ef4444; }
+:root { --bg:#0a0e17; --card:#111827; --border:#1e293b; --text:#e2e8f0; --text-dim:#94a3b8; --accent:#3b82f6; --green:#10b981; --red:#ef4444; --orange:#f59e0b; }
 * { box-sizing:border-box; margin:0; padding:0; }
-body { font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',sans-serif; background:linear-gradient(135deg,var(--bg) 0%,#1e1b4b 100%); color:var(--text); min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
-.auth-box { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:40px; width:100%; max-width:400px; box-shadow:0 20px 60px rgba(0,0,0,0.5); }
-.auth-box h1 { font-size:24px; margin-bottom:8px; background:linear-gradient(135deg,var(--accent),#8b5cf6); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
-.auth-box p { color:var(--text-dim); font-size:13px; margin-bottom:24px; }
-.form-group { margin-bottom:16px; }
-label { display:block; font-size:12px; color:var(--text-dim); margin-bottom:6px; text-transform:uppercase; letter-spacing:0.5px; }
-input { width:100%; padding:12px; background:rgba(10,14,23,0.5); border:1px solid var(--border); border-radius:8px; color:var(--text); font-size:16px; transition:border 0.2s; }
-input:focus { outline:none; border-color:var(--accent); }
-button { width:100%; padding:14px; background:linear-gradient(135deg,var(--accent),#8b5cf6); color:white; border:none; border-radius:8px; font-size:14px; font-weight:700; cursor:pointer; transition:transform 0.15s; }
-button:hover { transform:translateY(-1px); }
-button:disabled { opacity:0.5; cursor:not-allowed; }
-.auth-links { margin-top:20px; text-align:center; font-size:13px; color:var(--text-dim); }
-.auth-links a { color:var(--accent); text-decoration:none; }
+body { font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',sans-serif; background:linear-gradient(135deg,var(--bg) 0%,#1e1b4b 100%); color:var(--text); min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; line-height:1.5; }
+.auth-box { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:40px 36px; width:100%; max-width:420px; box-shadow:0 20px 60px rgba(0,0,0,0.5); }
+.brand-lockup { display:flex; align-items:center; gap:10px; margin-bottom:18px; }
+.brand-mark { width:36px; height:36px; border-radius:10px; background:linear-gradient(135deg,var(--accent),#8b5cf6); display:flex; align-items:center; justify-content:center; font-weight:800; font-size:18px; color:#fff; box-shadow:0 6px 18px rgba(59,130,246,0.35); }
+.auth-box h1 { font-size:22px; font-weight:800; letter-spacing:-0.2px; background:linear-gradient(135deg,var(--accent),#8b5cf6); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.auth-box .subtitle { color:var(--text-dim); font-size:13px; margin-bottom:6px; }
+.form-group { margin-bottom:14px; }
+label { display:block; font-size:11px; color:var(--text-dim); margin-bottom:6px; text-transform:uppercase; letter-spacing:0.6px; font-weight:700; }
+input { width:100%; padding:12px 14px; background:rgba(10,14,23,0.55); border:1px solid var(--border); border-radius:8px; color:var(--text); font-size:15px; transition:border 0.15s, background 0.15s; font-family:inherit; }
+input:focus { outline:none; border-color:var(--accent); background:rgba(10,14,23,0.85); }
+button { width:100%; padding:13px; background:linear-gradient(135deg,var(--accent),#8b5cf6); color:white; border:none; border-radius:8px; font-size:14px; font-weight:700; cursor:pointer; transition:transform 0.12s, box-shadow 0.12s; letter-spacing:0.2px; }
+button:hover { transform:translateY(-1px); box-shadow:0 8px 20px rgba(59,130,246,0.30); }
+button:disabled { opacity:0.5; cursor:not-allowed; transform:none; box-shadow:none; }
+.auth-links { margin-top:22px; text-align:center; font-size:13px; color:var(--text-dim); }
+.auth-links a { color:var(--accent); text-decoration:none; font-weight:600; }
 .auth-links a:hover { text-decoration:underline; }
-.error { background:rgba(239,68,68,0.15); color:var(--red); padding:10px; border-radius:8px; font-size:13px; margin-bottom:16px; display:none; }
-.success { background:rgba(16,185,129,0.15); color:var(--green); padding:10px; border-radius:8px; font-size:13px; margin-bottom:16px; display:none; }
+.error { background:rgba(239,68,68,0.12); color:var(--red); padding:10px 12px; border-radius:8px; font-size:13px; margin-bottom:14px; display:none; border:1px solid rgba(239,68,68,0.30); }
+.success { background:rgba(16,185,129,0.12); color:var(--green); padding:10px 12px; border-radius:8px; font-size:13px; margin-bottom:14px; display:none; border:1px solid rgba(16,185,129,0.30); }
+/* Round-61 pt.74: trust copy + password visibility toggle */
+.pt74-trust-row { display:flex; flex-direction:column; gap:6px; margin:18px 0 10px; padding-top:14px; border-top:1px solid var(--border); font-size:12px; color:var(--text-dim); line-height:1.5; }
+.pt74-trust-row .trust-item { display:inline-flex; align-items:flex-start; gap:8px; }
+.pt74-trust-row .trust-item::before { content:"✓"; color:var(--green); font-weight:700; flex:0 0 12px; }
+.pt74-pw-wrapper { position:relative; }
+.pt74-pw-toggle { position:absolute; right:8px; top:50%; transform:translateY(-50%); background:transparent; width:auto; padding:4px 8px; color:var(--text-dim); border:1px solid var(--border); border-radius:5px; font-size:10px; font-weight:700; letter-spacing:0.4px; text-transform:uppercase; cursor:pointer; transition:color 0.15s, background 0.15s; }
+.pt74-pw-toggle:hover { color:var(--text); background:rgba(255,255,255,0.06); transform:translateY(-50%); box-shadow:none; }
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration:0.01ms !important; transition-duration:0.01ms !important; }
+}
 </style></head><body>
 <div class="auth-box">
-  <h1>Stock Bot Login</h1>
-  <p>Sign in to your trading dashboard</p>
-  <div id="error" class="error"></div>
+  <div class="brand-lockup">
+    <div class="brand-mark" aria-hidden="true">📈</div>
+    <h1>Stock Bot</h1>
+  </div>
+  <p class="subtitle">Sign in to your trading dashboard.</p>
+  <div id="error" class="error" role="alert"></div>
   <div id="success" class="success"></div>
-  <form id="loginForm">
+  <form id="loginForm" novalidate>
     <div class="form-group">
-      <label for="username">Username or Email</label>
-      <input type="text" id="username" name="username" required autofocus>
+      <label for="username">Username or email</label>
+      <input type="text" id="username" name="username" required autofocus autocomplete="username" autocapitalize="none" spellcheck="false">
     </div>
     <div class="form-group">
       <label for="password">Password</label>
-      <input type="password" id="password" name="password" required autocomplete="current-password">
+      <div class="pt74-pw-wrapper">
+        <input type="password" id="password" name="password" required autocomplete="current-password">
+        <button type="button" class="pt74-pw-toggle" aria-label="Show password">Show</button>
+      </div>
     </div>
-    <button type="submit">Sign In</button>
+    <button type="submit">Sign in</button>
   </form>
+  <div class="pt74-trust-row" aria-label="Trust assurances">
+    <span class="trust-item">Paper-trading by default — no real money is at risk until you enable live mode.</span>
+    <span class="trust-item">API credentials are AES-256-GCM encrypted at rest.</span>
+    <span class="trust-item">No trades fire without explicit setup.</span>
+  </div>
   <div class="auth-links">
     <a href="/forgot">Forgot password?</a>
     <br><br>
@@ -44,11 +67,34 @@ button:disabled { opacity:0.5; cursor:not-allowed; }
   </div>
 </div>
 <script>
+// Password visibility toggle
+(function () {
+    var btns = document.querySelectorAll('.pt74-pw-toggle');
+    btns.forEach(function (btn) {
+        btn.addEventListener('click', function (ev) {
+            ev.preventDefault();
+            var wrap = btn.closest('.pt74-pw-wrapper');
+            if (!wrap) return;
+            var input = wrap.querySelector('input');
+            if (!input) return;
+            if (input.type === 'password') {
+                input.type = 'text';
+                btn.textContent = 'Hide';
+                btn.setAttribute('aria-label', 'Hide password');
+            } else {
+                input.type = 'password';
+                btn.textContent = 'Show';
+                btn.setAttribute('aria-label', 'Show password');
+            }
+        });
+    });
+})();
+
 document.getElementById('loginForm').addEventListener('submit', async function(e) {
   e.preventDefault();
-  var btn = e.target.querySelector('button');
+  var btn = e.target.querySelector('button[type="submit"]');
   btn.disabled = true;
-  btn.textContent = 'Signing in...';
+  btn.textContent = 'Signing in…';
   var err = document.getElementById('error');
   err.style.display = 'none';
   try {
@@ -67,13 +113,13 @@ document.getElementById('loginForm').addEventListener('submit', async function(e
       err.textContent = data.error || 'Login failed';
       err.style.display = 'block';
       btn.disabled = false;
-      btn.textContent = 'Sign In';
+      btn.textContent = 'Sign in';
     }
   } catch(e) {
     err.textContent = 'Network error: ' + e.message;
     err.style.display = 'block';
     btn.disabled = false;
-    btn.textContent = 'Sign In';
+    btn.textContent = 'Sign in';
   }
 });
 </script></body></html>

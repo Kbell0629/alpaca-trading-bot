@@ -156,7 +156,8 @@ describe('openClosePositionModal — equity path', () => {
     // Long 18 shares AAPL bought at $150, current $160
     api.openClosePositionModal('AAPL', 18, 150, 160, 180, 6.67);
     const title = document.getElementById('closeModalTitle').textContent;
-    expect(title).toBe('Close AAPL Position');
+    // Round-61 pt.74: copy pass softened "Position" → "position" (sentence case).
+    expect(title).toBe('Close AAPL position');
     const details = document.getElementById('closeModalDetails').textContent;
     // Shares
     expect(details).toContain('18 shares of AAPL');

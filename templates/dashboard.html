@@ -1958,6 +1958,197 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
     * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
     .spinning { animation-duration: 0.8s !important; }   /* keep the spinner */
 }
+
+/* ============================================================================
+   Round-61 pt.74 — UI/UX "Pro" polish
+   Focus Mode, skeleton loaders, last-updated chips, sticky table headers,
+   risk-context badges. Additive — does not change existing structure.
+   ============================================================================ */
+
+/* --- Focus Mode: hides decorative + secondary panels for execution-only view */
+body.focus-mode .panel-decorative,
+body.focus-mode .factor-section,
+body.focus-mode #voiceBtn,
+body.focus-mode #helpBtn,
+body.focus-mode #recentActivityCard,
+body.focus-mode .nav-scroll-hint,
+body.focus-mode .panel-tertiary {
+    display: none !important;
+}
+body.focus-mode .header-v2 { padding: 8px 16px; }
+body.focus-mode .nav-tabs { padding: 4px 8px; }
+
+/* Focus Mode toggle pill itself */
+.focus-mode-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: rgba(59,130,246,0.12);
+    border: 1px solid rgba(59,130,246,0.35);
+    border-radius: 999px;
+    padding: 5px 11px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.4px;
+    color: var(--accent); cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+.focus-mode-pill:hover { background: rgba(59,130,246,0.22); }
+.focus-mode-pill[aria-pressed="true"] {
+    background: var(--accent); color: #fff;
+    border-color: var(--accent);
+}
+
+/* --- Skeleton loaders: shimmer placeholder while content fetches */
+.pt74-skeleton {
+    display: block;
+    background: linear-gradient(
+        90deg,
+        rgba(255,255,255,0.04) 0%,
+        rgba(255,255,255,0.10) 50%,
+        rgba(255,255,255,0.04) 100%);
+    background-size: 200% 100%;
+    border-radius: 6px;
+    animation: pt74Shimmer 1.4s ease-in-out infinite;
+    min-height: 14px;
+}
+@keyframes pt74Shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+.pt74-skeleton-line { height: 14px; margin-bottom: 8px; }
+.pt74-skeleton-line.lg { height: 22px; }
+.pt74-skeleton-line.sm { height: 10px; }
+.pt74-skeleton-line.w-25 { width: 25%; }
+.pt74-skeleton-line.w-50 { width: 50%; }
+.pt74-skeleton-line.w-75 { width: 75%; }
+.pt74-skeleton-line.w-100 { width: 100%; }
+.pt74-skeleton-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px; padding: 6px 0;
+}
+.pt74-skeleton-card {
+    background: rgba(59,130,246,0.04);
+    border: 1px solid rgba(59,130,246,0.10);
+    border-radius: 8px; padding: 12px;
+}
+
+/* --- Last-updated freshness chip */
+.pt74-fresh-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 10px; color: var(--text-dim);
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 999px;
+    padding: 3px 9px;
+    font-weight: 600; letter-spacing: 0.3px;
+    text-transform: none;
+}
+.pt74-fresh-chip.stale { color: var(--orange); border-color: rgba(245,158,11,0.35); }
+.pt74-fresh-chip.error { color: var(--red); border-color: rgba(239,68,68,0.35); }
+.pt74-fresh-chip .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--green);
+}
+.pt74-fresh-chip.stale .dot { background: var(--orange); }
+.pt74-fresh-chip.error .dot { background: var(--red); }
+
+/* --- Sticky table headers + density polish */
+.pt74-sticky-table thead th,
+.pt74-sticky-table thead tr th {
+    position: sticky; top: 0; z-index: 5;
+    background: rgba(15,23,42,0.96);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border-bottom: 1px solid rgba(255,255,255,0.10);
+}
+
+/* --- Risk-context inline badge (e.g. "PAPER · max −$300/day") */
+.pt74-risk-badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 10px; font-weight: 600; letter-spacing: 0.3px;
+    color: var(--text-dim);
+    background: rgba(245,158,11,0.06);
+    border: 1px solid rgba(245,158,11,0.20);
+    padding: 3px 8px;
+    border-radius: 6px;
+}
+.pt74-risk-badge.live {
+    color: var(--red); background: rgba(239,68,68,0.08);
+    border-color: rgba(239,68,68,0.28);
+}
+
+/* --- Auth polish: trust copy + password visibility */
+.pt74-trust-row {
+    display: flex; flex-wrap: wrap; gap: 12px;
+    margin: 14px 0 4px;
+    font-size: 12px; color: var(--text-dim);
+}
+.pt74-trust-row .trust-item {
+    display: inline-flex; align-items: center; gap: 6px;
+    line-height: 1.4;
+}
+.pt74-trust-row .trust-item::before {
+    content: "✓"; color: var(--green); font-weight: 700;
+}
+.pt74-pw-toggle {
+    position: absolute; right: 10px; top: 50%;
+    transform: translateY(-50%);
+    background: transparent; border: 0;
+    color: var(--text-dim); cursor: pointer;
+    font-size: 11px; padding: 2px 6px;
+    border-radius: 4px;
+    text-transform: uppercase; letter-spacing: 0.4px;
+}
+.pt74-pw-toggle:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+.pt74-pw-wrapper { position: relative; }
+
+/* --- Tone down decorative pulses by 30% (keep alert pulses bright) */
+@media (prefers-reduced-motion: no-preference) {
+    .pt74-soft-pulse { animation-duration: 4s !important; opacity: 0.85; }
+}
+
+/* --- Focus Mode hides also: scheduler/log heatmap (decorative-by-default) */
+body.focus-mode #heatmapCard,
+body.focus-mode #schedulerCard,
+body.focus-mode #section-scheduler,
+body.focus-mode #section-perf-attribution {
+    display: none !important;
+}
+
+/* --- Item 4: header cluster grouping. Group every header-icon-btn
+   into visual clusters (status / trading / utilities) with subtle
+   dividers so the eye scans naturally. The pt.74 Focus pill counts
+   as the first cluster anchor. */
+.header-actions {
+    display: flex; align-items: center; gap: 6px;
+    flex-wrap: wrap;
+}
+.header-actions > .focus-mode-pill {
+    margin-right: 6px;
+    border-right: 1px solid rgba(255,255,255,0.10);
+    padding-right: 12px; border-radius: 999px;
+}
+.header-actions > .force-deploy-btn,
+.header-actions > .voice-btn-v2 { /* trading cluster — subtle group */ }
+.header-actions > .help-btn-v2,
+.header-actions > .refresh-btn-v2 {
+    /* utilities cluster — separator before */
+    border-left: 1px solid rgba(255,255,255,0.06);
+    margin-left: 4px;
+    padding-left: 8px;
+}
+@media (max-width: 600px) {
+    .header-actions > .focus-mode-pill {
+        border-right: 0; padding-right: 6px;
+    }
+}
+
+/* --- Item 1: info hierarchy. Decorate panel-tertiary section
+   header with a subtle "advanced" hint so users understand it's
+   collapsible-by-default. */
+.panel-tertiary > h3::after {
+    content: " · advanced";
+    font-size: 0.7em; color: var(--text-dim); font-weight: 500;
+    text-transform: lowercase; letter-spacing: 0.4px;
+    margin-left: 6px;
+}
 </style>
 </head>
 <body>
@@ -2025,8 +2216,11 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
 <!-- Close Position Modal (Enhanced with P&L) -->
 <div class="modal-overlay" id="closeModal">
   <div class="modal" style="--modal-w:500px;max-width:500px">
-    <h2 id="closeModalTitle">Close Position</h2>
-    <div class="modal-subtitle" id="closeModalSubtitle">Are you sure you want to close this position?</div>
+    <h2 id="closeModalTitle">Close position</h2>
+    <div class="modal-subtitle" id="closeModalSubtitle">Closing sells the entire position at the next available market price.</div>
+    <!-- Round-61 pt.74: risk badge surfaces paper/live + remaining
+         daily-loss budget at the action site. -->
+    <div id="closeRiskBadge" style="margin:6px 0 10px"></div>
     <div id="closeModalDetails" style="background:var(--bg);border-radius:8px;padding:14px;margin:12px 0;font-size:13px;"></div>
     <div class="modal-info-box" id="closeInfoBox">
       <div class="info-title">If You Close Now</div>
@@ -2151,22 +2345,25 @@ button[aria-busy="true"] { opacity: 0.7; cursor: wait; }
 
 <div class="modal-overlay" id="killSwitchModal">
   <div class="modal" style="--modal-w:540px;max-width:540px">
-    <h2 style="color:var(--red)">EMERGENCY KILL SWITCH</h2>
+    <h2 style="color:var(--red)">Emergency kill switch</h2>
+    <!-- Round-61 pt.74: risk-context badge tells the user which
+         account this affects right at the action site. -->
+    <div id="killSwitchRiskBadge" style="margin:6px 0 10px"></div>
     <div class="modal-subtitle">This will immediately:</div>
     <div class="modal-info-box warning" style="border-color:rgba(239,68,68,0.3);background:rgba(239,68,68,0.08)">
       <ul style="margin:0;padding-left:18px;line-height:2;font-size:13px">
-        <li>Cancel ALL open orders</li>
-        <li>Sell ALL positions at market price</li>
+        <li>Cancel every open order</li>
+        <li>Sell every position at market</li>
         <li>Disable the auto-deployer</li>
         <li>Stop all new trades</li>
       </ul>
     </div>
     <div style="background:var(--bg);border-radius:8px;padding:14px;margin:12px 0;font-size:13px;line-height:1.6;color:var(--text-dim)">
-      Your current positions will be closed at whatever the market price is right now. This cannot be undone.
+      Positions close at the current market price. This cannot be undone.
     </div>
     <div class="modal-actions">
       <button class="btn-ghost" onclick="closeModal('killSwitchModal')">Cancel</button>
-      <button class="btn-danger" style="font-size:14px;font-weight:800;letter-spacing:0.5px" onclick="executeKillSwitch()">ACTIVATE KILL SWITCH</button>
+      <button class="btn-danger" style="font-size:14px;font-weight:800;letter-spacing:0.5px" onclick="executeKillSwitch()">Activate kill switch</button>
     </div>
   </div>
 </div>
@@ -3374,8 +3571,19 @@ function openClosePositionModal(symbol, qty, avgEntry, currentPrice, pnl, pnlPct
     }
     // Equity position — original concise path.
     const proceeds = (currentPrice * qty).toFixed(2);
-    document.getElementById('closeModalTitle').textContent = 'Close ' + symbol + ' Position';
-    document.getElementById('closeModalSubtitle').textContent = '';
+    document.getElementById('closeModalTitle').textContent = 'Close ' + symbol + ' position';
+    document.getElementById('closeModalSubtitle').textContent = 'Sells the full position at the next available market price.';
+    // Round-61 pt.74: surface paper/live mode at the action site.
+    try {
+        var crb = document.getElementById('closeRiskBadge');
+        if (crb && typeof pt74RenderRiskBadge === 'function') {
+            var live = !!window.currentSessionMode && window.currentSessionMode === 'live';
+            crb.innerHTML = pt74RenderRiskBadge({
+                live: live,
+                detail: 'Affects ' + (live ? 'LIVE' : 'PAPER') + ' account only',
+            });
+        }
+    } catch (e) {}
     document.getElementById('closeModalDetails').innerHTML =
         '<div class="modal-detail-row"><span class="detail-label">You own</span><span class="detail-value">' + qty + ' shares of ' + symbol + '</span></div>' +
         '<div class="modal-detail-row"><span class="detail-label">Bought at</span><span class="detail-value">' + fmtMoney(avgEntry) + '</span></div>' +
@@ -3864,6 +4072,20 @@ async function adoptOrphanPositions() {
 }
 
 function openKillSwitchModal() {
+    // Round-61 pt.74: surface paper/live + max-loss-remaining at the
+    // action site so the user knows exactly what this affects.
+    try {
+        var badge = document.getElementById('killSwitchRiskBadge');
+        if (badge && typeof pt74RenderRiskBadge === 'function') {
+            var live = !!window.currentSessionMode && window.currentSessionMode === 'live';
+            badge.innerHTML = pt74RenderRiskBadge({
+                live: live,
+                detail: 'Affects ' + (live ? 'LIVE' : 'PAPER') + ' account only',
+                title: 'This kill switch affects only the ' +
+                    (live ? 'LIVE' : 'PAPER') + ' account state',
+            });
+        }
+    } catch (e) {}
     openModal('killSwitchModal');
 }
 
@@ -4109,9 +4331,13 @@ async function refreshAnalyticsPanel() {
         // ticks don't flash the panel back to "Loading..." while a
         // refresh is mid-flight.
         _analyticsLastPayload = d;
+        // Round-61 pt.74: track freshness for the chip.
+        window._analyticsLastFetchedAt = Date.now();
+        window._analyticsLastFetchError = false;
         renderAnalyticsPanel(d);
     } catch (e) {
         clearTimeout(timer);
+        window._analyticsLastFetchError = true;
         var msg = (e.name === 'AbortError')
             ? 'Request timed out after 30s. Server may be slow or restarting — try Refresh.'
             : esc(e.message);
@@ -4621,9 +4847,13 @@ async function refreshTradesPanel() {
         // ticks don't flash the panel back to "Loading..." while a
         // refresh is mid-flight.
         _tradesLastPayload = d;
+        // Round-61 pt.74: track freshness for the chip.
+        window._tradesLastFetchedAt = Date.now();
+        window._tradesLastFetchError = false;
         renderTradesPanel(d);
     } catch (e) {
         clearTimeout(timer);
+        window._tradesLastFetchError = true;
         var msg = (e.name === 'AbortError')
             ? 'Request timed out after 30s. Server may be slow or restarting — try Refresh.'
             : esc(e.message);
@@ -7005,6 +7235,8 @@ function renderDashboard() {
                     })() +
                 '</div>' +
                 '<div class="header-actions">' +
+                    /* Round-61 pt.74: Focus Mode toggle. */
+                    '<button class="focus-mode-pill" id="focusModePill" onclick="toggleFocusMode()" aria-pressed="false" title="Toggle Focus Mode">\u25CE FOCUS</button>' +
                     '<button class="header-icon-btn force-deploy-btn" onclick="forceAutoDeploy()" title="Force auto-deployer to run now" aria-label="Force auto-deployer to run now">\u26A1</button>' +
                     '<button class="header-icon-btn voice-btn-v2" id="voiceBtn" onclick="toggleVoice()" title="Voice commands" aria-label="Toggle voice commands">\ud83c\udfa4</button>' +
                     '<button class="header-icon-btn help-btn-v2" onclick="openReadme()" title="User guide" aria-label="Open user guide">\ud83d\udcd6</button>' +
@@ -7226,7 +7458,10 @@ function renderDashboard() {
                     '</span>' +
                 '</h3>' +
                 posSummaryHtml +
-                '<table><thead><tr>' +
+                /* Round-61 pt.74: pt74-sticky-table makes the header
+                   row stay visible while the user scrolls a long
+                   positions list. */
+                '<table class="pt74-sticky-table"><thead><tr>' +
                     '<th>Symbol</th>' +
                     '<th>Qty</th>' +
                     '<th>Avg Entry</th>' +
@@ -7246,7 +7481,7 @@ function renderDashboard() {
                     '<a class="btn-ghost btn-sm" href="/api/export/orders.csv" download="orders.csv" style="text-decoration:none" title="Download orders as CSV">⬇ CSV</a>' +
                 '</h3>' +
                 ordSummaryHtml +
-                '<table><thead><tr><th>Symbol</th><th>Side</th><th>Type</th><th>Qty</th><th>Price</th><th class="hide-narrow">Status</th><th>Actions</th></tr></thead>' +
+                '<table class="pt74-sticky-table"><thead><tr><th>Symbol</th><th>Side</th><th>Type</th><th>Qty</th><th>Price</th><th class="hide-narrow">Status</th><th>Actions</th></tr></thead>' +
                 '<tbody>' + ordHtml + '</tbody></table>' +
             '</div>' +
         '</div>' +
@@ -7263,7 +7498,16 @@ function renderDashboard() {
                     '<span>📊 Analytics Hub' + sectionHelpButton('analytics') + '</span>' +
                     '<button class="btn-ghost btn-sm" onclick="refreshAnalyticsPanel()" title="Re-fetch analytics data">↻ Refresh</button>' +
                 '</h3>' +
-                '<div id="analyticsPanel" style="margin-top:12px"><div style="color:var(--text-dim);padding:24px;text-align:center">Loading analytics…</div></div>' +
+                '<div id="analyticsPanel" style="margin-top:12px">' +
+                    /* Round-61 pt.74: skeleton loader instead of plain
+                       "Loading…" text — tells the user data is in flight. */
+                    (typeof pt74RenderSkeleton === 'function'
+                        ? pt74RenderSkeleton({cards: 8, rows: 0})
+                            + '<div style="margin-top:14px">'
+                            + pt74RenderSkeleton({rows: 4})
+                            + '</div>'
+                        : '<div style="color:var(--text-dim);padding:24px;text-align:center">Loading analytics…</div>') +
+                '</div>' +
             '</div>' +
             '<div class="card" style="margin-top:18px">' +
                 '<h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">' +
@@ -7290,7 +7534,11 @@ function renderDashboard() {
                     '<span>Trades' + sectionHelpButton('trades') + '</span>' +
                     '<button class="btn-ghost btn-sm" onclick="refreshTradesPanel()" title="Re-fetch trade journal">↻ Refresh</button>' +
                 '</h3>' +
-                '<div id="tradesPanel" style="margin-top:8px"><div style="color:var(--text-dim);padding:16px;text-align:center">Loading trades…</div></div>' +
+                '<div id="tradesPanel" style="margin-top:8px">' +
+                    (typeof pt74RenderSkeleton === 'function'
+                        ? pt74RenderSkeleton({cards: 5, rows: 4})
+                        : '<div style="color:var(--text-dim);padding:16px;text-align:center">Loading trades…</div>') +
+                '</div>' +
             '</div>' +
         '</section>' +
         '<section id="section-screener" aria-label="Full stock screener">' +
@@ -7371,7 +7619,9 @@ function renderDashboard() {
             '</div>' +
         '</div>' +
         '</section>' +
-        '<section id="section-scheduler" class="scheduler-section" aria-label="Cloud scheduler status">' +
+        /* Round-61 pt.74: tag scheduler/perf as panel-tertiary so
+           Focus Mode hides them. */
+        '<section id="section-scheduler" class="scheduler-section panel-tertiary" aria-label="Cloud scheduler status">' +
             '<h3 style="display:flex;justify-content:space-between;align-items:center"><span>Cloud Scheduler' + sectionHelpButton('cloud-scheduler') + '</span><button class="btn-ghost btn-sm" onclick="refreshSchedulerStatus()" aria-label="Refresh scheduler status">Refresh</button></h3>' +
             '<div id="schedulerPanel" role="region" aria-live="polite"><div class="empty-state loading"><div class="icon">\u{23F3}</div><div class="title">Loading scheduler status</div><div class="subtitle">Fetching last-run times and task states\u2026</div></div></div>' +
         '</section>' +
@@ -9758,6 +10008,148 @@ function openSectionGuide(sectionId) {
 }
 
 // sectionHelpButton lives in /static/dashboard_render_core.js (Round-61 pt.8 batch-10).
+
+// ============================================================================
+// Round-61 pt.74 — UI/UX "Pro" polish JS
+// ============================================================================
+
+// Focus Mode: toggles a body class that hides decorative panels via CSS.
+// Persisted in localStorage so it survives reloads.
+function toggleFocusMode() {
+    var on = !document.body.classList.contains('focus-mode');
+    document.body.classList.toggle('focus-mode', on);
+    var pill = document.getElementById('focusModePill');
+    if (pill) pill.setAttribute('aria-pressed', on ? 'true' : 'false');
+    try { localStorage.setItem('pt74_focusMode', on ? '1' : '0'); } catch (e) {}
+    if (typeof showToast === 'function') {
+        showToast(on
+            ? 'Focus Mode ON — decorative panels hidden'
+            : 'Focus Mode OFF — full dashboard restored',
+            'info', 2500);
+    }
+}
+
+// Re-apply Focus Mode on every page load.
+(function applyFocusModeFromStorage() {
+    try {
+        if (localStorage.getItem('pt74_focusMode') === '1') {
+            document.body.classList.add('focus-mode');
+            var attempts = 0;
+            var iv = setInterval(function () {
+                var pill = document.getElementById('focusModePill');
+                if (pill) {
+                    pill.setAttribute('aria-pressed', 'true');
+                    clearInterval(iv);
+                }
+                if (++attempts > 40) clearInterval(iv);
+            }, 100);
+        }
+    } catch (e) {}
+})();
+
+// Skeleton loader: returns an HTML string for a panel-shaped placeholder.
+// Use as initial content for any panel that fetches async.
+function pt74RenderSkeleton(opts) {
+    opts = opts || {};
+    var rows = opts.rows || 4;
+    var cards = opts.cards || 0;
+    var html = '';
+    if (cards > 0) {
+        html += '<div class="pt74-skeleton-grid">';
+        for (var i = 0; i < cards; i++) {
+            html += '<div class="pt74-skeleton-card">' +
+                '<div class="pt74-skeleton pt74-skeleton-line sm w-50"></div>' +
+                '<div class="pt74-skeleton pt74-skeleton-line lg w-75"></div>' +
+                '<div class="pt74-skeleton pt74-skeleton-line sm w-25"></div>' +
+                '</div>';
+        }
+        html += '</div>';
+    }
+    if (rows > 0) {
+        html += '<div style="padding:12px 0">';
+        var widths = ['w-100','w-75','w-100','w-50','w-75'];
+        for (var r = 0; r < rows; r++) {
+            html += '<div class="pt74-skeleton pt74-skeleton-line ' +
+                widths[r % widths.length] + '"></div>';
+        }
+        html += '</div>';
+    }
+    return html;
+}
+
+// Last-updated freshness chip. State: "fresh" (<60s),
+// "stale" (60s-300s), "error" (any error in fetch).
+function pt74FormatFreshness(timestampMs, errorState) {
+    if (errorState) {
+        return {state: 'error', text: 'fetch failed'};
+    }
+    if (!timestampMs) {
+        return {state: 'stale', text: 'never updated'};
+    }
+    var age = (Date.now() - timestampMs) / 1000;
+    if (age < 60) return {state: 'ok', text: 'updated just now'};
+    if (age < 300) return {state: 'ok', text: 'updated ' + Math.floor(age) + 's ago'};
+    if (age < 3600) return {state: 'stale', text: 'updated ' + Math.floor(age / 60) + 'm ago'};
+    return {state: 'stale', text: 'updated ' + Math.floor(age / 3600) + 'h ago'};
+}
+
+function pt74RenderFreshnessChip(timestampMs, errorState) {
+    var f = pt74FormatFreshness(timestampMs, errorState);
+    var cls = (f.state === 'error') ? 'error' : (f.state === 'stale' ? 'stale' : '');
+    return '<span class="pt74-fresh-chip ' + cls + '" title="' + f.text + '">' +
+        '<span class="dot" aria-hidden="true"></span>' + f.text +
+        '</span>';
+}
+
+// Risk badge: paper vs live, max-loss-remaining etc. Used at action sites.
+function pt74RenderRiskBadge(opts) {
+    opts = opts || {};
+    var live = opts.live === true;
+    var label = opts.label || (live ? 'LIVE' : 'PAPER');
+    var detail = opts.detail || '';
+    var cls = 'pt74-risk-badge' + (live ? ' live' : '');
+    return '<span class="' + cls + '" title="' + (opts.title || '') + '">' +
+        label + (detail ? ' · ' + detail : '') +
+        '</span>';
+}
+
+// Password visibility toggle. Wires to any input that has a sibling
+// .pt74-pw-toggle button. Idempotent.
+function pt74WirePasswordToggles(rootEl) {
+    var root = rootEl || document;
+    var btns = root.querySelectorAll('.pt74-pw-toggle');
+    for (var i = 0; i < btns.length; i++) {
+        if (btns[i]._wired) continue;
+        btns[i]._wired = true;
+        btns[i].addEventListener('click', function (ev) {
+            ev.preventDefault();
+            var wrap = ev.target.closest('.pt74-pw-wrapper');
+            if (!wrap) return;
+            var input = wrap.querySelector('input');
+            if (!input) return;
+            if (input.type === 'password') {
+                input.type = 'text';
+                ev.target.textContent = 'Hide';
+            } else {
+                input.type = 'password';
+                ev.target.textContent = 'Show';
+            }
+        });
+    }
+}
+// Auto-wire on DOM ready in case auth pages include this module.
+if (document.readyState !== 'loading') pt74WirePasswordToggles();
+else document.addEventListener('DOMContentLoaded', function () {
+    pt74WirePasswordToggles();
+});
+
+// Expose for tests.
+window.pt74RenderSkeleton = pt74RenderSkeleton;
+window.pt74FormatFreshness = pt74FormatFreshness;
+window.pt74RenderFreshnessChip = pt74RenderFreshnessChip;
+window.pt74RenderRiskBadge = pt74RenderRiskBadge;
+window.pt74WirePasswordToggles = pt74WirePasswordToggles;
+window.toggleFocusMode = toggleFocusMode;
 
 function openReadme() {
     var modal = document.getElementById('readmeModal');

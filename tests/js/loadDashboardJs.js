@@ -194,6 +194,9 @@ export function loadDashboardJs(stubs = {}) {
     'buildShortStrategyCard', 'buildStrategyTemplates', 'buildComparisonPanel',
     // Section-visibility helpers (localStorage round-trip)
     'getHiddenSections', 'setHiddenSections', 'toggleSection',
+    // Round-61 pt.74 — UI/UX "Pro" polish helpers
+    'pt74RenderSkeleton', 'pt74FormatFreshness', 'pt74RenderFreshnessChip',
+    'pt74RenderRiskBadge', 'pt74WirePasswordToggles', 'toggleFocusMode',
   ];
   for (const name of exposed) {
     if (typeof globalThis[name] === 'function') {
