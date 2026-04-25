@@ -751,6 +751,17 @@ def check_score_degradation(journal, *,
 # End-to-end builder
 # ============================================================================
 
+def _safe_risk_parity_weights(journal):
+    """Round-61 pt.65: surface risk_parity weights in the analytics
+    view. Best-effort — falls back to {} on any error so missing
+    journal data never breaks the analytics fetch."""
+    try:
+        import risk_parity as _rp
+        return _rp.compute_risk_parity_weights(journal)
+    except Exception:
+        return {}
+
+
 def build_analytics_view(journal=None, scorecard=None, account=None,
                           picks=None, now=None):
     """Single end-to-end call. Returns the full analytics payload
@@ -771,4 +782,7 @@ def build_analytics_view(journal=None, scorecard=None, account=None,
         "filter_summary": compute_filter_summary(picks),
         "score_outcome": compute_score_outcome(journal),
         "score_health": check_score_degradation(journal),
+        # Round-61 pt.65: risk-parity strategy weights — read-only
+        # for the dashboard. Inverse-σ weighting; sums to 1.0.
+        "risk_parity_weights": _safe_risk_parity_weights(journal),
     }
