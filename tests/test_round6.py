@@ -382,9 +382,13 @@ def test_dashboard_handler_mixin_decomposition(isolated_data_dir):
     # 3380 (round-61 pt.24 — /api/close-ghost-strategies route + the
     # handle_close_ghost_strategies delegation one-liner. Belongs at
     # the route-dispatch layer; the actual logic is in the mixin).
+    # 3395 (round-61 pt.36 + pt.37 — /api/trades + /api/backtest/run
+    # routes + their multi-line delegation comments. Both are
+    # read-only endpoints; the actual logic lives in actions_mixin
+    # and trades_analysis_core / backtest_core respectively).
     import os
     server_lines = sum(1 for _ in open(server.__file__))
-    assert server_lines < 3380, \
+    assert server_lines < 3395, \
         f"server.py too large ({server_lines} lines) — handler methods leaked back in"
 
 
