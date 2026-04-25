@@ -3962,13 +3962,15 @@ async function runMultiStrategyBacktest() {
     var days = parseInt(daysEl ? daysEl.value : '30', 10) || 30;
     panel.innerHTML = '<div style="color:var(--text-dim);padding:16px;text-align:center">Running backtest&hellip; (this may take 10-30 seconds depending on cache state)</div>';
     try {
+        // CSRF header is auto-injected by the global fetch wrapper at
+        // top of inline script (reads `csrf` cookie via readCsrfCookie).
+        // Round-61 pt.43 hotfix: removed broken `getCookie('csrf_token')`
+        // call (function not defined; cookie name is 'csrf' not
+        // 'csrf_token').
         var resp = await fetch(API_BASE + '/api/backtest/run', {
             method: 'POST',
             credentials: 'same-origin',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRF-Token': getCookie('csrf_token') || '',
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ days: days }),
         });
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -4056,11 +4058,13 @@ async function refreshTradesPanel() {
     var panel = document.getElementById('tradesPanel');
     if (!panel) return;
     try {
+        // CSRF header is auto-injected by the global fetch wrapper.
+        // Round-61 pt.43 hotfix: removed broken `getCookie('csrf_token')`
+        // (function not defined; cookie name is 'csrf' not 'csrf_token').
         var resp = await fetch(API_BASE + '/api/trades', {
             method: 'POST',
             credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json',
-                        'X-CSRF-Token': getCookie('csrf_token') || '' },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 filters: _tradesState.filters,
                 sort_by: _tradesState.sort_by,
