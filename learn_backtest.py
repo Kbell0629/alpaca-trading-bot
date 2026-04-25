@@ -149,11 +149,19 @@ def clamp_param_change(strategy: str, param: str, current: float,
 def select_best_variant(variant_results: list,
                           base_expectancy: float,
                           min_improvement: float = MIN_IMPROVEMENT_THRESHOLD,
+                          *,
+                          max_overfit_ratio: Optional[float] = None,
                           ) -> Optional[dict]:
     """From the list of `(params, summary)` tuples, return the
     variant that improves expectancy the most over `base_expectancy`.
     Returns None if no variant improves by at least `min_improvement`
     (5% by default) — keep the current params in that case.
+
+    Round-61 pt.48: ``max_overfit_ratio`` (optional) rejects any
+    variant whose ``summary['_overfit_ratio']`` exceeds the bound.
+    The walk-forward harness stamps that field onto each variant's
+    summary so this selector can transparently use it. None = no
+    overfit-ratio filter (legacy in-sample mode).
     """
     if not variant_results:
         return None
@@ -172,6 +180,18 @@ def select_best_variant(variant_results: list,
             cnt = 0
         if cnt < 5:
             continue  # too few sim trades
+        # Round-61 pt.48: reject overfitting winners. A variant whose
+        # train expectancy is >1.5× its test expectancy is memorising
+        # noise; even if test_expectancy beats baseline it shouldn't
+        # be promoted because the gap means the strategy doesn't
+        # generalise.
+        if max_overfit_ratio is not None:
+            try:
+                ovr = summary.get("_overfit_ratio")
+                if ovr is not None and float(ovr) > float(max_overfit_ratio):
+                    continue
+            except (TypeError, ValueError):
+                pass
         # Need exp > base*(1+min_improvement). Handle base==0 edge:
         # if base is zero, any positive improvement counts as ≥5%.
         threshold = (
@@ -207,13 +227,26 @@ def propose_adjustments(strategy_results: Mapping[str, dict],
     for strat, result in (strategy_results or {}).items():
         base_exp = float(result.get("base_expectancy") or 0)
         variants = result.get("variants") or []
-        best = select_best_variant(variants, base_exp)
+        # Round-61 pt.48: pass through walk-forward overfit guard if
+        # the upstream sweep ran in walk_forward mode.
+        max_ovr = result.get("max_overfit_ratio")
+        validation_mode = result.get("validation_mode") or "in_sample"
+        best = select_best_variant(
+            variants, base_exp,
+            max_overfit_ratio=max_ovr if validation_mode == "walk_forward"
+                                else None,
+        )
         if not best:
+            reason = ("no variant improved expectancy by 5%+ "
+                       "OR insufficient sim trades")
+            if validation_mode == "walk_forward":
+                reason += (" OR every winning variant had overfit_ratio "
+                            f">{max_ovr or 1.5}")
             out["no_change"].append({
                 "strategy": strat,
-                "reason": "no variant improved expectancy by 5%+ "
-                          "OR insufficient sim trades",
+                "reason": reason,
                 "base_expectancy": round(base_exp, 4),
+                "validation_mode": validation_mode,
             })
             continue
         cur = current_defaults.get(strat) or {}
@@ -306,6 +339,15 @@ def run_self_learning(bars_by_symbol: Mapping,
                        run_backtest_fn,
                        current_defaults: Optional[Mapping] = None,
                        deltas=(-0.20, -0.10, 0.10, 0.20),
+                       *,
+                       validation_mode: str = "in_sample",
+                       slippage_bps: float = 0.0,
+                       commission_per_trade: float = 0.0,
+                       walk_forward_train_days: int = 30,
+                       walk_forward_test_days: int = 30,
+                       walk_forward_step_days: int = 7,
+                       max_overfit_ratio: float = 1.5,
+                       walk_forward_fn=None,
                        ) -> dict:
     """End-to-end self-learning sweep.
 
@@ -319,12 +361,53 @@ def run_self_learning(bars_by_symbol: Mapping,
                           backtest_core.DEFAULT_PARAMS.
       deltas: fractional perturbations applied to each tunable param.
 
+    Round-61 pt.48 additions (active accuracy upgrades):
+
+      validation_mode: ``"in_sample"`` (legacy default — variant
+        evaluated on the same window it was tuned on) or
+        ``"walk_forward"`` (NEW — variant evaluated on out-of-sample
+        test slices via ``walk_forward_fn``). Walk-forward is the
+        only reliable defence against the self-learning loop
+        memorising in-sample noise.
+      slippage_bps / commission_per_trade: passed through into
+        backtest params so simulated expectancy reflects realistic
+        fill friction. Production should pass non-zero values
+        (e.g. 10 bps + $1) — defaults stay 0 for backwards compat
+        with pt.44 tests.
+      walk_forward_train_days / test_days / step_days: window
+        geometry for walk-forward mode.
+      max_overfit_ratio: in walk_forward mode, a variant is rejected
+        if its ratio (train_expectancy / test_expectancy) exceeds
+        this bound — that's the signal the variant is overfitting
+        even if its test-window expectancy looks good.
+      walk_forward_fn: callable(bars_by_symbol, strategy, *,
+        train_days, test_days, step_days, base_params, param_grid)
+        returning a walk-forward result dict (see
+        ``backtest_core.run_walk_forward_backtest``). Injected so
+        this module stays unit-testable.
+
     Returns the proposal payload (same shape as
     ``propose_adjustments``).
     """
     if current_defaults is None:
         from backtest_core import DEFAULT_PARAMS as BC_DEFAULTS
         current_defaults = BC_DEFAULTS
+    if validation_mode not in ("in_sample", "walk_forward"):
+        raise ValueError(f"unknown validation_mode: {validation_mode}")
+    if validation_mode == "walk_forward" and walk_forward_fn is None:
+        # Lazy default — production passes the real harness; tests
+        # override.
+        from backtest_core import run_walk_forward_backtest as _wf
+        walk_forward_fn = _wf
+
+    # Round-61 pt.48: realistic fill friction. Pulled into a single
+    # dict so every variant gets the same treatment.
+    base_friction = {}
+    if slippage_bps:
+        base_friction["slippage_bps"] = float(slippage_bps)
+    if commission_per_trade:
+        base_friction["commission_per_trade"] = float(commission_per_trade)
+
     strategy_results = {}
     for strat, base_params in current_defaults.items():
         # Tag base_params with strategy so build_param_variants can
@@ -335,25 +418,83 @@ def run_self_learning(bars_by_symbol: Mapping,
         # Strip the bookkeeping tag before passing to backtest.
         for v in variants:
             v.pop("_strategy", None)
-        # Run base first, then each variant.
-        base_result = run_backtest_fn(bars_by_symbol, strat,
-                                       dict(base_params))
-        try:
-            base_summary = base_result.get("summary") or {}
+
+        if validation_mode == "walk_forward":
+            # Walk-forward: feed the entire variant grid (incl. the
+            # baseline as the first entry) to the harness in ONE call.
+            # Each fold picks its winner on the train slice and reports
+            # test-slice metrics — the result we trust for selection.
+            wf_grid = [dict(base_params)] + [v for v in variants
+                                                if v != dict(base_params)]
+            wf_result = walk_forward_fn(
+                bars_by_symbol, strat,
+                train_days=walk_forward_train_days,
+                test_days=walk_forward_test_days,
+                step_days=walk_forward_step_days,
+                param_grid=wf_grid,
+                base_params=base_friction or None,
+            )
+            # Aggregate test-window expectancy is the OOS truth.
+            base_summary = (wf_result.get("aggregate_test_summary")
+                              if isinstance(wf_result, dict) else {}) or {}
             base_exp = float(base_summary.get("expectancy") or 0)
-        except (AttributeError, TypeError, ValueError):
-            base_exp = 0.0
-        variant_runs = []
-        for params in variants:
-            # Skip the variant identical to base (already ran above)
-            if params == dict(base_params):
-                variant_runs.append((params, base_summary))
-                continue
-            r = run_backtest_fn(bars_by_symbol, strat, params)
-            if isinstance(r, dict):
-                variant_runs.append((params, r.get("summary") or {}))
-        strategy_results[strat] = {
-            "base_expectancy": base_exp,
-            "variants": variant_runs,
-        }
+            # For variant_runs we still need per-variant comparisons.
+            # The walk-forward harness only returns the WINNING variant
+            # per fold + the aggregate; to get per-variant test
+            # expectancies we run each variant through the harness on
+            # its own (single-element grid). Slower but accurate.
+            variant_runs = []
+            for params in variants:
+                merged = {**params, **base_friction}
+                if params == dict(base_params):
+                    variant_runs.append((params, base_summary))
+                    continue
+                vr = walk_forward_fn(
+                    bars_by_symbol, strat,
+                    train_days=walk_forward_train_days,
+                    test_days=walk_forward_test_days,
+                    step_days=walk_forward_step_days,
+                    param_grid=[merged],   # single-element grid
+                    base_params=None,       # already merged
+                )
+                if not isinstance(vr, dict):
+                    continue
+                summary = vr.get("aggregate_test_summary") or {}
+                # Stash overfit_ratio onto the summary so
+                # select_best_variant can reject overfit winners.
+                summary = dict(summary)
+                if vr.get("overfit_ratio") is not None:
+                    summary["_overfit_ratio"] = vr["overfit_ratio"]
+                variant_runs.append((params, summary))
+            strategy_results[strat] = {
+                "base_expectancy": base_exp,
+                "variants": variant_runs,
+                "validation_mode": "walk_forward",
+                "max_overfit_ratio": max_overfit_ratio,
+            }
+        else:
+            # Legacy in-sample mode — pre-pt.48 behaviour.
+            base_result = run_backtest_fn(
+                bars_by_symbol, strat,
+                {**dict(base_params), **base_friction})
+            try:
+                base_summary = base_result.get("summary") or {}
+                base_exp = float(base_summary.get("expectancy") or 0)
+            except (AttributeError, TypeError, ValueError):
+                base_exp = 0.0
+            variant_runs = []
+            for params in variants:
+                merged = {**params, **base_friction}
+                # Skip the variant identical to base (already ran above)
+                if params == dict(base_params):
+                    variant_runs.append((params, base_summary))
+                    continue
+                r = run_backtest_fn(bars_by_symbol, strat, merged)
+                if isinstance(r, dict):
+                    variant_runs.append((params, r.get("summary") or {}))
+            strategy_results[strat] = {
+                "base_expectancy": base_exp,
+                "variants": variant_runs,
+                "validation_mode": "in_sample",
+            }
     return propose_adjustments(strategy_results, current_defaults)

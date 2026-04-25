@@ -8,6 +8,122 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.48 — active walk-forward + slippage in self-learning + event-day gate (+31 tests)
+
+**Date:** 2026-04-25
+
+User asked: *"please implement 1, 2, 3 completely and test to ensure
+fully functioning with no bugs"*. Pt.47 built the walk-forward
+harness + slippage/commission parameters but the production
+self-learning loop didn't use them — the harness was decorative.
+Pt.48 wires them on AND adds news-event awareness so the bot
+doesn't trade through Fed days like quiet Tuesdays.
+
+### 1. Walk-forward INTO the self-learning loop
+
+`learn_backtest.run_self_learning` now accepts
+`validation_mode="walk_forward"` (default still `"in_sample"` for
+backwards compat). When walk-forward:
+* Each variant goes through the pt.47 `run_walk_forward_backtest`
+  harness — base config sweeps the entire grid in one walk; per-
+  variant calls confirm OOS metrics for each candidate.
+* Variants compete on `aggregate_test_summary["expectancy"]` —
+  the out-of-sample number, not the in-sample one.
+* Each variant's `_overfit_ratio` (train_expectancy /
+  test_expectancy from the harness) is stamped onto its summary;
+  `select_best_variant` rejects any variant where the ratio
+  exceeds `max_overfit_ratio` (default 1.5). Even if test
+  expectancy beats baseline, a variant whose train run is >1.5×
+  the test run is overfitting and gets rejected.
+* `propose_adjustments` only applies the overfit filter when
+  `validation_mode == "walk_forward"` — pt.44 in-sample callers
+  see no behaviour change.
+
+`cloud_scheduler.run_weekly_learning` wires this on:
+```python
+proposal = run_self_learning(
+    bars_by_symbol=...,
+    run_backtest_fn=_bc_run,
+    current_defaults=DEFAULT_PARAMS,
+    validation_mode="walk_forward",
+    walk_forward_train_days=30,
+    walk_forward_test_days=30,
+    walk_forward_step_days=10,
+    max_overfit_ratio=1.5,
+    ...
+)
+```
+
+Bar fetch window bumped from 60 to 120 days so walk-forward has
+enough timeline to slide several folds.
+
+### 2. Realistic slippage + commission in self-learning
+
+`run_self_learning` accepts `slippage_bps` +
+`commission_per_trade` parameters and threads them into every
+backtest call (in-sample mode merges into each variant's params;
+walk-forward mode passes via `base_params`). Both default to 0 so
+existing pt.44 tests are bit-identical.
+
+`run_weekly_learning` now passes `slippage_bps=10.0` +
+`commission_per_trade=1.0` — production-realistic friction.
+Without this, learned params were calibrated against perfect
+fills and over-promised expectancy by 10–20% vs what live trading
+would actually deliver.
+
+### 3. Event-day gate (FOMC / CPI / NFP / PCE)
+
+New `event_calendar.py` (pure, stdlib-only) encodes the 2026 +
+2027 calendar of high-impact macro events:
+
+* **FOMC** — hardcoded 2-day-meeting end dates from
+  federalreserve.gov/monetarypolicy/fomccalendars.htm
+* **CPI** — BLS release dates (~13th of each month)
+* **NFP** — first Friday of each month (computed)
+* **PCE** — last Friday of each month (computed)
+
+API:
+* `is_high_impact_event_day(date)` → `(bool, "FOMC"|"CPI"|"NFP"|"PCE"|None)`.
+  Accepts `date`, `datetime`, or ISO string. FOMC > CPI > NFP >
+  PCE on collisions.
+* `next_high_impact_event(date)` → `(label, date)` for the
+  next event ≥ the queried date (within 365d horizon).
+* `event_score_multiplier(label)` → 2.0/1.5/1.5/1.3 for
+  FOMC/CPI/NFP/PCE; 1.0 for non-event days.
+
+`cloud_scheduler.run_auto_deployer` consults the calendar at the
+top of each run:
+* If today's a high-impact event day, log the elevation factor.
+* **Long side**: every pick must clear `50 × multiplier`
+  (skipped + logged otherwise — visible in the deploy log).
+* **Short side**: `min_short_score` is multiplied by the
+  multiplier so weak shorts don't fire on volatility days.
+
+Result: on FOMC day a long pick needs `best_score >= 100` (vs
+the implicit ~50 baseline); a short pick needs the elevated
+short score. Bot can still take exceptional setups but won't
+blunder into the 2pm rate decision with the same risk as a
+quiet Tuesday.
+
+### Tests
+
++31 in `tests/test_round61_pt48_active_self_learning.py`:
+* run_self_learning backwards compat (default in-sample mode)
+* walk_forward mode invokes the harness fn
+* Invalid `validation_mode` raises ValueError
+* `select_best_variant` overfit-ratio rejection (with + without
+  filter, missing field passthrough)
+* `propose_adjustments` only applies overfit filter in
+  walk-forward mode
+* Slippage/commission threaded into in-sample + walk-forward
+  modes; zero-friction omits the keys
+* Event calendar: FOMC/CPI/NFP detection, quiet day, ISO + datetime
+  + invalid input, priority order, helper functions
+* Source-pin tests on cloud_scheduler wiring (imports, calls,
+  wiring of validation_mode/slippage/commission/120d window)
+
+---
+
 ## 🆕 Round-61 pt.47 — accuracy batch: pt.44b/pt.38b wiring + walk-forward + slippage + score-to-outcome (+69 tests)
 
 **Date:** 2026-04-25

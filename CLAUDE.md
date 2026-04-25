@@ -61,9 +61,41 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-25 — round 61 pt.10-47 SHIPPED)
+## Current session state (2026-04-25 — round 61 pt.10-48 SHIPPED)
 
-**Pt.47 in flight:** five-in-one accuracy batch closing the deferred
+**Pt.48 in flight:** three-in-one accuracy batch making the pt.47
+infrastructure ACTIVE in production:
+  1. **Walk-forward in self-learning loop.**
+     `learn_backtest.run_self_learning` now accepts
+     `validation_mode="walk_forward"`. Each variant evaluated on
+     out-of-sample test slices via the pt.47
+     `run_walk_forward_backtest` harness; `select_best_variant`
+     gains `max_overfit_ratio` filter. `cloud_scheduler.run_weekly_learning`
+     wires this on (mode="walk_forward", overfit cap 1.5).
+     Variants must beat baseline on the OOS test slice AND have
+     train/test ratio < 1.5 to be promoted. Closes the loop on
+     pt.47's harness — without this wiring, the harness was
+     decorative.
+  2. **Realistic slippage + commission in self-learning.**
+     `run_self_learning` accepts `slippage_bps` +
+     `commission_per_trade`; production weekly hook now passes
+     10 bps + $1 so simulated expectancy reflects real fill
+     friction. Learned params no longer over-promise vs live.
+  3. **Event-day gate.** New `event_calendar.py` (pure module)
+     encodes 2026/2027 FOMC, CPI, NFP (first-Friday-rule), PCE
+     (last-Friday-rule). `is_high_impact_event_day(date)` returns
+     `(bool, label)`; `event_score_multiplier(label)` returns
+     2.0/1.5/1.5/1.3 for FOMC/CPI/NFP/PCE. Auto-deployer raises
+     long-side score gate (`50 × multiplier`) and short-side
+     `min_short_score × multiplier` so the bot can't blunder
+     into FOMC at 1pm with the same risk as a quiet Tuesday.
++31 tests in `tests/test_round61_pt48_active_self_learning.py`
+covering walk-forward thread-through, overfit-ratio rejection,
+backwards-compat zero-friction defaults, event calendar (FOMC/
+CPI/NFP detection, ISO/datetime/string inputs, priority order),
+and source-pin tests on the auto-deployer wiring.
+
+**Pt.47 landed (PR #174):** five-in-one accuracy batch closing the deferred
 wiring + adding the missing meta-validation:
   1. **Pt.44b — learned_params consumer.** New
      `strategy_params.py` resolver with precedence
