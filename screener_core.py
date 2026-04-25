@@ -655,3 +655,161 @@ def apply_breakout_confirmation(picks: list,
     # Re-sort by best_score so demoted picks fall down.
     picks.sort(key=lambda p: float(p.get("best_score") or 0), reverse=True)
     return picks
+
+
+# ============================================================================
+# Round-61 pt.41: per-strategy adaptive thresholds (rolling win rate)
+# ============================================================================
+
+# Default lookback: most recent N closed trades per strategy. Smaller
+# = more responsive but noisier; larger = slower to adapt but more
+# reliable. 30 trades is the academic baseline for "stable enough to
+# infer expectancy" without baking in stale market regime.
+ADAPTIVE_LOOKBACK_DEFAULT: int = 30
+
+# Below this trade count we don't have enough signal to adjust the
+# threshold — return multiplier=1.0 (no-op).
+ADAPTIVE_MIN_SAMPLE: int = 5
+
+# Boundaries for the multiplier curve. Win rate below LOW means the
+# strategy is "cold" — raise the threshold (multiplier < 1 demotes
+# scores so picks need to be stronger to deploy). Above HIGH means
+# "hot" — lower the threshold (multiplier > 1 boosts scores so the
+# bot deploys more aggressively).
+ADAPTIVE_COLD_WIN_RATE: float = 0.40
+ADAPTIVE_HOT_WIN_RATE: float = 0.60
+ADAPTIVE_MAX_DEMOTE: float = 0.70   # cold → score × 0.70
+ADAPTIVE_MAX_BOOST: float = 1.30    # hot  → score × 1.30
+
+
+def compute_strategy_win_rates(journal: Optional[dict],
+                                 lookback: int = ADAPTIVE_LOOKBACK_DEFAULT,
+                                 ) -> dict:
+    """Return ``{strategy_name: {"wins": N, "losses": N, "count": N,
+    "win_rate": float}}`` for the most recent ``lookback`` CLOSED
+    trades per strategy.
+
+    Pure: takes a parsed journal dict, returns a stats dict. Caller
+    handles loading ``trade_journal.json``.
+
+    Strategy names are taken verbatim from the journal entries (lower-
+    case is canonical: "breakout", "mean_reversion", "wheel",
+    "short_sell", "pead", "copy_trading", "trailing_stop"). Open
+    trades are skipped — they have no W/L yet.
+    """
+    if not journal or not isinstance(journal, dict):
+        return {}
+    trades = journal.get("trades") or []
+    by_strategy: dict = {}
+    # Walk newest → oldest so we collect the most recent N per strategy.
+    for t in reversed(trades):
+        if not isinstance(t, dict):
+            continue
+        if (t.get("status") or "open").lower() != "closed":
+            continue
+        try:
+            pnl = float(t.get("pnl"))
+        except (TypeError, ValueError):
+            continue
+        strat = t.get("strategy") or "unknown"
+        slot = by_strategy.setdefault(strat, {
+            "wins": 0, "losses": 0, "count": 0,
+        })
+        if slot["count"] >= lookback:
+            continue  # cap reached for this strategy
+        slot["count"] += 1
+        if pnl > 0.005:
+            slot["wins"] += 1
+        elif pnl < -0.005:
+            slot["losses"] += 1
+        # near-zero pnl is neither win nor loss
+    # Compute win_rate per strategy
+    for slot in by_strategy.values():
+        cnt = slot["count"]
+        slot["win_rate"] = (slot["wins"] / cnt) if cnt else 0.0
+    return by_strategy
+
+
+def get_threshold_multiplier(win_rate: float, sample_size: int,
+                              min_sample: int = ADAPTIVE_MIN_SAMPLE,
+                              cold_threshold: float = ADAPTIVE_COLD_WIN_RATE,
+                              hot_threshold: float = ADAPTIVE_HOT_WIN_RATE,
+                              max_demote: float = ADAPTIVE_MAX_DEMOTE,
+                              max_boost: float = ADAPTIVE_MAX_BOOST,
+                              ) -> float:
+    """Return the multiplier to apply to a strategy's pick scores.
+
+    Curve (win_rate → multiplier):
+      * sample_size < min_sample          → 1.0 (no-op, insufficient data)
+      * win_rate < cold_threshold (40%)   → max_demote (0.70)
+      * win_rate > hot_threshold (60%)    → max_boost (1.30)
+      * cold ≤ win_rate ≤ hot             → linear interpolation between
+                                              max_demote and max_boost
+    """
+    if sample_size < min_sample:
+        return 1.0
+    if win_rate <= cold_threshold:
+        return max_demote
+    if win_rate >= hot_threshold:
+        return max_boost
+    # Linear interpolation between (cold, max_demote) and (hot, max_boost)
+    span = hot_threshold - cold_threshold
+    if span <= 0:
+        return 1.0
+    fraction = (win_rate - cold_threshold) / span
+    return max_demote + fraction * (max_boost - max_demote)
+
+
+def apply_adaptive_thresholds(picks: list,
+                                win_rates: Optional[Mapping[str, dict]],
+                                ) -> list:
+    """Round-61 pt.41: scale each pick's ``best_score`` by its
+    strategy's adaptive multiplier so cold strategies are deployed
+    less aggressively and hot strategies more.
+
+    Each pick is annotated with:
+      * ``strategy_win_rate`` — rolling win rate for its strategy
+      * ``strategy_sample_size`` — how many closed trades were used
+      * ``adaptive_multiplier`` — what we multiplied the score by
+
+    Picks whose strategy has no journal entries OR fewer than the
+    minimum sample are passed through unchanged.
+
+    Strategy name normalisation: picks use the screener's mixed-case
+    names ("Breakout", "Mean Reversion") while the journal stores
+    lowercase ("breakout", "mean_reversion"). Match both via
+    snake-cased lower comparison.
+    """
+    if not picks:
+        return picks
+    win_rates = win_rates or {}
+    if not win_rates:
+        return picks
+
+    # Build a lookup keyed by canonical (lowercase + snake_case) name.
+    canonical_rates = {}
+    for name, stats in win_rates.items():
+        key = (name or "").lower().replace(" ", "_")
+        canonical_rates[key] = stats
+
+    for p in picks:
+        strat = (p.get("best_strategy") or "").lower().replace(" ", "_")
+        stats = canonical_rates.get(strat)
+        if not stats:
+            continue
+        win_rate = float(stats.get("win_rate") or 0)
+        sample = int(stats.get("count") or 0)
+        mult = get_threshold_multiplier(win_rate, sample)
+        p["strategy_win_rate"] = round(win_rate, 4)
+        p["strategy_sample_size"] = sample
+        p["adaptive_multiplier"] = round(mult, 4)
+        if mult == 1.0:
+            continue  # nothing to do
+        try:
+            p["best_score"] = float(p.get("best_score") or 0) * mult
+        except (TypeError, ValueError):
+            pass
+
+    # Re-sort so demoted/boosted picks land in their new positions.
+    picks.sort(key=lambda p: float(p.get("best_score") or 0), reverse=True)
+    return picks

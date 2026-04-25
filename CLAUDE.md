@@ -61,18 +61,37 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-25 — round 61 pt.10-40 SHIPPED)
+## Current session state (2026-04-25 — round 61 pt.10-41 SHIPPED)
+
+**Pt.41 landed (PR #168):** per-strategy adaptive thresholds. Self-
+correcting score multipliers based on each strategy's rolling 30-trade
+win rate. Cold strategies (< 40% WR) get scores demoted (×0.70) so
+only the strongest signals deploy; hot strategies (> 60% WR) get
+scores boosted (×1.30) so the bot deploys more aggressively.
+  * **`screener_core.compute_strategy_win_rates(journal, lookback=30)`**
+    — pure helper. Walks journal newest→oldest, caps at lookback per
+    strategy. Skips open trades + unparseable pnl.
+  * **`screener_core.get_threshold_multiplier(win_rate, sample_size)`**
+    — pure curve. <5 trades: neutral. ≤40% WR: 0.70. ≥60% WR: 1.30.
+    Linear interp between.
+  * **`screener_core.apply_adaptive_thresholds(picks, win_rates)`** —
+    multiplies best_score, annotates pick, re-sorts. Strategy name
+    normalisation handles "Breakout" ↔ "breakout" / "Mean Reversion"
+    ↔ "mean_reversion".
+  * Wired into `update_dashboard.py` after trend filter. Reads
+    JOURNAL_PATH env var (round-9 per-user isolation).
++29 tests in `tests/test_round61_pt41_adaptive_thresholds.py`.
 
 **Pt.40 landed (PR #167):** multi-day breakout confirmation. Single-
 day breakouts have a "Tuesday-fake-Wednesday-collapse" failure mode;
 academic momentum research shows two-bar confirmation lifts win rate
 ~10-15 points at the cost of ~20% fewer entries.
   * **`screener_core.apply_breakout_confirmation(picks, bars_map,
-    lookback=20)`** — pure helper. For each Breakout-strategy pick:
+    lookback=20)`** — pure helper. Per Breakout-strategy pick,
     requires today's close > today's 20-day high AND yesterday's
     close > prior 20-day high. Single-day breakouts get
-    `_breakout_unconfirmed = True` + score halved (best_score AND
-    breakout_score). Demoted, not eliminated.
+    `_breakout_unconfirmed = True` + score halved. Demoted, not
+    eliminated.
   * Wired into `update_dashboard.py` after factor scoring + trend
     filter. Uses the same `factor_bars` (zero extra API calls).
 +22 tests in `tests/test_round61_pt40_breakout_confirmation.py`.

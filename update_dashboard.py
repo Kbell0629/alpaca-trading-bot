@@ -1246,6 +1246,41 @@ def fetch_all_data():
                           f"demoted (single-day breakouts, score halved)")
             except Exception as _bc_err:
                 print(f"  Breakout confirmation failed: {_bc_err}. Continuing.")
+
+            # Round-61 pt.41: adaptive thresholds based on rolling
+            # 30-trade win rate per strategy. Cold strategies (win
+            # rate < 40%) get scores demoted (×0.70). Hot strategies
+            # (> 60%) get scores boosted (×1.30). Self-correcting:
+            # when breakout is on a losing streak, the threshold
+            # raises and only the strongest signals deploy. When it's
+            # winning, the bot deploys more aggressively. Reads the
+            # trade journal we already maintain.
+            try:
+                import json as _json
+                from screener_core import (
+                    compute_strategy_win_rates,
+                    apply_adaptive_thresholds,
+                )
+                _journal_path = os.environ.get(
+                    "JOURNAL_PATH",
+                    os.path.join(DATA_DIR, "trade_journal.json"),
+                )
+                if os.path.exists(_journal_path):
+                    with open(_journal_path) as _jf:
+                        _journal = _json.load(_jf) or {}
+                    _win_rates = compute_strategy_win_rates(_journal,
+                                                              lookback=30)
+                    if _win_rates:
+                        apply_adaptive_thresholds(top_candidates,
+                                                    _win_rates)
+                        # Log the adjustments for operator visibility
+                        for _strat, _stats in _win_rates.items():
+                            if _stats["count"] >= 5:
+                                print(f"  Adaptive threshold {_strat}: "
+                                      f"{_stats['wins']}/{_stats['count']} "
+                                      f"({_stats['win_rate']*100:.0f}% win rate)")
+            except Exception as _at_err:
+                print(f"  Adaptive thresholds failed: {_at_err}. Continuing.")
         except Exception as _factor_err:
             print(f"  Factor enrichment failed: {_factor_err}. Continuing without RS/sector factors.")
 
