@@ -38,11 +38,57 @@ def compute_vwap_offset_pct(price: float, vwap: float) -> Optional[float]:
     return (p / v - 1) * 100
 
 
+def detect_vwap_retest(*,
+                        price: float,
+                        vwap: Optional[float],
+                        prev_price: Optional[float] = None,
+                        session_low: Optional[float] = None,
+                        ) -> bool:
+    """Round-61 pt.66: VWAP retest is the high-quality long pattern
+    where price spent the morning UNDER VWAP, then crossed UP through
+    it on volume. Different from "chase above VWAP" — the buyer was
+    waiting for confirmation, not paying up.
+
+    Heuristic:
+      * Current price is at-or-just-above VWAP (within 0.5% above)
+      * Either prev_price was BELOW VWAP (cross detected) OR
+        session_low was BELOW VWAP (previously underwater)
+    """
+    try:
+        p = float(price)
+        v = float(vwap)
+    except (TypeError, ValueError):
+        return False
+    if v <= 0:
+        return False
+    offset = (p / v - 1) * 100
+    # Only consider "at" VWAP (not far below, not chased far above).
+    if not (-0.25 <= offset <= 0.5):
+        return False
+    if prev_price is not None:
+        try:
+            pp = float(prev_price)
+            if pp < v and p >= v:
+                return True
+        except (TypeError, ValueError):
+            pass
+    if session_low is not None:
+        try:
+            sl = float(session_low)
+            if sl < v * 0.995:  # session traded materially below VWAP
+                return True
+        except (TypeError, ValueError):
+            pass
+    return False
+
+
 def evaluate_vwap_gate(*,
                         strategy: str,
                         price: float,
                         vwap: Optional[float],
                         tolerance_pct: float = DEFAULT_TOLERANCE_PCT,
+                        prev_price: Optional[float] = None,
+                        session_low: Optional[float] = None,
                         ) -> dict:
     """Decide whether to BLOCK an entry based on the VWAP offset.
 
@@ -55,6 +101,10 @@ def evaluate_vwap_gate(*,
         data fetch failed — the gate fails OPEN (allowed=True) so
         a flaky data feed never blocks deploys.
       tolerance_pct: how far above VWAP we'll allow. Default 0.5%.
+      prev_price, session_low: optional. When supplied, used by
+        ``detect_vwap_retest`` to flag a high-quality cross-up
+        pattern. Retests are explicitly ALLOWED with a positive
+        signal even if they would otherwise be blocked.
 
     Returns:
       {
@@ -62,11 +112,13 @@ def evaluate_vwap_gate(*,
         "reason": str,        # short label
         "vwap_offset_pct": float | None,
         "vwap": float | None,
+        "is_retest": bool,    # pt.66
       }
     """
     out = {
         "allowed": True, "reason": "ok",
         "vwap_offset_pct": None, "vwap": vwap,
+        "is_retest": False,
     }
     if (strategy or "").lower() != "breakout":
         out["reason"] = "not_breakout"
@@ -78,6 +130,17 @@ def evaluate_vwap_gate(*,
     out["vwap_offset_pct"] = offset
     if offset is None:
         out["reason"] = "bad_vwap_or_price"
+        return out
+    # Pt.66: prefer-retest. If we can detect a recent cross-up
+    # through VWAP, allow with a positive label even if the offset
+    # is marginally above tolerance.
+    if detect_vwap_retest(price=price, vwap=vwap,
+                            prev_price=prev_price,
+                            session_low=session_low):
+        out["is_retest"] = True
+        out["allowed"] = True
+        out["reason"] = (f"vwap_retest_cross_up: {offset:.2f}% "
+                          "(crossed from below)")
         return out
     if offset > tolerance_pct:
         out["allowed"] = False

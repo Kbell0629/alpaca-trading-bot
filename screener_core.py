@@ -423,14 +423,21 @@ def apply_trend_filter(picks: list, bars_map: Optional[Mapping[str, list]],
 GAP_PENALTY_THRESHOLD_PCT: float = 3.0
 GAP_PENALTY_BLOCK_THRESHOLD_PCT: float = 8.0
 GAP_PENALTY_MULTIPLIER: float = 0.85
+# Round-61 pt.66: a volume surge converts a "chase" gap into an
+# institutional-confirmed breakout. When relative_volume on the
+# pre-market gap clears this multiple, skip the penalty.
+GAP_PENALTY_VOLUME_CONFIRM_X: float = 2.0
 
 
 def apply_gap_penalty(picks: list,
                         *,
                         threshold_pct: float = GAP_PENALTY_THRESHOLD_PCT,
                         block_threshold_pct: float = GAP_PENALTY_BLOCK_THRESHOLD_PCT,
-                        multiplier: float = GAP_PENALTY_MULTIPLIER) -> list:
-    """Round-61 pt.58: penalize picks with a 3-8% intraday gap.
+                        multiplier: float = GAP_PENALTY_MULTIPLIER,
+                        volume_confirm_x: float = GAP_PENALTY_VOLUME_CONFIRM_X,
+                        ) -> list:
+    """Round-61 pt.58/pt.66: penalize picks with a 3-8% intraday gap
+    UNLESS volume confirms institutional participation.
 
     The pt.45 chase_block already hard-blocks picks with daily_change
     > 8%. The gap between 3-8% is a grey zone — sometimes a real
@@ -442,6 +449,11 @@ def apply_gap_penalty(picks: list,
         best_score by `multiplier` (default 0.85, ~15% demotion)
     * daily_change >= block_threshold_pct → leave alone (chase_block
         will hard-block at deploy time)
+
+    Pt.66 refinement: if `relative_volume >= volume_confirm_x` (default
+    2.0×), the gap is real institutional buying, not a thin pump.
+    The penalty is skipped and the pick gets a `_gap_volume_confirmed`
+    tag instead so the dashboard can chip-render the win.
 
     Tags affected picks with `_gap_penalty_applied: True` so the
     dashboard can show the "deploy-time chip" pattern.
@@ -458,6 +470,15 @@ def apply_gap_penalty(picks: list,
         except (TypeError, ValueError):
             continue
         if threshold_pct <= dc < block_threshold_pct:
+            try:
+                rv = float(p.get("relative_volume") or 0)
+            except (TypeError, ValueError):
+                rv = 0.0
+            if rv >= volume_confirm_x > 0:
+                p["_gap_volume_confirmed"] = True
+                p["_gap_relative_volume"] = round(rv, 2)
+                p["_gap_penalty_pct"] = round(dc, 2)
+                continue
             try:
                 bs = float(p.get("best_score") or 0)
             except (TypeError, ValueError):
