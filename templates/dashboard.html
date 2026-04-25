@@ -4063,20 +4063,36 @@ function renderMultiStrategyBacktest(d) {
 async function refreshAnalyticsPanel() {
     var panel = document.getElementById('analyticsPanel');
     if (!panel) return;
+    // Round-61 pt.50: explicit fetch timeout so a slow Alpaca call
+    // (account+positions+orders chain) doesn't leave the panel
+    // stuck on "Loading..." forever — surface a real error after
+    // 30s so the user can refresh.
+    var controller = new AbortController();
+    var timer = setTimeout(function() { controller.abort(); }, 30000);
     try {
         var resp = await fetch(API_BASE + '/api/analytics', {
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({}),
+            signal: controller.signal,
         });
+        clearTimeout(timer);
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         var d = await resp.json();
+        // Round-61 pt.50: cache the last-good payload so renderDashboard
+        // ticks don't flash the panel back to "Loading..." while a
+        // refresh is mid-flight.
+        _analyticsLastPayload = d;
         renderAnalyticsPanel(d);
     } catch (e) {
+        clearTimeout(timer);
+        var msg = (e.name === 'AbortError')
+            ? 'Request timed out after 30s. Server may be slow or restarting — try Refresh.'
+            : esc(e.message);
         panel.innerHTML = '<div class="empty-state error"><div class="icon">⚠</div>' +
             '<div class="title">Analytics unavailable</div>' +
-            '<div class="subtitle">' + esc(e.message) + '</div></div>';
+            '<div class="subtitle">' + msg + '</div></div>';
     }
 }
 
@@ -4421,6 +4437,11 @@ function renderAnalyticsPanel(d) {
 async function refreshTradesPanel() {
     var panel = document.getElementById('tradesPanel');
     if (!panel) return;
+    // Round-61 pt.50: explicit timeout so the panel surfaces an
+    // actual error instead of hanging on "Loading trades..." when
+    // the server is slow or mid-deploy.
+    var controller = new AbortController();
+    var timer = setTimeout(function() { controller.abort(); }, 30000);
     try {
         // CSRF header is auto-injected by the global fetch wrapper.
         // Round-61 pt.43 hotfix: removed broken `getCookie('csrf_token')`
@@ -4434,14 +4455,24 @@ async function refreshTradesPanel() {
                 sort_by: _tradesState.sort_by,
                 descending: _tradesState.descending,
             }),
+            signal: controller.signal,
         });
+        clearTimeout(timer);
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         var d = await resp.json();
+        // Round-61 pt.50: cache the last-good payload so renderDashboard
+        // ticks don't flash the panel back to "Loading..." while a
+        // refresh is mid-flight.
+        _tradesLastPayload = d;
         renderTradesPanel(d);
     } catch (e) {
+        clearTimeout(timer);
+        var msg = (e.name === 'AbortError')
+            ? 'Request timed out after 30s. Server may be slow or restarting — try Refresh.'
+            : esc(e.message);
         panel.innerHTML = '<div class="empty-state error"><div class="icon">⚠</div>' +
             '<div class="title">Trades unavailable</div>' +
-            '<div class="subtitle">' + esc(e.message) + '</div></div>';
+            '<div class="subtitle">' + msg + '</div></div>';
     }
 }
 
@@ -7511,9 +7542,34 @@ function renderDashboard() {
                     }
                 }
             }
+            // Round-61 pt.50: re-hydrate Analytics + Trades panels
+            // from cache on every dashboard rebuild. Without this,
+            // the 30s renderDashboard tick wipes the Analytics /
+            // Trades panel back to "Loading..." even though we
+            // have a perfectly good payload from a recent fetch.
+            if (typeof _analyticsLastPayload !== 'undefined' &&
+                  _analyticsLastPayload &&
+                  document.getElementById('analyticsPanel')) {
+                try { renderAnalyticsPanel(_analyticsLastPayload); }
+                catch(_) {}
+            }
+            if (typeof _tradesLastPayload !== 'undefined' &&
+                  _tradesLastPayload &&
+                  document.getElementById('tradesPanel')) {
+                try { renderTradesPanel(_tradesLastPayload); }
+                catch(_) {}
+            }
         } catch(_) { /* never break rendering on a restore hiccup */ }
     });
 }
+
+// Round-61 pt.50: Last-good payload cache for Analytics + Trades
+// panels. Set by refreshAnalyticsPanel / refreshTradesPanel on
+// success; replayed by renderDashboard's post-paint hook so the
+// panels survive container rebuilds without flashing back to
+// "Loading...".
+var _analyticsLastPayload = null;
+var _tradesLastPayload = null;
 
 var _backtestChart = null;
 
@@ -9206,6 +9262,90 @@ var SECTION_GUIDES = {
                 '<li><strong>WARN</strong> or <strong>ERR</strong> prefixes route to Sentry + ntfy</li>' +
             '</ul>' +
             '<p>Clear button resets the in-memory buffer but the persistent journal stays intact.</p>'
+    },
+    // Round-61 pt.46: Analytics Hub guide.
+    'analytics': {
+        title: '📊 Analytics Hub',
+        html:
+            '<p>Single tab that consolidates every performance metric the bot has into one place — KPIs, equity curve, distributions, top symbols, exit reasons, best/worst trades, screener filter summary, and score-to-outcome correlation. POST <code>/api/analytics</code>; read-only.</p>' +
+            '<p><strong>8 KPI cards</strong>:</p>' +
+            '<ul>' +
+                '<li><strong>Total P&L</strong> — realised (closed trades) plus unrealised (open).</li>' +
+                '<li><strong>Win Rate</strong> — closed wins ÷ closed trades, with W/L count.</li>' +
+                '<li><strong>Expectancy</strong> — average dollar profit per trade.</li>' +
+                '<li><strong>Avg Win</strong> — mean profit on winning trades only.</li>' +
+                '<li><strong>Max DD</strong> — worst peak-to-trough equity drawdown.</li>' +
+                '<li><strong>Sharpe</strong> — annualised risk-adjusted return.</li>' +
+                '<li><strong>Avg Hold</strong> — mean hold duration in days.</li>' +
+                '<li><strong>Validation</strong> — days elapsed in the paper-trading window (started 2026-04-15, target ~30 days).</li>' +
+            '</ul>' +
+            '<p><strong>Equity curve</strong> — line + filled area, no Chart.js dep, daily portfolio_value from the scorecard.</p>' +
+            '<p><strong>P&L by Period</strong> — today / 7d / 30d / 90d / all-time. <strong>Per-strategy breakdown</strong> grid — count, win rate, total P&L, avg, best, worst per strategy.</p>' +
+            '<p><strong>P&L Distribution + Hold Time Distribution</strong> — 6-bucket histograms.</p>' +
+            '<p><strong>Top Symbols by Impact</strong> + <strong>P&L by Exit Reason</strong> bars.</p>' +
+            '<p><strong>Best Trades + Worst Trades</strong> leaderboards (top 5 each).</p>' +
+            '<p><strong>Screener Filter Summary</strong> — counts of how many picks were blocked by each filter (already-held, below_50ma, chase-block, etc — pt.45 chip data aggregated).</p>' +
+            '<p><strong>Score-to-Outcome Correlation</strong> <em>(pt.47 + pt.49)</em> — bins closed trades by the screener score they got at deploy time and reports per-bucket win rate + expectancy. Two pills: green if win-rate increases with score AND expectancy increases with score; red if either is non-monotonic. Daily 4:35 PM ET health check (pt.49) sends a notification on transition INTO the degraded state. Also surfaced in <code>build_analytics_view["score_health"]</code>.</p>'
+    },
+    // Round-61 pt.36: Trades dashboard guide.
+    'trades': {
+        title: 'Trades',
+        html:
+            '<p>Filterable + sortable view of the entire trade journal. POST <code>/api/trades</code>; read-only.</p>' +
+            '<p><strong>Columns</strong>: timestamp, symbol, strategy, side (long/short), qty, entry price, exit price, realised P&L, % return, hold days, exit reason, _screener_score (pt.47).</p>' +
+            '<p><strong>Filters</strong>: status (open/closed/all), strategy multi-select, win/loss/flat, symbol substring (matches OCC underlying), exit reason, side, date range, min/max P&L.</p>' +
+            '<p><strong>Sort</strong>: any field; default exit_timestamp DESC. Click a column header to sort by it; click again to flip direction.</p>' +
+            '<p><strong>Per-strategy summary + overall summary</strong> at the top show counts, win rate, total + avg P&L per strategy.</p>' +
+            '<p><strong>Pt.43 hotfix</strong>: the panel was briefly broken by a stale <code>getCookie()</code> reference; the global fetch wrapper now auto-injects the CSRF header so no manual handling is needed.</p>'
+    },
+    // Round-61 pt.49: position sizing + Kelly explanation.
+    'position-sizing': {
+        title: 'Position Sizing — Fractional Kelly + Correlation',
+        html:
+            '<p>Layered <em>on top of</em> the screener\'s <code>recommended_shares</code> and BEFORE the legacy drawdown multiplier. All existing caps (<code>max_position_pct</code>, <code>LIVE_MAX_DOLLARS</code>, settled-funds, fractional routing) still apply unchanged — Kelly only nudges within those bounds.</p>' +
+            '<p><strong>Kelly multiplier</strong> — based on the per-strategy realised edge (win_rate, avg_win, avg_loss) computed from the trade journal:</p>' +
+            '<ul>' +
+                '<li>Strong strategies (high Kelly fraction) scale UP to 2.0×.</li>' +
+                '<li>Weak strategies (low Kelly) scale DOWN to 0.5×.</li>' +
+                '<li>Half Kelly capped at 25% per position (avoids hot-streak overconfidence on small samples).</li>' +
+                '<li>Strategy needs ≥10 closed trades before Kelly engages — below that, no adjustment.</li>' +
+            '</ul>' +
+            '<p><strong>Correlation discount</strong> — each same-sector held position cuts the new size by 0.5×, floored at 0.25× (so even four correlated positions don\'t shrink below a quarter-size). 0 correlated = 1.0×; 1 correlated = 0.5×; 2 correlated = 0.25×.</p>' +
+            '<p><strong>Audit</strong>: every adjustment is logged with the rationale, e.g. <code>Kelly+corr sizing 100 → 87 (Kelly 1.05×; correlation 0.50×)</code>. Visible in the deployer log so you can audit why a particular trade got resized.</p>'
+    },
+    // Round-61 pt.48: event-day gate.
+    'event-calendar': {
+        title: 'Event-Day Risk Gate',
+        html:
+            '<p>The bot recognises 2026/2027 high-impact macro release days and raises the score threshold so it doesn\'t blunder into a Fed decision with the same risk model as a quiet Tuesday.</p>' +
+            '<p><strong>Events tracked</strong> (encoded in <code>event_calendar.py</code>):</p>' +
+            '<ul>' +
+                '<li><strong>FOMC</strong> — Fed rate decision days (×2.0 score gate)</li>' +
+                '<li><strong>CPI</strong> — Bureau of Labor Statistics monthly inflation print (×1.5)</li>' +
+                '<li><strong>NFP</strong> — first-Friday jobs report (×1.5)</li>' +
+                '<li><strong>PCE</strong> — last-Friday Personal Consumption Expenditures (×1.3)</li>' +
+            '</ul>' +
+            '<p><strong>What it does</strong>: on event days the implicit "good pick" score threshold (50) gets multiplied by the event multiplier — so on FOMC day a long pick must score ≥100 to deploy. Short side\'s <code>min_short_score</code> gets the same treatment.</p>' +
+            '<p>The bot can still take exceptional setups but won\'t fire on borderline picks while the macro tape is about to move.</p>'
+    },
+    // Round-61 pt.47/48: walk-forward backtest + slippage explainer.
+    'walk-forward': {
+        title: 'Walk-Forward Validation + Realistic Friction',
+        html:
+            '<p>The weekly self-learning loop now uses <strong>walk-forward validation</strong> instead of in-sample tuning. Each parameter variant is evaluated on an out-of-sample test slice that immediately follows the train slice, NOT the same window it was tuned on.</p>' +
+            '<p><strong>Why it matters</strong>: in-sample optimisation makes any strategy look good — the tuner just memorises the noise in the data it sees. Walk-forward proves the variant generalises.</p>' +
+            '<p><strong>Overfit guard</strong>: each variant\'s <code>overfit_ratio</code> = train_expectancy / test_expectancy. Variants where the ratio &gt; 1.5 are REJECTED even if their test expectancy beats baseline — the gap means the strategy doesn\'t generalise.</p>' +
+            '<p><strong>Realistic friction</strong>: the production self-learning loop also passes <strong>10 bps slippage</strong> + <strong>$1 commission per trade</strong> into the simulator so learned params reflect real fill costs (not perfect fills). Without this, learned params over-promised expectancy by 10–20% vs live.</p>' +
+            '<p>API: <code>backtest_core.run_walk_forward_backtest(bars_by_symbol, strategy, *, train_days=30, test_days=30, step_days=10)</code>.</p>'
+    },
+    // Round-61 pt.49: pipeline-aware backtest.
+    'pipeline-backtest': {
+        title: 'Pipeline-Aware Backtest',
+        html:
+            '<p>The pt.37 backtest tests the <em>strategy</em> in isolation: "if breakout fired, would the trade have been profitable?". The production deploy pipeline applies many filters AFTER the strategy signal — chase_block, sector cap, trend filter, event-day gate, min_score. A pick can pass the strategy and still NOT deploy.</p>' +
+            '<p>The pipeline-aware backtest replays a historical picks sequence through every gate and reports how many would actually have deployed vs been blocked + by which reason. Useful when you\'re wondering: "are the gates blocking profitable picks?".</p>' +
+            '<p>API: <code>pipeline_backtest.run_pipeline_backtest(picks_history, *, sector_map=None, simulate_outcomes=False, bars_by_symbol=None)</code>. Pass <code>simulate_outcomes=True</code> + a bars dict for a counterfactual P&L curve via <code>backtest_core._simulate_symbol</code>.</p>' +
+            '<p>Defaults match production gate thresholds (pt.10-49) — chase_block 8%, volatility_block 25%, max_per_sector 2, min_score 50, plus the pt.48 event-day score gate.</p>'
     }
 };
 

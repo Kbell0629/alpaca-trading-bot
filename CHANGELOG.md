@@ -8,6 +8,97 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.50 — audit weekend awareness + load resilience + guide deep-links (+22 tests)
+
+**Date:** 2026-04-25
+
+User-reported audit + dashboard issues:
+  1. State Audit was flagging "MEDIUM · STALE_SCORECARD" every weekend
+     because the flat 48h threshold trips on a normal Friday→Monday
+     gap.
+  2. Analytics Hub + Trades panels were stuck on "Loading..." (slow
+     server / mid-deploy) and would also flash back to "Loading..."
+     on every dashboard refresh tick.
+  3. The in-app (i) info icons next to "📊 Analytics Hub" and "Trades"
+     fell through to the full README instead of opening a focused
+     section guide.
+
+### 1. Weekend-aware scorecard freshness audit
+
+Pt.21's audit fired any time `last_updated` was >48h old, false-
+positive on every Monday morning. Pt.50 measures staleness in
+TRADING DAYS, not wall-clock hours.
+
+* New `audit_core._is_trading_day(d)` returns False for weekends
+  AND for NYSE 2026/2027 holidays (encoded in
+  `_US_MARKET_HOLIDAYS` — New Year, MLK, Presidents Day, Good
+  Friday, Memorial Day, Juneteenth, Independence Day, Labor Day,
+  Thanksgiving, Christmas).
+* New `audit_core._trading_closes_between(start, end)` counts
+  expected `daily_close` runs (16:05 ET on each trading day) that
+  should have fired in the (start, end] window.
+* Audit Check 7 now flags only when `missed_closes >= 2`. Friday
+  4:05 PM → Monday 9 AM = 0 missed closes. Three-day Memorial
+  Day weekend = 0 missed closes. Wed → Fri afternoon = 2 missed
+  closes (Thu + Fri) → flag fires.
+* Message format updated: `Scorecard last updated 64h ago (2
+  expected daily_close runs missed). Trigger via Settings ->
+  Force Daily Close.`
+
+### 2. Analytics + Trades load resilience
+
+Two related fixes for "panel won't load" reports:
+
+* **30s timeout** via `AbortController` on both
+  `refreshAnalyticsPanel` and `refreshTradesPanel`. A slow
+  backend (Alpaca account fetch, mid-deploy) now surfaces a
+  real error after 30 seconds instead of hanging on "Loading..."
+  forever.
+* **Cache last-good payload** in `_analyticsLastPayload` /
+  `_tradesLastPayload`. The 30s `renderDashboard` tick rebuilds
+  every section's HTML — without a cache, that wiped the
+  Analytics + Trades panels back to the "Loading..." placeholder
+  every cycle (the user-reported "loaded but goes back to
+  loading" symptom). Post-paint hook now re-renders from cache
+  so the panels stay populated between fetches.
+
+### 3. In-app guide deep links
+
+Added `SECTION_GUIDES` entries that the (i) buttons depend on:
+
+* **`analytics`** — full Analytics Hub guide covering all 8 KPI
+  cards, equity curve, P&L by Period, per-strategy breakdown,
+  distributions, top symbols, exit reasons, best/worst trades,
+  filter summary, and the pt.47 + pt.49 score-to-outcome panel.
+* **`trades`** — Trades dashboard schema, filters, sort, and
+  the pt.43 CSRF hotfix note.
+* **`position-sizing`** — pt.49 Kelly + correlation explainer.
+* **`event-calendar`** — pt.48 FOMC/CPI/NFP/PCE risk gate.
+* **`walk-forward`** — pt.47/pt.48 walk-forward + slippage
+  + commission methodology.
+* **`pipeline-backtest`** — pt.49 shadow-deploy backtest API.
+
+Clicking the (i) on Analytics Hub or Trades now opens a focused
+modal with the matching section, NOT the full README at the top.
+
+### Tests
+
++22 in `tests/test_round61_pt50_audit_weekend_aware.py`:
+* `_is_trading_day`: weekday / weekend / NYSE holiday / datetime
+  / invalid
+* `_trading_closes_between`: zero/single/weekend-gap (the exact
+  Fri-close → Mon-morning false positive) / 3-day holiday /
+  Wed→Wed multi-day / tz-aware / invalid
+* Full-audit integration with monkey-patched `now_et()`:
+  silent after weekend, fires on 2 missed closes, silent for
+  3-day holiday, message format includes missed-closes count.
+
+Existing `pt.21` and `pt.22` audit tests updated to use 8-day
+gaps so they always cross ≥5 trading-day closes regardless of
+when the test runs.
+
+---
+
 ## 🆕 Round-61 pt.49 — fractional-Kelly sizing + score-health alerting + pipeline-aware backtest (+87 tests)
 
 **Date:** 2026-04-25

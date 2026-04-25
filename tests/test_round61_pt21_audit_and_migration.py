@@ -345,7 +345,11 @@ def test_audit_flags_unknown_strategy_name_in_journal():
 def test_audit_flags_stale_scorecard():
     import audit_core
     from datetime import datetime, timedelta, timezone
-    old = datetime.now(timezone.utc) - timedelta(hours=72)
+    # Round-61 pt.50: staleness measured in trading days, not wall
+    # clock hours. 8 calendar days ago always crosses ≥5 trading
+    # closes regardless of when the test runs (covers any 3-day
+    # holiday weekend).
+    old = datetime.now(timezone.utc) - timedelta(days=8)
     report = audit_core.run_audit(
         positions=[],
         orders=[],
