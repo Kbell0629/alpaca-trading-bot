@@ -728,6 +728,95 @@ class ActionsHandlerMixin:
         except Exception as e:
             self._send_error_safe(e, 500, "trades-view")
 
+    def handle_backtest_run(self, body=None):
+        """Round-61 pt.37: 30-day backtest harness.
+
+        Body:
+            symbols      — optional list. Defaults to the user's
+                           journal universe (sorted unique symbols
+                           pulled from trade_journal closed trades),
+                           falling back to the dashboard top-picks
+                           universe if the journal is empty.
+            strategies   — optional list of strategy names. Defaults
+                           to all backtestable strategies.
+            days         — int, default 30. Window size in trading
+                           days; cache lookback is `days * 1.5 + 5`.
+            params       — optional {strategy: {stop_pct,
+                           target_pct, max_hold_days, ...}} overrides.
+            force_refresh — bypass the OHLCV cache (slow).
+
+        Returns:
+            success      — True on completion (False = error string)
+            by_strategy  — {strategy: {trades, summary, params}}
+            overall_summary — pooled-across-strategies aggregates
+            symbols_evaluated — list of symbols actually fetched
+            symbols_missing  — list of symbols where bars couldn't
+                               be obtained (no cache + network down)
+            window_days  — echoes the days param for the dashboard
+                           label
+        """
+        if not self.current_user:
+            return self.send_json({"error": "Not authenticated"}, 401)
+        try:
+            import server
+            import backtest_core as bc
+            import backtest_data as bd
+            body = body or {}
+            days = int(body.get("days") or 30)
+            symbols = body.get("symbols")
+            strategies = body.get("strategies")
+            params = body.get("params") or {}
+            force_refresh = bool(body.get("force_refresh"))
+
+            user_id = self.current_user.get("id")
+            try:
+                import auth as _auth
+                user_dir = _auth.user_data_dir(
+                    user_id, mode=self.session_mode or "paper")
+            except Exception:
+                user_dir = ""
+            # Universe selection: explicit > journal > dashboard picks
+            if not symbols:
+                journal = server.load_json(
+                    self._user_file("trade_journal.json")) or {}
+                symbols = bd.universe_from_journal(journal)
+                if not symbols:
+                    dash = server.load_json(
+                        self._user_file("dashboard_data.json")) or {}
+                    symbols = bd.universe_from_dashboard_data(dash)
+            if not symbols:
+                return self.send_json({
+                    "success": False,
+                    "error": ("No symbols available — empty trade "
+                              "journal AND no recent dashboard "
+                              "snapshot. Add symbols explicitly via "
+                              "the symbols field."),
+                })
+
+            bars_by_symbol = bd.fetch_bars_for_symbols(
+                user_dir, symbols, days=int(days * 1.6) + 10,
+                force_refresh=force_refresh,
+            )
+            symbols_missing = [s for s, b in bars_by_symbol.items()
+                                if not b]
+            valid_bars = {s: b for s, b in bars_by_symbol.items() if b}
+
+            result = bc.run_multi_strategy_backtest(
+                valid_bars, strategies=strategies,
+                params_by_strategy=params,
+            )
+            self.send_json({
+                "success": True,
+                "by_strategy": result["by_strategy"],
+                "overall_summary": result["overall_summary"],
+                "strategies_run": result["strategies_run"],
+                "symbols_evaluated": list(valid_bars.keys()),
+                "symbols_missing": symbols_missing,
+                "window_days": days,
+            })
+        except Exception as e:
+            self._send_error_safe(e, 500, "backtest-run")
+
     def handle_force_orphan_adoption(self, body=None):
         """Round-61 pt.15: run orphan adoption on-demand. Synthesizes
         strategy files for every Alpaca position that has no matching

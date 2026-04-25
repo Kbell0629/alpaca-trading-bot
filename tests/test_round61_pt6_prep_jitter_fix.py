@@ -69,7 +69,11 @@ def test_normhash_applied_inside_renderDashboard():
     src = _src()
     rd_start = src.find("function renderDashboard")
     assert rd_start > 0
-    rd_block = src[rd_start:rd_start + 120_000]  # generous window
+    # Round-61 pt.37: bumped window 120K → 200K. The dashboard JS
+    # keeps growing as new panels are added (pt.36 trades view, pt.37
+    # multi-strategy backtest sub-panel pushed `_normHash` past 120K).
+    # 200K leaves room for future panels.
+    rd_block = src[rd_start:rd_start + 200_000]
     # All three normalization components must be inside the function
     assert "_normHash" in rd_block
     assert r"\$-?[\d,]+\.\d{2}" in rd_block

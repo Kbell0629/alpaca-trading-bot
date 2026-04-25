@@ -73,24 +73,14 @@ account doesn't take the same 12% stops as a $100k margin account.
     `{tier_name: {strategy: {param: value}}}` covering all six
     tiers (cash_micro, cash_small, cash_standard, margin_small,
     margin_standard, margin_whale) and every strategy enabled per
-    tier (skips short_sell on cash, skips wheel where wheel_enabled
-    is False).
+    tier.
   * **`portfolio_calibration.get_strategy_param(tier_cfg, strategy,
     param_name, default)`** — pure helper. Returns tier-specific
-    value if present, else the caller's default. Defensive: handles
-    None / non-dict inputs / missing tier names / orphan strategy
-    names. User overrides via guardrails.json STILL win — caller
-    pattern is `guardrails.get(name) or get_strategy_param(...) or
-    default` (round-50 schema preserved).
-  * Risk-budget invariants pinned: micro stops ≤ small ≤ standard,
-    targets grow with account size, max-hold-days grows with
-    account size. Coverage of every tier × strategy entry.
+    value if present, else the caller's default.
 +17 tests in `tests/test_round61_pt38_per_strategy_tier.py`.
-*Wiring* — the TIER_STRATEGY_PARAMS data is in place but the
-auto-deployer + monitor consumers still call into existing
-guardrails.json. A follow-up PR (pt.38b) will route them through
-`get_strategy_param` for the tier-aware default. Pt.38 is the
-infrastructure, pt.38b is the wiring.
+*Wiring* — data + helper in place; auto-deployer + monitor consumers
+still read from guardrails.json. Pt.38b will route them through
+the helper.
 
 **Pt.37 landed (PR #164):** 30-day backtest harness. Closes the
 "is breakout 0/7 because of THIS strategy or THIS market?" question

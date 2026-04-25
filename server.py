@@ -3211,6 +3211,16 @@ class DashboardHandler(
             # for the filter/sort schema.
             self.handle_trades_view(body)
 
+        elif path == "/api/backtest/run":
+            # Round-61 pt.37: 30-day backtest harness. Re-runs each
+            # backtestable strategy's entry/exit logic against
+            # historical daily bars (cached per-user under
+            # backtest_cache/) and reports per-strategy hypothetical
+            # P&L. Read-only; auth-gated. See
+            # handlers/actions_mixin.handle_backtest_run for the
+            # full request/response schema.
+            self.handle_backtest_run(body)
+
         elif path == "/api/close-ghost-strategies":
             # Round-61 pt.24: mutating counterpart to /api/audit —
             # marks active strategy files with no matching Alpaca

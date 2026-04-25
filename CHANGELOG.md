@@ -74,6 +74,100 @@ time. Pt.38 is the infrastructure; pt.38b is the wiring.
 
 ---
 
+## 🆕 Round-61 pt.37 — 30-day backtest harness (+84 tests)
+
+**Date:** 2026-04-25
+
+User-requested: "Pair the trades dashboard with a backtest harness
+for the last 30 days." Closes the "is breakout 0/7 because of THIS
+strategy or THIS market?" question with a real simulator.
+
+### What landed
+
+* **`backtest_core.py`** — pure simulation engine, no I/O:
+  * Indicator helpers: `_highest_close`, `_lowest_close`,
+    `_avg_volume`, `_rsi` (Wilder's, stdlib-only).
+  * Per-strategy entry signals for `breakout`,
+    `mean_reversion`, `short_sell` — the three strategies whose
+    rules can be replayed from bars alone (wheel/pead need
+    options/earnings data not in this layer).
+  * Per-symbol simulator: stop / target / max_hold / window-end
+    exits, both long and short. Stops checked at next bar's
+    extreme (low for long, high for short).
+  * `_summarize` matches the trades-dashboard schema so the
+    backtest output renders with the same panels.
+  * `run_backtest` + `run_multi_strategy_backtest` — end-to-end.
+  * Pt.35 invariant: leveraged/inverse ETFs blocked from
+    short-side sims (defers to `constants.is_leveraged_or_inverse_etf`).
+
+* **`backtest_data.py`** — OHLCV fetcher + on-disk cache:
+  * Cache layout: `$DATA_DIR/backtest_cache/<SYMBOL>.json` with
+    `{symbol, fetched_at, bars}`. Atomic writes (tempfile+rename).
+  * `CACHE_TTL_HOURS = 12` — fresh entries reused, stale ones
+    refetched. Bypassable via `force_refresh=True`.
+  * yfinance fetcher (`_yfinance_fetch`) is the production path;
+    tests inject fakes via the `fetcher` parameter.
+  * Graceful degrade: network failure returns stale cache rather
+    than crashing.
+  * `universe_from_journal` — pulls a sorted unique symbol list
+    from the trade journal (resolves OCC option contracts to
+    underlyings via the round-22 multi-contract pattern).
+  * `universe_from_dashboard_data` — pulls from the screener's
+    top picks (preserving order so highest-scored evaluate first).
+
+* **`/api/backtest/run` POST endpoint** in
+  `handlers/actions_mixin.handle_backtest_run`. Read-only;
+  auth-gated. Body: `{symbols, strategies, days, params,
+  force_refresh}`. Universe selection: explicit symbols >
+  journal universe > dashboard picks. Returns per-strategy
+  results + overall pooled summary + `symbols_evaluated` /
+  `symbols_missing` for diagnostics.
+
+* **Dashboard panel** in the existing Backtest section
+  (`#section-backtest`): "30-Day Strategy Backtest" sub-panel
+  with:
+  * Day-window selector (14 / 30 / 60 / 90).
+  * Run button → POST /api/backtest/run.
+  * Top-line summary cards: Total Trades, Win Rate, Hypothetical
+    P&L, Expectancy, Best, Worst.
+  * Per-strategy comparison cards (color-coded by aggregate P&L
+    sign).
+  * Operator-facing explainer at the bottom: "A strategy that's
+    NEGATIVE here is structurally losing money on the symbols
+    you trade — disabling it via Settings → Auto-Deployer
+    Strategies prevents real-money losses going forward."
+
+### Tests
++40 in `tests/test_round61_pt37_backtest_core.py` covering every
+indicator, signal, simulator branch (long target / long stop /
+long window-end / long max-hold / short target / short cover-stop /
+no-signal flat run), aggregation cases (empty / dust / mixed),
+end-to-end `run_backtest` + `run_multi_strategy_backtest`, and the
+pt.35 leveraged-ETF blocklist defer.
+
++34 in `tests/test_round61_pt37_backtest_data.py` covering cache
+I/O round-trip + atomic-write safety, TTL freshness logic, fetcher
+injection (cache-hit / stale-refetch / network-down / not-cached),
+`force_refresh`, bulk fetch, and both universe builders.
+
++10 in `tests/test_round61_pt37_backtest_endpoint.py` covering the
+route registration, auth gate, read-only invariant (no order
+placement / no journal writes), universe fallback chain
+(symbols > journal > picks), dashboard panel surface (Run handler,
+window selector, summary cards, explainer block).
+
+### Touched files
+- `backtest_core.py` (new, 380 LOC pure simulation)
+- `backtest_data.py` (new, 200 LOC fetcher + cache)
+- `handlers/actions_mixin.py` (handle_backtest_run added)
+- `server.py` (route /api/backtest/run)
+- `templates/dashboard.html` (30-day backtest sub-panel + JS)
+- `tests/test_round61_pt37_backtest_core.py` (new)
+- `tests/test_round61_pt37_backtest_data.py` (new)
+- `tests/test_round61_pt37_backtest_endpoint.py` (new)
+
+---
+
 ## 🆕 Round-61 pt.36 — Trades dashboard + post-mortem panel (+83 tests)
 
 **Date:** 2026-04-25
