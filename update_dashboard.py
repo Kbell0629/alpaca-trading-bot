@@ -1203,6 +1203,29 @@ def fetch_all_data():
             apply_factor_scores(top_candidates, spy_long_bars, bars_map=factor_bars,
                                  data_dir=DATA_DIR)
             print("  RS + Sector factors applied")
+
+            # Round-61 pt.39: trend filter. Block LONG entries whose
+            # price is below the 50-day SMA (dead-cat bounces inside a
+            # downtrend) and SHORT entries above the 50-day SMA
+            # (chasing weakness in an uptrend). Uses the same
+            # factor_bars we already fetched for RS ranking — no
+            # extra API calls.
+            try:
+                from screener_core import apply_trend_filter
+                before = sum(1 for p in top_candidates
+                              if p.get("will_deploy") is not False
+                              and p.get("best_strategy"))
+                apply_trend_filter(top_candidates, bars_map=factor_bars,
+                                    period=50)
+                after = sum(1 for p in top_candidates
+                             if p.get("will_deploy") is not False
+                             and p.get("best_strategy"))
+                filtered = before - after
+                if filtered > 0:
+                    print(f"  Trend filter: blocked {filtered} picks "
+                          f"(below 50-MA longs / above 50-MA shorts)")
+            except Exception as _tf_err:
+                print(f"  Trend filter failed: {_tf_err}. Continuing.")
         except Exception as _factor_err:
             print(f"  Factor enrichment failed: {_factor_err}. Continuing without RS/sector factors.")
 

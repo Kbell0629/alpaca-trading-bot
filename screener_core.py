@@ -311,6 +311,111 @@ def apply_market_regime(picks: list, regime: Optional[dict]) -> list:
     return picks
 
 
+# ============================================================================
+# Round-61 pt.39: trend filter
+# ============================================================================
+
+# Strategies that take a LONG position. These should only fire when the
+# stock trades ABOVE its 50-day moving average (with the underlying
+# trend, not against it).
+_LONG_STRATEGIES: frozenset = frozenset({
+    "breakout", "trailing_stop", "mean_reversion", "pead",
+    "copy_trading",
+})
+# Strategies that take a SHORT position. Should only fire BELOW the
+# 50-day moving average (selling weakness, not chasing a stock that's
+# trending up against you).
+_SHORT_STRATEGIES: frozenset = frozenset({"short_sell"})
+
+
+def _sma_from_closes(closes, period: int):
+    """Simple moving average of the last `period` closes. Returns None
+    if there aren't enough bars."""
+    if not closes or len(closes) < period:
+        return None
+    window = list(closes[-period:])
+    try:
+        return sum(float(c) for c in window) / period
+    except (TypeError, ValueError):
+        return None
+
+
+def apply_trend_filter(picks: list, bars_map: Optional[Mapping[str, list]],
+                        period: int = 50,
+                        long_strategies: Optional[frozenset] = None,
+                        short_strategies: Optional[frozenset] = None) -> list:
+    """Round-61 pt.39: gate strategy selection by the longer-term trend.
+
+    Most "fake breakouts" happen on stocks below their longer-term
+    trend — they look exciting on the daily but are dead-cat-bouncing
+    inside a downtrend. Same problem in reverse for shorts (chasing
+    weakness in a stock that's actually in an uptrend).
+
+    Behaviour per pick:
+      * Compute SMA(``period``) from ``bars_map[symbol]`` closes. If
+        we don't have enough bars, the pick passes through unchanged
+        (fail OPEN — never block a deploy on missing data).
+      * Tag the pick with ``sma_<period>`` and ``above_sma_<period>``
+        booleans for the dashboard / audit.
+      * If ``best_strategy`` is a long strategy AND price <= SMA:
+        zero out the score, set ``_filtered_by_trend = "below_sma"``,
+        clear ``best_strategy`` and ``will_deploy``. Pick stays in
+        the list (with an explanatory tag) so the dashboard's
+        "filtered out" panel can show it.
+      * Mirror for shorts (price >= SMA → filter).
+      * Picks with no `best_strategy` / unknown strategy pass through.
+
+    Caller (update_dashboard) is responsible for sourcing the
+    ``bars_map`` (typically the same factor_bars used for RS ranking).
+    """
+    long_strategies = long_strategies or _LONG_STRATEGIES
+    short_strategies = short_strategies or _SHORT_STRATEGIES
+    bars_map = bars_map or {}
+    if not picks:
+        return picks
+
+    sma_key = f"sma_{period}"
+    above_key = f"above_sma_{period}"
+
+    for p in picks:
+        symbol = p.get("symbol")
+        bars = bars_map.get(symbol) or []
+        # Extract closes from bars (Alpaca format: each bar has 'c').
+        closes = [b.get("c") for b in bars if isinstance(b, dict)]
+        sma = _sma_from_closes(closes, period)
+        if sma is None:
+            # Fail open — no trend data, no filter.
+            continue
+        p[sma_key] = round(sma, 4)
+        try:
+            price = float(p.get("price") or 0)
+        except (TypeError, ValueError):
+            price = 0
+        if price <= 0:
+            continue
+        p[above_key] = bool(price > sma)
+
+        strategy = p.get("best_strategy") or ""
+        if strategy in long_strategies and price <= sma:
+            p["_filtered_by_trend"] = "below_sma"
+            p["best_score"] = 0
+            p["will_deploy"] = False
+            # Keep the strategy name for the dashboard's "why filtered"
+            # tooltip but mark as filtered.
+            p["_filtered_strategy"] = strategy
+            p["best_strategy"] = None
+        elif strategy in short_strategies and price >= sma:
+            p["_filtered_by_trend"] = "above_sma"
+            p["best_score"] = 0
+            p["will_deploy"] = False
+            p["_filtered_strategy"] = strategy
+            p["best_strategy"] = None
+
+    # Re-sort so filtered picks fall to the bottom.
+    picks.sort(key=lambda p: float(p.get("best_score") or 0), reverse=True)
+    return picks
+
+
 def apply_sector_diversification(picks: list, max_per_sector: int = 2,
                                     top_n: int = 5) -> list:
     """Return the top `top_n` picks with at most `max_per_sector` per
