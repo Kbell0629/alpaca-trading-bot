@@ -1045,6 +1045,59 @@ class ActionsHandlerMixin:
         except Exception as e:
             self._send_error_safe(e, 500, "analytics-view")
 
+    def handle_pipeline_backtest(self, body=None):
+        """Round-61 pt.56: pipeline-backtest harness. Replays the
+        user's picks_history.json through every deploy-side gate
+        (chase_block, volatility_block, sector cap, trend filter,
+        event-day gate, etc.) and reports how many would actually
+        have deployed vs been blocked + by-reason breakdown.
+
+        Read-only. No mutations, no order placement.
+
+        Body (all optional):
+            chase_block_pct        — default 8.0
+            volatility_block_pct   — default 25.0
+            max_per_sector         — default 2
+            min_score              — default 50
+            simulate_outcomes      — bool, default False
+        """
+        if not self.current_user:
+            return self.send_json({"error": "Not authenticated"}, 401)
+        try:
+            import server
+            import picks_history as ph
+            import pipeline_backtest as pb
+            body = body or {}
+            hist_path = self._user_file("picks_history.json")
+            history = ph.load_picks_history(hist_path)
+            if not history:
+                return self.send_json({
+                    "success": True,
+                    "total_picks": 0,
+                    "would_deploy": 0,
+                    "blocked_by_reason": {},
+                    "deploys": [],
+                    "blocks_by_day": [],
+                    "block_rate": 0.0,
+                    "message": (
+                        "No picks history yet. The screener writes "
+                        "today's picks to picks_history.json on every "
+                        "30-min cycle; come back tomorrow once a few "
+                        "days have accumulated."),
+                })
+            kwargs = {}
+            for key, default in (("chase_block_pct", 8.0),
+                                   ("volatility_block_pct", 25.0),
+                                   ("max_per_sector", 2),
+                                   ("min_score", 50)):
+                if key in body:
+                    kwargs[key] = body[key]
+            result = pb.run_pipeline_backtest(history, **kwargs)
+            self.send_json({"success": True, **result,
+                              "history_days": len(history)})
+        except Exception as e:
+            self._send_error_safe(e, 500, "pipeline-backtest")
+
     def handle_trades_view(self, body=None):
         """Round-61 pt.36: filterable + sortable view of the user's
         trade journal. Powers the new `/api/trades` endpoint and the

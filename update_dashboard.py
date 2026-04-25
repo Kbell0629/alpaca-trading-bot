@@ -2462,6 +2462,20 @@ def save_data_json(data):
     safe_save_json(DATA_JSON_PATH, output)
     print(f"Data JSON saved: {DATA_JSON_PATH}")
 
+    # Round-61 pt.56: snapshot today's picks into picks_history.json
+    # so the pipeline-backtest harness has a sequence to replay.
+    # Best-effort — never block the screener cycle.
+    try:
+        import picks_history as _ph
+        from datetime import date as _date_cls
+        _hist_path = os.environ.get("PICKS_HISTORY_PATH") or \
+                      os.path.join(DATA_DIR, "picks_history.json")
+        _today = _date_cls.today().isoformat()
+        _picks_for_history = output.get("picks") or []
+        _ph.snapshot_picks(_today, _picks_for_history, _hist_path)
+    except Exception as _ph_e:
+        print(f"picks_history snapshot failed: {_ph_e}")
+
 
 def main():
     start = time.time()

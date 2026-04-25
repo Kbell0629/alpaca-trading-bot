@@ -3223,6 +3223,11 @@ class DashboardHandler(
             # summary. Read-only.
             self.handle_analytics_view(body)
 
+        elif path == "/api/pipeline-backtest":
+            # Round-61 pt.56: replay picks_history.json through every
+            # deploy gate; reports total/deploy/blocked + block_rate.
+            self.handle_pipeline_backtest(body)
+
         elif path == "/api/backtest/run":
             # Round-61 pt.37: 30-day backtest harness. Re-runs each
             # backtestable strategy's entry/exit logic against
