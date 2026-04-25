@@ -129,11 +129,19 @@ def _cancel_pending_sell_orders(handler, symbol):
     available" because a queued MOO/limit order is reserving the
     shares.
 
+    Round-61 pt.75: dropped the `?symbols={symbol}` URL filter.
+    Alpaca's orders endpoint silently excludes some "accepted"-
+    status orders when filtered server-side, so a SOXL BUY-stop
+    visible in the UI was being missed by the cancel scan. We now
+    fetch ALL open orders and filter client-side. Slightly more
+    bytes over the wire (still tiny — open orders is < 100 even
+    for active accounts) but reliably catches every order that
+    could be reserving the qty / buying-power.
+
     Returns (cancelled_count, error_message_or_None).
     """
     try:
-        url = (f"{handler.user_api_endpoint}/orders"
-                f"?status=open&symbols={symbol}&limit=50")
+        url = f"{handler.user_api_endpoint}/orders?status=open&limit=200"
         orders = handler.user_api_get(url)
         if not isinstance(orders, list):
             return 0, "couldn't list open orders"
