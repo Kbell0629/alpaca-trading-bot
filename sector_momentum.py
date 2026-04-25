@@ -83,6 +83,52 @@ def build_sector_returns(etf_prices: Mapping) -> dict:
     return out
 
 
+def fetch_sector_returns(fetch_bars_fn,
+                            *,
+                            lookback_days: int = 20,
+                            etfs=None,
+                            ) -> dict:
+    """Round-61 pt.68: build ``sector_returns`` by fetching daily bars
+    for each sector ETF. Caller injects ``fetch_bars_fn(symbols, days)``
+    so this stays pure (no direct Alpaca/yfinance dependency).
+
+    Args:
+      fetch_bars_fn: callable ``(symbols: list[str], days: int) ->
+        dict[symbol, list[bar]]`` where each bar has at minimum a
+        ``"c"`` close-price key.
+      lookback_days: how many trading days back to compute return
+        over. Default 20 (~1 month).
+      etfs: subset of ETF symbols to fetch. Defaults to the full set
+        from ``SECTOR_ETF_MAP``.
+
+    Returns ``{sector_name: pct_return}`` ready for
+    ``apply_sector_momentum_filter``. Empty dict on fetch failure.
+    """
+    symbols = list(etfs) if etfs else list(SECTOR_ETF_MAP.keys())
+    try:
+        bars_map = fetch_bars_fn(symbols, lookback_days + 5)
+    except Exception:
+        return {}
+    if not isinstance(bars_map, Mapping):
+        return {}
+    etf_prices = {}
+    for sym in symbols:
+        bars = bars_map.get(sym) or []
+        if not isinstance(bars, list) or len(bars) < 2:
+            continue
+        # Use the OLDEST close as start, NEWEST as end. Bars are
+        # typically in chronological order from Alpaca.
+        try:
+            start = bars[0].get("c") if isinstance(bars[0], dict) else None
+            end = bars[-1].get("c") if isinstance(bars[-1], dict) else None
+        except (AttributeError, IndexError):
+            continue
+        if start is None or end is None:
+            continue
+        etf_prices[sym] = {"start": start, "end": end}
+    return build_sector_returns(etf_prices)
+
+
 def is_sector_in_downtrend(sector: Optional[str],
                             sector_returns: Mapping,
                             threshold_pct: float = DEFAULT_THRESHOLD_PCT,

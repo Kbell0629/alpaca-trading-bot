@@ -402,6 +402,45 @@ def fetch_bars_for_picks(picks, days=20, max_workers=6):
     return results
 
 
+def fetch_intraday_bars(symbol, timeframe="4Hour", limit=25):
+    """Round-61 pt.68: fetch intraday bars (4-hour by default) for
+    multi-timeframe breakout confirmation. Returns the bars list,
+    empty on failure."""
+    end_date = now_et().strftime("%Y-%m-%d")
+    start_date = (now_et() - timedelta(days=14)).strftime("%Y-%m-%d")
+    url = (
+        f"{DATA_ENDPOINT}/stocks/{urllib.parse.quote(symbol)}/bars"
+        f"?timeframe={urllib.parse.quote(timeframe)}"
+        f"&start={start_date}&end={end_date}&limit={limit}&feed=iex"
+    )
+    result = api_get_with_retry(url, timeout=10)
+    if isinstance(result, dict) and "bars" in result:
+        return result["bars"]
+    if isinstance(result, list):
+        return result
+    return []
+
+
+def fetch_intraday_bars_for_symbols(symbols, timeframe="4Hour",
+                                       limit=25, max_workers=6):
+    """Round-61 pt.68: parallel fetch of intraday bars."""
+    def _one(sym):
+        try:
+            return sym, fetch_intraday_bars(sym, timeframe, limit)
+        except Exception:
+            return sym, []
+    results = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_one, s): s for s in symbols}
+        for future in as_completed(futures):
+            try:
+                sym, bars = future.result()
+                results[sym] = bars
+            except Exception:
+                pass
+    return results
+
+
 def fetch_bars_for_symbols(symbols, days=20, max_workers=6):
     """Fetch historical bars for a list of symbols in parallel. Returns {symbol: bars}."""
     def fetch_one(sym):
@@ -1285,15 +1324,22 @@ def fetch_all_data():
             except Exception as _gp_err:
                 print(f"  Gap penalty failed: {_gp_err}. Continuing.")
 
-            # Round-61 pt.66: sector-momentum filter. Block long
-            # deploys in sectors trending DOWN >10% MoM. Best-effort:
-            # caller supplies sector_returns built from sector-ETF
-            # snapshots; if unavailable, the filter is a no-op. Short
-            # picks pass through (a downtrending sector is a good
-            # short setup).
+            # Round-61 pt.66/pt.68: sector-momentum filter. Block long
+            # deploys in sectors trending DOWN >10% MoM. Pt.68 wires
+            # the actual ETF data fetch so the filter is no longer
+            # a no-op. Best-effort — failures fall through to no-op.
             try:
                 import sector_momentum as _sm
                 _sector_returns = locals().get("sector_returns") or {}
+                if not _sector_returns:
+                    # Pt.68: build sector_returns from XLE/XLF/XLK/...
+                    # daily bars over the last 20 trading days.
+                    _sector_returns = _sm.fetch_sector_returns(
+                        fetch_bars_for_symbols, lookback_days=20)
+                    if _sector_returns:
+                        print(f"  Sector momentum: fetched returns "
+                              f"for {len(_sector_returns)} sectors "
+                              f"({_sm.explain_sector_returns(_sector_returns, top_n=3)})")
                 if _sector_returns:
                     _before_blocked = sum(1 for p in top_candidates
                                             if p.get("_sector_downtrend"))
@@ -1309,6 +1355,63 @@ def fetch_all_data():
             except Exception as _sm_err:
                 print(f"  Sector momentum filter failed: {_sm_err}. "
                       "Continuing.")
+
+            # Round-61 pt.68: bid-ask spread filter. A pick with high
+            # volume but a wide spread is a 5%-on-entry tax. Reject
+            # anything where (ask - bid) / mid > 0.5%. Quotes come
+            # from the same snapshots we already fetched (latestQuote
+            # field), so zero extra API calls.
+            try:
+                import spread_filter as _spf
+                _quotes = {}
+                for p in top_candidates:
+                    sym = (p.get("symbol") or "").upper()
+                    if not sym:
+                        continue
+                    snap = snapshots.get(sym) or {}
+                    lq = snap.get("latestQuote") or {}
+                    bp, ap = lq.get("bp"), lq.get("ap")
+                    if bp and ap:
+                        _quotes[sym] = {"bid": bp, "ask": ap}
+                _before_spread = sum(1 for p in top_candidates
+                                       if p.get("_wide_spread"))
+                _spf.apply_spread_filter(top_candidates, _quotes)
+                _after_spread = sum(1 for p in top_candidates
+                                      if p.get("_wide_spread"))
+                _newly_spread = _after_spread - _before_spread
+                if _newly_spread > 0:
+                    print(f"  Spread filter: blocked {_newly_spread} "
+                          "pick(s) with bid-ask spread > 0.5%")
+            except Exception as _spf_err:
+                print(f"  Spread filter failed: {_spf_err}. Continuing.")
+
+            # Round-61 pt.68: 4h breakout confirmation. The 30-min
+            # screener can flag a stock as breaking out (today's
+            # close > 20-day high) when on the 4h chart that move
+            # is just a mid-session blip getting rejected at 4h
+            # resistance. Require Breakout picks to clear the 4h
+            # 20-bar high too. Best-effort fetch — failures fail-open.
+            try:
+                import multi_timeframe as _mtf
+                _bars_4h = _mtf.fetch_4h_bars_for_breakouts(
+                    top_candidates,
+                    lambda syms, tf, lim:
+                        fetch_intraday_bars_for_symbols(syms, tf, lim),
+                )
+                if _bars_4h:
+                    _before_mtf = sum(1 for p in top_candidates
+                                        if p.get("_mtf_rejected"))
+                    _mtf.apply_mtf_breakout_confirmation(
+                        top_candidates, _bars_4h)
+                    _after_mtf = sum(1 for p in top_candidates
+                                       if p.get("_mtf_rejected"))
+                    _newly_mtf = _after_mtf - _before_mtf
+                    if _newly_mtf > 0:
+                        print(f"  4h MTF: rejected {_newly_mtf} "
+                              "Breakout pick(s) at-or-below 4h "
+                              "20-bar high")
+            except Exception as _mtf_err:
+                print(f"  4h MTF gate failed: {_mtf_err}. Continuing.")
 
             # Round-61 pt.40: multi-day breakout confirmation. Require
             # today's close AND yesterday's close to BOTH be above their
@@ -1908,6 +2011,13 @@ def fetch_all_data():
         if (p.get("_sector_downtrend")
                 and "sector_downtrend" not in reasons):
             reasons.append("sector_downtrend")
+        # Pt.68: bridge wide-spread tag.
+        if p.get("_wide_spread") and "wide_spread" not in reasons:
+            reasons.append("wide_spread")
+        # Pt.68: bridge multi-timeframe rejection tag.
+        if (p.get("_mtf_rejected")
+                and "mtf_breakout_unconfirmed" not in reasons):
+            reasons.append("mtf_breakout_unconfirmed")
         p["filter_reasons"] = reasons
         p["will_deploy"] = not reasons
 
