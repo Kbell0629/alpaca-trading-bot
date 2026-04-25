@@ -3954,6 +3954,104 @@ var _tradesState = {
     expanded: {},  // {trade_index: true} — which rows show post-mortem
 };
 
+// Round-61 pt.37: 30-day multi-strategy backtest panel.
+async function runMultiStrategyBacktest() {
+    var panel = document.getElementById('multiBacktestPanel');
+    if (!panel) return;
+    var daysEl = document.getElementById('multiBacktestDaysSelect');
+    var days = parseInt(daysEl ? daysEl.value : '30', 10) || 30;
+    panel.innerHTML = '<div style="color:var(--text-dim);padding:16px;text-align:center">Running backtest&hellip; (this may take 10-30 seconds depending on cache state)</div>';
+    try {
+        var resp = await fetch(API_BASE + '/api/backtest/run', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': getCookie('csrf_token') || '',
+            },
+            body: JSON.stringify({ days: days }),
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        var d = await resp.json();
+        renderMultiStrategyBacktest(d);
+    } catch (e) {
+        panel.innerHTML = '<div class="empty-state error"><div class="icon">⚠</div>' +
+            '<div class="title">Backtest unavailable</div>' +
+            '<div class="subtitle">' + esc(e.message) + '</div></div>';
+    }
+}
+
+function renderMultiStrategyBacktest(d) {
+    var panel = document.getElementById('multiBacktestPanel');
+    if (!panel) return;
+    if (d.success === false) {
+        panel.innerHTML = '<div class="empty-state error"><div class="icon">⚠</div>' +
+            '<div class="title">No data</div>' +
+            '<div class="subtitle">' + esc(d.error || 'unknown') + '</div></div>';
+        return;
+    }
+    var html = '';
+    var ov = d.overall_summary || {};
+    var totalClass = (ov.total_pnl || 0) > 0 ? 'pnl-pos' : (ov.total_pnl || 0) < 0 ? 'pnl-neg' : '';
+
+    // Window summary line
+    var symEval = (d.symbols_evaluated || []).length;
+    var symMiss = (d.symbols_missing || []).length;
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:14px;font-size:12px;color:var(--text-dim)">' +
+        '<div>Window: <strong>' + (d.window_days || 30) + ' days</strong> &nbsp;|&nbsp; Symbols evaluated: <strong>' + symEval + '</strong>' +
+            (symMiss ? ' &nbsp;|&nbsp; <span style="color:var(--orange)">' + symMiss + ' missing data</span>' : '') +
+        '</div>' +
+    '</div>';
+
+    // Top-line summary cards
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:14px">';
+    html += '<div class="factor-card"><div class="factor-card-title">Total Trades</div><div class="factor-card-value">' + (ov.count || 0) + '</div><div class="factor-card-sub">' + (ov.wins||0) + 'W / ' + (ov.losses||0) + 'L</div></div>';
+    html += '<div class="factor-card"><div class="factor-card-title">Win Rate</div><div class="factor-card-value">' + ((ov.win_rate||0)*100).toFixed(0) + '%</div></div>';
+    html += '<div class="factor-card"><div class="factor-card-title">Hypothetical P&amp;L</div><div class="factor-card-value '+totalClass+'">' + _tradeFmtMoney(ov.total_pnl) + '</div><div class="factor-card-sub">avg ' + _tradeFmtMoney(ov.avg_pnl) + '</div></div>';
+    html += '<div class="factor-card"><div class="factor-card-title">Expectancy</div><div class="factor-card-value">' + _tradeFmtMoney(ov.expectancy) + '</div></div>';
+    html += '<div class="factor-card"><div class="factor-card-title">Best</div><div class="factor-card-value pnl-pos">' + _tradeFmtMoney(ov.best_pnl) + '</div></div>';
+    html += '<div class="factor-card"><div class="factor-card-title">Worst</div><div class="factor-card-value pnl-neg">' + _tradeFmtMoney(ov.worst_pnl) + '</div></div>';
+    html += '</div>';
+
+    // Per-strategy comparison
+    var by = d.by_strategy || {};
+    var keys = Object.keys(by);
+    if (keys.length) {
+        html += '<div style="margin-bottom:6px;font-size:12px;color:var(--text-dim);font-weight:600">PER-STRATEGY HYPOTHETICAL PERFORMANCE</div>';
+        html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:18px">';
+        keys.forEach(function(k){
+            var r = by[k];
+            if (r.error) {
+                html += '<div class="factor-card" style="border-color:rgba(239,68,68,0.3)"><div class="factor-card-title">' + esc(_tradeStrategyLabel(k)) + '</div><div style="color:var(--orange);font-size:12px">' + esc(r.error) + '</div></div>';
+                return;
+            }
+            var s = r.summary || {};
+            var pnlClass = (s.total_pnl || 0) > 0 ? 'pnl-pos' : (s.total_pnl || 0) < 0 ? 'pnl-neg' : '';
+            html += '<div class="factor-card" style="border-color:'+ ((s.total_pnl||0) > 0 ? 'rgba(16,185,129,0.3)' : (s.total_pnl||0) < 0 ? 'rgba(239,68,68,0.3)' : 'var(--border)')+'">' +
+                '<div class="factor-card-title">' + esc(_tradeStrategyLabel(k)) + '</div>' +
+                '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:6px;margin-top:4px">' +
+                    '<span class="factor-card-value '+pnlClass+'" style="font-size:18px">' + _tradeFmtMoney(s.total_pnl) + '</span>' +
+                    '<span style="font-size:11px;color:var(--text-dim)">' + (s.count||0) + ' trades</span>' +
+                '</div>' +
+                '<div style="font-size:11px;color:var(--text-dim);margin-top:6px;display:flex;flex-wrap:wrap;gap:8px">' +
+                    '<span>Win: <strong>' + ((s.win_rate||0)*100).toFixed(0) + '%</strong> ('+ (s.wins||0) +'W/'+(s.losses||0)+'L)</span>' +
+                    '<span>Avg: <strong>' + _tradeFmtMoney(s.avg_pnl) + '</strong></span>' +
+                '</div>' +
+            '</div>';
+        });
+        html += '</div>';
+    }
+
+    // Notes
+    html += '<div style="margin-top:14px;padding:10px;background:rgba(59,130,246,0.05);border:1px solid rgba(59,130,246,0.2);border-radius:8px;font-size:12px;color:var(--text-dim);line-height:1.5">' +
+        '<strong>How to read this:</strong> Each strategy is replayed against the daily bars of the symbols in your trade journal. Hypothetical P&amp;L assumes 1-share positions with the strategy\'s default stop / target / max-hold rules. ' +
+        'A strategy that\'s NEGATIVE here is structurally losing money on the symbols you trade — disabling it via Settings &rarr; Auto-Deployer Strategies prevents real-money losses going forward. ' +
+        'Backtesting cannot include news/earnings/sector filters that production uses, so live results may differ.' +
+    '</div>';
+
+    panel.innerHTML = html;
+}
+
 async function refreshTradesPanel() {
     var panel = document.getElementById('tradesPanel');
     if (!panel) return;
@@ -6641,6 +6739,29 @@ function renderDashboard() {
             '<div id="backtestSummary" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px"></div>' +
             '<div style="position:relative;height:320px;width:100%"><canvas id="backtestChart"></canvas></div>' +
             '<div id="backtestExplanation" style="margin-top:16px;padding:12px;background:rgba(59,130,246,0.05);border:1px solid rgba(59,130,246,0.2);border-radius:8px;font-size:13px;color:var(--text-dim);line-height:1.6"></div>' +
+            // Round-61 pt.37: 30-day multi-strategy backtest panel.
+            // Uses the existing #section-backtest anchor (no extra
+            // tab) — the Visual Backtest above is per-symbol single-
+            // strategy; this is per-strategy across the journal
+            // universe + dashboard top picks.
+            '<div style="margin-top:24px;padding-top:18px;border-top:1px solid var(--border)">' +
+                '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:12px">' +
+                    '<div style="flex:1;min-width:240px">' +
+                        '<h3 style="margin:0">30-Day Strategy Backtest</h3>' +
+                        '<div style="font-size:12px;color:var(--text-dim);margin-top:4px">Replay every backtestable strategy against historical bars — compares hypothetical P&amp;L on the symbols you actually traded.</div>' +
+                    '</div>' +
+                    '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">' +
+                        '<select id="multiBacktestDaysSelect" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:14px">' +
+                            '<option value="14">14 days</option>' +
+                            '<option value="30" selected>30 days</option>' +
+                            '<option value="60">60 days</option>' +
+                            '<option value="90">90 days</option>' +
+                        '</select>' +
+                        '<button class="btn-primary btn-sm" onclick="runMultiStrategyBacktest()" style="height:36px">Run Backtest</button>' +
+                    '</div>' +
+                '</div>' +
+                '<div id="multiBacktestPanel" style="margin-top:12px"><div style="color:var(--text-dim);padding:12px;text-align:center;font-size:12px">Click "Run Backtest" to simulate the last N days against your trade history.</div></div>' +
+            '</div>' +
         '</div>' +
         '</section>' +
         '<section id="section-scheduler" class="scheduler-section" aria-label="Cloud scheduler status">' +
