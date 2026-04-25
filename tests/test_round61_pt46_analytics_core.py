@@ -555,6 +555,8 @@ def test_build_analytics_view_returns_all_keys():
         "best_worst_trades", "filter_summary",
         # Round-61 pt.47 added score_outcome.
         "score_outcome",
+        # Round-61 pt.49 added score_health.
+        "score_health",
     }
     assert set(out.keys()) == expected_keys
 

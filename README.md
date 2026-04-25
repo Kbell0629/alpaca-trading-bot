@@ -302,6 +302,53 @@ have an `overfit_ratio` below 1.5 to be promoted into
 the walker can slide several folds. Slippage 10 bps + $1 commission
 also threaded in so simulated expectancy reflects real fill friction.
 
+### Position sizing — fractional Kelly + correlation discount
+
+The bot resizes new positions based on the strategy's realised
+edge AND existing portfolio correlation:
+
+- **Kelly multiplier** — strong strategies (high Kelly fraction)
+  scale up to 2.0×; weak strategies (low Kelly) scale down to 0.5×.
+  Uses HALF Kelly capped at 25% per position. Strategy-eligible
+  starts at 10 closed trades; below that, no adjustment.
+- **Correlation discount** — each same-sector held position cuts
+  the new position by 0.5× (floored at 0.25×). 0 correlated = 1.0×;
+  1 correlated = 0.5×; 2+ correlated = 0.25×.
+
+Layered ON TOP of the screener's `recommended_shares` and BEFORE
+the legacy drawdown multiplier, so all existing caps
+(`max_position_pct`, `LIVE_MAX_DOLLARS`, settled-funds, fractional
+routing) still apply. Each adjustment is logged with rationale so
+you can audit why a particular trade got resized.
+
+API: `position_sizing.compute_full_size(base_qty=..., strategy=...,
+symbol=..., journal=..., existing_positions=...)`.
+
+### Score-health monitoring
+
+The bot runs a daily 4:35 PM check on whether higher-scored screener
+picks actually win more often. Across ≥30 closed trades, if neither
+win rate NOR expectancy increases monotonically with score, you get
+a notification: **"⚠ Screener scoring appears uncorrelated to
+outcome"**. The scoring system likely needs investigation. A
+recovery notification fires when the pattern returns to healthy.
+
+Visible live in the Analytics Hub (Score-to-Outcome Correlation
+panel) AND surfaced as `build_analytics_view["score_health"]`.
+
+### Pipeline-aware backtest
+
+`pipeline_backtest.run_pipeline_backtest(picks_history)` replays a
+sequence of historical screener picks through every deploy-side
+gate (chase_block, volatility_block, sector cap, trend filter,
+event-day gate, min_score) and reports how many would actually
+have deployed vs been blocked + by which reason.
+
+Useful when you're wondering "are the gates blocking profitable
+picks?". Pass `simulate_outcomes=True` + a `bars_by_symbol` dict
+to also get a counterfactual P&L curve from
+`backtest_core._simulate_symbol`.
+
 ### Event-day awareness
 
 `event_calendar.py` encodes 2026/2027 FOMC / CPI / NFP / PCE release

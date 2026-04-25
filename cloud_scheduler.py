@@ -3047,6 +3047,30 @@ def run_auto_deployer(user):
         except (TypeError, ValueError):
             log(f"[{user['username']}] {symbol}: Skipped (bad recommended_shares: {rs!r})", "deployer")
             continue
+        # Round-61 pt.49: fractional-Kelly + correlation-aware sizing.
+        # Layered ON TOP of the screener's recommended_shares (which
+        # already applies vol-based 2% risk + max_position_pct cap).
+        # Kelly scales by the per-strategy realised edge in [0.5, 2.0]×;
+        # correlation discount cuts size by 0.5×^N for N same-sector
+        # positions. Both are best-effort — never block the deploy.
+        try:
+            import position_sizing as _ps
+            _journal_for_kelly = load_json(
+                user_file(user, "trade_journal.json")) or None
+            _size = _ps.compute_full_size(
+                base_qty=qty, strategy=best_strat,
+                symbol=symbol, journal=_journal_for_kelly,
+                existing_positions=existing_positions,
+            )
+            if _size["qty"] != qty:
+                log(f"[{user['username']}] {symbol}: Kelly+corr sizing "
+                    f"{qty} → {_size['qty']} ({_size['rationale']})",
+                    "deployer")
+                qty = _size["qty"]
+        except Exception as _e:
+            log(f"[{user['username']}] {symbol}: Kelly sizing failed "
+                f"({_e}); using base qty.", "deployer")
+
         # Round-11 expansion item 12: drawdown-adaptive sizing.
         # Apply the multiplier computed at deployer start. 0.25..1.0.
         if drawdown_mult < 1.0:
@@ -3444,6 +3468,26 @@ def run_auto_deployer(user):
                 if short_qty < 1:
                     log(f"[{user['username']}] {short_symbol}: Short skipped (price ${short_price} too high for 5% sizing)", "deployer")
                     continue
+                # Round-61 pt.49: Kelly + correlation sizing for shorts.
+                try:
+                    import position_sizing as _ps
+                    _journal_for_kelly = load_json(
+                        user_file(user, "trade_journal.json")) or None
+                    _size = _ps.compute_full_size(
+                        base_qty=short_qty, strategy="short_sell",
+                        symbol=short_symbol, journal=_journal_for_kelly,
+                        existing_positions=existing_positions,
+                    )
+                    if _size["qty"] != short_qty:
+                        log(f"[{user['username']}] {short_symbol}: "
+                            f"short Kelly+corr {short_qty} → "
+                            f"{_size['qty']} ({_size['rationale']})",
+                            "deployer")
+                        short_qty = _size["qty"]
+                except Exception as _e:
+                    log(f"[{user['username']}] {short_symbol}: short "
+                        f"Kelly sizing failed ({_e}); using base.",
+                        "deployer")
 
                 # Place short (sell without existing position = short sell)
                 log(f"[{user['username']}] Deploying SHORT: {short_symbol} x{short_qty} @ ~${short_price}", "deployer")
@@ -4087,6 +4131,79 @@ def run_scorecard_digest(user):
         log(f"[{user['username']}] Scorecard digest queued to {user.get('_notification_email')}", "digest")
     except Exception as e:
         log(f"[{user['username']}] scorecard_digest: queue failed: {e}", "digest")
+
+
+# ============================================================================
+# Round-61 pt.49: SCORE-HEALTH DAILY CHECK (per user)
+# ============================================================================
+def run_score_health_check(user):
+    """Round-61 pt.49: daily check that the screener's score actually
+    correlates with realised outcome. If pt.46's monotonic-winrate +
+    monotonic-expectancy flags are BOTH False over >=30 closed
+    trades, send a notification — silent regression in scoring is
+    the worst kind of bug because the bot keeps deploying picks the
+    user trusts even though the ranking has stopped meaning anything.
+
+    Best-effort: read-only check + at most one notification per
+    transition. Stamps last reported state in scheduler_last_runs so
+    we don't spam the user every day with the same alert.
+    """
+    try:
+        import analytics_core as _ac
+        udir = user["_data_dir"]
+        journal = load_json(os.path.join(udir, "trade_journal.json")) or {}
+        health = _ac.check_score_degradation(journal)
+    except Exception as e:
+        log(f"[{user['username']}] score_health_check failed: {e}",
+            "score-health")
+        return
+
+    uid = user.get("id")
+    state_key = f"score_health_state_{uid}"
+    last_state = _last_runs.get(state_key)
+
+    # State machine: "ok" / "warning" / "degraded" / "insufficient".
+    if health.get("degraded"):
+        new_state = "degraded"
+    elif health.get("warning"):
+        new_state = "warning"
+    elif health.get("tracked_trades", 0) < health.get("min_trades", 30):
+        new_state = "insufficient"
+    else:
+        new_state = "ok"
+
+    # Notify only on transition INTO degraded — that's the actionable
+    # one. Warning ⇒ silent (visible in the dashboard). OK ⇒ silent.
+    if new_state == "degraded" and last_state != "degraded":
+        try:
+            notify_user(user,
+                          f"{health['headline']}. {health['detail']}",
+                          "alert")
+        except Exception as e:
+            log(f"[{user['username']}] score_health notify failed: {e}",
+                "score-health")
+    # Notify on RECOVERY (degraded → ok) so the user knows it's fixed.
+    if last_state == "degraded" and new_state == "ok":
+        try:
+            notify_user(user,
+                          "Screener score health recovered. Higher-"
+                          "scored picks are winning more often again.",
+                          "info")
+        except Exception as _e:
+            log(f"[{user.get('username','?')}] score_health recovery "
+                f"notify failed: {_e}", "score-health")
+
+    log(f"[{user['username']}] score_health: {new_state} "
+        f"(tracked={health.get('tracked_trades')} "
+        f"mwr={health.get('monotonic_winrate')} "
+        f"mex={health.get('monotonic_expectancy')})",
+        "score-health")
+    _last_runs[state_key] = new_state
+    try:
+        _save_last_runs()
+    except Exception as _e:
+        log(f"[{user.get('username','?')}] score_health save_last_runs "
+            f"failed: {_e}", "score-health")
 
 
 # ============================================================================
@@ -4966,6 +5083,19 @@ def scheduler_loop():
                             except Exception as _e:
                                 log(f"[{user['username']}] scorecard_digest failed: {_e}", "scheduler")
                                 _clear_daily_stamp(f"scorecard_digest_{uid}")
+
+                    # Round-61 pt.49: Score-health daily check at 4:35 PM ET
+                    # weekdays. Reads-only — pulls journal, computes
+                    # score-to-outcome correlation, notifies once on
+                    # transition INTO degraded state.
+                    if is_weekday and now_et.hour == 16 and now_et.minute >= 35:
+                        if should_run_daily_at(f"score_health_{uid}", 16, 35,
+                                                max_late_seconds=4*3600):
+                            try:
+                                run_score_health_check(user)
+                            except Exception as _e:
+                                log(f"[{user['username']}] score_health failed: {_e}", "scheduler")
+                                _clear_daily_stamp(f"score_health_{uid}")
 
                     # Weekly learning: Fridays 5:00 PM ET
                     if weekday == 4 and now_et.hour == 17:

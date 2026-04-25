@@ -655,6 +655,99 @@ def _bucket_label(idx, total):
 
 
 # ============================================================================
+# Round-61 pt.49: score-degradation alerting
+# ============================================================================
+
+def check_score_degradation(journal, *,
+                              min_trades: int = 30,
+                              bucket_count: int = 5) -> dict:
+    """Active health check on the screener's score-to-outcome
+    correlation. Pt.46 surfaced the panel; pt.49 turns it into an
+    alert so silent regression doesn't go unnoticed.
+
+    Returns:
+      {
+        "degraded": bool,             # True if both monotonic flags
+                                       # are False AND tracked_trades
+                                       # >= min_trades
+        "warning": bool,              # True if EITHER monotonic flag
+                                       # is False AND tracked >= min
+        "tracked_trades": int,
+        "total_closed": int,
+        "min_trades": int,
+        "monotonic_winrate": bool,
+        "monotonic_expectancy": bool,
+        "headline": str,              # short notification-ready
+                                       # one-liner
+        "detail": str,                # longer explanation
+      }
+
+    Two thresholds:
+      * `degraded`: BOTH flags False — strongest signal that scoring
+        is broken. Trip a notification.
+      * `warning`: ONE flag False — soft signal; surface in dashboard,
+        no notification.
+
+    Below `min_trades` of tracked closed trades, both flags are
+    False but `degraded` and `warning` stay False because the sample
+    is too small to draw conclusions.
+    """
+    so = compute_score_outcome(journal, bucket_count=bucket_count)
+    tracked = so.get("tracked_trades", 0)
+    mwr = bool(so.get("monotonic_winrate"))
+    mex = bool(so.get("monotonic_expectancy"))
+    out = {
+        "degraded": False,
+        "warning": False,
+        "tracked_trades": tracked,
+        "total_closed": so.get("total_closed", 0),
+        "min_trades": min_trades,
+        "monotonic_winrate": mwr,
+        "monotonic_expectancy": mex,
+        "headline": "",
+        "detail": "",
+    }
+    if tracked < min_trades:
+        out["headline"] = "Score health: insufficient sample"
+        out["detail"] = (
+            f"Need ≥{min_trades} closed trades with embedded "
+            f"screener scores to evaluate score-to-outcome "
+            f"correlation. Currently tracking {tracked}.")
+        return out
+
+    if not mwr and not mex:
+        out["degraded"] = True
+        out["warning"] = True
+        out["headline"] = "⚠ Screener scoring appears uncorrelated to outcome"
+        out["detail"] = (
+            f"Across {tracked} closed trades, neither win rate nor "
+            f"expectancy increases monotonically with screener score. "
+            f"Higher-scored picks aren't winning more often than "
+            f"lower-scored picks. The score-ranking system likely "
+            f"needs investigation.")
+    elif not mwr or not mex:
+        out["warning"] = True
+        broken = []
+        if not mwr:
+            broken.append("win rate")
+        if not mex:
+            broken.append("expectancy")
+        out["headline"] = (
+            f"Score health: {' + '.join(broken)} not monotonic")
+        out["detail"] = (
+            f"Across {tracked} closed trades, "
+            f"{' and '.join(broken)} does not increase monotonically "
+            f"with score. Soft signal — keep monitoring.")
+    else:
+        out["headline"] = "Score health: OK"
+        out["detail"] = (
+            f"Across {tracked} closed trades, both win rate and "
+            f"expectancy increase monotonically with screener score. "
+            f"Scoring is correlated with outcome.")
+    return out
+
+
+# ============================================================================
 # End-to-end builder
 # ============================================================================
 
@@ -677,4 +770,5 @@ def build_analytics_view(journal=None, scorecard=None, account=None,
         "best_worst_trades": compute_best_worst_trades(journal),
         "filter_summary": compute_filter_summary(picks),
         "score_outcome": compute_score_outcome(journal),
+        "score_health": check_score_degradation(journal),
     }
