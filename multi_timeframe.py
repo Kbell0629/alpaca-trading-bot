@@ -165,6 +165,148 @@ def enrich_picks_with_mtf(picks, daily_bars_map, weekly_bars_map=None,
     return picks
 
 
+# ============================================================================
+# Round-61 pt.68 — 4-hour breakout confirmation gate (HARD reject).
+#
+# The Round-11 confirm_breakout above is a SOFT score-adjuster (±10).
+# Pt.68 adds a HARD gate: a Breakout pick must clear its 4h 20-bar
+# high before it ranks. This catches the case where a 30-min screener
+# flags a "breakout" that on the 4h chart is just a mid-session blip
+# getting rejected at a known resistance level.
+# ============================================================================
+
+DEFAULT_MTF_LOOKBACK_BARS: int = 20
+DEFAULT_MTF_BUFFER_PCT: float = 0.0
+
+
+def compute_4h_high(bars: list,
+                      *,
+                      lookback_bars: int = DEFAULT_MTF_LOOKBACK_BARS,
+                      ):
+    """Return the maximum ``h`` field over the last ``lookback_bars``
+    4-hour bars. None on empty / malformed input."""
+    if not isinstance(bars, list) or not bars:
+        return None
+    window = bars[-lookback_bars:] if len(bars) > lookback_bars else bars
+    highs = []
+    for b in window:
+        if not isinstance(b, dict):
+            continue
+        h = b.get("h")
+        if h is None:
+            continue
+        try:
+            highs.append(float(h))
+        except (TypeError, ValueError):
+            continue
+    if not highs:
+        return None
+    return max(highs)
+
+
+def is_breakout_confirmed(price,
+                            bars: list,
+                            *,
+                            lookback_bars: int = DEFAULT_MTF_LOOKBACK_BARS,
+                            buffer_pct: float = DEFAULT_MTF_BUFFER_PCT,
+                            ) -> bool:
+    """Return True when ``price`` strictly exceeds the 4h 20-bar high
+    (plus optional buffer). Inputs that can't be evaluated return
+    True (fail-open) so a flaky bars feed doesn't drop every Breakout."""
+    high = compute_4h_high(bars, lookback_bars=lookback_bars)
+    if high is None:
+        return True
+    try:
+        p = float(price)
+    except (TypeError, ValueError):
+        return True
+    threshold = high * (1 + buffer_pct / 100)
+    return p > threshold
+
+
+def apply_mtf_breakout_confirmation(picks: list,
+                                       bars_4h,
+                                       *,
+                                       lookback_bars: int = DEFAULT_MTF_LOOKBACK_BARS,
+                                       buffer_pct: float = DEFAULT_MTF_BUFFER_PCT,
+                                       ) -> list:
+    """Reject Breakout picks whose price is at-or-below the 4h
+    20-bar high. Mutates each affected pick:
+      * ``_mtf_rejected = True``
+      * ``_mtf_4h_high = <high>``
+      * ``will_deploy = False``
+      * Appends ``"mtf_breakout_unconfirmed"`` to ``filter_reasons``.
+
+    Non-Breakout picks pass through untouched. ``bars_4h`` is a
+    ``{symbol: list_of_bar_dicts}`` map; missing symbols fail-open.
+    Returns ``picks`` for chaining.
+    """
+    if not picks:
+        return picks or []
+    if not hasattr(bars_4h, "get"):
+        return picks
+    for p in picks:
+        if not isinstance(p, dict):
+            continue
+        strat = (p.get("best_strategy") or "").lower().replace(" ", "_")
+        if strat != "breakout":
+            continue
+        sym = (p.get("symbol") or "").upper()
+        if not sym:
+            continue
+        bars = bars_4h.get(sym)
+        if not bars:
+            continue
+        try:
+            price = float(p.get("price") or p.get("current_price") or 0)
+        except (TypeError, ValueError):
+            continue
+        if price <= 0:
+            continue
+        if is_breakout_confirmed(
+                price, bars, lookback_bars=lookback_bars,
+                buffer_pct=buffer_pct):
+            continue
+        high_4h = compute_4h_high(bars, lookback_bars=lookback_bars)
+        p["_mtf_rejected"] = True
+        if high_4h is not None:
+            p["_mtf_4h_high"] = round(high_4h, 4)
+        p["will_deploy"] = False
+        reasons = p.get("filter_reasons")
+        if not isinstance(reasons, list):
+            reasons = []
+        if "mtf_breakout_unconfirmed" not in reasons:
+            reasons.append("mtf_breakout_unconfirmed")
+        p["filter_reasons"] = reasons
+    return picks
+
+
+def fetch_4h_bars_for_breakouts(picks: list,
+                                  fetch_bars_fn,
+                                  *,
+                                  lookback_bars: int = DEFAULT_MTF_LOOKBACK_BARS,
+                                  ) -> dict:
+    """Fetch ~20 4h bars for each Breakout pick. Caller injects
+    ``fetch_bars_fn(symbols, timeframe, limit) -> {symbol: bars}``
+    so this stays pure (no Alpaca dependency).
+    """
+    breakout_syms = []
+    for p in picks or []:
+        if not isinstance(p, dict):
+            continue
+        strat = (p.get("best_strategy") or "").lower().replace(" ", "_")
+        if strat == "breakout":
+            sym = (p.get("symbol") or "").upper()
+            if sym:
+                breakout_syms.append(sym)
+    if not breakout_syms:
+        return {}
+    try:
+        return fetch_bars_fn(breakout_syms, "4Hour", lookback_bars + 5) or {}
+    except Exception:
+        return {}
+
+
 if __name__ == "__main__":
     # Synthetic smoke test
     import random

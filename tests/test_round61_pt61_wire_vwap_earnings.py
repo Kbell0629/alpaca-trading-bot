@@ -75,7 +75,9 @@ def test_auto_deployer_vwap_gate_fetches_today_bars():
 def test_auto_deployer_vwap_gate_records_skip_reason():
     src = _src("cloud_scheduler.py")
     idx = src.find("VWAP-relative entry gate")
-    block = src[idx:idx + 2500]
+    # Pt.68: bumped 2500→5000 since the block grew when retest data
+    # extraction (session_low / prev_price) was inlined into it.
+    block = src[idx:idx + 5000]
     assert "above_vwap" in block
     assert "skip_reasons.append" in block
 
@@ -85,7 +87,7 @@ def test_auto_deployer_vwap_gate_fails_open_on_error():
     — it should fall through to the rest of the loop."""
     src = _src("cloud_scheduler.py")
     idx = src.find("VWAP-relative entry gate")
-    block = src[idx:idx + 2500]
+    block = src[idx:idx + 5000]
     # Try/except with a fail-open log.
     assert "VWAP gate fetch" in block
     assert "allowing through" in block

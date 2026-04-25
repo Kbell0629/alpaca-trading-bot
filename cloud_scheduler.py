@@ -3148,11 +3148,42 @@ def run_auto_deployer(user):
                 _vwap_series = _compute_vwap(_bars_today)
                 _vwap_today = (_vwap_series[-1]
                                 if _vwap_series else None)
+                # Round-61 pt.68: pass session_low + prev_price so
+                # the VWAP gate can detect a "retest cross-up"
+                # pattern (price was UNDER VWAP earlier today, now
+                # crossed above on volume) and ALLOW it instead of
+                # blocking. Without this data, every break above
+                # VWAP looks like a chase.
+                _session_low = None
+                _prev_price = None
+                if _bars_today:
+                    try:
+                        _lows = [b.get("l") for b in _bars_today
+                                  if isinstance(b, dict) and b.get("l") is not None]
+                        if _lows:
+                            _session_low = float(min(_lows))
+                    except (TypeError, ValueError):
+                        _session_low = None
+                    if len(_bars_today) >= 2:
+                        try:
+                            _prev = _bars_today[-2]
+                            if isinstance(_prev, dict):
+                                _pc = _prev.get("c")
+                                if _pc is not None:
+                                    _prev_price = float(_pc)
+                        except (TypeError, ValueError, IndexError):
+                            _prev_price = None
                 _gate_result = _vg.evaluate_vwap_gate(
                     strategy=best_strat,
                     price=float(pick.get("price") or 0),
                     vwap=_vwap_today,
+                    prev_price=_prev_price,
+                    session_low=_session_low,
                 )
+                if _gate_result.get("is_retest"):
+                    log(f"[{user['username']}] {symbol}: VWAP retest "
+                        f"pattern detected — allowing breakout entry "
+                        f"(price crossed up through VWAP).", "deployer")
                 if not _gate_result.get("allowed", True):
                     log(f"[{user['username']}] {symbol}: VWAP gate "
                         f"blocked breakout — {_gate_result.get('reason')}",
