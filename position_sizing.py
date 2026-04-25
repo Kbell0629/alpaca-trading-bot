@@ -381,6 +381,154 @@ def confluence_size_multiplier(count: int,
 # End-to-end wrapper
 # ============================================================================
 
+DEFAULT_ADV_CAP_PCT: float = 5.0
+DEFAULT_DRAWDOWN_HALVING_PCT: float = 5.0
+DEFAULT_DRAWDOWN_LOOKBACK_DAYS: int = 30
+
+
+def adv_size_multiplier(price: float,
+                          qty: int,
+                          adv_dollar: float,
+                          *,
+                          cap_pct: float = DEFAULT_ADV_CAP_PCT,
+                          ) -> float:
+    """Round-61 pt.71: liquidity-aware sizing. Cap a position at
+    ``cap_pct``% of the symbol's 20-day average daily dollar volume
+    so the bot doesn't become its own worst fill on a thin name.
+
+    Returns a multiplier in (0, 1]. 1.0 means the proposed size
+    fits within the cap; <1.0 means scale the qty down so dollars
+    spent ≤ ``cap_pct`` × ``adv_dollar``.
+
+    Bad inputs (zero/negative ADV, non-numeric, negative qty)
+    return 1.0 (fail-open) so a missing ADV feed doesn't drop
+    every deploy to zero.
+    """
+    try:
+        p = float(price)
+        q = int(qty)
+        adv = float(adv_dollar)
+        cap = float(cap_pct)
+    except (TypeError, ValueError):
+        return 1.0
+    if p <= 0 or q <= 0 or adv <= 0 or cap <= 0:
+        return 1.0
+    proposed_dollars = p * q
+    cap_dollars = adv * (cap / 100.0)
+    if cap_dollars <= 0:
+        return 1.0
+    if proposed_dollars <= cap_dollars:
+        return 1.0
+    # Need to shrink. Multiplier = cap_dollars / proposed_dollars.
+    mult = cap_dollars / proposed_dollars
+    return max(0.05, min(1.0, mult))
+
+
+def compute_strategy_recent_drawdown(journal: Optional[Mapping],
+                                        strategy: str,
+                                        *,
+                                        lookback_days: int = DEFAULT_DRAWDOWN_LOOKBACK_DAYS,
+                                        ) -> dict:
+    """Round-61 pt.71: rolling per-strategy drawdown. Walks the last
+    ``lookback_days`` of CLOSED trades for ``strategy`` and computes
+    peak-to-trough equity drawdown over that window. Returns
+    ``{"drawdown_pct": float, "trade_count": int, "peak": float,
+       "trough": float}``.
+
+    Empty / no-data → ``drawdown_pct=0``. The peak/trough are
+    cumulative pnl points; drawdown is `(peak - trough) / max(peak, 1)`.
+    """
+    out = {"drawdown_pct": 0.0, "trade_count": 0,
+            "peak": 0.0, "trough": 0.0}
+    if not isinstance(journal, Mapping):
+        return out
+    trades = journal.get("trades") or []
+    if not isinstance(trades, list):
+        return out
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=lookback_days)
+    rows = []
+    for t in trades:
+        if not isinstance(t, Mapping):
+            continue
+        if (t.get("status") or "open").lower() != "closed":
+            continue
+        if (t.get("strategy") or "").lower() != (strategy or "").lower():
+            continue
+        ts = t.get("exit_timestamp") or ""
+        try:
+            if ts.endswith("Z"):
+                ts = ts[:-1] + "+00:00"
+            dt = datetime.fromisoformat(ts)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+        except (ValueError, AttributeError, TypeError):
+            continue
+        if dt < cutoff:
+            continue
+        try:
+            pnl = float(t.get("pnl") or 0)
+        except (TypeError, ValueError):
+            pnl = 0.0
+        rows.append((dt, pnl))
+    if not rows:
+        return out
+    rows.sort(key=lambda r: r[0])
+    cum = 0.0
+    peak = 0.0
+    max_dd_dollars = 0.0
+    trough_at_max_dd = 0.0
+    for _dt, pnl in rows:
+        cum += pnl
+        if cum > peak:
+            peak = cum
+        # Track the worst peak-to-trough excursion.
+        current_dd = peak - cum
+        if current_dd > max_dd_dollars:
+            max_dd_dollars = current_dd
+            trough_at_max_dd = cum
+    out["trade_count"] = len(rows)
+    out["peak"] = round(peak, 2)
+    out["trough"] = round(trough_at_max_dd, 2)
+    if peak <= 0:
+        return out
+    drawdown_pct = max(0.0, max_dd_dollars / peak * 100)
+    out["drawdown_pct"] = round(drawdown_pct, 2)
+    return out
+
+
+def drawdown_size_multiplier(drawdown_pct: float,
+                                *,
+                                halving_threshold_pct: float = DEFAULT_DRAWDOWN_HALVING_PCT,
+                                floor: float = 0.5,
+                                ) -> float:
+    """Round-61 pt.71: scale position size down when a strategy is
+    bleeding. Linear taper from full size at 0% drawdown to ``floor``
+    at ``halving_threshold_pct`` × 2 drawdown. At
+    ``halving_threshold_pct`` exactly, multiplier is the midpoint.
+
+    Default: 0% DD → 1.0×, 5% DD → 0.75×, 10% DD → 0.5× (floored).
+
+    Bad inputs (negative drawdown, non-numeric) return 1.0.
+    """
+    try:
+        dd = float(drawdown_pct)
+        thr = float(halving_threshold_pct)
+        fl = float(floor)
+    except (TypeError, ValueError):
+        return 1.0
+    if dd <= 0 or thr <= 0:
+        return 1.0
+    if dd >= thr * 2:
+        return fl
+    # Linear interp from 1.0 at dd=0 to fl at dd=thr*2.
+    span = thr * 2
+    progress = dd / span
+    mult = 1.0 - progress * (1.0 - fl)
+    return max(fl, min(1.0, mult))
+
+
 def compute_full_size(*,
                        base_qty: int,
                        strategy: str,
@@ -389,9 +537,13 @@ def compute_full_size(*,
                        existing_positions: Optional[Iterable] = None,
                        sector_map: Optional[Mapping] = None,
                        pick: Optional[Mapping] = None,
+                       price: Optional[float] = None,
+                       adv_dollar: Optional[float] = None,
                        enable_kelly: bool = True,
                        enable_correlation: bool = True,
                        enable_confluence: bool = True,
+                       enable_adv_cap: bool = True,
+                       enable_drawdown_taper: bool = True,
                        ) -> dict:
     """Apply Kelly + correlation + confluence multipliers on top of
     `base_qty`. Round-61 pt.58 added the confluence step which reads
@@ -442,7 +594,25 @@ def compute_full_size(*,
     if enable_confluence and pick is not None:
         confluence_count = count_confluence_signals(pick)
         f_mult = confluence_size_multiplier(confluence_count)
-    final_float = bq * k_mult * c_mult * f_mult
+    # Round-61 pt.71: drawdown taper. Cut size when the strategy
+    # has been bleeding over the last 30 days.
+    dd_info = {}
+    dd_mult = 1.0
+    if enable_drawdown_taper:
+        dd_info = compute_strategy_recent_drawdown(journal, strategy)
+        dd_mult = drawdown_size_multiplier(dd_info.get("drawdown_pct", 0))
+    # Apply Kelly + correlation + confluence + drawdown.
+    pre_adv_float = bq * k_mult * c_mult * f_mult * dd_mult
+    pre_adv_qty = max(1, int(pre_adv_float))
+    # Round-61 pt.71: ADV cap. After all other multipliers, ensure
+    # the final dollar size doesn't exceed cap_pct of 20-day ADV
+    # (5% by default). Cheap protection against being our own bad
+    # fill on a thin name.
+    adv_mult = 1.0
+    if (enable_adv_cap and price is not None
+            and adv_dollar is not None and adv_dollar > 0):
+        adv_mult = adv_size_multiplier(price, pre_adv_qty, adv_dollar)
+    final_float = pre_adv_qty * adv_mult
     final_qty = max(1, int(final_float))
     rationale_bits = []
     if k_mult != 1.0:
@@ -456,6 +626,13 @@ def compute_full_size(*,
     if f_mult != 1.0:
         rationale_bits.append(
             f"confluence {f_mult:.2f}× ({confluence_count}/5 signals)")
+    if dd_mult != 1.0:
+        rationale_bits.append(
+            f"drawdown {dd_mult:.2f}× ({strategy} 30d DD: "
+            f"{dd_info.get('drawdown_pct', 0):.1f}%)")
+    if adv_mult != 1.0:
+        rationale_bits.append(
+            f"ADV cap {adv_mult:.2f}× (5% of 20d $-volume)")
     if not rationale_bits:
         rationale_bits.append("base size (no adjustment)")
     return {
@@ -463,8 +640,11 @@ def compute_full_size(*,
         "kelly_multiplier": round(k_mult, 4),
         "correlation_multiplier": round(c_mult, 4),
         "confluence_multiplier": round(f_mult, 4),
+        "drawdown_multiplier": round(dd_mult, 4),
+        "adv_multiplier": round(adv_mult, 4),
         "confluence_count": confluence_count,
         "edge": edge,
         "correlated_count": correlated,
+        "drawdown_info": dd_info,
         "rationale": "; ".join(rationale_bits),
     }

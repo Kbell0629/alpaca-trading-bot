@@ -1401,6 +1401,77 @@ def monitor_strategies(user, extended_hours=False):
                 log(f"[{user['username']}] divergence sweep failed: "
                     f"{_ldm_e}", "monitor")
 
+            # Round-61 pt.71: position-level news exit triggers.
+            # Sweep open LONG positions for fresh bearish news. A
+            # position can take a 10% hit on FDA-rejection / SEC-
+            # probe / class-action news before the bot reacts. Best-
+            # effort: any failure inside the helper is swallowed.
+            try:
+                import news_exit_monitor as _nem
+                _live_positions_news = user_api_get(user, "/positions")
+                if isinstance(_live_positions_news, list) and _live_positions_news:
+                    _data_ep_news = (user.get("_data_endpoint")
+                                       or "https://data.alpaca.markets/v2")
+                    _news_ep = _data_ep_news.replace("/v2", "/v1beta1") + "/news"
+
+                    def _fetch_news_fn(sym, limit):
+                        try:
+                            url = (f"{_news_ep}?symbols={sym}"
+                                    f"&limit={limit}")
+                            resp = user_api_get(user, url)
+                            if isinstance(resp, dict):
+                                return resp.get("news") or []
+                            if isinstance(resp, list):
+                                return resp
+                        except Exception:  # allow-silent-except -- best-effort fetch; loop continues
+                            pass
+                        return []
+                    # Per-symbol cooldown state lives in _last_runs so
+                    # restarts don't re-fire (10-min cooldown by default).
+                    _news_cooldown_key = "news_exit_cooldown"
+                    _cooldown_state = _last_runs.get(_news_cooldown_key, {})
+                    if not isinstance(_cooldown_state, dict):
+                        _cooldown_state = {}
+                    _news_result = _nem.check_position_news(
+                        _live_positions_news, _fetch_news_fn,
+                        cooldown_state=_cooldown_state)
+                    _last_runs[_news_cooldown_key] = _cooldown_state
+                    for _close in _news_result.get("closes", []) or []:
+                        _sym = _close.get("symbol")
+                        log(f"[{user['username']}] {_sym}: bearish-news "
+                            f"exit recommended (score "
+                            f"{_close.get('score')}, signal "
+                            f"{_close.get('signal')})", "monitor")
+                        notify_user(
+                            user,
+                            _nem.explain_close(_close),
+                            "alert")
+                        # Mark the position to be closed by the
+                        # per-strategy loop below (set a flag the
+                        # process_strategy_file can pick up).
+                        _close_flag_key = f"news_exit_close_{user.get('id')}_{_sym}"
+                        _last_runs[_close_flag_key] = time.time()
+                    for _warn in _news_result.get("warnings", []) or []:
+                        _sym = _warn.get("symbol")
+                        # Dedupe warnings — only notify the first time
+                        # we see this score for this symbol.
+                        _warn_key = f"news_warn_{user.get('id')}_{_sym}"
+                        if _last_runs.get(_warn_key):
+                            continue
+                        log(f"[{user['username']}] {_sym}: bearish-news "
+                            f"warning (score {_warn.get('score')})",
+                            "monitor")
+                        notify_user(
+                            user,
+                            f"News warning on {_sym}: score "
+                            f"{_warn.get('score')} ({_warn.get('signal')}). "
+                            "Watching for further deterioration.",
+                            "alert")
+                        _last_runs[_warn_key] = time.time()
+            except Exception as _nem_e:
+                log(f"[{user['username']}] news-exit sweep failed: "
+                    f"{_nem_e}", "monitor")
+
         for fname in os.listdir(sdir):
             if not fname.endswith(".json"):
                 continue
@@ -2386,6 +2457,49 @@ def process_strategy_file(user, filepath, strat, extended_hours=False):
                 record_trade_close(user, symbol, strategy_type, price, pnl,
                                     "target_hit", qty=shares, side="sell")
 
+    # Round-61 pt.71: news-exit close. The monitor sweep set
+    # `news_exit_close_<user>_<sym>` in _last_runs when fresh
+    # bearish news on this position crossed the close threshold.
+    # Pick up the flag and close — but only for LONG positions
+    # (shorts benefit from bearish news).
+    if not extended_hours and shares > 0:
+        try:
+            _news_close_key = (
+                f"news_exit_close_{user.get('id')}_{symbol}")
+            if _last_runs.get(_news_close_key):
+                old_stop_id = state.get("stop_order_id")
+                if old_stop_id:
+                    user_api_delete(user, f"/orders/{old_stop_id}")
+                    state["stop_order_id"] = None
+                order = user_api_post(user, "/orders", {
+                    "symbol": symbol, "qty": str(shares), "side": "sell",
+                    "type": "market", "time_in_force": "day"
+                })
+                if isinstance(order, dict) and "id" in order:
+                    strat["status"] = "closed"
+                    state["exit_reason"] = "bearish_news"
+                    state["exit_price"] = price
+                    pnl = (price - entry) * shares
+                    pnl_pct = ((price / entry - 1) * 100) if entry else 0
+                    log(f"[{user['username']}] {symbol}: news-exit close. "
+                        f"P&L ${pnl:.2f} ({pnl_pct:+.1f}%)", "monitor")
+                    notify_user(
+                        user,
+                        f"News-exit close on {symbol}: sold {shares} "
+                        f"@ ${price:.2f} ({pnl_pct:+.1f}%) — bearish "
+                        "news cleared the close threshold.",
+                        "exit")
+                    record_trade_close(user, symbol, strategy_type,
+                                         price, pnl, "bearish_news",
+                                         qty=shares, side="sell")
+                    # Clear the flag so we don't try to close it again.
+                    _last_runs.pop(_news_close_key, None)
+                    save_json(filepath, strat)
+                    return
+        except Exception as _ne_e:
+            log(f"[{user['username']}] {symbol}: news-exit close "
+                f"failed: {_ne_e}", "monitor")
+
     # Round-61 pt.59: dead-money cutter. Close non-PEAD positions
     # that haven't moved >= 2% in 10+ days. PEAD is excluded because
     # its 30-60 day drift window would false-positive here. Frees
@@ -3302,6 +3416,20 @@ def run_auto_deployer(user):
             import position_sizing as _ps
             _journal_for_kelly = load_json(
                 user_file(user, "trade_journal.json")) or None
+            # Round-61 pt.71: ADV cap. Compute 20-day average dollar
+            # volume from the pick's daily_volume × price (best-effort
+            # — if the pick lacks volume, falls through to no-op).
+            _ps_price = 0.0
+            _adv_dollar = None
+            try:
+                _ps_price = float(pick.get("current_price")
+                                    or pick.get("price") or 0)
+                _vol = float(pick.get("avg_volume_20d")
+                              or pick.get("daily_volume") or 0)
+                if _vol > 0 and _ps_price > 0:
+                    _adv_dollar = _vol * _ps_price
+            except (TypeError, ValueError):
+                _adv_dollar = None
             _size = _ps.compute_full_size(
                 base_qty=qty, strategy=best_strat,
                 symbol=symbol, journal=_journal_for_kelly,
@@ -3310,6 +3438,10 @@ def run_auto_deployer(user):
                 # confluence multiplier can read sentiment +
                 # insider + multi-timeframe signals.
                 pick=pick,
+                # Round-61 pt.71: liquidity-aware ADV cap +
+                # per-strategy 30-day drawdown taper.
+                price=_ps_price if _ps_price > 0 else None,
+                adv_dollar=_adv_dollar,
             )
             if _size["qty"] != qty:
                 log(f"[{user['username']}] {symbol}: Kelly+corr sizing "
