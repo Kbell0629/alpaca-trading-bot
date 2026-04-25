@@ -161,6 +161,50 @@ def _cancel_pending_sell_orders(handler, symbol):
     return cancelled, None
 
 
+def _record_close_to_settled_funds(handler, symbol, qty, price):
+    """Round-61 pt.67: bridge user-initiated closes into the
+    settled-funds ledger.
+
+    The pt.50/pt.53 close paths (DELETE /positions, xh_close limit,
+    MOO queue) were missing this hook — only the auto-deployer's
+    record_trade_close updates settled_funds, so a cash-account user
+    who clicks Close in the dashboard could re-deploy the proceeds
+    same-day and trigger a Good Faith Violation.
+
+    Best-effort: any error is swallowed (the close itself already
+    succeeded; ledger drift can be corrected by Alpaca's
+    cash_withdrawable on the next gate check). Only records SELL
+    sides (longs); short covers (buy-to-cover) don't generate
+    settled-funds proceeds.
+
+    `qty` is the SIGNED qty from `_position_qty` (positive=long).
+    `price` is best-effort: latest_price snapshot or the user's
+    fill quote — exact fill price isn't available until the order
+    settles; this is close enough for the unsettled-cash ledger.
+    """
+    if qty is None or qty <= 0:
+        return  # short cover — no proceeds to record
+    if price is None:
+        return
+    try:
+        proceeds = float(price) * abs(int(qty))
+    except (TypeError, ValueError):
+        return
+    if proceeds <= 0:
+        return
+    try:
+        from auth import user_data_dir as _udd
+        import settled_funds as _sf
+        user_id = getattr(handler, "user_id", None)
+        if user_id is None:
+            return
+        mode = getattr(handler, "session_mode", "paper")
+        user_dict = {"_data_dir": _udd(user_id, mode=mode)}
+        _sf.record_sale(user_dict, symbol, proceeds)
+    except Exception:  # allow-silent-except -- close already succeeded; ledger drift recoverable
+        pass
+
+
 def _build_xh_close_order(symbol, qty, side, last_price):
     """Build the Alpaca order body for closing a position during
     pre-market or after-hours. Alpaca requires LIMIT + day +
@@ -351,6 +395,16 @@ class ActionsHandlerMixin:
                 if isinstance(queued, dict) and "error" in queued:
                     self.send_json({"error": queued["error"]}, 400)
                 else:
+                    # Pt.67: bridge the close into settled_funds so a
+                    # cash account can't re-deploy these proceeds same-
+                    # day and earn a Good Faith Violation.
+                    if side == "sell":
+                        _close_price = (
+                            float(body.get("limit_price"))
+                            if body.get("limit_price") else
+                            _latest_price(self, symbol))
+                        _record_close_to_settled_funds(
+                            self, symbol, qty, _close_price)
                     self.send_json({
                         "success": True, "symbol": symbol,
                         "queued": True,
@@ -369,6 +423,10 @@ class ActionsHandlerMixin:
         # returned 422 "insufficient qty available for order
         # (requested: 29, available: 0)". Auto-cancel the queued
         # order and retry — that's clearly what the user intended.
+        # Pt.67: capture qty + price BEFORE the close so we can record
+        # the sale to settled_funds on success.
+        _qty_at_close = _position_qty(self, symbol)
+        _price_at_close = _latest_price(self, symbol)
         result = self.user_api_delete(
             f"{self.user_api_endpoint}/positions/{symbol}")
         if isinstance(result, dict) and "error" in result:
@@ -385,6 +443,10 @@ class ActionsHandlerMixin:
             # Pt.53: auto-recover from "insufficient qty" by cancelling
             # pending sell orders against the symbol and retrying once.
             if "insufficient qty" in err_l or "available: 0" in err_l:
+                # Pt.67: capture qty BEFORE the retry close so we know
+                # how much to record into settled-funds. After DELETE
+                # /positions succeeds, the qty probe returns None.
+                _qty_before_retry = _position_qty(self, symbol)
                 cancelled, retry_err = _cancel_pending_sell_orders(
                     self, symbol)
                 if cancelled > 0:
@@ -397,6 +459,10 @@ class ActionsHandlerMixin:
                                        + f" (cancelled {cancelled} "
                                        "pending order(s) before retry)")
                         }, 400)
+                    # Pt.67: settled-funds bridge after retry close.
+                    _record_close_to_settled_funds(
+                        self, symbol, _qty_before_retry,
+                        _latest_price(self, symbol))
                     return self.send_json({
                         "success": True, "symbol": symbol,
                         "message": (f"Cancelled {cancelled} pending "
@@ -411,6 +477,9 @@ class ActionsHandlerMixin:
                          "a pending sell may be reserving the shares.")
             self.send_json({"error": err}, 400)
         else:
+            # Pt.67: bridge user-initiated RTH close into settled_funds.
+            _record_close_to_settled_funds(
+                self, symbol, _qty_at_close, _price_at_close)
             self.send_json({"success": True, "symbol": symbol, "order": result})
     def handle_sell(self, body):
         """Place a market sell order."""
@@ -476,6 +545,14 @@ class ActionsHandlerMixin:
                         "to verify the saved credentials authenticate.")
             self.send_json({"error": err}, 400)
         else:
+            # Pt.67: bridge user-initiated partial-sell into
+            # settled_funds (cash-account GFV prevention).
+            _close_price = (
+                float(order_body.get("limit_price"))
+                if order_body.get("limit_price") else
+                _latest_price(self, symbol))
+            _record_close_to_settled_funds(
+                self, symbol, qty, _close_price)
             self.send_json({
                 "success": True, "symbol": symbol, "qty": qty,
                 "queued": queued_label is not None,
