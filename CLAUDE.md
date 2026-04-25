@@ -61,7 +61,27 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-25 — round 61 pt.10-38 SHIPPED)
+## Current session state (2026-04-25 — round 61 pt.10-39 SHIPPED)
+
+**Pt.39 landed (PR #166):** trend filter — block longs below 50-MA,
+shorts above. Most "fake breakouts" happen on stocks below their
+longer-term trend (dead-cat bounces inside a downtrend). Mirror
+problem on the short side: shorting strength inside an uptrend is
+buying the dip in disguise.
+  * **`screener_core.apply_trend_filter(picks, bars_map, period=50)`**
+    — pure helper. Computes SMA(50) per pick, gates long strategies
+    (breakout/trailing_stop/mean_reversion/pead/copy_trading) on
+    `price > SMA`, and short_sell on `price < SMA`. Picks with
+    insufficient bars pass through (fail open — never block on
+    missing data).
+  * Wired into `update_dashboard.py` AFTER `apply_factor_scores`
+    using the same `factor_bars` already fetched for RS ranking
+    (zero extra API calls). Logs `Trend filter: blocked N picks`
+    when filtering occurs.
+  * Filtered picks stay in the list (with `_filtered_by_trend` +
+    `_filtered_strategy` tags) so the dashboard's "filtered out"
+    panel can show why they didn't deploy.
++23 tests in `tests/test_round61_pt39_trend_filter.py`.
 
 **Pt.38 landed (PR #165):** per-strategy tier-aware risk parameters.
 Round-50's tier system already calibrated max_positions /
