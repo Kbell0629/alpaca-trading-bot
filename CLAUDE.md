@@ -61,9 +61,51 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-25 — round 61 pt.10-51 SHIPPED)
+## Current session state (2026-04-25 — round 61 pt.10-57 SHIPPED)
 
-**Pt.51 in flight:** test + UI polish for pt.49/pt.50 features.
+**Pt.57 in flight:** four-in-one polish batch making the bot more
+production-ready:
+  1. **Cryptography-sandbox skip pattern.** `http_harness` fixture
+     in `tests/conftest.py` now `pytest.skip`s with a clear reason
+     when AESGCM construction raises `BaseException` (covers
+     pyo3 PanicException from missing cffi backend). Local sandbox
+     runs no longer drown in 259 ERROR rows — they all SKIP cleanly.
+     CI keeps running them since cryptography installs from
+     requirements.txt there.
+  2. **Pipeline-backtest "simulate P&L" toggle.** Pt.49 + pt.56
+     built the counterfactual-P&L feature in the library + endpoint
+     but the dashboard had no way to opt in. Added a checkbox next
+     to the "▶ Run" button; when checked, request includes
+     `simulate_outcomes=true` and the panel renders a fifth row
+     with trade count / win rate / total P&L / avg / expectancy.
+     Endpoint fetches bars on-the-fly via `backtest_data.fetch_bars_for_symbols`.
+     Timeout bumped 30s → 90s when simulating.
+  3. **Score-to-outcome partial-data view.** Below the 30-trade
+     full threshold the panel previously just said "insufficient
+     sample". Pt.57 surfaces a status bar with three stages
+     (INSUFFICIENT < 10, PRELIMINARY 10-29, TRUSTWORTHY ≥30) +
+     fill % so users can see how close they are to having enough
+     data. Legacy untracked count surfaced too.
+  4. **Tier-aware risk e2e test.** Pt.38 added TIER_STRATEGY_PARAMS,
+     pt.47 wired it through the resolver. Pt.57 adds 10 e2e tests
+     locking in the claim "$500 cash account gets a tighter stop
+     than a $100k margin account" — detects tier from account dict,
+     resolves through `strategy_params.resolve_strategy_param`,
+     asserts the tier value wins over the fallback. Plus 8 more
+     source-pin + UI tests for the pipeline-backtest toggle and
+     score-outcome partial view.
++18 tests in `tests/test_round61_pt57_polish.py`.
+
+**Pt.51-56 landed (PRs #178/#179/#180/#181/#182/#183):** see
+CHANGELOG.md for full notes. Highlights: Analytics Hub
+score-health pill (pt.51), routing regression tests using lazy-
+import pattern (pt.52/54), auto-cancel pending sell orders before
+Close to fix the SOXL "insufficient qty" bug at market open
+(pt.53), `alpaca_mock` conftest fixture v2 (pt.55), pipeline-
+backtest end-to-end UI with picks_history.json snapshotting +
+`/api/pipeline-backtest` endpoint + dashboard panel (pt.56).
+
+**Pt.51 (legacy notes — superseded by pt.55):** test + UI polish for pt.49/pt.50 features.
   1. **Pt.50 routing regression tests.** 27 tests in
      `tests/test_round61_pt51_closed_market_routing.py` covering
      `_market_session` (RTH/premarket/afterhours/overnight/holiday/

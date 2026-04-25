@@ -1092,6 +1092,28 @@ class ActionsHandlerMixin:
                                    ("min_score", 50)):
                 if key in body:
                     kwargs[key] = body[key]
+            # Round-61 pt.57: optional counterfactual simulation —
+            # for each pick that would have deployed, run the
+            # strategy through backtest_core._simulate_symbol against
+            # OHLCV bars and roll up a counterfactual P&L summary.
+            if body.get("simulate_outcomes"):
+                try:
+                    import backtest_data as _bd
+                    symbols = sorted({(p.get("symbol") or "").upper()
+                                      for d in history
+                                      for p in (d.get("picks") or [])
+                                      if p.get("symbol")})
+                    symbols = [s for s in symbols if s][:30]
+                    _data_dir = (self.current_user.get("_data_dir")
+                                  if self.current_user else None)
+                    bars = _bd.fetch_bars_for_symbols(
+                        _data_dir, symbols, days=90)
+                    kwargs["simulate_outcomes"] = True
+                    kwargs["bars_by_symbol"] = bars or {}
+                except Exception as _bd_e:
+                    log.warning(
+                        "pipeline-backtest sim outcomes failed",
+                        extra={"error": str(_bd_e)})
             result = pb.run_pipeline_backtest(history, **kwargs)
             self.send_json({"success": True, **result,
                               "history_days": len(history)})
