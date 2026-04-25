@@ -8,6 +8,54 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.35 — block leveraged + inverse ETFs from short-sell (+20 tests)
+
+**Date:** 2026-04-25
+
+User-reported SOXL incident (round-61 pt.30): the screener picked
+SOXL (3x leveraged semis) as a short-sell candidate; the position
+lost ~$500 in 9 paper-trading days from a normal-sized adverse move.
+Pt.35 prevents this class of pick.
+
+### Why leveraged/inverse ETFs are bad shorts
+
+1. **Decay** — daily-reset products lose value to volatility drag
+   even when the underlying is FLAT. Shorting SOXL "expecting
+   nothing to happen" still loses money because the product itself
+   rolls daily.
+2. **Inverse logic error** — shorting an INVERSE ETF (SOXS, SQQQ,
+   SDOW) is effectively going LONG the underlying. The screener's
+   "bearish on SOXS" thesis is the SAME as "bullish on semis" but
+   executed via a short. Always wrong on signal alignment.
+
+### What landed
+
+* **`constants.LEVERAGED_OR_INVERSE_ETFS`** — frozenset of all
+  known 2x/3x leveraged longs, leveraged inverses, 1x inverses,
+  single-stock leveraged ETFs (TSLL/NVDL/etc.), volatility products
+  (VXX/UVXY/VIXY), and leveraged crypto ETFs.
+* **`constants.is_leveraged_or_inverse_etf(symbol)`** —
+  case-insensitive helper.
+* **`short_strategy.identify_short_candidates`** — checks the
+  blocklist at the TOP of the per-pick loop, short-circuiting
+  before any score logic runs. Emits a one-line summary log when
+  symbols are filtered (operator visibility).
+
+### Tests
++20 in `tests/test_round61_pt35_block_leveraged_short.py` covering
+the blocklist contents (SOXL/TQQQ/SQQQ/UVXY/single-stock pinned),
+the helper (case insensitivity, empty input), filter behaviour
+(SOXL/SOXS/VXX dropped, AMD/INTC pass), filter-runs-before-score,
+log emission, source-pin (uses `constants` module not a private
+copy).
+
+### Touched files
+- `constants.py` (new blocklist + helper)
+- `short_strategy.py` (filter at top of loop)
+- `tests/test_round61_pt35_block_leveraged_short.py` (new)
+
+---
+
 ## 🆕 Round-61 pt.34 — capital_check core extraction (+47 tests)
 
 **Date:** 2026-04-25

@@ -309,3 +309,64 @@ def is_known_strategy(name) -> bool:
     if not name:
         return False
     return str(name).strip().lower() in STRATEGY_NAMES
+
+
+# Round-61 pt.35: leveraged + inverse ETFs that must NEVER be shorted.
+#
+# User-reported (round-61 pt.30 SOXL incident): the screener picked
+# SOXL (3x leveraged semis) for a short-sell entry. Leveraged and
+# inverse ETFs have two structural problems for shorting:
+#
+#   1. **Decay** — daily-reset products lose value to volatility drag
+#      even when the underlying is FLAT, so a flat-price stretch turns
+#      against a short fundamentally differently from a normal stock.
+#      You can't short SOXL "expecting nothing to happen" — the
+#      product itself rolls daily. Holding a SOXL short through choppy
+#      sideways action LOSES money even with no directional move.
+#   2. **Inverse logic error** — shorting an INVERSE ETF (SOXS, SQQQ,
+#      SDOW) is effectively going LONG the underlying. The screener's
+#      "bearish on SOXS" thesis is the SAME as "bullish on semis" but
+#      executed via a short. Always wrong on signal alignment.
+#
+# Both classes belong in this blocklist. The screener's
+# ``identify_short_candidates`` skips any symbol that matches.
+#
+# Adding to this list is safe; removing requires a written
+# justification in the commit message.
+LEVERAGED_OR_INVERSE_ETFS: frozenset = frozenset({
+    # 3x leveraged longs
+    "TQQQ", "UPRO", "SOXL", "TNA", "FAS", "NUGT", "JNUG", "ERX",
+    "GUSH", "LABU", "CURE", "DRN", "DPST", "DFEN", "WANT", "WEBL",
+    "RETL", "TECL", "BNKU", "MIDU", "EDC", "EURL", "INDL", "YINN",
+    "BRZU", "MEXX", "RUSL", "EDZ",
+    # 3x leveraged inverses
+    "SQQQ", "SPXU", "SOXS", "TZA", "FAZ", "DUST", "JDST", "ERY",
+    "DRIP", "LABD", "SDOW", "RWL", "DRV", "DPK", "WEBS",
+    "TECS", "BNKD", "MIDZ",
+    # 2x leveraged longs
+    "QLD", "SSO", "DDM", "UWM", "AGQ", "UCO", "BOIL", "URE", "ROM",
+    "USD", "RXL", "UPW", "UYM", "UGE", "UYG",
+    # 2x leveraged inverses
+    "QID", "SDS", "DXD", "TWM", "ZSL", "SCO", "KOLD", "SRS", "REW",
+    "SSG", "RXD", "SDP", "SMN", "SZK", "SKF",
+    # 1x inverse
+    "SH", "PSQ", "DOG", "RWM", "EUM", "EFZ", "EFU", "EWV", "EPV",
+    # Single-stock 2x/3x (proliferating recently)
+    "TSLL", "TSLR", "TSLQ", "TSLS", "TSDD", "TSLG",
+    "NVDL", "NVDQ", "NVDU", "NVDS",
+    "AMZU", "AMZD", "AAPU", "AAPD", "MSFU", "MSFD", "GOOX", "GOOD",
+    "METU", "METD", "AMDL", "AMDS", "CONL", "CONI", "BABX",
+    # Volatility (structurally short-vol-decay; never short these)
+    "VXX", "UVXY", "VIXY",
+    # Leveraged crypto ETFs
+    "BITX", "BITU", "ETHU", "ETHT",
+})
+
+
+def is_leveraged_or_inverse_etf(symbol) -> bool:
+    """True if the symbol is a known leveraged or inverse ETF that
+    the screener must never select for short-selling. See
+    ``LEVERAGED_OR_INVERSE_ETFS`` for the rationale."""
+    if not symbol:
+        return False
+    return str(symbol).strip().upper() in LEVERAGED_OR_INVERSE_ETFS

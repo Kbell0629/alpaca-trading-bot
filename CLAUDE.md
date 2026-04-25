@@ -61,7 +61,23 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-25 — round 61 pt.10-34 SHIPPED)
+## Current session state (2026-04-25 — round 61 pt.10-35 SHIPPED)
+
+**Pt.35 landed (PR #161):** block leveraged + inverse ETFs from
+short-sell entries. User-reported SOXL incident: the screener
+picked SOXL (3x leveraged semis) for a short-sell, position lost
+~$500 in 9 days from a normal-sized adverse move. Two structural
+problems with shorting leveraged/inverse ETFs:
+  1. **Decay** — daily-reset products lose value to volatility drag
+     even when the underlying is FLAT.
+  2. **Inverse logic error** — shorting an INVERSE ETF (SOXS, SQQQ,
+     SDOW) is effectively going LONG the underlying.
+  **Fix:** new `LEVERAGED_OR_INVERSE_ETFS` frozenset + helper
+  `is_leveraged_or_inverse_etf()` in `constants.py` (round-21 SSOT
+  pattern). `short_strategy.identify_short_candidates` checks at the
+  TOP of the loop — short-circuits before any score logic runs. Logs
+  one summary line per screener run when symbols are blocked.
++20 tests in `tests/test_round61_pt35_block_leveraged_short.py`.
 
 **Pt.34 landed (PR #160):** capital_check core extraction. Mirrors
 the pt.7 pattern (screener_core.py + scorecard_core.py): pure math
