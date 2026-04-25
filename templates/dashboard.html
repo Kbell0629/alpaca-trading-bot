@@ -7188,17 +7188,26 @@ function renderDashboard() {
         return '<button class="nav-tab' + activeClass + '" onclick="scrollToSection(\'' + sectionId + '\')">' + label + '</button>';
     };
     const navTabs = '<div class="nav-tabs-wrap"><div class="nav-tabs">' +
+        // Round-61 pt.75: nav order matches actual section DOM order
+        // so clicking a tab scrolls forward through the page instead
+        // of jumping around. DOM order: overview → picks →
+        // strategies → readiness → positions → analytics
+        // → trades → screener → shorts → backtest
+        // → scheduler → heatmap → comparison →
+        // settings (Templates) → Account modal. Conditional
+        // sections (Short Sells, Tax Harvest) only show when content
+        // rendered.
         _navBtn('section-overview', 'Overview') +
         _navBtn('section-picks', 'Picks') +
         _navBtn('section-strategies', 'Strategies') +
-        _navBtn('section-analytics', '📊 Analytics') +
+        _navBtn('section-readiness', 'Readiness') +
         _navBtn('section-positions', 'Positions') +
+        _navBtn('section-analytics', '📊 Analytics') +
         _navBtn('section-trades', 'Trades') +
         _navBtn('section-screener', 'Screener') +
         (shortCands.length > 0 ? _navBtn('section-shorts', 'Short Sells') : '') +
         (losers.length > 0 ? _navBtn('section-tax', 'Tax Harvest') : '') +
         _navBtn('section-backtest', 'Backtest') +
-        _navBtn('section-readiness', 'Readiness') +
         _navBtn('section-scheduler', 'Scheduler') +
         _navBtn('section-heatmap', 'Heatmap') +
         _navBtn('section-comparison', 'Paper vs Live') +
