@@ -8,6 +8,34 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.41 — per-strategy adaptive thresholds (+29 tests)
+
+**Date:** 2026-04-25
+
+User-prioritised screener accuracy improvement #3: when a strategy
+is on a losing streak, the bot should get pickier about deploying
+it. When it's hot, deploy more aggressively. Self-correcting feedback
+loop reading the trade journal you already have.
+
+### What landed
+
+* **`screener_core.compute_strategy_win_rates(journal, lookback=30)`**
+  — pure helper. Walks journal newest→oldest, caps at lookback per
+  strategy. Skips open trades + unparseable pnl.
+* **`screener_core.get_threshold_multiplier(win_rate, sample_size)`**
+  — pure curve. <5 trades: neutral (1.0). ≤40% WR: 0.70. ≥60% WR:
+  1.30. Linear interp between.
+* **`screener_core.apply_adaptive_thresholds(picks, win_rates)`** —
+  multiplies best_score, annotates pick, re-sorts. Strategy name
+  normalisation handles "Breakout" ↔ "breakout".
+* Wired into `update_dashboard.py` after trend filter. Reads
+  `JOURNAL_PATH` env var (round-9 per-user isolation).
+
+### Tests
++29 in `tests/test_round61_pt41_adaptive_thresholds.py`
+
+---
+
 ## 🆕 Round-61 pt.40 — multi-day breakout confirmation (+22 tests)
 
 **Date:** 2026-04-25
@@ -15,28 +43,20 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 User-prioritised screener accuracy improvement #2: single-day
 breakouts have the well-known "Tuesday-fake-Wednesday-collapse"
 failure mode. Academic momentum research consistently shows
-two-bar confirmation lifts win rate ~10-15 points at the cost of
-~20% fewer entries — net positive.
+two-bar confirmation lifts win rate ~10-15 points.
 
 ### What landed
 
 * **`screener_core.apply_breakout_confirmation(picks, bars_map,
   lookback=20)`** — pure helper. Per Breakout-strategy pick,
   requires both today's close > today's 20-day high AND yesterday's
-  close > yesterday's 20-day high. Confirmed picks tag with
-  `breakout_confirmed=True` + level/above flags. Unconfirmed picks
-  get `_breakout_unconfirmed=True` and BOTH `best_score` AND
+  close > yesterday's 20-day high. Unconfirmed picks get
+  `_breakout_unconfirmed=True` and BOTH `best_score` AND
   `breakout_score` halved. Demoted, not eliminated.
-* Wired into `update_dashboard.py` after factor scoring. Zero
-  extra API calls (uses same `factor_bars`).
-* Fail-open: insufficient bars / corrupt data / non-Breakout
-  strategy passes through unchanged.
+* Wired into `update_dashboard.py` after factor scoring.
 
 ### Tests
-+22 in `tests/test_round61_pt40_breakout_confirmation.py` covering
-`_max_high_window` math, confirmed/unconfirmed branches, strategy
-gating (case-insensitive), fail-open paths, sort order, both score
-fields halved, source-pin wiring.
++22 in `tests/test_round61_pt40_breakout_confirmation.py`
 
 ---
 
