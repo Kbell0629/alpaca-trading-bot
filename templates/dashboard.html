@@ -4384,13 +4384,30 @@ function renderAnalyticsPanel(d) {
 
     // ---- SCORE-TO-OUTCOME (pt.47): meta-validation that screener
     //      score actually correlates with realised win rate. ----
+    // Round-61 pt.51: also render the score_health summary pill
+    // (pt.49) so users see at a glance whether scoring is healthy.
     var so = d.score_outcome || {};
     var soBuckets = so.buckets || [];
+    var sh = d.score_health || {};
     html += '<div class="factor-card" style="margin-bottom:18px">' +
         '<div class="factor-card-title" style="margin-bottom:6px">Score-to-Outcome Correlation</div>' +
         '<div style="font-size:11px;color:var(--text-dim);margin-bottom:10px">' +
             'Are higher-scored screener picks actually winning? Closed trades binned by their entry-time screener score.' +
         '</div>';
+    // Round-61 pt.51: top-of-panel status pill summarising the
+    // health check that runs daily at 4:35 PM ET.
+    if (sh && sh.headline) {
+        var shState = sh.degraded ? 'degraded' : (sh.warning ? 'warning' : 'ok');
+        var shColor = (shState === 'degraded') ? 'rgba(239,68,68,0.25);color:var(--red)' :
+                       (shState === 'warning') ? 'rgba(245,158,11,0.25);color:var(--orange)' :
+                       'rgba(16,185,129,0.25);color:var(--green)';
+        html += '<div style="margin-bottom:10px;padding:8px 12px;border-radius:6px;background:' +
+                  shColor.split(';')[0] + ';display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+            '<span style="font-weight:600;font-size:13px;color:' + shColor.split(';')[1].split(':')[1] +
+              '">' + esc(sh.headline) + '</span>' +
+            '<span style="font-size:11px;color:var(--text-dim)">' + esc(sh.detail || '') + '</span>' +
+        '</div>';
+    }
     if (!soBuckets.length) {
         var msg = 'Need at least 10 closed trades with embedded screener scores to compute correlation. ';
         msg += '<strong>Tracked: ' + (so.tracked_trades||0) + '</strong>';

@@ -61,9 +61,42 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-25 — round 61 pt.10-50 SHIPPED)
+## Current session state (2026-04-25 — round 61 pt.10-51 SHIPPED)
 
-**Pt.50 in flight:** audit + dashboard polish round.
+**Pt.51 in flight:** test + UI polish for pt.49/pt.50 features.
+  1. **Pt.50 routing regression tests.** 27 tests in
+     `tests/test_round61_pt51_closed_market_routing.py` covering
+     `_market_session` (RTH/premarket/afterhours/overnight/holiday/
+     boundary), `_position_qty` (long/short/missing/error),
+     `_latest_price` (success/error/data-endpoint pin), and
+     `_build_xh_close_order` (long/short/zero-price/rounding).
+     Fills the gap shipped in pt.50.
+  2. **Score-health pill in Analytics Hub.** `build_analytics_view`
+     already returns `score_health` from pt.49; pt.51 renders it
+     as a status pill at the top of the Score-to-Outcome panel.
+     Green when healthy, orange "warning" when one monotonic
+     flag fails, red "degraded" when both fail.
+  3. **`alpaca_mock` conftest fixture.** New `AlpacaMock` test
+     double in `tests/conftest.py`. Patches every
+     `cloud_scheduler` / `scheduler_api` Alpaca helper
+     (`user_api_get`/`post`/`delete`/`patch`) so scheduler
+     functions can be tested deterministically without network.
+     12 harness tests in
+     `tests/test_round61_pt51_scheduler_harness.py` covering
+     `record_trade_open`/`close` (idempotence + journal write),
+     `check_correlation_allowed` (sector cap), and the fixture
+     itself. First step toward the 80% coverage goal — tested
+     paths previously needed live Alpaca.
+  4. **Ruff `noqa` warning fix.** Renamed the project-internal
+     silent-except marker from `# noqa: silent-except` to
+     `# allow-silent-except` so ruff stops emitting "Invalid
+     `# noqa` directive" warnings (it interprets any `noqa:`
+     comment as a ruff-rule list). Pt.22 ratchet test +
+     scanner updated; four call sites in
+     `handlers/actions_mixin.py` migrated.
++39 tests total (27 routing + 12 harness).
+
+**Pt.50 landed (PR #177):** audit + dashboard polish round.
   1. **Weekend-aware scorecard freshness audit.**
      `audit_core.run_audit` no longer fires `STALE_SCORECARD` on
      normal weekends. Replaced the flat 48-hour threshold with

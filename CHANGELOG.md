@@ -8,6 +8,109 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.51 — test polish + score-health UI + alpaca_mock harness (+39 tests)
+
+**Date:** 2026-04-25
+
+User asked: "fix everything we need to get this app/bot high
+performing and accurate and reliable". Pt.51 closes the regression-
+test gap from pt.50, surfaces the score_health data we computed but
+never showed, lays the groundwork for the 80% coverage push, and
+silences a ruff warning.
+
+### 1. Pt.50 routing regression tests
+
+Pt.50 shipped the closed-market order routing without tests.
+Pt.51 adds 27 regression tests covering every branch in
+`handlers/actions_mixin.py`:
+* `_market_session(handler)` — RTH / premarket / afterhours /
+  overnight classification across boundary times (4:00 AM, 9:30
+  AM, 4:00 PM, 8:00 PM), weekend handling, fail-open on `/clock`
+  probe error.
+* `_position_qty(handler, symbol)` — long, short (negative),
+  missing, error.
+* `_latest_price(handler, symbol)` — success, no trade, error,
+  + a pin that the helper hits the data endpoint (not the
+  trading endpoint).
+* `_build_xh_close_order(symbol, qty, side, price)` — long
+  (-1%), short (+1%), zero/negative/invalid price → None,
+  rounding to two decimals.
+
+A pre-market regression on Close would now fail CI before it
+reaches users.
+
+### 2. Score-health pill in Analytics Hub
+
+Pt.49 added `build_analytics_view["score_health"]` and a daily
+4:35 PM check, but the dashboard didn't render the result. Pt.51
+adds a status pill at the top of the Score-to-Outcome panel:
+
+* **Green** "Score health: OK" — both monotonic flags pass.
+* **Orange** "Score health: win rate not monotonic" — one flag
+  failed.
+* **Red** "⚠ Screener scoring appears uncorrelated to outcome" —
+  both flags fail with ≥30 closed trades. Notification was already
+  firing daily; now visible inline too.
+
+### 3. `alpaca_mock` conftest fixture
+
+New `AlpacaMock` test double in `tests/conftest.py` and matching
+`alpaca_mock` pytest fixture. Patches every
+`cloud_scheduler` / `scheduler_api` Alpaca helper
+(`user_api_get`, `user_api_post`, `user_api_delete`,
+`user_api_patch`) so scheduler functions can be invoked against
+deterministic responses without network.
+
+API:
+```python
+def test_deploy_skips_already_held(alpaca_mock):
+    alpaca_mock.register("GET", "/positions", [
+        {"symbol": "AAPL", "qty": "10", "market_value": "1500"}
+    ])
+    # ... call cloud_scheduler.run_auto_deployer(user) ...
+    alpaca_mock.assert_called("GET", "/positions")
+```
+
+12 harness tests added in
+`tests/test_round61_pt51_scheduler_harness.py` covering
+`record_trade_open` / `record_trade_close` (idempotence + journal
+write), `check_correlation_allowed` (sector cap blocks 3rd
+position), and the fixture itself. First step toward the 80%
+coverage target — tested paths previously needed live Alpaca.
+
+### 4. Ruff `noqa` warning fix
+
+The project-internal silent-except marker was
+`# noqa: silent-except`, which ruff parsed as a malformed rule
+suppression and warned on every run ("Invalid `# noqa` directive").
+Pt.51 renames it to `# allow-silent-except` (no `noqa:` prefix)
+across:
+* `tests/test_round61_pt22_no_silent_except.py` — scanner
+  + docs + sample-test snippets
+* `handlers/actions_mixin.py` — four call sites in the pt.50
+  routing helpers
+
+Ratchet test still passes; ruff now silent.
+
+### Tests
+
++27 in `tests/test_round61_pt51_closed_market_routing.py`
++12 in `tests/test_round61_pt51_scheduler_harness.py`
+(plus pt.22 silent-except scanner + sample tests updated for
+the marker rename).
+
+### Deferred for follow-up
+
+* Pipeline-backtest dashboard panel (data flow needs daily
+  picks-history snapshotting first — currently no source for
+  the harness to read).
+* Close-path unification (RTH still uses DELETE
+  `/positions/{symbol}` while extended hours uses POST
+  `/orders`; keeping both for now since DELETE has built-in
+  handling for options/short covers).
+
+---
+
 ## 🆕 Round-61 pt.50 — audit weekend awareness + load resilience + guide deep-links (+22 tests)
 
 **Date:** 2026-04-25
