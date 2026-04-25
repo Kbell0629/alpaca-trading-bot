@@ -2319,6 +2319,52 @@ def process_strategy_file(user, filepath, strat, extended_hours=False):
                 record_trade_close(user, symbol, strategy_type, price, pnl,
                                     "target_hit", qty=shares, side="sell")
 
+    # Round-61 pt.59: dead-money cutter. Close non-PEAD positions
+    # that haven't moved >= 2% in 10+ days. PEAD is excluded because
+    # its 30-60 day drift window would false-positive here. Frees
+    # capital tied up in stagnant names so it can fund better setups.
+    if not extended_hours and strategy_type != "pead" and shares > 0:
+        try:
+            import dead_money as _dm
+            _dm_result = _dm.is_dead_money(
+                created_str=strat.get("created"),
+                today=get_et_time().date(),
+                entry_price=entry,
+                current_price=price,
+            )
+            if _dm_result.get("is_dead"):
+                old_stop_id = state.get("stop_order_id")
+                if old_stop_id:
+                    user_api_delete(user, f"/orders/{old_stop_id}")
+                    state["stop_order_id"] = None
+                order = user_api_post(user, "/orders", {
+                    "symbol": symbol, "qty": str(shares), "side": "sell",
+                    "type": "market", "time_in_force": "day"
+                })
+                if isinstance(order, dict) and "id" in order:
+                    strat["status"] = "closed"
+                    state["exit_reason"] = "dead_money"
+                    state["exit_price"] = price
+                    pnl = (price - entry) * shares
+                    pnl_pct = ((price / entry - 1) * 100) if entry else 0
+                    log(f"[{user['username']}] {symbol}: Dead-money exit "
+                        f"({_dm_result.get('reason')}). P&L ${pnl:.2f}",
+                        "monitor")
+                    notify_user(
+                        user,
+                        f"Dead-money exit on {symbol}: sold "
+                        f"{shares} @ ${price:.2f} "
+                        f"({pnl_pct:+.1f}% in {_dm_result.get('days_held')}d)",
+                        "exit")
+                    record_trade_close(user, symbol, strategy_type,
+                                         price, pnl, "dead_money",
+                                         qty=shares, side="sell")
+                    save_json(filepath, strat)
+                    return
+        except Exception as _dm_e:
+            log(f"[{user['username']}] {symbol}: dead-money check "
+                f"failed: {_dm_e}", "monitor")
+
     # PEAD time-based exit + earnings-event guard.
     # PEAD's edge is the 30-60 day post-earnings drift; holding past
     # the window risks giving back gains AND running into the next
