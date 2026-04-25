@@ -67,12 +67,12 @@ def _market_session(handler) -> str:
             f"{handler.user_api_endpoint}/clock")
         if isinstance(clock, dict) and clock.get("is_open"):
             return "rth"
-    except Exception:  # noqa: silent-except -- fail open to RTH; no log needed (probe)
+    except Exception:  # allow-silent-except -- fail open to RTH; no log needed (probe)
         return "rth"
     # Market closed per Alpaca — figure out which non-RTH window.
     try:
         et = now_et()
-    except Exception:  # noqa: silent-except -- clock fallback
+    except Exception:  # allow-silent-except -- clock fallback
         return "overnight"
     if et.weekday() >= 5:   # Sat/Sun → overnight (queue as MOO)
         return "overnight"
@@ -99,7 +99,7 @@ def _position_qty(handler, symbol):
             f"{handler.user_api_endpoint}/positions/{symbol}")
         if isinstance(pos, dict) and "qty" in pos:
             return int(float(pos["qty"]))
-    except Exception:  # noqa: silent-except -- best-effort probe; caller falls through to DELETE
+    except Exception:  # allow-silent-except -- best-effort probe; caller falls through to DELETE
         pass
     return None
 
@@ -117,7 +117,7 @@ def _latest_price(handler, symbol):
             p = trade.get("p")
             if p:
                 return float(p)
-    except Exception:  # noqa: silent-except -- best-effort quote; caller falls back to MOO
+    except Exception:  # allow-silent-except -- best-effort quote; caller falls back to MOO
         pass
     return None
 

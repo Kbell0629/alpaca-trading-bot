@@ -25,8 +25,14 @@ exceptions could silently lose money or leak credentials.
 
 To add a file to the audit set: append it to `_AUDITED_FILES`.
 To whitelist a specific line (e.g. a legitimately best-effort
-cleanup): add the marker comment `# noqa: silent-except` on the
+cleanup): add the marker comment `# allow-silent-except` on the
 except line — the test will skip it with a warning.
+
+Round-61 pt.51: marker renamed FROM ``noqa: silent-except`` TO
+``allow-silent-except`` because ruff parses any ``# noqa: ...``
+comment as a ruff-rule suppression and prints a warning when the
+contents aren't a comma-separated ruff code list. The new marker
+has no ``noqa:`` prefix so ruff ignores it cleanly.
 """
 from __future__ import annotations
 
@@ -48,7 +54,9 @@ _AUDITED_FILES = [
 ]
 
 
-_ALLOW_MARKER = "noqa: silent-except"
+# Round-61 pt.51: see module docstring on why this is no longer
+# `noqa: silent-except` — that form triggers ruff warnings.
+_ALLOW_MARKER = "allow-silent-except"
 
 
 def _scan_file(path):
@@ -140,7 +148,7 @@ def test_no_new_silent_except_on_auth_trading_paths():
             errors.append(
                 f"  {path}: {got} silent-except patterns (baseline {expected}). "
                 f"New additions forbidden — either log the exception, catch a "
-                f"specific type, or add `# noqa: silent-except` with a "
+                f"specific type, or add `# allow-silent-except` with a "
                 f"one-line justification. Offenders:")
             for line_no, snippet in offenders[expected:]:
                 errors.append(f"    L{line_no}: {snippet}")
@@ -170,11 +178,11 @@ def test_audited_files_exist():
 
 
 def test_allow_marker_skips_a_line(tmp_path):
-    """The `noqa: silent-except` marker must actually skip the line."""
+    """The `allow-silent-except` marker must actually skip the line."""
     snippet = (
         "try:\n"
         "    thing()\n"
-        "except Exception:  # noqa: silent-except -- intentionally\n"
+        "except Exception:  # allow-silent-except -- intentionally\n"
         "    pass\n"
     )
     f = tmp_path / "fake.py"
