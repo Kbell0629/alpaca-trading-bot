@@ -386,9 +386,12 @@ def test_dashboard_handler_mixin_decomposition(isolated_data_dir):
     # routes + their multi-line delegation comments. Both are
     # read-only endpoints; the actual logic lives in actions_mixin
     # and trades_analysis_core / backtest_core respectively).
+    # 3400 (round-61 pt.56 — /api/pipeline-backtest route delegation
+    # one-liner. Logic lives in actions_mixin + pipeline_backtest +
+    # picks_history modules).
     import os
     server_lines = sum(1 for _ in open(server.__file__))
-    assert server_lines < 3395, \
+    assert server_lines < 3400, \
         f"server.py too large ({server_lines} lines) — handler methods leaked back in"
 
 

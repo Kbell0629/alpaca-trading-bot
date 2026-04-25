@@ -4207,6 +4207,78 @@ function _analyticsRenderPnlBars(items, labelKey, valueKey) {
     return html;
 }
 
+// Round-61 pt.56: pipeline-backtest panel renders below the
+// Analytics Hub. Click "▶ Run" → POST /api/pipeline-backtest →
+// renderPipelineBacktest fills the result.
+async function runPipelineBacktest() {
+    var panel = document.getElementById('pipelineBacktestPanel');
+    if (!panel) return;
+    panel.innerHTML = '<div style="color:var(--text-dim);padding:16px;text-align:center;font-size:12px">Running…</div>';
+    var controller = new AbortController();
+    var timer = setTimeout(function() { controller.abort(); }, 30000);
+    try {
+        var resp = await fetch(API_BASE + '/api/pipeline-backtest', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+            signal: controller.signal,
+        });
+        clearTimeout(timer);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        var d = await resp.json();
+        renderPipelineBacktest(d);
+    } catch (e) {
+        clearTimeout(timer);
+        var msg = (e.name === 'AbortError')
+            ? 'Request timed out after 30s.'
+            : esc(e.message);
+        panel.innerHTML = '<div class="empty-state error" style="padding:16px"><div class="title" style="font-size:13px">Pipeline backtest failed</div><div class="subtitle" style="font-size:11px">' + msg + '</div></div>';
+    }
+}
+
+function renderPipelineBacktest(d) {
+    var panel = document.getElementById('pipelineBacktestPanel');
+    if (!panel) return;
+    var total = d.total_picks || 0;
+    if (total === 0) {
+        panel.innerHTML = '<div style="color:var(--text-dim);padding:12px;font-size:12px">' +
+            esc(d.message || 'No picks history yet.') + '</div>';
+        return;
+    }
+    var deployed = d.would_deploy || 0;
+    var blockRate = (d.block_rate || 0) * 100;
+    var byReason = d.blocked_by_reason || {};
+    var reasonRows = Object.keys(byReason)
+        .sort(function(a, b) { return byReason[b] - byReason[a]; })
+        .map(function(r) {
+            return '<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.04)">' +
+                '<span>' + esc(r) + '</span>' +
+                '<span style="font-weight:600">' + byReason[r] + '</span>' +
+            '</div>';
+        }).join('');
+    panel.innerHTML =
+        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:12px">' +
+            '<div class="factor-card" style="padding:10px">' +
+                '<div style="font-size:11px;color:var(--text-dim)">Picks evaluated</div>' +
+                '<div style="font-size:20px;font-weight:600">' + total + '</div>' +
+                '<div style="font-size:10px;color:var(--text-dim)">over ' + (d.history_days || 0) + ' day(s)</div>' +
+            '</div>' +
+            '<div class="factor-card" style="padding:10px">' +
+                '<div style="font-size:11px;color:var(--text-dim)">Would deploy</div>' +
+                '<div style="font-size:20px;font-weight:600;color:var(--green)">' + deployed + '</div>' +
+                '<div style="font-size:10px;color:var(--text-dim)">' + ((deployed / total) * 100).toFixed(0) + '% of picks</div>' +
+            '</div>' +
+            '<div class="factor-card" style="padding:10px">' +
+                '<div style="font-size:11px;color:var(--text-dim)">Block rate</div>' +
+                '<div style="font-size:20px;font-weight:600;color:var(--orange)">' + blockRate.toFixed(0) + '%</div>' +
+                '<div style="font-size:10px;color:var(--text-dim)">' + (total - deployed) + ' picks gated out</div>' +
+            '</div>' +
+        '</div>' +
+        '<div class="factor-card-title" style="font-size:11px;color:var(--text-dim);margin-bottom:6px">BLOCKED BY REASON</div>' +
+        '<div>' + (reasonRows || '<div style="color:var(--text-dim);font-size:12px;padding:6px">No blocks recorded.</div>') + '</div>';
+}
+
 function renderAnalyticsPanel(d) {
     var panel = document.getElementById('analyticsPanel');
     if (!panel) return;
@@ -7124,6 +7196,16 @@ function renderDashboard() {
                     '<button class="btn-ghost btn-sm" onclick="refreshAnalyticsPanel()" title="Re-fetch analytics data">↻ Refresh</button>' +
                 '</h3>' +
                 '<div id="analyticsPanel" style="margin-top:12px"><div style="color:var(--text-dim);padding:24px;text-align:center">Loading analytics…</div></div>' +
+            '</div>' +
+            '<div class="card" style="margin-top:18px">' +
+                '<h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">' +
+                    '<span>🔍 Pipeline Backtest' + sectionHelpButton('pipeline-backtest') + '</span>' +
+                    '<button class="btn-ghost btn-sm" onclick="runPipelineBacktest()" title="Replay picks history through every deploy gate">▶ Run</button>' +
+                '</h3>' +
+                '<div style="font-size:11px;color:var(--text-dim);margin-top:6px">' +
+                    'Replays the picks_history.json sequence through every deploy-side gate (chase_block / volatility_block / sector_cap / trend filter / event-day / min_score) and reports how many would have deployed vs been blocked + why.' +
+                '</div>' +
+                '<div id="pipelineBacktestPanel" style="margin-top:12px"><div style="color:var(--text-dim);padding:16px;text-align:center;font-size:12px">Click ▶ Run to execute against your accumulated picks history.</div></div>' +
             '</div>' +
         '</section>' +
         // /api/trades on first scroll/click — initial markup is just
