@@ -122,6 +122,45 @@ def _latest_price(handler, symbol):
     return None
 
 
+def _cancel_pending_sell_orders(handler, symbol):
+    """Round-61 pt.53: list open orders for `symbol`, cancel any
+    sell-side orders (sell or buy-to-cover for shorts). Used when
+    DELETE /positions/{symbol} fails with "insufficient qty
+    available" because a queued MOO/limit order is reserving the
+    shares.
+
+    Returns (cancelled_count, error_message_or_None).
+    """
+    try:
+        url = (f"{handler.user_api_endpoint}/orders"
+                f"?status=open&symbols={symbol}&limit=50")
+        orders = handler.user_api_get(url)
+        if not isinstance(orders, list):
+            return 0, "couldn't list open orders"
+    except Exception as e:
+        return 0, f"order list failed: {e}"
+    cancelled = 0
+    for o in orders:
+        if not isinstance(o, dict):
+            continue
+        if (o.get("symbol") or "").upper() != symbol.upper():
+            continue
+        # We want to cancel orders that would prevent a close.
+        # For a long position, a pending SELL reserves the shares.
+        # For a short position, a pending BUY (to cover) reserves
+        # the buying power. Cancel either.
+        oid = o.get("id")
+        if not oid:
+            continue
+        try:
+            handler.user_api_delete(
+                f"{handler.user_api_endpoint}/orders/{oid}")
+            cancelled += 1
+        except Exception:  # allow-silent-except -- best-effort cancel; loop continues
+            pass
+    return cancelled, None
+
+
 def _build_xh_close_order(symbol, qty, side, last_price):
     """Build the Alpaca order body for closing a position during
     pre-market or after-hours. Alpaca requires LIMIT + day +
@@ -323,16 +362,53 @@ class ActionsHandlerMixin:
                     })
                 return
 
-        result = self.user_api_delete(f"{self.user_api_endpoint}/positions/{symbol}")
+        # Round-61 pt.53: cancel any pending sell-side orders for this
+        # symbol BEFORE the close, then retry on "insufficient qty".
+        # User-reported case: a pre-market MOO order from pt.50 still
+        # queued at 9:30 reserved the shares so DELETE /positions
+        # returned 422 "insufficient qty available for order
+        # (requested: 29, available: 0)". Auto-cancel the queued
+        # order and retry — that's clearly what the user intended.
+        result = self.user_api_delete(
+            f"{self.user_api_endpoint}/positions/{symbol}")
         if isinstance(result, dict) and "error" in result:
             err = result["error"] or ""
+            err_l = err.lower()
             # Pt.50: enrich the auth-failed message with concrete next step.
-            if "authentication failed" in err.lower():
+            if "authentication failed" in err_l:
                 err = (err + " Mode: "
                         + getattr(self, "session_mode", "paper")
                         + ". Try Settings → Alpaca API → Test Saved Keys "
                         "to verify the saved credentials authenticate, "
                         "then re-save if not.")
+                return self.send_json({"error": err}, 400)
+            # Pt.53: auto-recover from "insufficient qty" by cancelling
+            # pending sell orders against the symbol and retrying once.
+            if "insufficient qty" in err_l or "available: 0" in err_l:
+                cancelled, retry_err = _cancel_pending_sell_orders(
+                    self, symbol)
+                if cancelled > 0:
+                    # Retry the close.
+                    result2 = self.user_api_delete(
+                        f"{self.user_api_endpoint}/positions/{symbol}")
+                    if isinstance(result2, dict) and "error" in result2:
+                        return self.send_json({
+                            "error": (result2["error"]
+                                       + f" (cancelled {cancelled} "
+                                       "pending order(s) before retry)")
+                        }, 400)
+                    return self.send_json({
+                        "success": True, "symbol": symbol,
+                        "message": (f"Cancelled {cancelled} pending "
+                                     f"sell order(s) on {symbol}, "
+                                     "then closed."),
+                        "order": result2,
+                    })
+                # No pending orders to cancel → enrich error with hint.
+                if retry_err:
+                    err += f" (cancel scan: {retry_err})"
+                err += (" — check Open Orders for this symbol; "
+                         "a pending sell may be reserving the shares.")
             self.send_json({"error": err}, 400)
         else:
             self.send_json({"success": True, "symbol": symbol, "order": result})
