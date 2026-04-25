@@ -1226,6 +1226,26 @@ def fetch_all_data():
                           f"(below 50-MA longs / above 50-MA shorts)")
             except Exception as _tf_err:
                 print(f"  Trend filter failed: {_tf_err}. Continuing.")
+
+            # Round-61 pt.40: multi-day breakout confirmation. Require
+            # today's close AND yesterday's close to BOTH be above their
+            # respective 20-day highs before treating a Breakout pick
+            # as real. Single-day breakouts get score halved (still
+            # rankable but won't be deploy-top). Uses the same
+            # factor_bars already fetched for RS ranking — zero extra
+            # API calls.
+            try:
+                from screener_core import apply_breakout_confirmation
+                apply_breakout_confirmation(top_candidates,
+                                              bars_map=factor_bars,
+                                              lookback=20)
+                demoted = sum(1 for _p in top_candidates
+                               if _p.get("_breakout_unconfirmed"))
+                if demoted > 0:
+                    print(f"  Breakout confirmation: {demoted} picks "
+                          f"demoted (single-day breakouts, score halved)")
+            except Exception as _bc_err:
+                print(f"  Breakout confirmation failed: {_bc_err}. Continuing.")
         except Exception as _factor_err:
             print(f"  Factor enrichment failed: {_factor_err}. Continuing without RS/sector factors.")
 

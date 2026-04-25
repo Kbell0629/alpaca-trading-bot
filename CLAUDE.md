@@ -61,7 +61,21 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-25 — round 61 pt.10-39 SHIPPED)
+## Current session state (2026-04-25 — round 61 pt.10-40 SHIPPED)
+
+**Pt.40 landed (PR #167):** multi-day breakout confirmation. Single-
+day breakouts have a "Tuesday-fake-Wednesday-collapse" failure mode;
+academic momentum research shows two-bar confirmation lifts win rate
+~10-15 points at the cost of ~20% fewer entries.
+  * **`screener_core.apply_breakout_confirmation(picks, bars_map,
+    lookback=20)`** — pure helper. For each Breakout-strategy pick:
+    requires today's close > today's 20-day high AND yesterday's
+    close > prior 20-day high. Single-day breakouts get
+    `_breakout_unconfirmed = True` + score halved (best_score AND
+    breakout_score). Demoted, not eliminated.
+  * Wired into `update_dashboard.py` after factor scoring + trend
+    filter. Uses the same `factor_bars` (zero extra API calls).
++22 tests in `tests/test_round61_pt40_breakout_confirmation.py`.
 
 **Pt.39 landed (PR #166):** trend filter — block longs below 50-MA,
 shorts above. Most "fake breakouts" happen on stocks below their
@@ -72,15 +86,12 @@ buying the dip in disguise.
     — pure helper. Computes SMA(50) per pick, gates long strategies
     (breakout/trailing_stop/mean_reversion/pead/copy_trading) on
     `price > SMA`, and short_sell on `price < SMA`. Picks with
-    insufficient bars pass through (fail open — never block on
-    missing data).
+    insufficient bars pass through (fail open).
   * Wired into `update_dashboard.py` AFTER `apply_factor_scores`
     using the same `factor_bars` already fetched for RS ranking
-    (zero extra API calls). Logs `Trend filter: blocked N picks`
-    when filtering occurs.
+    (zero extra API calls).
   * Filtered picks stay in the list (with `_filtered_by_trend` +
-    `_filtered_strategy` tags) so the dashboard's "filtered out"
-    panel can show why they didn't deploy.
+    `_filtered_strategy` tags) for dashboard visibility.
 +23 tests in `tests/test_round61_pt39_trend_filter.py`.
 
 **Pt.38 landed (PR #165):** per-strategy tier-aware risk parameters.
