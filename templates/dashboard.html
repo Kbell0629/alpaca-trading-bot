@@ -3944,6 +3944,306 @@ async function loadGuardrails() {
 // (Round-61 pt.8 Option B).
 
 // Round-11 Item 1: Performance Attribution panel.
+// Round-61 pt.36: Trades dashboard panel.
+// State persists across re-renders so filter selections survive a
+// refresh-tick. Filters + sort serialise to /api/trades (POST body).
+var _tradesState = {
+    filters: { status: 'closed' },
+    sort_by: 'exit_timestamp',
+    descending: true,
+    expanded: {},  // {trade_index: true} — which rows show post-mortem
+};
+
+async function refreshTradesPanel() {
+    var panel = document.getElementById('tradesPanel');
+    if (!panel) return;
+    try {
+        var resp = await fetch(API_BASE + '/api/trades', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json',
+                        'X-CSRF-Token': getCookie('csrf_token') || '' },
+            body: JSON.stringify({
+                filters: _tradesState.filters,
+                sort_by: _tradesState.sort_by,
+                descending: _tradesState.descending,
+            }),
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        var d = await resp.json();
+        renderTradesPanel(d);
+    } catch (e) {
+        panel.innerHTML = '<div class="empty-state error"><div class="icon">⚠</div>' +
+            '<div class="title">Trades unavailable</div>' +
+            '<div class="subtitle">' + esc(e.message) + '</div></div>';
+    }
+}
+
+function _tradeFmtMoney(n) {
+    var v = (typeof n === 'number') ? n : Number(n);
+    if (isNaN(v)) return '—';
+    var sign = v >= 0 ? '+' : '−';
+    return sign + '$' + Math.abs(v).toLocaleString(undefined,
+        { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function _tradeFmtPct(n) {
+    var v = (typeof n === 'number') ? n : Number(n);
+    if (isNaN(v)) return '—';
+    var sign = v >= 0 ? '+' : '';
+    return sign + v.toFixed(1) + '%';
+}
+
+function _tradeFmtPnlClass(c) {
+    if (c === 'win') return 'pnl-pos';
+    if (c === 'loss') return 'pnl-neg';
+    return '';
+}
+
+function _tradeStrategyLabel(s) {
+    var map = {
+        'breakout': 'BREAKOUT',
+        'mean_reversion': 'MEAN REV',
+        'trailing_stop': 'TRAILING',
+        'wheel': 'WHEEL',
+        'short_sell': 'SHORT',
+        'pead': 'PEAD',
+        'copy_trading': 'COPY',
+    };
+    return map[s] || (s || '').toUpperCase();
+}
+
+function renderTradesPanel(d) {
+    var panel = document.getElementById('tradesPanel');
+    if (!panel) return;
+    var html = '';
+
+    // ---- Filter controls ----
+    var f = _tradesState.filters || {};
+    var status = f.status || 'all';
+    var winLoss = f.win_loss || 'all';
+    var symbol = f.symbol || '';
+    var strategies = f.strategy || [];
+    var allStrategies = ['breakout', 'mean_reversion', 'trailing_stop',
+                          'wheel', 'short_sell', 'pead', 'copy_trading'];
+
+    html += '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px;padding:10px;background:rgba(255,255,255,0.02);border:1px solid var(--border);border-radius:8px">';
+    // Status
+    html += '<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim)">Status:' +
+        '<select onchange="_setTradesFilter(\'status\', this.value)" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px">' +
+        ['all','closed','open'].map(function(v){
+            return '<option value="'+v+'"'+(status===v?' selected':'')+'>'+v.charAt(0).toUpperCase()+v.slice(1)+'</option>';
+        }).join('') + '</select></label>';
+    // Win/Loss
+    html += '<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim)">P&amp;L:' +
+        '<select onchange="_setTradesFilter(\'win_loss\', this.value)" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px">' +
+        [['all','All'],['win','Wins'],['loss','Losses'],['flat','Flat']].map(function(p){
+            return '<option value="'+p[0]+'"'+(winLoss===p[0]?' selected':'')+'>'+p[1]+'</option>';
+        }).join('') + '</select></label>';
+    // Symbol search
+    html += '<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim)">Symbol:' +
+        '<input type="text" value="' + esc(symbol) + '" oninput="_setTradesFilter(\'symbol\', this.value)" placeholder="e.g. AAPL" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px;width:90px;text-transform:uppercase" /></label>';
+    // Strategy chips
+    html += '<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center"><span style="font-size:12px;color:var(--text-dim);margin-right:4px">Strategy:</span>';
+    allStrategies.forEach(function(s){
+        var active = strategies.indexOf(s) !== -1;
+        html += '<button onclick="_toggleTradesStrategy(\''+s+'\')" style="font-size:11px;padding:3px 8px;border-radius:12px;border:1px solid var(--border);background:'+(active?'var(--accent)':'var(--card)')+';color:'+(active?'#fff':'var(--text-dim)')+';cursor:pointer">'+_tradeStrategyLabel(s)+'</button>';
+    });
+    html += '</div>';
+    // Reset
+    html += '<button onclick="_resetTradesFilters()" style="margin-left:auto;font-size:11px;padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--text-dim);cursor:pointer">Reset</button>';
+    html += '</div>';
+
+    // ---- Top-line summary card ----
+    var ov = d.overall_summary || {};
+    var totalPnlClass = (ov.total_pnl || 0) > 0 ? 'pnl-pos' : (ov.total_pnl || 0) < 0 ? 'pnl-neg' : '';
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:14px">';
+    html += '<div class="factor-card"><div class="factor-card-title">Total Trades</div><div class="factor-card-value">' + (ov.count || 0) + '</div><div class="factor-card-sub">' + (ov.wins||0) + 'W / ' + (ov.losses||0) + 'L</div></div>';
+    html += '<div class="factor-card"><div class="factor-card-title">Win Rate</div><div class="factor-card-value">' + ((ov.win_rate||0)*100).toFixed(0) + '%</div><div class="factor-card-sub">' + (ov.count >= 5 ? 'reliable' : 'Need 5+') + '</div></div>';
+    html += '<div class="factor-card"><div class="factor-card-title">Total P&amp;L</div><div class="factor-card-value '+totalPnlClass+'">' + _tradeFmtMoney(ov.total_pnl) + '</div><div class="factor-card-sub">avg ' + _tradeFmtMoney(ov.avg_pnl) + '</div></div>';
+    html += '<div class="factor-card"><div class="factor-card-title">Expectancy</div><div class="factor-card-value">' + _tradeFmtMoney(ov.expectancy) + '</div><div class="factor-card-sub">per trade</div></div>';
+    html += '<div class="factor-card"><div class="factor-card-title">Best</div><div class="factor-card-value pnl-pos">' + _tradeFmtMoney(ov.best_pnl) + '</div></div>';
+    html += '<div class="factor-card"><div class="factor-card-title">Worst</div><div class="factor-card-value pnl-neg">' + _tradeFmtMoney(ov.worst_pnl) + '</div></div>';
+    html += '</div>';
+
+    // ---- Per-strategy summary cards ----
+    var ss = d.strategy_summary || {};
+    var stratKeys = Object.keys(ss);
+    if (stratKeys.length) {
+        html += '<div style="margin-bottom:6px;font-size:12px;color:var(--text-dim);font-weight:600">PER-STRATEGY PERFORMANCE</div>';
+        html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:18px">';
+        stratKeys.forEach(function(k){
+            var s = ss[k];
+            var pnlClass = (s.total_pnl || 0) > 0 ? 'pnl-pos' : (s.total_pnl || 0) < 0 ? 'pnl-neg' : '';
+            html += '<div class="factor-card" style="border-color:'+ ((s.total_pnl||0) > 0 ? 'rgba(16,185,129,0.3)' : (s.total_pnl||0) < 0 ? 'rgba(239,68,68,0.3)' : 'var(--border)')+'">' +
+                '<div class="factor-card-title">' + esc(_tradeStrategyLabel(k)) + '</div>' +
+                '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:6px;margin-top:4px">' +
+                    '<span class="factor-card-value '+pnlClass+'" style="font-size:18px">' + _tradeFmtMoney(s.total_pnl) + '</span>' +
+                    '<span style="font-size:11px;color:var(--text-dim)">' + (s.count||0) + ' trades</span>' +
+                '</div>' +
+                '<div style="font-size:11px;color:var(--text-dim);margin-top:6px;display:flex;flex-wrap:wrap;gap:8px">' +
+                    '<span>Win: <strong>' + ((s.win_rate||0)*100).toFixed(0) + '%</strong> ('+ (s.wins||0) +'W/'+(s.losses||0)+'L)</span>' +
+                    '<span>Avg: <strong>' + _tradeFmtMoney(s.avg_pnl) + '</strong></span>' +
+                    (s.avg_hold_days != null ? '<span>Hold: <strong>' + s.avg_hold_days.toFixed(1) + 'd</strong></span>' : '') +
+                '</div>' +
+            '</div>';
+        });
+        html += '</div>';
+    }
+
+    // ---- Trades table ----
+    var trades = d.trades || [];
+    html += '<div style="margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">' +
+        '<div style="font-size:12px;color:var(--text-dim);font-weight:600">' +
+            esc((d.filtered_count || 0) + ' / ' + (d.total_count || 0) + ' trades') +
+        '</div>' +
+        '<div style="font-size:11px;color:var(--text-dim)">Click a row to expand the post-mortem</div>' +
+    '</div>';
+    if (!trades.length) {
+        html += '<div class="empty-state"><div class="icon">\u{1F4DD}</div><div class="title">No trades match the current filters</div><div class="subtitle">Loosen the filters above or wait for more closed trades.</div></div>';
+    } else {
+        html += '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch">';
+        html += '<table style="width:100%;border-collapse:collapse;font-size:13px;min-width:680px">';
+        html += '<thead><tr style="text-align:left;color:var(--text-dim);font-size:11px;text-transform:uppercase">' +
+            _tradeSortHeader('exit_timestamp', 'Date') +
+            _tradeSortHeader('symbol', 'Symbol') +
+            _tradeSortHeader('strategy', 'Strategy') +
+            '<th style="padding:6px 8px">Side</th>' +
+            _tradeSortHeader('qty', 'Qty', 'right') +
+            _tradeSortHeader('price', 'Entry', 'right') +
+            _tradeSortHeader('exit_price', 'Exit', 'right') +
+            _tradeSortHeader('pnl', 'P&L $', 'right') +
+            _tradeSortHeader('pnl_pct', 'P&L %', 'right') +
+            _tradeSortHeader('hold_days', 'Hold', 'right') +
+            '<th style="padding:6px 8px">Why exited</th>' +
+            '</tr></thead><tbody>';
+        trades.forEach(function(t, idx){
+            var pnlClass = _tradeFmtPnlClass(t.pnl_class);
+            var sideLabel = (t.side || '').toLowerCase() === 'sell' ? 'SHORT' : 'LONG';
+            var sideColor = sideLabel === 'SHORT' ? 'var(--orange)' : 'var(--blue)';
+            var dateShort = (t.exit_timestamp || t.timestamp || '').slice(0, 10);
+            html += '<tr onclick="_toggleTradeDetail('+idx+')" style="cursor:pointer;border-top:1px solid var(--border)">' +
+                '<td style="padding:6px 8px;white-space:nowrap">' + esc(dateShort) + '</td>' +
+                '<td style="padding:6px 8px;font-weight:600">' + esc(t.occ_underlying || t.symbol || '') + '</td>' +
+                '<td style="padding:6px 8px"><span style="font-size:10px;padding:2px 6px;border-radius:8px;background:rgba(255,255,255,0.05);color:var(--text-dim)">' + esc(_tradeStrategyLabel(t.strategy)) + '</span></td>' +
+                '<td style="padding:6px 8px;font-size:11px;color:'+sideColor+'">' + sideLabel + '</td>' +
+                '<td style="padding:6px 8px;text-align:right">' + (t.qty != null ? esc(String(t.qty)) : '—') + '</td>' +
+                '<td style="padding:6px 8px;text-align:right">' + (t.price != null ? '$'+Number(t.price).toFixed(2) : '—') + '</td>' +
+                '<td style="padding:6px 8px;text-align:right">' + (t.exit_price != null ? '$'+Number(t.exit_price).toFixed(2) : '—') + '</td>' +
+                '<td style="padding:6px 8px;text-align:right" class="'+pnlClass+'">' + _tradeFmtMoney(t.pnl) + '</td>' +
+                '<td style="padding:6px 8px;text-align:right;font-size:11px" class="'+pnlClass+'">' + _tradeFmtPct(t.pnl_pct) + '</td>' +
+                '<td style="padding:6px 8px;text-align:right;font-size:11px;color:var(--text-dim)">' + (t.hold_days != null ? t.hold_days.toFixed(1)+'d' : '—') + '</td>' +
+                '<td style="padding:6px 8px;font-size:11px;color:var(--text-dim)">' + esc(t.exit_reason_human || t.exit_reason || '') + '</td>' +
+            '</tr>';
+            // Post-mortem expand row
+            if (_tradesState.expanded[idx]) {
+                html += '<tr style="border-top:1px solid var(--border);background:rgba(255,255,255,0.02)"><td colspan="11" style="padding:12px 14px">' +
+                    _renderTradePostMortem(t) +
+                '</td></tr>';
+            }
+        });
+        html += '</tbody></table></div>';
+    }
+    panel.innerHTML = html;
+}
+
+function _tradeSortHeader(field, label, align) {
+    var alignStyle = (align === 'right') ? 'text-align:right;' : '';
+    var arrow = '';
+    if (_tradesState.sort_by === field) {
+        arrow = ' ' + (_tradesState.descending ? '↓' : '↑');
+    }
+    return '<th style="padding:6px 8px;cursor:pointer;'+alignStyle+'" onclick="_setTradesSort(\''+field+'\')">' + esc(label) + arrow + '</th>';
+}
+
+function _renderTradePostMortem(t) {
+    // Per-trade detail card. Shows entry context (signal/reason/deployer),
+    // exit context (price/reason/why), derived metrics, and a thumbnail
+    // of the trade arc (open → close P&L%).
+    var entryReason = t.reason || '(no entry reason recorded)';
+    var pnlPct = (typeof t.pnl_pct === 'number') ? t.pnl_pct.toFixed(2)+'%' : '—';
+    var pnlAbs = _tradeFmtMoney(t.pnl);
+    var pnlClass = _tradeFmtPnlClass(t.pnl_class);
+    var entryTs = (t.timestamp || '').replace('T', ' ').slice(0, 19);
+    var exitTs = (t.exit_timestamp || '').replace('T', ' ').slice(0, 19);
+    var hold = (t.hold_days != null) ? t.hold_days.toFixed(2) + ' days' : '—';
+    var deployer = t.deployer || 'unknown';
+    var occ = t.occ_underlying && t.occ_underlying !== t.symbol ?
+        '<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px">Option contract on <strong>'+esc(t.occ_underlying)+'</strong></div>' : '';
+    return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;font-size:12px">' +
+        '<div>' +
+            '<div style="font-weight:600;color:var(--text-dim);text-transform:uppercase;font-size:10px;margin-bottom:4px">Entry</div>' +
+            occ +
+            '<div><strong>'+esc(t.symbol||'')+'</strong> @ $'+Number(t.price||0).toFixed(2) + ' × ' + (t.qty||0) + ' shares</div>' +
+            '<div style="color:var(--text-dim);font-size:11px;margin-top:2px">'+esc(entryTs)+'</div>' +
+            '<div style="margin-top:6px"><span style="color:var(--text-dim)">Strategy:</span> <strong>'+esc(_tradeStrategyLabel(t.strategy))+'</strong></div>' +
+            '<div><span style="color:var(--text-dim)">Deployer:</span> '+esc(deployer)+'</div>' +
+            '<div style="margin-top:8px"><span style="color:var(--text-dim)">Signal/reason:</span><br/>' +
+                '<span style="white-space:pre-wrap">'+esc(entryReason)+'</span></div>' +
+        '</div>' +
+        '<div>' +
+            '<div style="font-weight:600;color:var(--text-dim);text-transform:uppercase;font-size:10px;margin-bottom:4px">Exit</div>' +
+            (t.is_open ? '<div style="color:var(--orange)">Position still open — no exit recorded yet.</div>' :
+                '<div><strong>$'+Number(t.exit_price||0).toFixed(2)+'</strong> × ' + (t.qty||0) + ' shares</div>' +
+                '<div style="color:var(--text-dim);font-size:11px;margin-top:2px">'+esc(exitTs)+' (held '+hold+')</div>' +
+                '<div style="margin-top:6px"><span style="color:var(--text-dim)">Why:</span> '+esc(t.exit_reason_human || t.exit_reason || '—')+'</div>' +
+                '<div style="margin-top:8px;padding:8px;background:rgba(255,255,255,0.03);border-radius:6px">' +
+                    '<div style="font-size:10px;color:var(--text-dim);text-transform:uppercase">Realized P&amp;L</div>' +
+                    '<div class="'+pnlClass+'" style="font-size:18px;font-weight:600">'+pnlAbs+' <span style="font-size:13px">('+pnlPct+')</span></div>' +
+                '</div>'
+            ) +
+        '</div>' +
+    '</div>';
+}
+
+function _setTradesFilter(key, value) {
+    if (!value || value === 'all' || value === '') {
+        delete _tradesState.filters[key];
+    } else {
+        _tradesState.filters[key] = value;
+    }
+    _tradesState.expanded = {};
+    refreshTradesPanel();
+}
+
+function _toggleTradesStrategy(s) {
+    var arr = _tradesState.filters.strategy || [];
+    var idx = arr.indexOf(s);
+    if (idx === -1) arr.push(s);
+    else arr.splice(idx, 1);
+    if (arr.length === 0) {
+        delete _tradesState.filters.strategy;
+    } else {
+        _tradesState.filters.strategy = arr;
+    }
+    _tradesState.expanded = {};
+    refreshTradesPanel();
+}
+
+function _resetTradesFilters() {
+    _tradesState.filters = { status: 'closed' };
+    _tradesState.sort_by = 'exit_timestamp';
+    _tradesState.descending = true;
+    _tradesState.expanded = {};
+    refreshTradesPanel();
+}
+
+function _setTradesSort(field) {
+    if (_tradesState.sort_by === field) {
+        _tradesState.descending = !_tradesState.descending;
+    } else {
+        _tradesState.sort_by = field;
+        _tradesState.descending = true;
+    }
+    _tradesState.expanded = {};
+    refreshTradesPanel();
+}
+
+function _toggleTradeDetail(idx) {
+    _tradesState.expanded[idx] = !_tradesState.expanded[idx];
+    refreshTradesPanel();
+}
+
 async function refreshPerfAttribution() {
     var panel = document.getElementById('perfAttributionPanel');
     if (!panel) return;
@@ -5986,6 +6286,7 @@ function renderDashboard() {
         _navBtn('section-picks', 'Picks') +
         _navBtn('section-strategies', 'Strategies') +
         _navBtn('section-positions', 'Positions') +
+        _navBtn('section-trades', 'Trades') +
         _navBtn('section-screener', 'Screener') +
         (shortCands.length > 0 ? _navBtn('section-shorts', 'Short Sells') : '') +
         (losers.length > 0 ? _navBtn('section-tax', 'Tax Harvest') : '') +
@@ -6274,6 +6575,18 @@ function renderDashboard() {
         '</div>' +
         corrHtml +
         taxHtml +
+        '</section>' +
+        // Round-61 pt.36: Trades dashboard section. Loads via
+        // /api/trades on first scroll/click — initial markup is just
+        // the wrapper + a placeholder; refreshTradesPanel() fills it.
+        '<section id="section-trades" aria-label="Closed trades + per-strategy performance">' +
+            '<div class="card">' +
+                '<h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">' +
+                    '<span>Trades' + sectionHelpButton('trades') + '</span>' +
+                    '<button class="btn-ghost btn-sm" onclick="refreshTradesPanel()" title="Re-fetch trade journal">↻ Refresh</button>' +
+                '</h3>' +
+                '<div id="tradesPanel" style="margin-top:8px"><div style="color:var(--text-dim);padding:16px;text-align:center">Loading trades…</div></div>' +
+            '</div>' +
         '</section>' +
         '<section id="section-screener" aria-label="Full stock screener">' +
         '<div class="screener">' +

@@ -677,6 +677,57 @@ class ActionsHandlerMixin:
         except Exception as e:
             self._send_error_safe(e, 500, "state-audit")
 
+    def handle_trades_view(self, body=None):
+        """Round-61 pt.36: filterable + sortable view of the user's
+        trade journal. Powers the new `/api/trades` endpoint and the
+        Trades dashboard tab. Read-only.
+
+        Filters (optional, all keys may be absent or empty):
+            status           — 'open' / 'closed' / 'all' (default 'all')
+            strategy         — list of strategy names to include
+            win_loss         — 'win' / 'loss' / 'flat' / 'all'
+            symbol           — case-insensitive substring (matches
+                               base symbol AND OCC underlying)
+            exit_reason      — list of reason codes
+            side             — 'long' / 'short' / 'all'
+            date_from        — ISO timestamp lower bound on entry time
+            date_to          — ISO timestamp upper bound on entry time
+            min_pnl          — numeric lower bound on realized P&L
+            max_pnl          — numeric upper bound
+
+        Sort (optional):
+            sort_by          — any trade field; default 'exit_timestamp'
+            descending       — bool, default True
+
+        Returns the full payload from
+        ``trades_analysis_core.build_trades_view``: filtered + sorted
+        + per-strategy summary + overall summary.
+        """
+        if not self.current_user:
+            return self.send_json({"error": "Not authenticated"}, 401)
+        try:
+            import server
+            import trades_analysis_core as tac
+            body = body or {}
+            filters = body.get("filters") or {}
+            sort_by = body.get("sort_by") or "exit_timestamp"
+            descending = bool(body.get("descending", True))
+
+            journal_path = self._user_file("trade_journal.json")
+            journal = server.load_json(journal_path) or {
+                "trades": [], "daily_snapshots": [],
+            }
+
+            view = tac.build_trades_view(
+                journal,
+                filters=filters,
+                sort_by=sort_by,
+                descending=descending,
+            )
+            self.send_json({"success": True, **view})
+        except Exception as e:
+            self._send_error_safe(e, 500, "trades-view")
+
     def handle_force_orphan_adoption(self, body=None):
         """Round-61 pt.15: run orphan adoption on-demand. Synthesizes
         strategy files for every Alpaca position that has no matching
