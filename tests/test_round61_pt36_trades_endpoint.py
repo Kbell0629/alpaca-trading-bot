@@ -118,10 +118,11 @@ def test_trades_endpoint_with_seeded_journal(http_harness, tmp_path):
     """Seed a known trade_journal.json and verify the endpoint
     returns the trades + computes summaries."""
     http_harness.create_user()
-    user_dir = http_harness.session_user.get("_data_dir")
-    if not user_dir:
-        # The harness should always set _data_dir; skip if not.
-        return
+    # Resolve the user's data dir via auth.user_data_dir — the
+    # harness exposes ``user_id``, not a full user dict.
+    import auth
+    user_dir = auth.user_data_dir(http_harness.user_id, mode="paper")
+    os.makedirs(user_dir, exist_ok=True)
     journal_path = os.path.join(user_dir, "trade_journal.json")
     journal = {
         "trades": [
@@ -174,9 +175,9 @@ def test_trades_endpoint_filter_strategy_narrows_results(
 ):
     """Strategy filter must shrink the result to only matching trades."""
     http_harness.create_user()
-    user_dir = http_harness.session_user.get("_data_dir")
-    if not user_dir:
-        return
+    import auth
+    user_dir = auth.user_data_dir(http_harness.user_id, mode="paper")
+    os.makedirs(user_dir, exist_ok=True)
     journal_path = os.path.join(user_dir, "trade_journal.json")
     journal = {
         "trades": [
