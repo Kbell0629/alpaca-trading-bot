@@ -92,12 +92,14 @@ class AlpacaMock:
 def alpaca_mock(monkeypatch):
     """Patch every cloud_scheduler / scheduler_api Alpaca helper to use
     AlpacaMock for deterministic testing without network. Returns the
-    mock so the test can register responses + assert calls."""
+    mock so the test can register responses + assert calls.
+
+    Pt.51: does NOT pop sys.modules — that would force-reimport
+    scheduler_api/cloud_scheduler and corrupt coverage tracking
+    + break other tests that share module state. monkeypatch.setattr
+    handles cleanup automatically when the test finishes.
+    """
     mock = AlpacaMock()
-    # Pop scheduler modules so they re-import against the patched
-    # functions on next access.
-    for mod in ("scheduler_api", "cloud_scheduler"):
-        sys.modules.pop(mod, None)
     import scheduler_api as _sa
     monkeypatch.setattr(_sa, "user_api_get", mock._do_get)
     monkeypatch.setattr(_sa, "user_api_post", mock._do_post)
