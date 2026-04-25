@@ -8,6 +8,52 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.72 — pre-trade quote abort + live-mode gate + per-symbol cooldown (+47 tests)
+
+**Date:** 2026-04-25
+
+Three production-readiness items + docs refresh covering pt.71.
+
+* **Pre-trade quote-snapshot abort** (new `pre_trade_check.py`).
+  Right before placing a deploy order, fetches a fresh
+  `latestQuote`. Aborts if (a) live spread > 0.5% (microstructure
+  shifted from screener time) or (b) price drifted > 1% from
+  screener-time price (something broke in the last few seconds).
+  Fail-open on any fetch error — this is microstructure insurance,
+  not a hard prerequisite. Wired into `run_auto_deployer` just
+  before `smart_orders` / market-fallback POST.
+* **Live-mode promotion gate** (new `live_mode_gate.py`). Paper
+  validation ends ~2026-05-15; right now flipping live is a manual
+  eyeball click. New `check_live_mode_readiness(journal,
+  scorecard, audit_findings)` returns `{ready, blockers,
+  warnings, summary, metrics}` and AUTO-blocks the live toggle
+  until: ≥30 closed trades, win rate ≥ 45%, sharpe ≥ 0.5, max
+  drawdown ≤ 15%, 0 HIGH-severity audit findings. Wired into
+  `handlers/auth_mixin.handle_toggle_live_mode` AFTER the existing
+  readiness ≥ 80 check (defense-in-depth). Override with
+  `override_readiness=true`.
+* **Per-symbol 24h cooldown after stop-out** (new
+  `symbol_cooldown.py`). Real-world example: SOXL stops out at
+  -8% Tuesday afternoon. Wednesday morning the 30-min screener
+  still has SOXL in the top 5. Bot deploys again. SOXL drops
+  another 5%. Death by a thousand re-entries on a falling knife.
+  Hooks both ends of the loop:
+    * `record_trade_close` calls `symbol_cooldown.record_stop_out`
+      for cooldown-triggering exit reasons (`stop_hit`,
+      `stop_loss`, `trailing_stop`, `bearish_news`, `dead_money`
+      — NOT `target_hit` since those are good closes)
+    * Auto-deployer pick loop calls `is_on_cooldown` and skips
+      with `"cooldown_after_<reason>: Xh remaining"`
+  State persisted in `_last_runs["symbol_cooldown"]`. Default 24h.
+
+Pure-module discipline: all three new modules avoid top-level
+imports of `cloud_scheduler`, `auth`, `server`. Pinned by tests.
+
++47 tests in
+`tests/test_round61_pt72_quote_abort_live_gate_cooldown.py`.
+
+---
+
 ## 🆕 Round-61 pt.71 — news exits + ADV cap + drawdown taper (+40 tests)
 
 **Date:** 2026-04-25

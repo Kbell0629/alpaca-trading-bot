@@ -590,6 +590,18 @@ Bot picks top 2 and places market buy orders.
   -6..-10 range → "watch list" warning. 10-minute per-symbol
   cooldown to avoid spam. Shorts skipped (bearish news is good
   for shorts).
+- **Pre-trade quote-snapshot abort (pt.72)** — right before
+  every deploy order, fetch a fresh `latestQuote`. If the spread
+  widened > 0.5% from screener time OR the price drifted > 1%,
+  abort the deploy. Catches the rare case where breaking news
+  hits in the few seconds between screener pick-time and order
+  placement.
+- **Per-symbol 24h cooldown after stop-out (pt.72)** — when a
+  position closes via `stop_hit`, `bearish_news`, or
+  `dead_money`, that symbol is blocked from re-entry for 24h.
+  Prevents "death by a thousand re-entries on a falling knife"
+  when the screener still ranks the same name highly the next
+  morning. Profit-target hits do NOT trigger a cooldown.
 
 ---
 
@@ -1109,6 +1121,13 @@ Trades that fire on the **live** account get a `[LIVE]` prefix in every ntfy pus
 - **Live entry in scheduler** requires BOTH live keys present AND the parallel flag on. Misconfigured sessions (e.g., switching view to live when no keys are saved) silently fall back to paper view.
 - **Per-mode circuit breaker** — if live Alpaca returns 401 three times in a row, only live's CB opens; paper keeps running.
 - **Per-mode per-day auth-failure alert** — a paper-keys-expired alert today doesn't silence a separate live-keys-expired alert on the same day.
+- **Auto-promotion gate (pt.72)** — flipping the live toggle is automatically blocked until the paper account proves out:
+  - **≥30 closed trades** (statistical sample)
+  - **win rate ≥ 45%** (edge demonstration)
+  - **sharpe ≥ 0.5** (positive risk-adjusted return)
+  - **max drawdown ≤ 15%** (not currently in a meltdown)
+  - **0 HIGH-severity audit findings** (state is clean)
+  Click "Enable Live" while any blocker fails and the bot returns a clear list of what's not yet met. Pass `override_readiness=true` (advanced) to force-enable. Stacks on top of the existing readiness ≥80 score requirement.
 
 ### What's Different in Live Mode
 
