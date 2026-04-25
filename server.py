@@ -1236,9 +1236,13 @@ class DashboardHandler(
                 msg = str(parsed["message"])[:120]
         except Exception:
             pass
-        # Categorize by HTTP code for a safe generic user message
-        if http_code == 401 or http_code == 403:
+        # Pt.50: split 401 (auth) from 403 (forbidden — market closed,
+        # PDT, buying-power, etc.). Conflating them gave wrong advice.
+        if http_code == 401:
             safe = "Alpaca authentication failed. Check API credentials in Settings."
+        elif http_code == 403:
+            safe = msg or ("Alpaca rejected the request (403). Common: "
+                            "market closed, PDT limit, low buying power.")
         elif http_code == 422:
             safe = msg or "Invalid order parameters"
         elif http_code == 429:
