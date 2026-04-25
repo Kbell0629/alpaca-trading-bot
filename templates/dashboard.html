@@ -1272,6 +1272,31 @@ input[type="range"]:focus {
 .back-to-top-btn:hover { opacity: 1; transform: translateY(-2px); }
 @media (max-width: 600px) {
     .back-to-top-btn { bottom: 16px; right: 16px; }
+    /* Round-61 pt.67: mobile-responsiveness for the Analytics Hub.
+       The pt.46 panel uses inline grid styles with min-column widths
+       of 280-320px. On a 360-393px screen those grids collapse fine
+       BUT the factor-card padding leaves <20px content width per
+       card; the equity chart text overlaps; the strategy breakdown
+       cards stack three numbers per row that wrap awkwardly. */
+    #analyticsPanel .factor-card { padding: 10px; }
+    #analyticsPanel .factor-card-title { font-size: 10px; }
+    /* Equity SVG gets cramped — let it grow taller on mobile so the
+       date labels at the bottom don't collide with the data. */
+    #analyticsPanel .factor-card svg[viewBox] { max-height: 200px !important; }
+    /* Per-strategy cards: drop the 220px floor so cards always fit
+       single-column on phones rather than scrolling horizontally. */
+    #analyticsPanel > div[style*="minmax(220px"] {
+        grid-template-columns: 1fr !important;
+    }
+    /* KPI grid: 150px floor → 110px so 3 cards fit per row on a
+       360px screen instead of 2 (which left a giant 8th card alone). */
+    #analyticsPanel > div[style*="minmax(150px"] {
+        grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)) !important;
+    }
+    /* Trades panel pt.36: same auto-fit fix on the same KPI band. */
+    #tradesPanel > div[style*="minmax(150px"] {
+        grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)) !important;
+    }
 }
 
 /* ===== Header V2 (cleaner 2-row layout) ===== */
@@ -4355,7 +4380,11 @@ function renderAnalyticsPanel(d) {
     html += '</div>';
 
     // ---- EQUITY CURVE + PER-PERIOD P&L ----
-    html += '<div style="display:grid;grid-template-columns:2fr 1fr;gap:16px;margin-bottom:18px">';
+    // Round-61 pt.67: collapse to single column on mobile via auto-
+    // fit; the prior 2fr/1fr layout cut the equity chart in half on
+    // 360px screens and forced a horizontal scroll on the per-period
+    // numbers.
+    html += '<div class="analytics-equity-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-bottom:18px">';
     // Equity chart card
     html += '<div class="factor-card">' +
         '<div class="factor-card-title" style="margin-bottom:8px">Portfolio Value</div>' +
