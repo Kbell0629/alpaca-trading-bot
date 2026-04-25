@@ -61,44 +61,30 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-25 — round 61 pt.10-44 SHIPPED)
+## Current session state (2026-04-25 — round 61 pt.10-45 SHIPPED)
 
-**Pt.44 landed (PR #171):** backtest-driven self-learning loop.
-Closes the user-requested feedback loop: the weekly learning task
-sweeps a small parameter grid for each strategy via the pt.37
-backtest harness, picks the variant that maximally improves
-simulated expectancy (subject to safety bounds), and writes the
-proposed defaults to `learned_params.json` for the screener to
-read on the next tick.
-  * **`learn_backtest.py`** — pure module. Exposes
-    `build_param_variants` (one-param-at-a-time perturbations of
-    -20/-10/+10/+20%), `clamp_param_change` (±25% per cycle +
-    absolute floor/ceiling per param), `select_best_variant`
-    (must beat base by ≥5% AND have ≥5 sim trades), `propose_adjustments`
-    (full audit-shaped payload), `merge_into_learned_params`
-    (preserves cross-strategy, caps history at 12 cycles),
-    `run_self_learning` (end-to-end orchestrator).
-  * **Safety invariants** (every adjustment subject to all):
-    - Per-cycle change ≤ ±25% (no whiplash)
-    - Absolute bounds: stop_pct ∈ [5%, 20%], target_pct ∈ [5%, 50%],
-      max_hold_days ∈ [3, 60]
-    - Improvement threshold: best variant must beat current by ≥5%
-    - Minimum sample: ≥5 sim trades per variant
-    - Tunable params: only `stop_pct` / `target_pct` /
-      `max_hold_days`. Things like `lookback_high` define strategy
-      identity — never auto-tuned.
-  * **Audit log:** every cycle's full proposal (adjustments +
-    no_change reasons) appended to `learned_params_history` (last
-    12 cycles retained).
-  * **Wired into `cloud_scheduler.run_weekly_learning`** AFTER the
-    existing `learn.py`. Best-effort — never fails the main step.
-    Reads journal symbols (cap 20), fetches OHLCV via existing
-    `backtest_data` cache, runs backtest sweep, writes
-    `learned_params.json` per user, notifies on N>0 adjustments.
-+35 tests in `tests/test_round61_pt44_self_learning.py`.
-*Wiring* — params are written but not yet read back by the
-screener. Pt.44b will route `learned_params.json` through
-`screener_core` so the next-tick screener honours the tuned values.
+**Pt.45 landed (PR #172):** filter-reason tags on screener picks.
+User asked: "why are POET (458) / AMD (172) / INTC (155) not in the
+Top 3 even though they outscore MRVL/TXN/NVDA?" Answer: they were
+filtered by deploy-time gates (don't-chase, already-held, sector-cap,
+trend filter, breakout-confirmation) but the screener table didn't
+surface the WHY. Pt.45 bridges every filter into the unified
+`filter_reasons` list and renders them as orange chips in the
+screener table.
+  * **`update_dashboard.py`**: builds `held_symbols` from
+    `positions_list`, appends `already_held` to filter_reasons for
+    matching symbols. Bridges pt.39 `_filtered_by_trend` →
+    `below_50ma`/`above_50ma` and pt.40 `_breakout_unconfirmed` →
+    `breakout_unconfirmed`. Existing chase_block + volatility_block
+    tags retained unchanged.
+  * **`templates/dashboard.html`**: screener table chip-render block
+    consumes `p.filter_reasons` and emits orange chips with tooltip
+    explaining the block. Each known reason has a short label
+    (🚫 Held / ⤓ <50MA / ⤒ >50MA / ? 1-day / 🏃 chase / ⚡ vol);
+    unknown codes fall back to the raw string.
++9 tests in `tests/test_round61_pt45_filter_reason_tags.py`.
+
+**Pt.44 in flight (PR #171):** backtest-driven self-learning loop.
 
 **Pt.43 landed (PR #170):** Trades dashboard hotfix — removed broken
 `getCookie('csrf_token')` calls in `templates/dashboard.html`'s

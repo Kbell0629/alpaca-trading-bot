@@ -8,6 +8,42 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.45 — filter-reason tags on screener picks (+9 tests)
+
+**Date:** 2026-04-25
+
+User-reported confusion: the Top 3 panel showed MRVL/TXN/NVDA when
+the screener table had POET (458) / AMD (172) / INTC (155) above
+them. Those higher-scored picks were filtered by deploy-time gates
+but the screener table didn't surface the WHY.
+
+### What landed
+
+* **`update_dashboard.py`** — builds `held_symbols` from the user's
+  open positions and appends `already_held` to `filter_reasons` for
+  matching symbols. Bridges existing pt.39 `_filtered_by_trend` →
+  `below_50ma`/`above_50ma` and pt.40 `_breakout_unconfirmed` →
+  `breakout_unconfirmed`. Existing chase_block + volatility_block
+  tags retained.
+* **`templates/dashboard.html`** — screener table chip-render block
+  consumes `p.filter_reasons` and emits orange chips with tooltips
+  explaining the block:
+  * `already_held` → 🚫 Held
+  * `below_50ma` → ⤓ <50MA
+  * `above_50ma` → ⤒ >50MA
+  * `breakout_unconfirmed` → ? 1-day
+  * `chase_block` → 🏃 + value
+  * `volatility_block` → ⚡ + value
+
+### Why it matters
+Without these chips, the screener appeared to misrank picks. Pt.45
+makes the deploy decision transparent.
+
+### Tests
++9 in `tests/test_round61_pt45_filter_reason_tags.py`
+
+---
+
 ## 🆕 Round-61 pt.44 — backtest-driven self-learning loop (+35 tests)
 
 **Date:** 2026-04-25
@@ -16,81 +52,32 @@ User-requested closing of the feedback loop: every weekly run, the
 bot runs the pt.37 backtest harness on each tradable strategy +
 recent trade-journal symbols, then proposes parameter adjustments
 based on what the simulation shows would have worked better.
-Self-improving without manual intervention, subject to safety
-bounds.
 
 ### What landed
 
-* **`learn_backtest.py`** — pure module:
-  * `build_param_variants` — one-param-at-a-time perturbations
-    (-20/-10/+10/+20%) so 3 tunable params + 4 deltas = 13
-    variants per strategy.
-  * `clamp_param_change` — ±25% per-cycle cap + absolute
-    floor/ceiling per param (catastrophic settings impossible).
-  * `select_best_variant` — improvement threshold (must beat
-    base by ≥5%) + minimum-sample gate (≥5 sim trades).
-  * `propose_adjustments` — audit-shaped payload with
-    old/new/expectancy_old/expectancy_new/improvement_pct per
-    parameter, plus `no_change` reasons.
-  * `merge_into_learned_params` — preserves cross-strategy
-    params, caps history at 12 cycles (~1 quarter).
-  * `run_self_learning` — end-to-end orchestrator. Backtest
-    function injected so module is testable in isolation.
-
-* **Wired into `cloud_scheduler.run_weekly_learning`** AFTER the
-  existing `learn.py`. Best-effort — never fails the main learning
-  step. Reads journal symbols (cap 20), fetches OHLCV via existing
-  `backtest_data` cache, writes `learned_params.json` per user,
-  notifies on N>0 adjustments.
+* **`learn_backtest.py`** — pure module: `build_param_variants`,
+  `clamp_param_change` (±25% per cycle + absolute floor/ceiling),
+  `select_best_variant` (≥5% improvement + ≥5 sim trades),
+  `propose_adjustments`, `merge_into_learned_params` (12-cycle
+  history cap), `run_self_learning` orchestrator.
+* **Wired into `cloud_scheduler.run_weekly_learning`** after the
+  existing `learn.py`. Best-effort. Reads journal symbols, fetches
+  OHLCV via cached `backtest_data`, writes `learned_params.json`.
 
 ### Safety invariants
-1. **Per-cycle change ≤ ±25%** — no whiplash from one bad week.
-2. **Absolute bounds** — `stop_pct ∈ [5%, 20%]`,
-   `target_pct ∈ [5%, 50%]`, `max_hold_days ∈ [3, 60]`. Even with
-   bad data, parameters can't go catastrophic.
-3. **Improvement threshold** — variant must beat current by ≥5%
-   on simulated expectancy.
-4. **Minimum sample** — variant needs ≥5 sim trades. A high
-   expectancy on 2 trades is noise.
-5. **Tunable allowlist** — only `stop_pct` / `target_pct` /
-   `max_hold_days`. Things like `lookback_high` define strategy
-   identity and are never auto-tuned.
-
-### Audit
-Every cycle's full proposal (adjustments + no_change reasons +
-timestamps) is appended to a 12-cycle rolling history inside
-`learned_params.json` so any regression can be diagnosed by
-inspection.
-
-### Why it matters
-Until pt.44, the bot's parameter defaults were static — set once
-and never adjusted regardless of what was actually working. Pt.44
-makes the bot self-improve based on the SAME backtest tooling the
-user can run interactively from the dashboard. The weekly cycle
-means new evidence accumulates without operator intervention.
+- Per-cycle change ≤ ±25%
+- Absolute bounds: `stop_pct ∈ [5%, 20%]`, `target_pct ∈ [5%, 50%]`,
+  `max_hold_days ∈ [3, 60]`
+- Improvement threshold ≥5%, minimum sample ≥5 sim trades
+- Tunable allowlist: stop_pct / target_pct / max_hold_days only
 
 ### Wiring (deferred to pt.44b)
-Params are WRITTEN by the weekly learning cycle but not yet
-READ back by the screener. Pt.44b will route `learned_params.json`
-through `screener_core` so the next-tick screener honours the
-tuned values. Pt.44 is the infrastructure; pt.44b is the
-consumer wiring.
+Params are WRITTEN by the cycle but not yet READ back by the
+screener. Pt.44b will route `learned_params.json` through
+`screener_core` so the next-tick screener honours tuned values.
 
 ### Tests
-+35 in `tests/test_round61_pt44_self_learning.py` covering safety
-constants, variant builder (one-param-at-a-time, max_hold rounded,
-non-tunable params untouched), clamp behaviour (relative cap up/down,
-absolute floor/ceiling, max_hold int coercion, invalid input),
-best-variant selection (improvement threshold, sample-size gate,
-empty input), proposal shape (no-change strategies, audit fields,
-clamping), merge schema (new payload, preserved cross-strategy
-params, history cap, version migration), atomic save, end-to-end
-sweep including error handling.
-
-### Touched files
-- `learn_backtest.py` (new module, ~270 LOC pure)
-- `cloud_scheduler.py` (wired into `run_weekly_learning`)
-- `tests/test_round61_pt44_self_learning.py` (new)
++35 in `tests/test_round61_pt44_self_learning.py`
 
 ---
 

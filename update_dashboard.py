@@ -1806,6 +1806,16 @@ def fetch_all_data():
     # (cloud_scheduler:2341) would skip them. Source-of-truth is still
     # those gates; this mirrors them so the UI doesn't lie. We also tag
     # will_deploy=False so the dashboard can dim violators.
+    #
+    # Round-61 pt.45: bridged additional filter reasons into the unified
+    # `filter_reasons` list so the screener table can show WHY a high-
+    # scored pick was demoted. New reasons:
+    #   * `already_held`            — symbol is in the user's open positions
+    #   * `below_50ma` / `above_50ma` — pt.39 trend filter (long/short)
+    #   * `breakout_unconfirmed`    — pt.40 single-day breakout
+    # Existing chase_block + volatility_block tags retained.
+    held_symbols = {(p.get("symbol") or "").upper()
+                    for p in positions_list if isinstance(p, dict)}
     for p in top_candidates:
         reasons = p.get("filter_reasons") or []
         try:
@@ -1830,6 +1840,24 @@ def fetch_all_data():
             reasons.append(f"chase_block (+{_dc:.1f}% intraday)")
         if _strat_key in ("breakout", "pead") and _vol > 20.0:
             reasons.append(f"volatility_block ({_vol:.1f}% > 20%)")
+        # Pt.45: already-held filter. The auto-deployer skips symbols
+        # the user already has a position in (avoid double-deploy);
+        # surface this in the screener so users see WHY a strong pick
+        # didn't appear in the Top 3.
+        _sym = (p.get("symbol") or "").upper()
+        if _sym and _sym in held_symbols:
+            reasons.append("already_held")
+        # Pt.45: bridge pt.39 trend-filter tag into filter_reasons.
+        # apply_trend_filter sets `_filtered_by_trend` to "below_sma"
+        # (long-side filter) or "above_sma" (short-side filter).
+        _trend = p.get("_filtered_by_trend")
+        if _trend == "below_sma":
+            reasons.append("below_50ma")
+        elif _trend == "above_sma":
+            reasons.append("above_50ma")
+        # Pt.45: bridge pt.40 breakout-confirmation tag.
+        if p.get("_breakout_unconfirmed"):
+            reasons.append("breakout_unconfirmed")
         p["filter_reasons"] = reasons
         p["will_deploy"] = not reasons
 
