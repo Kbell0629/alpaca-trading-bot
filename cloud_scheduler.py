@@ -1119,12 +1119,24 @@ def _compute_stepped_stop(entry, extreme_price, default_trail, is_short=False):
             return round(extreme_price * (1 + trail), 2), 3, trail
         return round(extreme_price * (1 - trail), 2), 3, trail
 
-    # Tier 4: 4% trail. Big winner — protect the gain tightly because
-    # the further it runs the more asymmetric the giveback is.
-    trail = 0.04
+    if profit_pct < 0.30:
+        # Tier 4: 4% trail. Big winner — protect the gain tightly
+        # because the further it runs the more asymmetric the giveback
+        # is.
+        trail = 0.04
+        if is_short:
+            return round(extreme_price * (1 + trail), 2), 4, trail
+        return round(extreme_price * (1 - trail), 2), 4, trail
+
+    # Tier 5 (round-61 pt.64): 3% trail at +30% profit. Aggressive
+    # tightening for "home run" trades — at this point the position
+    # has crushed expectations and any meaningful pullback is worth
+    # banking. Caps the typical 30% giveback that previously erased
+    # half of a +30 winner over the following week.
+    trail = 0.03
     if is_short:
-        return round(extreme_price * (1 + trail), 2), 4, trail
-    return round(extreme_price * (1 - trail), 2), 4, trail
+        return round(extreme_price * (1 + trail), 2), 5, trail
+    return round(extreme_price * (1 - trail), 2), 5, trail
 
 
 def monitor_strategies(user, extended_hours=False):
@@ -2350,12 +2362,26 @@ def process_strategy_file(user, filepath, strat, extended_hours=False):
                     log(f"[{user['username']}] {symbol}: Dead-money exit "
                         f"({_dm_result.get('reason')}). P&L ${pnl:.2f}",
                         "monitor")
-                    notify_user(
+                    # Round-61 pt.64: rich-template notification with
+                    # rationale ("here's WHY we closed this even though
+                    # it didn't hit a stop or target"). Falls back to
+                    # plain notify_user on template error.
+                    try:
+                        import notification_templates as _nt
+                        _subj, _body = _nt.dead_money_exit(
+                            symbol=symbol, strategy=strategy_type,
+                            entry_price=entry, exit_price=price,
+                            shares=shares, pnl=pnl, pnl_pct=pnl_pct,
+                            hold_days=_dm_result.get("days_held") or 0,
+                        )
+                    except Exception:
+                        _subj = _body = None
+                    notify_rich(
                         user,
                         f"Dead-money exit on {symbol}: sold "
                         f"{shares} @ ${price:.2f} "
                         f"({pnl_pct:+.1f}% in {_dm_result.get('days_held')}d)",
-                        "exit")
+                        "exit", rich_subject=_subj, rich_body=_body)
                     record_trade_close(user, symbol, strategy_type,
                                          price, pnl, "dead_money",
                                          qty=shares, side="sell")

@@ -8,6 +8,87 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.64 — daily backups + dead-money notification + risk-parity + tier-5 trailing (+24 tests)
+
+**Date:** 2026-04-25
+
+Four polish items completing the production-readiness sprint:
+
+* **A. Daily backups already cover per-user state.** `backup.INCLUDES`
+  has `users/` recursively — that captures `learned_params.json`,
+  `picks_history.json`, journals, scorecards. Pt.64 adds 3 source-pin
+  tests so a future refactor can't silently drop them.
+* **B. Dead-money exit notification template.** New
+  `notification_templates.dead_money_exit` returns rich subject + body
+  with rationale ("the bot closed this even though it didn't hit a
+  stop or target — the trade just stopped moving"). Wired into
+  `cloud_scheduler.process_strategy_file`'s dead-money block (replaces
+  the plain notify_user from pt.59).
+* **C. Risk-parity weight allocator.** New `risk_parity.py` (pure
+  module). `compute_risk_parity_weights(journal, *, strategies)`
+  returns `{strategy: weight}` summing to 1.0, weighted inversely by
+  σ(P&L). Read-only library for now; future PR can consume it.
+* **D. Aggressive Tier-5 trailing-stop at +30% profit.** Adds a 5th
+  tier to `_compute_stepped_stop` — at +30% profit the trail tightens
+  from 4% (Tier 4) to 3% (Tier 5). Caps the typical 30% giveback that
+  erased half of +30 winners over the following week.
+
++24 tests in `tests/test_round61_pt64_polish_batch.py`.
+
+---
+
+## 🆕 Round-61 pt.63 — live-data divergence monitor (+22 tests)
+
+**Date:** 2026-04-25
+
+New `live_data_monitor.py` pure module — detects when the bot's
+last-seen price for a symbol diverges materially from Alpaca's
+most-recent latest_trade. Severity tiers: `ok` (Δ < 2%), `warn`
+(2–4%), `alert` (≥ 4%).
+
+API: `compute_divergence_pct`, `classify_divergence`,
+`check_position_divergence(positions, latest_trade_fn,
+threshold_pct)`. +22 tests. Wiring into the monitor cycle ships in a
+follow-up.
+
+---
+
+## 🆕 Round-61 pt.62 — scheduler coverage push round 2 (+31 tests)
+
+**Date:** 2026-04-25
+
+Second round of harness tests on `cloud_scheduler.py`. Targets
+`_compute_stepped_stop` (12 tests covering the 4-tier trailing
+math), `strategy_file_lock`, `user_strategies_dir`, `load_json` /
+`save_json`, `_within_opening_bell_congestion`, `log()` ring-buffer,
+`_flatten_all_user`, `now_et` tz-awareness, `_heartbeat_tick`.
+
++31 tests in `tests/test_round61_pt62_coverage_push_2.py`.
+
+---
+
+## 🆕 Round-61 pt.61 — wire VWAP gate + earnings calendar into auto-deployer (+18 tests)
+
+**Date:** 2026-04-25
+
+Pt.59 built `vwap_gate.py` and `earnings_calendar_static.py` as pure
+modules but didn't wire either into the deploy path. Pt.61 plugs them
+in:
+
+1. **VWAP gate** runs after chase_block / volatility_block, ONLY for
+   breakout picks. Fetches today's 5-min bars from Alpaca's data
+   endpoint, computes VWAP via `indicators.vwap`, blocks the deploy
+   if `price > VWAP × 1.005` (0.5% tolerance). Fails OPEN on
+   data-fetch error.
+2. **Earnings calendar** runs after the VWAP gate. Calls
+   `earnings_calendar_static.next_earnings_date(symbol, max_days_ahead=3)`;
+   if the static calendar reports earnings within 3 days, blocks the
+   deploy. PEAD exempt.
+
++18 tests in `tests/test_round61_pt61_wire_vwap_earnings.py`.
+
+---
+
 ## 🆕 Round-61 pt.51 — test polish + score-health UI + alpaca_mock harness (+39 tests)
 
 **Date:** 2026-04-25
