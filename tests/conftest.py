@@ -76,7 +76,24 @@ def http_harness(isolated_data_dir, monkeypatch):
             resp = http_harness.get("/api/version")
             assert resp["status"] == 200
             assert "commit" in resp["body"]
+
+    Round-61 pt.57: skip cleanly in environments where the
+    cryptography wheel can't load (PanicException on `_cffi_backend`
+    in some sandbox environments). On CI the wheel installs from
+    requirements.txt and works fine; locally it's an import-time
+    crash on every test. importorskip raises a Skip exception so
+    the test reports as skipped (yellow `s`) instead of failing
+    with a noisy stack trace.
     """
+    # AESGCM probe must catch BaseException because pyo3's
+    # PanicException (raised when the cffi backend is missing)
+    # inherits from BaseException, not Exception. See auth.py:313
+    # for the matching pattern.
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        AESGCM(b"\x00" * 32)
+    except BaseException as e:
+        pytest.skip(f"AESGCM unavailable: {type(e).__name__}: {e}")
     # Make sure every server module reloads against the isolated_data_dir
     # env. server.py imports cloud_scheduler + auth + lots else at module
     # load, so we pop them before re-importing server.
