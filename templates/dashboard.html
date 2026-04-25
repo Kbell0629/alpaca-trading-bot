@@ -4366,6 +4366,55 @@ function renderAnalyticsPanel(d) {
         '</div>';
     }
 
+    // ---- SCORE-TO-OUTCOME (pt.47): meta-validation that screener
+    //      score actually correlates with realised win rate. ----
+    var so = d.score_outcome || {};
+    var soBuckets = so.buckets || [];
+    html += '<div class="factor-card" style="margin-bottom:18px">' +
+        '<div class="factor-card-title" style="margin-bottom:6px">Score-to-Outcome Correlation</div>' +
+        '<div style="font-size:11px;color:var(--text-dim);margin-bottom:10px">' +
+            'Are higher-scored screener picks actually winning? Closed trades binned by their entry-time screener score.' +
+        '</div>';
+    if (!soBuckets.length) {
+        var msg = 'Need at least 10 closed trades with embedded screener scores to compute correlation. ';
+        msg += '<strong>Tracked: ' + (so.tracked_trades||0) + '</strong>';
+        if ((so.untracked_trades||0) > 0) {
+            msg += ', <strong>Legacy (no score): ' + so.untracked_trades + '</strong>';
+        }
+        html += '<div style="color:var(--text-dim);font-size:12px;padding:8px">' + msg + '</div>';
+    } else {
+        // Status pills + bucket grid.
+        var winrateOk = so.monotonic_winrate;
+        var expOk = so.monotonic_expectancy;
+        var pillStyle = 'display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;margin-right:6px;font-weight:600;';
+        html += '<div style="margin-bottom:10px">' +
+            '<span style="' + pillStyle + 'background:' + (winrateOk ? 'rgba(16,185,129,0.2);color:var(--green)' : 'rgba(239,68,68,0.2);color:var(--red)') + '">' +
+                (winrateOk ? '✓ Win-rate increases with score' : '⚠ Win-rate not monotonic') +
+            '</span>' +
+            '<span style="' + pillStyle + 'background:' + (expOk ? 'rgba(16,185,129,0.2);color:var(--green)' : 'rgba(239,68,68,0.2);color:var(--red)') + '">' +
+                (expOk ? '✓ Expectancy increases with score' : '⚠ Expectancy not monotonic') +
+            '</span>' +
+            '<span style="color:var(--text-dim);font-size:11px;margin-left:6px">' +
+                'tracked=' + (so.tracked_trades||0) + ' / total closed=' + (so.total_closed||0) +
+            '</span>' +
+        '</div>';
+        html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px">';
+        soBuckets.forEach(function(b) {
+            var pnlCls = _analyticsPnlClass(b.total_pnl);
+            var winColor = (b.win_rate >= 0.5) ? 'var(--green)' : 'var(--red)';
+            html += '<div class="factor-card" style="padding:10px">' +
+                '<div style="font-size:10px;color:var(--text-dim);margin-bottom:2px">' + esc(b.label) + '</div>' +
+                '<div style="font-size:10px;color:var(--text-dim);margin-bottom:6px">score ' + b.score_range[0] + '–' + b.score_range[1] + '</div>' +
+                '<div style="font-size:18px;font-weight:600;color:' + winColor + '">' + (b.win_rate * 100).toFixed(0) + '%</div>' +
+                '<div style="font-size:11px;color:var(--text-dim);margin-bottom:4px">win rate (' + b.wins + '/' + b.count + ')</div>' +
+                '<div class="' + pnlCls + '" style="font-size:13px;font-weight:600">' + _analyticsFmtMoney(b.total_pnl) + '</div>' +
+                '<div style="font-size:10px;color:var(--text-dim)">expectancy: ' + _analyticsFmtMoney(b.expectancy) + '</div>' +
+            '</div>';
+        });
+        html += '</div>';
+    }
+    html += '</div>';
+
     panel.innerHTML = html;
 }
 

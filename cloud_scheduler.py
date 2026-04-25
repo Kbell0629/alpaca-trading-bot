@@ -2606,6 +2606,15 @@ def run_auto_deployer(user):
             if _key not in guardrails and _key in TIER_CFG:
                 guardrails[_key] = TIER_CFG[_key]
 
+    # Round-61 pt.47 (pt.44b + pt.38b wiring): load self-learned
+    # parameter overrides written by the weekly self-learning loop.
+    # Best-effort — never block deploy on read failure.
+    LEARNED_PARAMS = None
+    try:
+        LEARNED_PARAMS = load_json(user_file(user, "learned_params.json"))
+    except Exception:
+        LEARNED_PARAMS = None
+
     # Cooldown check
     last_loss = guardrails.get("last_loss_time")
     if last_loss:
@@ -3184,6 +3193,24 @@ def run_auto_deployer(user):
                     "atr_pct": _atr_pct_val,
                     "stop_source": "atr" if _atr_stop_pct else "fixed",
                 }
+            # Round-61 pt.47: layer in TIER_STRATEGY_PARAMS (pt.38b) +
+            # learned_params (pt.44b) on top of the legacy hardcoded
+            # defaults. Precedence: learned > tier > hardcoded.
+            try:
+                import strategy_params as _sp
+                rules = _sp.resolve_rules_dict(
+                    strategy=best_strat, base_rules=rules,
+                    tier_cfg=TIER_CFG, learned_params=LEARNED_PARAMS,
+                )
+                # Re-derive trailing_distance_pct from the (possibly)
+                # adjusted stop so the trail stays tighter than the
+                # initial stop. Only for non-PEAD; PEAD uses ATR.
+                if not is_pead and isinstance(rules.get("stop_loss_pct"), (int, float)):
+                    rules["trailing_distance_pct"] = min(
+                        float(rules["stop_loss_pct"]), 0.08)
+            except Exception as _e:
+                log(f"[{user['username']}] strategy_params resolve "
+                    f"failed ({_e}) — using legacy defaults.", "deployer")
             strat_file = {
                 "symbol": symbol,
                 "strategy": best_strat,
@@ -3228,6 +3255,12 @@ def run_auto_deployer(user):
                 "reason": f"Auto-deployed. Score {_score_str}, RSI {_rsi_str}, Bias {pick.get('overall_bias','?')}",
                 "deployer": "cloud_scheduler",
                 "status": "open",
+                # Round-61 pt.47: embed screener score at open so the
+                # analytics hub can compute score-to-outcome correlation
+                # at close time. Float or None.
+                "_screener_score": (float(_score)
+                                      if isinstance(_score, (int, float))
+                                      else None),
             })
             save_json(journal_path, journal)
 
@@ -3311,6 +3344,29 @@ def run_auto_deployer(user):
             stop_pct = short_config.get("stop_loss_pct", 0.08)
             target_pct = short_config.get("profit_target_pct", 0.15)
             max_pct = short_config.get("max_portfolio_pct_per_short", 0.05)
+            # Round-61 pt.47 (pt.44b + pt.38b): per-strategy overrides
+            # for short_sell. Precedence: learned > tier > short_config.
+            try:
+                import strategy_params as _sp
+                stop_pct = _sp.resolve_strategy_param(
+                    strategy="short_sell", param_name="stop_loss_pct",
+                    fallback=stop_pct, tier_cfg=TIER_CFG,
+                    learned_params=LEARNED_PARAMS)
+                target_pct = _sp.resolve_strategy_param(
+                    strategy="short_sell", param_name="profit_target_pct",
+                    fallback=target_pct, tier_cfg=TIER_CFG,
+                    learned_params=LEARNED_PARAMS)
+            except Exception:
+                pass
+            _short_max_hold = 14
+            try:
+                import strategy_params as _sp
+                _short_max_hold = int(_sp.resolve_strategy_param(
+                    strategy="short_sell", param_name="max_hold_days",
+                    fallback=14, tier_cfg=TIER_CFG,
+                    learned_params=LEARNED_PARAMS))
+            except Exception:
+                pass
 
             for sc in short_candidates:
                 if current_shorts >= max_shorts:
@@ -3363,7 +3419,7 @@ def run_auto_deployer(user):
                         "rules": {
                             "stop_loss_pct": stop_pct,
                             "profit_target_pct": target_pct,
-                            "max_hold_days": 14,
+                            "max_hold_days": _short_max_hold,
                             "reason": "Bear market deploy"
                         },
                         "state": {
@@ -3398,6 +3454,12 @@ def run_auto_deployer(user):
                         "reason": f"Bear market short. SPY 20d: {spy_mom:.1f}%. Score: {sc.get('short_score')}",
                         "deployer": "cloud_scheduler",
                         "status": "open",
+                        # Round-61 pt.47: short-side screener score for
+                        # the analytics hub's score-to-outcome panel.
+                        "_screener_score": (float(sc.get("short_score"))
+                                              if isinstance(sc.get("short_score"),
+                                                              (int, float))
+                                              else None),
                     })
                     save_json(journal_path, journal)
 

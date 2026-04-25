@@ -199,14 +199,43 @@ _SIGNAL_FNS = {
 # Per-symbol simulator
 # ============================================================================
 
+def _apply_slippage(price, side, is_entry, slippage_bps):
+    """Round-61 pt.47: adjust fill price by slippage_bps (1 bps =
+    0.0001 = 0.01%). Slippage always works against you:
+      * long entry:  pay UP — entry_price * (1 + slip)
+      * long exit:   receive LESS — exit_price * (1 - slip)
+      * short entry: receive LESS — entry_price * (1 - slip)
+      * short exit:  pay UP to cover — exit_price * (1 + slip)
+    Returns the adjusted price.
+    """
+    if not slippage_bps:
+        return price
+    slip = float(slippage_bps) / 10000.0
+    if side == "long":
+        return price * (1 + slip) if is_entry else price * (1 - slip)
+    else:  # short
+        return price * (1 - slip) if is_entry else price * (1 + slip)
+
+
 def _simulate_symbol(symbol, bars, strategy, params):
     """Walk the bars forward, opening at most ONE position per
     consecutive signal (debounced by an active-position flag), and
-    track exits. Returns a list of hypothetical-trade dicts."""
+    track exits. Returns a list of hypothetical-trade dicts.
+
+    Round-61 pt.47: optional ``slippage_bps`` (basis points applied
+    to entry + exit prices, working against you on both sides) and
+    ``commission_per_trade`` (dollar amount subtracted from pnl per
+    round-trip). Both default to 0 for backwards compatibility.
+    Production should pass realistic values (e.g. slippage_bps=10,
+    commission_per_trade=1.0) so backtest expectancy doesn't
+    over-promise.
+    """
     side = params.get("side", "long")
     stop_pct = params["stop_pct"]
     target_pct = params["target_pct"]
     max_hold = params["max_hold_days"]
+    slippage_bps = float(params.get("slippage_bps", 0) or 0)
+    commission = float(params.get("commission_per_trade", 0) or 0)
     signal_fn = _SIGNAL_FNS[strategy]
 
     trades = []
@@ -242,9 +271,15 @@ def _simulate_symbol(symbol, bars, strategy, params):
                 exit_price = bar["close"]
 
             if exit_reason is not None:
-                pnl = (exit_price - position["entry_price"]
+                # Apply slippage to the realised fill price.
+                fill_exit = _apply_slippage(
+                    exit_price, side, is_entry=False,
+                    slippage_bps=slippage_bps)
+                pnl = (fill_exit - position["entry_price"]
                         if side == "long"
-                        else position["entry_price"] - exit_price)
+                        else position["entry_price"] - fill_exit)
+                # Subtract commission (charged once per round-trip).
+                pnl -= commission
                 pnl_pct = (
                     (pnl / position["entry_price"]) * 100
                     if position["entry_price"] else 0.0
@@ -256,17 +291,21 @@ def _simulate_symbol(symbol, bars, strategy, params):
                     "entry_date": bars[position["entry_idx"]]["date"],
                     "entry_price": position["entry_price"],
                     "exit_date": bar["date"],
-                    "exit_price": exit_price,
+                    "exit_price": fill_exit,
                     "exit_reason": exit_reason,
                     "pnl": round(pnl, 4),
                     "pnl_pct": round(pnl_pct, 2),
                     "hold_days": idx - position["entry_idx"],
+                    "slippage_bps": slippage_bps,
+                    "commission": commission,
                 })
                 position = None
 
         # Entry check (only when flat)
         if position is None and signal_fn(bars, idx, params):
-            entry_price = bar["close"]
+            raw_entry = bar["close"]
+            entry_price = _apply_slippage(
+                raw_entry, side, is_entry=True, slippage_bps=slippage_bps)
             if side == "long":
                 stop = entry_price * (1 - stop_pct)
                 target = entry_price * (1 + target_pct)
@@ -283,10 +322,13 @@ def _simulate_symbol(symbol, bars, strategy, params):
     # Open position at end of window — close at last bar
     if position is not None:
         last_bar = bars[-1]
-        exit_price = last_bar["close"]
-        pnl = (exit_price - position["entry_price"]
+        fill_exit = _apply_slippage(
+            last_bar["close"], side, is_entry=False,
+            slippage_bps=slippage_bps)
+        pnl = (fill_exit - position["entry_price"]
                 if side == "long"
-                else position["entry_price"] - exit_price)
+                else position["entry_price"] - fill_exit)
+        pnl -= commission
         pnl_pct = (
             (pnl / position["entry_price"]) * 100
             if position["entry_price"] else 0.0
@@ -298,11 +340,13 @@ def _simulate_symbol(symbol, bars, strategy, params):
             "entry_date": bars[position["entry_idx"]]["date"],
             "entry_price": position["entry_price"],
             "exit_date": last_bar["date"],
-            "exit_price": exit_price,
+            "exit_price": fill_exit,
             "exit_reason": "window_end",
             "pnl": round(pnl, 4),
             "pnl_pct": round(pnl_pct, 2),
             "hold_days": (len(bars) - 1) - position["entry_idx"],
+            "slippage_bps": slippage_bps,
+            "commission": commission,
         })
 
     return trades
@@ -426,6 +470,210 @@ def run_multi_strategy_backtest(bars_by_symbol, strategies=None,
         "symbols_evaluated": list(bars_by_symbol.keys()
                                     if bars_by_symbol else []),
     }
+
+
+# ============================================================================
+# Round-61 pt.47: Walk-forward validation harness
+# ============================================================================
+
+def _slice_bars(bars, start_idx, end_idx):
+    """Return bars[start_idx:end_idx] for one symbol; safe on bounds."""
+    if not bars:
+        return []
+    if start_idx < 0:
+        start_idx = 0
+    if end_idx > len(bars):
+        end_idx = len(bars)
+    if start_idx >= end_idx:
+        return []
+    return bars[start_idx:end_idx]
+
+
+def _slice_universe(bars_by_symbol, start_idx, end_idx):
+    """Return a {symbol: sliced_bars} dict aligned by index across
+    every symbol. Symbols with empty slices drop out."""
+    out = {}
+    for sym, bars in (bars_by_symbol or {}).items():
+        sliced = _slice_bars(bars, start_idx, end_idx)
+        if sliced:
+            out[sym] = sliced
+    return out
+
+
+def _max_universe_len(bars_by_symbol):
+    """Length of the longest bar series — defines the walk-forward
+    timeline. Walk-forward assumes bars are aligned by date across
+    the universe (all symbols share a common timeline)."""
+    if not bars_by_symbol:
+        return 0
+    return max(len(b) for b in bars_by_symbol.values() if b)
+
+
+def run_walk_forward_backtest(bars_by_symbol, strategy, *,
+                                train_days: int = 30,
+                                test_days: int = 30,
+                                step_days: int = 7,
+                                param_grid=None,
+                                base_params=None,
+                                metric: str = "expectancy"):
+    """Walk-forward validation of a strategy. Slides a (train_days,
+    test_days) window forward by step_days through the bar timeline.
+    For each fold, picks the best param variant on the train window
+    and evaluates that exact variant on the immediately-following
+    test window. Reports both per-fold + aggregate test-window
+    metrics — a healthy strategy should show test ~= train; if test
+    is much worse, the param tuning is overfitting.
+
+    Args:
+      bars_by_symbol: same shape as run_backtest.
+      strategy: one of BACKTESTABLE_STRATEGIES.
+      train_days: bars in the train window (used for param selection).
+      test_days: bars in the test window (out-of-sample eval).
+      step_days: how far forward to slide each fold.
+      param_grid: list of param-override dicts to compete on the
+        train window. If None, defaults to a small ±20% sweep around
+        DEFAULT_PARAMS[strategy] for stop_pct + target_pct.
+      base_params: dict merged INTO DEFAULT_PARAMS before each
+        variant override (e.g. inject slippage_bps + commission).
+      metric: which summary key to maximize on the train window.
+        Default "expectancy"; "total_pnl" or "win_rate" also work.
+
+    Returns:
+      {
+        "strategy": str,
+        "folds": [
+          {
+            "fold_idx": int,
+            "train_window": [start_date, end_date],
+            "test_window":  [start_date, end_date],
+            "best_params":  {...},
+            "train_summary": {...},
+            "test_summary":  {...},
+          },
+          ...
+        ],
+        "aggregate_test_summary": {...},   # pooled over all folds
+        "aggregate_train_summary": {...},  # pooled over all folds
+        "overfit_ratio": float,            # train_expectancy / test_expectancy
+                                              # (>1.5 ⇒ overfitting risk)
+        "fold_count": int,
+      }
+    """
+    if strategy not in BACKTESTABLE_STRATEGIES:
+        return {"error": f"unsupported strategy: {strategy}"}
+    if train_days < 5 or test_days < 5 or step_days < 1:
+        return {"error": "train_days/test_days must be >=5, step_days >=1"}
+    timeline = _max_universe_len(bars_by_symbol)
+    if timeline < (train_days + test_days):
+        return {"error": (
+            f"need >= {train_days + test_days} bars; have {timeline}")}
+
+    if not param_grid:
+        param_grid = _default_param_grid(strategy)
+    if base_params:
+        param_grid = [{**base_params, **p} for p in param_grid]
+
+    folds = []
+    fold_idx = 0
+    start = 0
+    while start + train_days + test_days <= timeline:
+        train_end = start + train_days
+        test_end = train_end + test_days
+        train_universe = _slice_universe(bars_by_symbol, start, train_end)
+        test_universe = _slice_universe(bars_by_symbol, train_end, test_end)
+        if not train_universe or not test_universe:
+            start += step_days
+            continue
+
+        # Score every param variant on train.
+        best = None
+        best_metric_val = None
+        best_train_summary = None
+        for variant in param_grid:
+            r = run_backtest(train_universe, strategy, variant)
+            sm = r.get("summary") or {}
+            mval = sm.get(metric, 0)
+            if mval is None:
+                mval = 0
+            if best is None or mval > best_metric_val:
+                best = variant
+                best_metric_val = mval
+                best_train_summary = sm
+
+        # Test the winning variant on the immediately-following window.
+        test_r = run_backtest(test_universe, strategy, best)
+
+        train_dates = _window_dates(train_universe)
+        test_dates = _window_dates(test_universe)
+        folds.append({
+            "fold_idx": fold_idx,
+            "train_window": train_dates,
+            "test_window": test_dates,
+            "best_params": best,
+            "train_summary": best_train_summary,
+            "test_summary": test_r.get("summary"),
+            "test_trades": test_r.get("trades", []),
+        })
+        fold_idx += 1
+        start += step_days
+
+    # Aggregate test trades across all folds → out-of-sample summary.
+    pooled_test = []
+    pooled_train_pnls = []
+    for f in folds:
+        pooled_test.extend(f.get("test_trades") or [])
+        ts = f.get("train_summary") or {}
+        if ts.get("count"):
+            pooled_train_pnls.append(ts.get("expectancy") or 0)
+    aggregate_test_summary = _summarize(pooled_test)
+
+    # Train aggregate (best-variant-per-fold expectancy mean) for
+    # the overfit ratio.
+    train_avg_exp = (sum(pooled_train_pnls) / len(pooled_train_pnls)
+                      if pooled_train_pnls else 0.0)
+    test_avg_exp = aggregate_test_summary.get("expectancy") or 0.0
+    overfit_ratio = None
+    if test_avg_exp != 0:
+        overfit_ratio = round(train_avg_exp / test_avg_exp, 3)
+
+    return {
+        "strategy": strategy,
+        "folds": folds,
+        "fold_count": len(folds),
+        "aggregate_test_summary": aggregate_test_summary,
+        "aggregate_train_expectancy": round(train_avg_exp, 4),
+        "aggregate_test_expectancy": round(test_avg_exp, 4),
+        "overfit_ratio": overfit_ratio,
+    }
+
+
+def _window_dates(universe):
+    """Earliest-start, latest-end date across an aligned universe."""
+    starts = []
+    ends = []
+    for bars in universe.values():
+        if bars:
+            starts.append(bars[0].get("date"))
+            ends.append(bars[-1].get("date"))
+    if not starts:
+        return [None, None]
+    return [min(starts), max(ends)]
+
+
+def _default_param_grid(strategy):
+    """Small ±20% sweep around DEFAULT_PARAMS[strategy] for the
+    walk-forward harness when no caller-supplied grid is given."""
+    base = dict(DEFAULT_PARAMS[strategy])
+    grid = [dict(base)]  # baseline
+    for stop_mult in (0.8, 1.0, 1.2):
+        for tgt_mult in (0.8, 1.0, 1.2):
+            if stop_mult == 1.0 and tgt_mult == 1.0:
+                continue  # already in baseline
+            v = dict(base)
+            v["stop_pct"] = round(base["stop_pct"] * stop_mult, 4)
+            v["target_pct"] = round(base["target_pct"] * tgt_mult, 4)
+            grid.append(v)
+    return grid
 
 
 # ============================================================================

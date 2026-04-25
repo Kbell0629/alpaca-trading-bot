@@ -237,6 +237,64 @@ Positions at a loss that could be sold for tax benefits:
 - Profit factor (target: 1.5)
 - Sharpe ratio (target: 0.5)
 
+### 📊 Analytics Hub
+
+Single tab consolidating every performance metric. Auto-refreshes
+on first click. Sections, top to bottom:
+
+- **8 KPI cards** — Total P&L, Win Rate (with W/L count), Expectancy
+  (avg $/trade), Avg Win, Max Drawdown %, Sharpe (annualised),
+  Average Hold Days, Validation (days elapsed of paper-trading window)
+- **Equity curve** — line + filled area, no Chart.js dependency
+- **P&L by Period** — today / 7d / 30d / 90d / all-time
+- **Per-strategy breakdown** — count, win rate, total P&L, avg, best,
+  worst per strategy
+- **P&L Distribution + Hold Time Distribution** — histogram bars
+- **Top Symbols by Impact** + **P&L by Exit Reason**
+- **Best / Worst Trades** — top 5 each
+- **Screener Filter Summary** — counts of how many picks were blocked
+  by each filter (already-held, below-50MA, chase-block, etc)
+- **Score-to-Outcome Correlation** *(pt.47)* — bins closed trades by
+  the screener score they received at deploy time and reports per-
+  bucket win rate + expectancy. Two green/red pills: "win-rate
+  increases with score" + "expectancy increases with score". Both
+  green ⇒ the screener's ranking is meaningful. Red ⇒ scoring is
+  uncorrelated with outcome and needs investigation.
+
+The endpoint is `POST /api/analytics`. Read-only — never places
+orders, never writes files. Auth-gated.
+
+### Self-learning + adaptive parameters
+
+The bot tunes its own stop / target / max-hold parameters every
+week based on what's actually working in your journal:
+
+- **Self-learning loop** *(pt.44)* — every Sunday the weekly task
+  runs a `±20% sweep` backtest on each strategy and writes proposed
+  defaults to `learned_params.json` if a variant beats current
+  expectancy by ≥5% with ≥5 sim trades. Per-cycle change capped at
+  ±25%; absolute floors / ceilings enforced (stop_pct ∈ [5%, 20%],
+  etc).
+- **Tier-aware risk** *(pt.38 + pt.47)* — every account is auto-
+  classified into one of 6 tiers (cash_micro through margin_whale)
+  based on equity + cash/margin status. Each tier has its own per-
+  strategy stop / target / max-hold defaults. A $500 cash account
+  uses tighter stops than a $100k margin account.
+- **Param resolver** *(pt.47)* — at deploy time, every new strategy
+  file gets stop_loss_pct / profit_target_pct / max_hold_days
+  resolved through `learned > tier > legacy-default` precedence.
+  Visible in the strategy file's `rules` dict.
+
+### Walk-forward backtest
+
+Available via `backtest_core.run_walk_forward_backtest`. Slides a
+(train, test) window forward by step_days, picks the best param
+variant on each train slice and evaluates that exact variant on
+the immediately-following test slice. Reports an `overfit_ratio`
+(train_expectancy / test_expectancy) — values > 1.5 mean the
+self-learning is overfitting and the in-sample numbers can't be
+trusted. Use this to validate any param-tuning experiment.
+
 ### Visual Backtest
 
 Pick any stock from the dropdown. Chart shows:

@@ -8,6 +8,111 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.47 — accuracy batch: pt.44b/pt.38b wiring + walk-forward + slippage + score-to-outcome (+69 tests)
+
+**Date:** 2026-04-25
+
+User asked: *"what else do we need to do to make this app more accurate
+... please implement 1, 2, 3, 4, 5 and be accurate and make sure you
+test"*. Pt.47 ships all five gaps as one batch — closes the deferred
+infrastructure-without-consumer items from pt.38 + pt.44, plus three
+backtest/analytics accuracy upgrades.
+
+### 1. Pt.44b — `learned_params.json` consumer
+
+The pt.44 self-learning loop wrote `learned_params.json` every week,
+but no consumer read it back. Pt.47 wires it in:
+
+* New `strategy_params.py` (pure module). Function
+  `resolve_strategy_param(strategy, param_name, fallback, tier_cfg,
+  learned_params)` returns the effective per-strategy value following
+  precedence `learned > tier > fallback`. Sister helper
+  `resolve_rules_dict(strategy, base_rules, tier_cfg, learned_params)`
+  returns a copy of `base_rules` with `stop_loss_pct`,
+  `profit_target_pct`, `max_hold_days` resolved.
+* Naming alias built in: learned_params uses the short
+  `stop_pct`/`target_pct` names (see `learn_backtest.TUNABLE_PARAMS`),
+  while TIER_STRATEGY_PARAMS + the deployer's `rules` dict use the
+  long form. The resolver maps between them transparently.
+* `cloud_scheduler.run_auto_deployer` loads the per-user
+  `learned_params.json` once per run (best-effort; never blocks),
+  passes it to `strategy_params.resolve_rules_dict` at the long-side
+  rules-construction site, and to
+  `strategy_params.resolve_strategy_param` at the short-side.
+
+### 2. Pt.38b — `TIER_STRATEGY_PARAMS` consumer
+
+The pt.38 tier-aware risk table was sitting unused since landing.
+Pt.47 wires the same resolver above so tier values layer in BELOW
+learned_params but ABOVE the legacy hardcoded defaults. Concrete
+result: a $500 cash-micro account stops getting the same 12% stops
+as a $100k margin-standard account.
+
+### 3. Walk-forward backtest validation
+
+Pt.37's backtest was in-sample. With pt.44 actively tuning params on
+the same data, the "5% improvement" threshold was meaningless if the
+tuning was overfitting. Pt.47 adds:
+
+* `backtest_core.run_walk_forward_backtest(bars_by_symbol, strategy,
+  *, train_days, test_days, step_days, param_grid, base_params,
+  metric)` — slides a (train, test) window forward, picks the best
+  param variant on each train slice and evaluates that exact variant
+  on the immediately-following test slice.
+* Returns per-fold detail + aggregate train/test expectancy + an
+  `overfit_ratio` (train_expectancy / test_expectancy). Healthy
+  strategy: ratio ≈ 1. Ratio > 1.5 ⇒ overfitting risk; the param
+  tuner is memorising in-sample noise.
+* Default param grid: ±20% sweep on stop_pct + target_pct around
+  `DEFAULT_PARAMS[strategy]`.
+
+### 4. Slippage + commission in backtest
+
+Pt.37's simulator assumed perfect fills at the close price. Pt.47
+adds realistic friction:
+
+* `_simulate_symbol` now accepts `slippage_bps` (basis points; 1 bps
+  = 0.01%) — applied to entry + exit prices, always working AGAINST
+  you (long entry pays more, long exit receives less; short entry
+  receives less, short exit pays more).
+* `_simulate_symbol` now accepts `commission_per_trade` (dollar
+  amount subtracted from pnl per round-trip).
+* Both default to 0, so existing pt.37 behaviour is bit-identical.
+  Production should pass realistic values (e.g. 10 bps + $1) so
+  backtest expectancy doesn't over-promise vs live results.
+* Trade records carry `slippage_bps` + `commission` for audit.
+
+### 5. Score-to-outcome correlation panel
+
+Pt.46 shipped the Analytics Hub but no meta-validation: did higher-
+scored picks actually win more often? Pt.47 adds it:
+
+* `cloud_scheduler` auto-deployer now embeds `_screener_score` into
+  every journal-open entry (long + short paths). `record_trade_close`
+  preserves the field (it only adds close-side fields).
+* New `analytics_core.compute_score_outcome(journal, bucket_count=5)`
+  bins closed trades by `_screener_score` into 5 quintile buckets and
+  computes win_rate / total_pnl / expectancy per bucket. Reports
+  `monotonic_winrate` + `monotonic_expectancy` flags — green if win
+  rate / expectancy strictly non-decreasing low→high (the healthy
+  pattern); red if random.
+* New panel in the Analytics Hub renders the bucket grid + status
+  pills. Surfaces "tracked vs untracked" so users know how many
+  closed trades have a score embedded vs how many are pre-pt.47
+  legacy.
+
+### Tests
+
++22 in `tests/test_round61_pt47_strategy_params.py` (resolver
+precedence, name aliasing, garbage-input safety, source pins).
++28 in `tests/test_round61_pt47_walk_forward_slippage.py`
+(slippage helper, simulator-integrated, walk-forward folds, base
+param passthrough, overfit-ratio).
++19 in `tests/test_round61_pt47_score_outcome.py` (bucketization,
+monotonic detection, deployer source pins, dashboard panel pins).
+
+---
+
 ## 🆕 Round-61 pt.46 — Analytics Hub (+59 tests)
 
 **Date:** 2026-04-25

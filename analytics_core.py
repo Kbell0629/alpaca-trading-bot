@@ -519,6 +519,142 @@ def compute_strategy_breakdown(journal):
 
 
 # ============================================================================
+# Round-61 pt.47: score-to-outcome correlation
+# ============================================================================
+
+def compute_score_outcome(journal, *, bucket_count: int = 5):
+    """Bin closed trades by their `_screener_score` (set at open time
+    by the auto-deployer) into ``bucket_count`` quantile buckets, then
+    compute win-rate / total P&L / expectancy per bucket.
+
+    This is the meta-validation that pt.46 was missing: did higher-
+    scored picks actually win more often, or is the screener's score
+    uncorrelated with realised outcome?
+
+    Returns:
+      {
+        "tracked_trades": int,        # closed trades with _screener_score
+        "untracked_trades": int,      # closed trades missing the field
+        "total_closed": int,
+        "buckets": [                  # ordered low-score → high-score
+          {
+            "label": "Q1 (lowest)",
+            "score_range": [low, high],
+            "count": int,
+            "wins": int,
+            "win_rate": float,
+            "total_pnl": float,
+            "avg_pnl": float,
+            "expectancy": float,
+          },
+          ...
+        ],
+        "monotonic_winrate": bool,    # True if win_rate strictly
+                                       # non-decreasing across buckets
+                                       # (the healthy pattern)
+        "monotonic_expectancy": bool,
+      }
+
+    If there aren't enough scored trades to populate at least 2
+    buckets, returns the same shape with ``buckets=[]`` and
+    ``tracked_trades`` reflecting what was found.
+    """
+    trades = list((journal or {}).get("trades") or [])
+    closed = [t for t in trades
+                if isinstance(t, dict)
+                and (t.get("status") or "open").lower() == "closed"]
+
+    scored = []
+    untracked = 0
+    for t in closed:
+        raw = t.get("_screener_score")
+        try:
+            s = float(raw)
+        except (TypeError, ValueError):
+            untracked += 1
+            continue
+        try:
+            pnl = float(t.get("pnl"))
+        except (TypeError, ValueError):
+            untracked += 1
+            continue
+        scored.append((s, pnl))
+
+    base = {
+        "tracked_trades": len(scored),
+        "untracked_trades": untracked,
+        "total_closed": len(closed),
+        "buckets": [],
+        "monotonic_winrate": False,
+        "monotonic_expectancy": False,
+    }
+    # Need at least 2 trades per bucket to make a meaningful bin.
+    min_per_bucket = 2
+    needed = bucket_count * min_per_bucket
+    if len(scored) < needed:
+        return base
+
+    scored.sort(key=lambda x: x[0])
+    n = len(scored)
+    buckets = []
+    # Equal-count slicing — last bucket gets the remainder.
+    per = n // bucket_count
+    for i in range(bucket_count):
+        start = i * per
+        end = (i + 1) * per if i < bucket_count - 1 else n
+        slc = scored[start:end]
+        if not slc:
+            continue
+        scores = [s for s, _p in slc]
+        pnls = [p for _s, p in slc]
+        wins = sum(1 for p in pnls if p > 0.005)
+        losses = sum(1 for p in pnls if p < -0.005)
+        cnt = len(slc)
+        win_rate = wins / cnt if cnt else 0.0
+        loss_rate = losses / cnt if cnt else 0.0
+        win_pnls = [p for p in pnls if p > 0.005]
+        loss_pnls = [p for p in pnls if p < -0.005]
+        avg_win = sum(win_pnls) / len(win_pnls) if win_pnls else 0.0
+        avg_loss = sum(loss_pnls) / len(loss_pnls) if loss_pnls else 0.0
+        total_pnl = sum(pnls)
+        avg_pnl = total_pnl / cnt if cnt else 0.0
+        expectancy = win_rate * avg_win + loss_rate * avg_loss
+        buckets.append({
+            "label": _bucket_label(i, bucket_count),
+            "score_range": [round(min(scores), 2), round(max(scores), 2)],
+            "count": cnt,
+            "wins": wins,
+            "losses": losses,
+            "win_rate": round(win_rate, 4),
+            "total_pnl": round(total_pnl, 2),
+            "avg_pnl": round(avg_pnl, 2),
+            "expectancy": round(expectancy, 2),
+        })
+
+    # Healthy strategy → win_rate / expectancy strictly non-decreasing
+    # from low-score bucket to high-score bucket.
+    if len(buckets) >= 2:
+        wr = [b["win_rate"] for b in buckets]
+        ex = [b["expectancy"] for b in buckets]
+        base["monotonic_winrate"] = all(wr[i] <= wr[i + 1]
+                                          for i in range(len(wr) - 1))
+        base["monotonic_expectancy"] = all(ex[i] <= ex[i + 1]
+                                             for i in range(len(ex) - 1))
+    base["buckets"] = buckets
+    return base
+
+
+def _bucket_label(idx, total):
+    """Q1 .. Q5 with low/high markers."""
+    label = f"Q{idx + 1}"
+    if idx == 0:
+        label += " (lowest)"
+    elif idx == total - 1:
+        label += " (highest)"
+    return label
+
+
+# ============================================================================
 # End-to-end builder
 # ============================================================================
 
@@ -540,4 +676,5 @@ def build_analytics_view(journal=None, scorecard=None, account=None,
         "pnl_distribution": compute_pnl_distribution(journal),
         "best_worst_trades": compute_best_worst_trades(journal),
         "filter_summary": compute_filter_summary(picks),
+        "score_outcome": compute_score_outcome(journal),
     }

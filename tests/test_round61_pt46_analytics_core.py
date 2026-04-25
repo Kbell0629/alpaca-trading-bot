@@ -553,6 +553,8 @@ def test_build_analytics_view_returns_all_keys():
         "pnl_by_symbol", "pnl_by_exit_reason",
         "hold_time_distribution", "pnl_distribution",
         "best_worst_trades", "filter_summary",
+        # Round-61 pt.47 added score_outcome.
+        "score_outcome",
     }
     assert set(out.keys()) == expected_keys
 
