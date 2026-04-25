@@ -75,19 +75,16 @@ def test_audit_flags_soxl_missing_stop_in_production_snapshot():
 
 
 def test_audit_flags_stale_scorecard_in_production_snapshot():
-    """Scorecard last_updated is 2026-04-22, fixture captured
-    2026-04-24 → >48h stale. Use a fresh `last_updated` far enough
-    in the past that the real wall clock always exceeds the 48h
-    threshold (the fixture's 2026 date may read as future in real-
-    world test runs)."""
+    """Round-61 pt.50: staleness measured in trading days. Use 8
+    calendar days back so the 5+ trading-day gap always trips the
+    audit regardless of when this test runs (handles weekends and
+    3-day holiday weekends)."""
     import audit_core
     from datetime import datetime, timedelta, timezone
     snap = _load_fixture()
-    # Force last_updated to be 72h before right now so the comparison
-    # is always >48h stale regardless of fixture date.
     stale_scorecard = dict(snap["scorecard"])
     stale_scorecard["last_updated"] = (
-        datetime.now(timezone.utc) - timedelta(hours=72)
+        datetime.now(timezone.utc) - timedelta(days=8)
     ).isoformat()
     report = audit_core.run_audit(
         positions=snap["positions"],

@@ -316,6 +316,11 @@ def run_audit(positions: Iterable[dict],
         })
 
     # ---------- Check 7: scorecard freshness ----------
+    # Round-61 pt.50: "fresh" is measured in TRADING DAYS, not wall
+    # clock hours. A 64-hour gap that spans Sat + Sun is normal — the
+    # daily_close task only runs Mon-Fri. The audit must NOT flag a
+    # weekend gap as a failure. Only fire when ≥ 2 trading days have
+    # passed without an update.
     last = scorecard.get("last_updated")
     if last:
         try:
@@ -331,14 +336,21 @@ def run_audit(positions: Iterable[dict],
                 except ImportError:
                     now = datetime.now(ts.tzinfo) if ts.tzinfo else datetime.now()
                 delta = now - ts
-                if delta > timedelta(hours=48):
-                    hours = int(delta.total_seconds() / 3600)
+                hours = int(delta.total_seconds() / 3600)
+                missed_closes = _trading_closes_between(ts, now)
+                # Flag only if ≥2 daily_close runs were expected to
+                # have fired since the last update. One missed close
+                # could be a hiccup or a half-day; two means the task
+                # really hasn't run.
+                if missed_closes >= 2:
                     findings.append({
                         "severity": "MEDIUM",
                         "category": "stale_scorecard",
-                        "message": (f"Scorecard last updated {hours}h ago. "
-                                    "daily_close may have failed to run. "
-                                    "Trigger via Settings -> Force Daily Close."),
+                        "message": (
+                            f"Scorecard last updated {hours}h ago "
+                            f"({missed_closes} expected daily_close "
+                            f"runs missed). Trigger via Settings -> "
+                            f"Force Daily Close."),
                         "symbol": None,
                     })
         except Exception:
@@ -353,6 +365,92 @@ def run_audit(positions: Iterable[dict],
         "counts": counts,
         "clean": not findings,
     }
+
+
+# ============================================================================
+# Round-61 pt.50: trading-day awareness for the scorecard freshness check
+# ============================================================================
+
+# US equity market closures for 2026/2027. NYSE official holiday calendar.
+# Source: https://www.nyse.com/markets/hours-calendars
+_US_MARKET_HOLIDAYS = frozenset({
+    # 2026
+    "2026-01-01",  # New Year's Day
+    "2026-01-19",  # MLK Day
+    "2026-02-16",  # Presidents Day
+    "2026-04-03",  # Good Friday
+    "2026-05-25",  # Memorial Day
+    "2026-06-19",  # Juneteenth
+    "2026-07-03",  # Independence Day (observed)
+    "2026-09-07",  # Labor Day
+    "2026-11-26",  # Thanksgiving
+    "2026-12-25",  # Christmas
+    # 2027
+    "2027-01-01",
+    "2027-01-18",
+    "2027-02-15",
+    "2027-03-26",  # Good Friday
+    "2027-05-31",
+    "2027-06-18",  # Juneteenth (observed)
+    "2027-07-05",  # Independence Day (observed)
+    "2027-09-06",
+    "2027-11-25",
+    "2027-12-24",  # Christmas (observed)
+})
+
+
+def _is_trading_day(d) -> bool:
+    """True if `d` is a US equity-market trading day (Mon-Fri AND not
+    a NYSE holiday). Accepts ``date`` or ``datetime``."""
+    try:
+        from datetime import date, datetime
+    except ImportError:
+        return True
+    if isinstance(d, datetime):
+        d = d.date()
+    if not isinstance(d, date):
+        return True
+    if d.weekday() >= 5:
+        return False
+    if d.isoformat() in _US_MARKET_HOLIDAYS:
+        return False
+    return True
+
+
+def _trading_closes_between(start, end, *, close_hour: int = 16,
+                              close_minute: int = 5) -> int:
+    """Number of expected daily_close runs that should have fired
+    in the (start, end] window. daily_close fires at 4:05 PM ET on
+    each trading day.
+
+    A daily_close at trading day D contributes to the count if:
+      * D is a trading day (weekday + not a holiday)
+      * The close timestamp `D 16:05` falls strictly AFTER `start`
+        and AT-OR-BEFORE `end`.
+
+    Returns 0 if start >= end.
+    """
+    from datetime import datetime, time, timedelta
+    if not isinstance(start, datetime) or not isinstance(end, datetime):
+        return 0
+    if start >= end:
+        return 0
+    # Strip tzinfo for the date math — both should be in the same
+    # zone (ET); if they differ in tz, fall back to naive
+    # comparison via the .replace(tzinfo=None) below.
+    start_naive = start.replace(tzinfo=None) if start.tzinfo else start
+    end_naive = end.replace(tzinfo=None) if end.tzinfo else end
+    count = 0
+    cur = start_naive.date()
+    last = end_naive.date()
+    while cur <= last:
+        if _is_trading_day(cur):
+            close_dt = datetime.combine(
+                cur, time(close_hour, close_minute))
+            if close_dt > start_naive and close_dt <= end_naive:
+                count += 1
+        cur += timedelta(days=1)
+    return count
 
 
 def load_strategy_files(strategies_dir: str) -> dict:

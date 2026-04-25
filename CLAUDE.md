@@ -61,9 +61,40 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-25 — round 61 pt.10-49 SHIPPED)
+## Current session state (2026-04-25 — round 61 pt.10-50 SHIPPED)
 
-**Pt.49 in flight:** three-in-one position-sizing + active monitoring
+**Pt.50 in flight:** audit + dashboard polish round.
+  1. **Weekend-aware scorecard freshness audit.**
+     `audit_core.run_audit` no longer fires `STALE_SCORECARD` on
+     normal weekends. Replaced the flat 48-hour threshold with
+     `_trading_closes_between(start, end)` that counts expected
+     daily_close runs (Mon-Fri excluding NYSE holidays from
+     `_US_MARKET_HOLIDAYS` 2026/2027). Stale = ≥2 missed closes.
+     Saturday morning audits no longer false-positive on the
+     normal Friday→Monday gap.
+  2. **Analytics + Trades load resilience.** Added 30s
+     `AbortController` timeouts to `refreshAnalyticsPanel` and
+     `refreshTradesPanel` so the panels surface a proper error
+     instead of hanging on "Loading..." when the backend is
+     mid-deploy. Added `_analyticsLastPayload` / `_tradesLastPayload`
+     caches: `renderDashboard`'s 30s tick now re-renders the
+     panels from cache after rebuilding the container, so the
+     panels stop flashing back to "Loading..." between fetches.
+  3. **In-app guide deep links.** Added `SECTION_GUIDES` entries
+     for `analytics` (📊 Analytics Hub — pt.46/pt.47/pt.49 all
+     covered), `trades` (Trades panel — pt.36/pt.43), plus four
+     reference entries for features that don't have a dashboard
+     section yet but power the bot: `position-sizing` (pt.49
+     Kelly + correlation), `event-calendar` (pt.48), `walk-forward`
+     (pt.47/pt.48), `pipeline-backtest` (pt.49). Clicking the (i)
+     icon now opens the matching section, not the full README.
++22 tests in `tests/test_round61_pt50_audit_weekend_aware.py`
+covering `_is_trading_day` (weekday/weekend/holiday/datetime/
+invalid), `_trading_closes_between` (zero/single/weekend gap/
+3-day holiday/Wed→Wed/naive+tz/invalid), and full-audit
+integration tests with monkey-patched `now_et()`.
+
+**Pt.49 landed (PR #176):** three-in-one position-sizing + active monitoring
 + pipeline-validation batch:
   1. **Fractional-Kelly + correlation-aware sizing.** New
      `position_sizing.py`. Functions:

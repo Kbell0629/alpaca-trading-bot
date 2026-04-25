@@ -44,6 +44,114 @@ _FORCE_DEPLOY_LAST: dict[int, float] = {}
 _FORCE_DEPLOY_LOCK = threading.Lock()
 
 
+# Round-61 pt.50: helpers for closed-market order routing.
+#
+# Three sessions Alpaca supports:
+#   * Regular Trading Hours (RTH): 9:30 AM - 4:00 PM ET.
+#       Plain market orders work.
+#   * Extended Hours (XH): pre-market 4:00-9:30 + after-hours
+#       16:00-20:00 ET. Alpaca ONLY accepts LIMIT orders here, with
+#       extended_hours=true. Market orders are rejected.
+#   * Overnight (20:00-4:00 ET) + weekends + holidays: no live
+#       trading session. Queue as Market-On-Open (time_in_force=opg)
+#       — Alpaca holds the order and fires it at the next 9:30
+#       opening cross.
+
+# Session classifier: returns "rth" / "premarket" / "afterhours" /
+# "overnight". RTH is when the bot can use plain market orders.
+def _market_session(handler) -> str:
+    """Best-effort. Falls back to "rth" on probe error so we don't
+    accidentally re-route during normal hours."""
+    try:
+        clock = handler.user_api_get(
+            f"{handler.user_api_endpoint}/clock")
+        if isinstance(clock, dict) and clock.get("is_open"):
+            return "rth"
+    except Exception:  # noqa: silent-except -- fail open to RTH; no log needed (probe)
+        return "rth"
+    # Market closed per Alpaca — figure out which non-RTH window.
+    try:
+        et = now_et()
+    except Exception:  # noqa: silent-except -- clock fallback
+        return "overnight"
+    if et.weekday() >= 5:   # Sat/Sun → overnight (queue as MOO)
+        return "overnight"
+    minutes = et.hour * 60 + et.minute
+    if 4 * 60 <= minutes < 9 * 60 + 30:
+        return "premarket"
+    if 16 * 60 <= minutes < 20 * 60:
+        return "afterhours"
+    return "overnight"
+
+
+def _market_is_closed(handler) -> bool:
+    """Compatibility shim retained for any caller that just wants
+    a boolean (kept so existing imports don't break)."""
+    return _market_session(handler) != "rth"
+
+
+def _position_qty(handler, symbol):
+    """Return the current Alpaca-reported qty for a symbol (positive
+    for long, negative for short). Returns None if no matching
+    position or the lookup fails."""
+    try:
+        pos = handler.user_api_get(
+            f"{handler.user_api_endpoint}/positions/{symbol}")
+        if isinstance(pos, dict) and "qty" in pos:
+            return int(float(pos["qty"]))
+    except Exception:  # noqa: silent-except -- best-effort probe; caller falls through to DELETE
+        pass
+    return None
+
+
+def _latest_price(handler, symbol):
+    """Best-effort latest trade price for `symbol` from Alpaca's
+    market-data endpoint. Returns float or None."""
+    try:
+        ep = getattr(handler, "user_data_endpoint", None) or \
+              "https://data.alpaca.markets/v2"
+        resp = handler.user_api_get(
+            f"{ep}/stocks/{symbol}/trades/latest")
+        if isinstance(resp, dict):
+            trade = resp.get("trade") or {}
+            p = trade.get("p")
+            if p:
+                return float(p)
+    except Exception:  # noqa: silent-except -- best-effort quote; caller falls back to MOO
+        pass
+    return None
+
+
+def _build_xh_close_order(symbol, qty, side, last_price):
+    """Build the Alpaca order body for closing a position during
+    pre-market or after-hours. Alpaca requires LIMIT + day +
+    extended_hours=true. We price aggressively (1% through the
+    spread) to maximise fill probability while keeping a slippage
+    floor so a fat-finger price quote doesn't cost the user 50%.
+    Returns the order body dict, or None if last_price is unusable.
+    """
+    try:
+        lp = float(last_price)
+    except (TypeError, ValueError):
+        return None
+    if lp <= 0:
+        return None
+    # Sell at -1% to attract bidders, buy at +1% to lift offers.
+    if side == "sell":
+        limit = round(lp * 0.99, 2)
+    else:                            # buy-to-cover a short
+        limit = round(lp * 1.01, 2)
+    return {
+        "symbol": symbol,
+        "qty": str(abs(int(qty))),
+        "side": side,
+        "type": "limit",
+        "limit_price": str(limit),
+        "time_in_force": "day",
+        "extended_hours": True,
+    }
+
+
 class ActionsHandlerMixin:
     def handle_refresh(self):
         """Run update_dashboard.py with current user's credentials and return fresh data."""
@@ -140,9 +248,92 @@ class ActionsHandlerMixin:
         if not re.match(r'^[A-Z]{1,10}$', symbol):
             return self.send_json({"error": "Invalid symbol format"}, 400)
 
+        # Round-61 pt.50: surface the actionable cause when Alpaca rejects
+        # the close request. Two common silent failures:
+        #   1. Saved keys decrypted to empty (cryptography import bug
+        #      from pt.13). Every Alpaca call returns 401.
+        #   2. Session is in live mode but user has no live keys saved
+        #      → handler falls back to env keys which may be wrong.
+        # Catch both BEFORE making the API call so we can return a
+        # clear "what to fix" error instead of "Alpaca auth failed".
+        if not (self.user_api_key and self.user_api_secret):
+            return self.send_json({
+                "error": (
+                    "No Alpaca API keys available for this session. "
+                    "Open Settings → Alpaca API and re-save your keys, "
+                    "then click 'Test Saved Keys' to confirm they "
+                    "authenticate. (Mode: "
+                    f"{getattr(self, 'session_mode', 'paper')})"
+                )
+            }, 400)
+
+        # Pt.50: route by trading session.
+        #   * RTH → DELETE /positions (existing behaviour).
+        #   * Pre-market / after-hours → LIMIT + extended_hours=true
+        #     so the order can fill in the live extended-hours session
+        #     instead of waiting for the open.
+        #   * Overnight / weekend → Market-On-Open (time_in_force=opg)
+        #     so the order queues for the next open cross.
+        session = _market_session(self)
+        if session != "rth":
+            qty = _position_qty(self, symbol)
+            if qty is None:
+                # No position found — fall through to the canonical
+                # DELETE; Alpaca will tell the user if it doesn't exist.
+                pass
+            else:
+                side = "buy" if qty < 0 else "sell"
+                if session in ("premarket", "afterhours"):
+                    last = _latest_price(self, symbol)
+                    body = _build_xh_close_order(symbol, qty, side, last)
+                    if body is None:
+                        # Couldn't price the limit — fall through to
+                        # MOO so the user gets SOMETHING queued.
+                        body = {
+                            "symbol": symbol, "qty": str(abs(qty)),
+                            "side": side, "type": "market",
+                            "time_in_force": "opg",
+                        }
+                        msg_label = "Market-On-Open (no live quote)"
+                    else:
+                        sess_label = ("pre-market" if session == "premarket"
+                                       else "after-hours")
+                        msg_label = (f"{sess_label} limit "
+                                      f"@ ${body['limit_price']}")
+                else:                                   # overnight
+                    body = {
+                        "symbol": symbol, "qty": str(abs(qty)),
+                        "side": side, "type": "market",
+                        "time_in_force": "opg",
+                    }
+                    msg_label = "Market-On-Open (queued for 9:30 ET)"
+                queued = self.user_api_post(
+                    f"{self.user_api_endpoint}/orders", body)
+                if isinstance(queued, dict) and "error" in queued:
+                    self.send_json({"error": queued["error"]}, 400)
+                else:
+                    self.send_json({
+                        "success": True, "symbol": symbol,
+                        "queued": True,
+                        "session": session,
+                        "message": (f"{side.upper()} {abs(qty)} "
+                                     f"{symbol} submitted as "
+                                     f"{msg_label}."),
+                        "order": queued,
+                    })
+                return
+
         result = self.user_api_delete(f"{self.user_api_endpoint}/positions/{symbol}")
         if isinstance(result, dict) and "error" in result:
-            self.send_json({"error": result["error"]}, 400)
+            err = result["error"] or ""
+            # Pt.50: enrich the auth-failed message with concrete next step.
+            if "authentication failed" in err.lower():
+                err = (err + " Mode: "
+                        + getattr(self, "session_mode", "paper")
+                        + ". Try Settings → Alpaca API → Test Saved Keys "
+                        "to verify the saved credentials authenticate, "
+                        "then re-save if not.")
+            self.send_json({"error": err}, 400)
         else:
             self.send_json({"success": True, "symbol": symbol, "order": result})
     def handle_sell(self, body):
@@ -158,17 +349,65 @@ class ActionsHandlerMixin:
         if qty < 1 or qty > 10000:
             return self.send_json({"error": "Invalid quantity. Must be 1-10000."}, 400)
 
-        result = self.user_api_post(f"{self.user_api_endpoint}/orders", {
-            "symbol": symbol,
-            "qty": str(qty),
-            "side": "sell",
-            "type": "market",
-            "time_in_force": "day",
-        })
+        # Pt.50: same key-availability guard as handle_close_position.
+        if not (self.user_api_key and self.user_api_secret):
+            return self.send_json({
+                "error": (
+                    "No Alpaca API keys available for this session. "
+                    "Open Settings → Alpaca API and re-save your keys, "
+                    "then click 'Test Saved Keys'. (Mode: "
+                    f"{getattr(self, 'session_mode', 'paper')})"
+                )
+            }, 400)
+
+        # Pt.50: route by trading session — same logic as
+        # handle_close_position but with explicit qty + always
+        # side='sell' (the partial-sell buttons never short).
+        session = _market_session(self)
+        if session in ("premarket", "afterhours"):
+            last = _latest_price(self, symbol)
+            order_body = _build_xh_close_order(symbol, qty, "sell", last)
+            if order_body is None:
+                order_body = {
+                    "symbol": symbol, "qty": str(qty), "side": "sell",
+                    "type": "market", "time_in_force": "opg",
+                }
+                queued_label = "Market-On-Open (no live quote)"
+            else:
+                sess_label = ("pre-market" if session == "premarket"
+                               else "after-hours")
+                queued_label = f"{sess_label} limit @ ${order_body['limit_price']}"
+        elif session == "overnight":
+            order_body = {
+                "symbol": symbol, "qty": str(qty), "side": "sell",
+                "type": "market", "time_in_force": "opg",
+            }
+            queued_label = "Market-On-Open (queued for 9:30 ET)"
+        else:                              # rth
+            order_body = {
+                "symbol": symbol, "qty": str(qty), "side": "sell",
+                "type": "market", "time_in_force": "day",
+            }
+            queued_label = None
+        result = self.user_api_post(
+            f"{self.user_api_endpoint}/orders", order_body)
         if isinstance(result, dict) and "error" in result:
-            self.send_json({"error": result["error"]}, 400)
+            err = result["error"] or ""
+            if "authentication failed" in err.lower():
+                err = (err + " Mode: "
+                        + getattr(self, "session_mode", "paper")
+                        + ". Try Settings → Alpaca API → Test Saved Keys "
+                        "to verify the saved credentials authenticate.")
+            self.send_json({"error": err}, 400)
         else:
-            self.send_json({"success": True, "symbol": symbol, "qty": qty, "order": result})
+            self.send_json({
+                "success": True, "symbol": symbol, "qty": qty,
+                "queued": queued_label is not None,
+                "session": session,
+                "message": (f"SELL {qty} {symbol} submitted as "
+                             f"{queued_label}.") if queued_label else None,
+                "order": result,
+            })
     def handle_auto_deployer(self, body):
         """Toggle the auto-deployer on/off by updating the current user's config file."""
         enabled = body.get("enabled", False)
