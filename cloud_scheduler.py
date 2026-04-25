@@ -3018,6 +3018,71 @@ def run_auto_deployer(user):
             skip_reasons.append(f"{symbol}: volatility {_vol:.1f}% > 20%")
             continue
 
+        # Round-61 pt.61: VWAP-relative entry gate for breakouts.
+        # Even when daily_change is moderate, a stock trading rich
+        # above intraday VWAP is a chase-buy. Block breakouts where
+        # price > VWAP × 1.005 (0.5% tolerance). Other strategies
+        # pass through (gate is a no-op for non-breakout). Best-
+        # effort fetch: if the data endpoint is unavailable, the
+        # gate fails OPEN.
+        if best_strat == "breakout":
+            try:
+                import vwap_gate as _vg
+                from indicators import vwap as _compute_vwap
+                _data_ep = (user.get("_data_endpoint")
+                             or "https://data.alpaca.markets/v2")
+                # Pull today's 5-min bars (≈78 bars max for full RTH).
+                _today_iso = now_et().strftime("%Y-%m-%d")
+                _bars_resp = user_api_get(
+                    user,
+                    f"{_data_ep}/stocks/{symbol}/bars"
+                    f"?timeframe=5Min&start={_today_iso}T09:30:00-04:00"
+                    "&limit=200",
+                )
+                _bars_today = (_bars_resp.get("bars")
+                                if isinstance(_bars_resp, dict)
+                                else None) or []
+                _vwap_series = _compute_vwap(_bars_today)
+                _vwap_today = (_vwap_series[-1]
+                                if _vwap_series else None)
+                _gate_result = _vg.evaluate_vwap_gate(
+                    strategy=best_strat,
+                    price=float(pick.get("price") or 0),
+                    vwap=_vwap_today,
+                )
+                if not _gate_result.get("allowed", True):
+                    log(f"[{user['username']}] {symbol}: VWAP gate "
+                        f"blocked breakout — {_gate_result.get('reason')}",
+                        "deployer")
+                    skip_reasons.append(
+                        f"{symbol}: above_vwap "
+                        f"({_gate_result.get('vwap_offset_pct', 0):.2f}%)")
+                    continue
+            except Exception as _vw_e:
+                log(f"[{user['username']}] {symbol}: VWAP gate fetch "
+                    f"failed ({_vw_e}); allowing through.", "deployer")
+
+        # Round-61 pt.61: earnings-calendar pre-flight check. Block
+        # deploys where the static calendar reports earnings within
+        # the next 3 days — protects against holding through a
+        # binary event with the wrong yfinance date. ETFs / unknown
+        # symbols pass through (next_earnings_date returns None).
+        try:
+            import earnings_calendar_static as _ecs
+            _next_earnings = _ecs.next_earnings_date(
+                symbol, max_days_ahead=3)
+            if _next_earnings is not None and best_strat != "pead":
+                log(f"[{user['username']}] {symbol}: Skipped ({best_strat} "
+                    f"deploy blocked — earnings within 3d on "
+                    f"{_next_earnings.isoformat()})", "deployer")
+                skip_reasons.append(
+                    f"{symbol}: earnings_in_3d "
+                    f"({_next_earnings.isoformat()})")
+                continue
+        except Exception as _ec_e:
+            log(f"[{user['username']}] {symbol}: earnings calendar "
+                f"check failed ({_ec_e}); allowing through.", "deployer")
+
         # Round-11 Tier 1: breadth gate — block breakout + PEAD in weak
         # breadth regimes. MR and wheel continue since they're not
         # dependent on broad-market momentum.
