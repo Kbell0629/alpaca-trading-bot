@@ -32,10 +32,27 @@ def identify_short_candidates(picks):
     - Bearish MACD crossover
     - Negative news sentiment
     - In a downtrend (20d momentum < -10%)
+
+    Round-61 pt.35: leveraged + inverse ETFs are unconditionally
+    blocked. User-reported SOXL incident: the screener picked SOXL
+    (3x leveraged semis) for a short, and the position lost ~$500
+    in 9 days from a normal-sized adverse move. Decay alone makes
+    flat-price stretches negative for the short side, and inverse
+    ETFs invert the signal entirely. See
+    ``constants.LEVERAGED_OR_INVERSE_ETFS`` for the full list.
     """
+    from constants import is_leveraged_or_inverse_etf
+
     short_candidates = []
+    blocked_leveraged = []
 
     for pick in picks:
+        symbol = pick.get("symbol", "")
+        # Pt.35: hard block on leveraged / inverse ETFs.
+        if is_leveraged_or_inverse_etf(symbol):
+            blocked_leveraged.append(symbol)
+            continue
+
         score = 0
         reasons = []
 
@@ -117,6 +134,12 @@ def identify_short_candidates(picks):
         })
 
     short_candidates.sort(key=lambda x: x["short_score"], reverse=True)
+    if blocked_leveraged:
+        # One log line per screener run rather than per blocked symbol —
+        # the list is short (≤ a handful) and noisier per-symbol logs
+        # would crowd the operator's recent-activity panel.
+        print(f"[short_strategy] Skipped leveraged/inverse ETFs from "
+              f"short-candidates: {', '.join(blocked_leveraged)}")
     return short_candidates
 
 def create_short_strategy_file(symbol, price, score, reasons):
