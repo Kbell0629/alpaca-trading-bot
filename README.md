@@ -133,6 +133,7 @@ Click the 📝 PAPER (orange) / 🔴 LIVE (red) badge in the top-left of the hea
 | **24/7 CLOUD** badge (green) | Cloud scheduler running — bot is alive |
 | **Auto-Deployer Toggle** | ON/OFF switch for automatic trading |
 | **KILL SWITCH** (red) | Emergency stop — cancels all orders, closes all positions. **Per-mode:** paper KILL only halts paper, live KILL only halts live. They're fully isolated. |
+| **◎ FOCUS** (pt.74) | Toggles **Focus Mode**. Hides decorative panels (factor cards, voice button, scheduler, perf attribution, recent activity) so only execution-critical cards remain. Persisted across reloads via `localStorage`. Click again to restore the full dashboard. |
 | **🎤 Voice** | Voice control (Chrome/Safari) — say "Kill switch", "What's my P&L" |
 | **📖 Help** | Opens this user manual |
 | **↻ Refresh** | Manually refresh dashboard data |
@@ -143,16 +144,23 @@ Click the 📝 PAPER (orange) / 🔴 LIVE (red) badge in the top-left of the hea
 
 ### Navigation Tabs (scrollable)
 
-Click any tab to jump to that section:
+Click any tab to jump to that section. **Pt.75 reordered the tabs to
+match the actual DOM order**, so clicking "Readiness" or "Backtest"
+now scrolls forward through the page instead of jumping back/forward
+across sections:
+
 - **Overview** — Account metrics
 - **Picks** — Top 3 stock recommendations
 - **Strategies** — 6 strategy cards
-- **Positions** — What you currently own
-- **Screener** — Full top 50 stocks
-- **Short Sells** — Bear market plays
-- **Tax Harvest** — Tax-loss opportunities
-- **Backtest** — Historical simulation
 - **Readiness** — Progress to go live
+- **Positions** — What you currently own
+- **📊 Analytics** — Unified KPIs + equity + drawdown
+- **Trades** — Closed trades + per-strategy performance
+- **Screener** — Full top 50 stocks
+- **Short Sells** — Bear market plays *(only shown when there are short candidates)*
+- **Tax Harvest** — Tax-loss opportunities *(only shown when there are losers)*
+- **Backtest** — Historical simulation
+- **Scheduler** — Cloud scheduler status *(panel-tertiary; hidden in Focus Mode)*
 - **Heatmap** — Daily P&L calendar
 - **Paper vs Live** — Account comparison
 - **Scheduler** — Cloud scheduler status

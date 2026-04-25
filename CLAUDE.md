@@ -31,9 +31,10 @@ auto-deploys top picks across 6 strategies, manages exits, handles kill-switch
 1. `git checkout main && git pull --ff-only`
 2. `cat CLAUDE.md` (this file), `cat README.md`, `cat CHANGELOG.md`
 3. `MASTER_ENCRYPTION_KEY=$(python3 -c 'print("e"*64)') python3 -m pytest tests/ --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json --deselect tests/test_auth.py::test_password_strength_rejects_weak --deselect tests/test_audit_round12_scheduler_latent.py::test_ruff_clean_on_real_bug_rules -q`
-   — expect ~**2960+ passing, 3 deselected** after pt.69 (baseline grew from
+   — expect ~**3060+ passing, 3 deselected** after pt.76 (baseline grew from
    1802 at pt.32 through pt.46 +59, pt.47 +69, pt.48 +31, pt.49 +87, pt.50 +22,
-   pt.51 +39, pt.52-57 polish, pt.58-69 batches +280).
+   pt.51 +39, pt.52-57 polish, pt.58-69 batches +280, pt.70-76 +160 — incl.
+   pt.74 +60 UI tests, pt.75 +10, pt.76 +4).
 4. `ruff check .` — clean.
 5. Validate dashboard JS: `awk '/^<script>/,/^<\/script>/' templates/dashboard.html | grep -v '^<script>' | grep -v '^</script>' > /tmp/dash.js && node --check /tmp/dash.js`
 6. `npm ci && npx vitest run` — expect **341 JS tests passing** (29 files).
@@ -63,13 +64,83 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-25 — round 61 pt.10-72 SHIPPED)
+## Current session state (2026-04-25 — round 61 pt.10-76 SHIPPED)
 
-**Latest merged batch (pt.65 → pt.72):** eight accuracy + reliability
-PRs closing the 8-item production-readiness list, the SOXL short-
-cover bug, and two follow-up batches (news exits + ADV cap +
-drawdown taper, then pre-trade abort + live-mode gate + per-
-symbol cooldown).
+**Latest merged batch (pt.65 → pt.76):** twelve accuracy + reliability +
+UX PRs. The 8-item production-readiness sprint, the SOXL short-cover
+bug (fixed three different ways: pt.50 → pt.53 → pt.69 → pt.75), and
+the round of UX polish + auth-form cleanup.
+
+**Pt.76 (PR #203) — signup form cleanup.** User-reported that the
+Invite Code section showed the label twice (section header +
+redundant `<label>` on the input) and the help text was a long
+sentence about admin links and `SIGNUP_INVITE_CODE`. Fix:
+  * Visible label = the section header. The `<label
+    for="invite_code">` is preserved (pt.8 a11y contract requires
+    the explicit association) but its inner text is wrapped in
+    `<span class="pt76-sr-only">` so it doesn't render on screen.
+  * Tightened help text to one sentence: "Only required if an
+    admin sent you a single-use link."
+  * Sentence-cased the title to match pt.74's section pattern.
+  * Refreshed placeholder.
++4 source-pin tests in
+`tests/test_round61_pt76_signup_invite_cleanup.py`.
+
+**Pt.75 (PR #202) — nav DOM-order match + SOXL cancel-scan
+reliability fix.** Two user-reported issues:
+  1. **Nav tabs jumped around when clicked.** Header nav was in
+     logical-grouping order, not page DOM order — clicking
+     "Readiness" jumped DOWN past Positions/Analytics/Trades, then
+     "Backtest" jumped BACK UP. Fixed by re-ordering the nav
+     array to match actual rendered DOM: overview → picks →
+     strategies → readiness → positions → analytics → trades →
+     screener → [shorts] → [tax] → backtest → scheduler →
+     heatmap → comparison → settings.
+  2. **SOXL "insufficient qty" close kept failing despite pt.69's
+     retry-with-backoff.** Root cause: cancel scan's URL had
+     `?status=open&symbols=SOXL` and Alpaca's orders endpoint
+     **silently excludes some "accepted"-status orders when
+     filtered server-side by symbol**. Empty list → cancelled==0
+     → pt.69's retry loop never fired. Fix: drop `?symbols=` URL
+     filter; fetch all open orders + trust the existing client-
+     side filter. Bumped limit from 50 → 200.
++10 source-pin tests in
+`tests/test_round61_pt75_nav_order_cancel_scan.py`.
+
+**Pt.74 (PR #201) — UI/UX "Pro" polish, 10-item batch.**
+Comprehensive UI upgrade addressing every item in the
+professional-feel audit. Additive — no DOM restructure; all new
+behaviours opt-in via CSS classes / body state / localStorage:
+  1. **Info hierarchy:** `.panel-tertiary` class + "· advanced"
+     hint after section headers; scheduler + perf-attribution
+     tagged.
+  2. **Focus Mode toggle:** ◎ FOCUS pill in header, hides
+     decorative panels; persisted in `localStorage["pt74_focusMode"]`.
+  3. **Reduced motion:** `prefers-reduced-motion` honored on
+     auth pages too; new `.pt74-soft-pulse` class for gentle 4s
+     pulses.
+  4. **Header cluster grouping:** CSS-only — focus pill = status
+     anchor with right separator; force-deploy + voice = trading
+     cluster; help + refresh = utilities cluster with left
+     separator.
+  5. **Skeleton loaders + freshness chips:** Analytics + Trades
+     panels now render skeleton placeholders (instead of plain
+     "Loading..." text) and track `_lastFetchedAt` /
+     `_lastFetchError` for pt74RenderFreshnessChip.
+  6. **Auth UX polish:** brand lockup + trust copy ("Paper-
+     trading by default", "AES-256-GCM", "no auto-trades"),
+     sentence-case headings, password Show/Hide toggle on every
+     password/secret field.
+  7. **Risk badge** at Kill Switch + Close Position action sites
+     surfacing the paper/live mode.
+  8. **Typography ramp** aligned across auth templates (SF Pro
+     Display, 0.6px letter-spacing on micro-labels).
+  9. **Sticky table headers** via `.pt74-sticky-table` (positions
+     + orders).
+  10. **High-stakes copy pass:** "EMERGENCY KILL SWITCH" →
+      "Emergency kill switch", Close-modal subtitle now describes
+      the action.
++23 vitest unit tests + 37 Python source-pin tests.
 
 **Pt.72 (PR #199) — pre-trade quote abort + live-mode gate + per-
 symbol cooldown.** Three production-readiness items:

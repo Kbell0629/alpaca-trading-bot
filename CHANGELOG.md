@@ -8,6 +8,118 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.76 — signup form: dedupe Invite Code label + tighten help text (+4 tests)
+
+**Date:** 2026-04-25
+
+User-reported via screenshot: the Invite Code section showed the
+label twice (section header + redundant `<label>` on the input)
+and the help text was a long sentence about admin links and
+`SIGNUP_INVITE_CODE`.
+
+**Fix:**
+* Visible label = the section header. The `<label
+  for="invite_code">` is preserved for the pt.8 a11y contract,
+  but its inner text is wrapped in a `<span class="pt76-sr-only">`
+  so screen readers / click-to-focus still get the association
+  while the visible UI stays clean.
+* New `.pt76-sr-only` utility uses the standard sr-only pattern
+  (1px clipped, `position: absolute`, `white-space: nowrap`).
+* Tightened help text from "Required if an admin sent you a
+  single-use invite (auto-filled from the URL) or if the
+  deployment has SIGNUP_INVITE_CODE set." → "Only required if an
+  admin sent you a single-use link."
+* Sentence-cased the section title ("Invite Code" → "Invite
+  code") to match pt.74's section pattern.
+* Refreshed placeholder to "Leave blank if you don't have one".
+* Auto-fill from `?invite=` URL param still works.
+
++4 source-pin tests in
+`tests/test_round61_pt76_signup_invite_cleanup.py`. CI initially
+failed because the pt.8 a11y test pinned the exact substring
+`<label for="invite_code">`; fixed by keeping the opener and
+hiding the inner text via the sr-only span.
+
+---
+
+## 🆕 Round-61 pt.75 — nav DOM-order match + SOXL cancel-scan reliability fix (+10 tests)
+
+**Date:** 2026-04-25
+
+Two user-reported issues fixed in one PR.
+
+**1. Nav tabs jumped around when clicked.** Header nav was in
+logical-grouping order, not page DOM order. Clicking "Readiness"
+jumped DOWN past Positions/Analytics/Trades, then "Backtest"
+jumped BACK UP past several sections. Re-ordered the nav array to
+match actual rendered DOM:
+```
+overview → picks → strategies → readiness → positions →
+analytics → trades → screener → [shorts] → [tax] →
+backtest → scheduler → heatmap → comparison → settings
+```
+Conditional sections (shorts, tax) only show in nav when their
+content actually rendered.
+
+**2. SOXL "insufficient qty" close kept failing despite pt.69's
+retry-with-backoff.** Toast showed the bare original error with
+neither pt.69's `(cancelled X pending order(s))` enrichment NOR
+the exhaustion message.
+
+Root cause: cancel scan's URL had `?status=open&symbols=SOXL` and
+**Alpaca's orders endpoint silently excludes some "accepted"-
+status orders when filtered server-side by symbol**. Empty list
+→ `cancelled == 0` → pt.69's retry loop never fired.
+
+Fix: drop the `?symbols=` URL filter; fetch ALL open orders
+(`?status=open&limit=200`) and trust the existing client-side
+filter (`o.get("symbol") == symbol`). Slightly more bytes over
+the wire but reliably catches every order — including the
+"accepted"-status BUY-stops Alpaca was hiding.
+
++10 source-pin tests in
+`tests/test_round61_pt75_nav_order_cancel_scan.py`.
+
+---
+
+## 🆕 Round-61 pt.74 — UI/UX "Pro" polish, 10-item batch (+60 tests)
+
+**Date:** 2026-04-25
+
+Comprehensive UI upgrade addressing every item in the
+professional-feel audit. Additive — no DOM restructure; all new
+behaviours opt-in via CSS classes / body state / localStorage.
+
+| # | Item | Where |
+|---|---|---|
+| 1 | Info hierarchy: `.panel-tertiary` class + "· advanced" hint | dashboard.html |
+| 2 | Focus Mode toggle (◎ FOCUS pill, persisted) | dashboard.html |
+| 3 | Reduced-motion respected on auth pages too; new `.pt74-soft-pulse` class | all 3 templates |
+| 4 | Header cluster grouping (status / trading / utilities) — CSS only | dashboard.html |
+| 5 | Skeleton loaders + freshness chips for Analytics + Trades | dashboard.html |
+| 6 | Auth polish: brand lockup, trust copy, password Show/Hide toggle | login.html + signup.html |
+| 7 | Risk badge (paper/live) at Kill Switch + Close Position action sites | dashboard.html |
+| 8 | Typography ramp aligned across auth templates | login.html + signup.html |
+| 9 | Sticky table headers via `.pt74-sticky-table` (positions + orders) | dashboard.html |
+| 10 | High-stakes copy pass: sentence-case headings, descriptive subtitles | dashboard.html |
+
+**New helpers (window-exposed for testing + reuse):**
+* `pt74RenderSkeleton({rows, cards})`
+* `pt74FormatFreshness(ts, errorState)` → `{state, text}`
+* `pt74RenderFreshnessChip(ts, errorState)` → full chip HTML
+* `pt74RenderRiskBadge({live, detail, label})`
+* `pt74WirePasswordToggles(rootEl)` — idempotent
+* `toggleFocusMode()` — body class + localStorage
+
++23 vitest unit tests in `tests/js/pt74-uiux.test.js` (every
+helper's branches, focus-mode persistence, password toggle
+idempotence) + 37 Python source-pin tests in
+`tests/test_round61_pt74_uiux_polish.py`. All 415 existing JS
+tests still green (1 closePositionModal title test updated for
+the sentence-case copy change).
+
+---
+
 ## 🆕 Round-61 pt.72 — pre-trade quote abort + live-mode gate + per-symbol cooldown (+47 tests)
 
 **Date:** 2026-04-25
