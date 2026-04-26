@@ -64,7 +64,23 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-26 — round 61 pt.10-84 SHIPPED)
+## Current session state (2026-04-26 — round 61 pt.10-86 SHIPPED)
+
+**Latest (pt.86) — live-mode dry-run / shadow mode.**
+Paper validation ends ~May 15. After that the live toggle is
+binary. Pt.86 adds an opt-in "shadow mode" that runs the auto-
+deployer through every gate but RECORDS the deploy intent into a
+per-user shadow log INSTEAD of POSTing the order. Per-user
+opt-in via `guardrails.live_shadow_mode: true` (or deployment-
+wide via the `LIVE_SHADOW_MODE` env var). New pure module
+`shadow_mode.py` exposes `is_shadow_mode_active`,
+`record_shadow_event`, `get_shadow_log`, `summarize_shadow_log`.
+Persisted in `users/<id>/shadow_log.json`, capped at 500 entries
+(oldest-first prune). Wired into `run_auto_deployer` just before
+the order POST — short-circuits with `continue` after recording
+the event. Fail-safe: any shadow check error falls through to
+the real POST so trading isn't accidentally suppressed.
++18 tests in `tests/test_round61_pt86_shadow_mode.py`.
 
 **Latest (pt.84) — slippage_tracker wired into the fill path.**
 Pt.80 shipped the math + analytics surface; pt.84 closes the

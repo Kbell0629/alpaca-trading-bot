@@ -8,6 +8,43 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.86 — live-mode dry-run / shadow mode (+18 tests)
+
+**Date:** 2026-04-26
+
+Paper validation ends ~May 15. After that the user can flip the
+live-mode toggle (with the pt.72 promotion gate as a check), and
+real money starts trading. Pt.86 adds an opt-in **shadow mode**
+that runs the auto-deployer through every gate but RECORDS the
+deploy intent into a per-user shadow log INSTEAD of POSTing the
+order — letting the user "watch what live would do" without
+committing capital.
+
+**New pure module `shadow_mode.py`:**
+* `is_shadow_mode_active(user, guardrails, env=os.environ)` —
+  resolution order: per-user `guardrails.live_shadow_mode` →
+  `LIVE_SHADOW_MODE` env var → False
+* `record_shadow_event(user, action, **fields)` — appends a
+  structured event (timestamp, action, symbol, strategy, qty,
+  price, score, sector) to `users/<id>/shadow_log.json`. Capped
+  at 500 entries (oldest-first prune)
+* `get_shadow_log(user, limit=50)` — newest-first
+* `summarize_shadow_log(events)` — counts by action / symbol /
+  strategy for the dashboard
+
+Wired into `cloud_scheduler.run_auto_deployer` just before the
+order POST: when shadow mode is active, records the
+`would_deploy` event and `continue`s the loop. Fail-safe: if the
+shadow check raises, falls through to the real POST so we don't
+accidentally suppress trading.
+
+Pure-module discipline: no top-level imports of
+`cloud_scheduler` / `auth` / `server`. Pinned by test.
+
++18 tests in `tests/test_round61_pt86_shadow_mode.py`.
+
+---
+
 ## 🆕 Round-61 pt.84 — wire slippage_tracker into the fill path (+8 tests)
 
 **Date:** 2026-04-26

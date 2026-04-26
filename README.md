@@ -393,6 +393,30 @@ and the future weekly meta-learning loop. API:
 `{winners, losers, delta}` so you can ask "did the winners have
 higher mean RS than the losers?".
 
+### Live shadow mode (pt.86)
+
+Paper validation ends ~May 15. After that flipping the live
+toggle is binary — real money starts trading. Shadow mode is an
+opt-in flag that runs the auto-deployer through every gate
+(pt.65-86 stack) but RECORDS the deploy intent into a per-user
+shadow log INSTEAD of POSTing the order. Lets you "watch what
+live would do" before committing capital.
+
+Enable per-user via `guardrails.live_shadow_mode: true` (Settings
+→ Live Trading) or deployment-wide via `LIVE_SHADOW_MODE=1` env
+var. The per-user override always wins over the env (so you can
+opt OUT of a global shadow mode if you're confident).
+
+Shadow events land in `users/<id>/shadow_log.json` (capped at 500
+entries, oldest pruned). API for the dashboard:
+`shadow_mode.get_shadow_log(user, limit=50)` returns newest-
+first; `shadow_mode.summarize_shadow_log(events)` aggregates
+counts by action / symbol / strategy.
+
+Fail-safe: if the shadow check raises for any reason, the bot
+falls through to the real POST so we never accidentally suppress
+trading.
+
 ### Score-health monitoring
 
 The bot runs a daily 4:35 PM check on whether higher-scored screener
