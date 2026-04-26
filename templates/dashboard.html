@@ -1297,6 +1297,18 @@ input[type="range"]:focus {
     #tradesPanel > div[style*="minmax(150px"] {
         grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)) !important;
     }
+    /* Round-61 pt.95 (audit-sweep): pt.88 slippage + rationale panels
+       hardcoded minmax(160px,1fr) on the per-strategy mini-grid and
+       a 4-column rationale comparison table. Both forced horizontal
+       scroll on <400px phones. Collapse to single-column / smaller
+       font so they read on mobile. */
+    #analyticsPanel div[style*="minmax(160px"] {
+        grid-template-columns: 1fr !important;
+    }
+    #analyticsPanel table { font-size: 11px !important; }
+    #analyticsPanel table th, #analyticsPanel table td {
+        padding: 4px 6px !important;
+    }
 }
 
 /* ===== Header V2 (cleaner 2-row layout) ===== */
@@ -2689,8 +2701,8 @@ body.focus-mode #section-perf-attribution {
 
     <div class="settings-panel" id="adminPanel-audit">
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
-        <label style="font-size:12px;color:var(--text-dim);margin:0">Action:</label>
-        <select id="adminAuditFilter" onchange="loadAdminAuditLog()" style="padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">
+        <label for="adminAuditFilter" style="font-size:12px;color:var(--text-dim);margin:0">Action:</label>
+        <select id="adminAuditFilter" onchange="loadAdminAuditLog()" aria-label="Filter audit log by action type" style="padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">
           <option value="">All events</option>
           <option value="login_success">Logins (success)</option>
           <option value="login_failed">Logins (failed)</option>
@@ -2708,8 +2720,8 @@ body.focus-mode #section-perf-attribution {
           <option value="revoke_invite">Invite revokes</option>
         </select>
         <!-- Round-40: user-id filter (populated from /api/admin/users). -->
-        <label style="font-size:12px;color:var(--text-dim);margin:0">User:</label>
-        <select id="adminAuditUserFilter" onchange="loadAdminAuditLog()" style="padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;max-width:180px">
+        <label for="adminAuditUserFilter" style="font-size:12px;color:var(--text-dim);margin:0">User:</label>
+        <select id="adminAuditUserFilter" onchange="loadAdminAuditLog()" aria-label="Filter audit log by user" style="padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;max-width:180px">
           <option value="">All users</option>
         </select>
         <button type="button" class="btn-ghost btn-sm" onclick="loadAdminAuditLog()" style="margin-left:auto">↻ Reload</button>
@@ -7890,14 +7902,14 @@ function renderDashboard() {
                         'maxlength="10" autocapitalize="characters" autocomplete="off" spellcheck="false" ' +
                         'onkeydown="if(event.key===\'Enter\'){runBacktestFromInput();}" ' +
                         'style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:14px;width:170px;text-transform:uppercase" />' +
-                    '<select id="backtestStrategySelect" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:14px">' +
+                    '<select id="backtestStrategySelect" aria-label="Backtest strategy" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:14px">' +
                         '<option value="trailing_stop">Trailing Stop</option>' +
                         '<option value="breakout">Breakout</option>' +
                         '<option value="mean_reversion">Mean Reversion</option>' +
                         '<option value="pead">PEAD</option>' +
                     '</select>' +
                     '<button class="btn-primary btn-sm" onclick="runBacktestFromInput()" style="height:36px">Run Backtest</button>' +
-                    '<select id="backtestStockSelector" onchange="renderBacktest(this.value)" title="Quick-pick from Top 50 screener" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:14px;min-width:200px"></select>' +
+                    '<select id="backtestStockSelector" onchange="renderBacktest(this.value)" aria-label="Backtest symbol from screener Top 50" title="Quick-pick from Top 50 screener" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:14px;min-width:200px"></select>' +
                 '</div>' +
             '</div>' +
             '<div id="backtestSummary" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px"></div>' +

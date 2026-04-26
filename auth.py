@@ -1331,7 +1331,9 @@ def export_user_data(user_id):
         profile = {k: row[k] for k in row.keys()}
         # Strip sensitive fields
         for k in ("password_hash", "password_salt",
-                  "alpaca_key_encrypted", "alpaca_secret_encrypted"):
+                  "alpaca_key_encrypted", "alpaca_secret_encrypted",
+                  "alpaca_live_key_encrypted",
+                  "alpaca_live_secret_encrypted"):
             profile.pop(k, None)
 
         # Sessions — metadata only, no session token
@@ -1396,15 +1398,37 @@ def export_user_data(user_id):
         z.writestr("audit_log.json", json.dumps(audit, indent=2, default=str))
         z.writestr("invites.json", json.dumps(invites, indent=2, default=str))
 
-        # Walk per-user data dir
+        # Walk per-user data dir.
+        # Round-61 pt.95 (audit-sweep): ``followlinks=False`` so a
+        # planted symlink can't make ``os.walk`` traverse outside the
+        # user dir. Plus: skip any file whose resolved real-path would
+        # land outside ``udir`` (defense-in-depth — covers the case
+        # where a parent directory itself is a symlink) and reject
+        # relative paths starting with ``..`` or absolute paths
+        # before writing them into the ZIP.
         udir = os.path.join(USERS_DIR, str(user_id))
         if os.path.isdir(udir):
-            for root, _dirs, files in os.walk(udir):
+            udir_real = os.path.realpath(udir)
+            for root, _dirs, files in os.walk(udir, followlinks=False):
                 for fname in files:
                     full = os.path.join(root, fname)
                     rel = os.path.relpath(full, udir)
                     # Skip hidden files + tempfiles
                     if fname.startswith(".") or fname.endswith(".tmp"):
+                        continue
+                    # Path-traversal guard: no .. components, no
+                    # absolute paths in the ZIP arcname.
+                    if rel.startswith("..") or os.path.isabs(rel) \
+                            or "/../" in rel or "\\..\\" in rel:
+                        continue
+                    # Resolve symlinks in case a node along the path
+                    # escapes udir.
+                    try:
+                        full_real = os.path.realpath(full)
+                    except OSError:
+                        continue
+                    if not (full_real == udir_real or
+                            full_real.startswith(udir_real + os.sep)):
                         continue
                     try:
                         with open(full, "rb") as f:

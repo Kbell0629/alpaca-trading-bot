@@ -6,6 +6,15 @@ on:
   pull_request:
     branches: [main]
 
+# Round-61 pt.95 (audit-sweep): cancel previous runs on the same
+# branch so a force-push or rapid-fire commits don't burn CI quota
+# running stale builds. PR pushes cancel earlier PR-build attempts;
+# main builds cancel earlier main builds. Run completion time matters
+# given the 3220-test suite + JS test job.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
