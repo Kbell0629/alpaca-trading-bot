@@ -762,6 +762,19 @@ def _safe_risk_parity_weights(journal):
         return {}
 
 
+def _safe_slippage_summary(journal):
+    """Round-61 pt.80: realized vs expected slippage. Returns
+    ``{aggregate, verdict}`` shape ready for the dashboard. Best-
+    effort — empty dict on error."""
+    try:
+        import slippage_tracker as _st
+        agg = _st.aggregate_realized_slippage(journal)
+        verdict = _st.compare_to_assumption(agg)
+        return {"aggregate": agg, "verdict": verdict}
+    except Exception:
+        return {}
+
+
 def build_analytics_view(journal=None, scorecard=None, account=None,
                           picks=None, now=None):
     """Single end-to-end call. Returns the full analytics payload
@@ -785,4 +798,10 @@ def build_analytics_view(journal=None, scorecard=None, account=None,
         # Round-61 pt.65: risk-parity strategy weights — read-only
         # for the dashboard. Inverse-σ weighting; sums to 1.0.
         "risk_parity_weights": _safe_risk_parity_weights(journal),
+        # Round-61 pt.80: realized vs expected slippage. Tells the
+        # user whether live fills match the 10 bps backtest
+        # assumption. {aggregate: {entry_count, entry_mean_bps, ...},
+        # verdict: {state: ok|warn|alert|preliminary, headline,
+        # detail, gap_bps}}.
+        "slippage_summary": _safe_slippage_summary(journal),
     }
