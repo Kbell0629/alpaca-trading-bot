@@ -519,6 +519,194 @@ def compute_strategy_breakdown(journal):
 
 
 # ============================================================================
+# Round-61 pt.97: per-strategy attribution
+# ============================================================================
+
+# Verdict thresholds. Conservative — better to flag a strategy as
+# "neutral" than to greenlight one that's actually dragging.
+PT97_MIN_TRADES_FOR_VERDICT: int = 10
+PT97_CARRYING_WIN_RATE: float = 0.45
+PT97_CARRYING_PROFIT_FACTOR: float = 1.2
+PT97_DRAGGING_WIN_RATE: float = 0.35
+PT97_DRAGGING_PROFIT_FACTOR: float = 0.8
+
+
+def _max_drawdown_pct_chronological(pnl_series):
+    """Walk a chronological P&L series, return peak-to-trough drawdown
+    as a percentage of peak. 0 if no positive peak ever reached."""
+    cum = 0.0
+    peak = 0.0
+    max_dd = 0.0
+    for pnl in pnl_series:
+        cum += pnl
+        if cum > peak:
+            peak = cum
+        if peak > 0:
+            dd = (peak - cum) / peak * 100
+            if dd > max_dd:
+                max_dd = dd
+    return round(max_dd, 2)
+
+
+def _classify_strategy_verdict(stats):
+    """Bucket a strategy into carrying / neutral / dragging /
+    preliminary based on win-rate, profit factor, and total $."""
+    if stats["count"] < PT97_MIN_TRADES_FOR_VERDICT:
+        return "preliminary"
+    win_rate = stats["win_rate"]
+    pf = stats["profit_factor"]
+    total = stats["total_pnl"]
+    if total < 0:
+        return "dragging"
+    if (win_rate < PT97_DRAGGING_WIN_RATE
+            and pf < PT97_DRAGGING_PROFIT_FACTOR):
+        return "dragging"
+    if (win_rate >= PT97_CARRYING_WIN_RATE
+            and pf >= PT97_CARRYING_PROFIT_FACTOR
+            and total > 0):
+        return "carrying"
+    return "neutral"
+
+
+def compute_strategy_attribution(journal):
+    """Per-strategy attribution view: extends compute_strategy_breakdown
+    with edge metrics (expectancy, profit factor, max drawdown) plus a
+    dollar-contribution share of overall realized P&L plus a verdict
+    bucket so users can see at a glance which strategies are carrying
+    the bot vs which are dragging.
+
+    Returns:
+      {
+        "strategies": {
+          "<strategy_name>": {
+            count, wins, losses, win_rate, expectancy,
+            total_pnl, sum_wins, sum_losses, profit_factor,
+            avg_win, avg_loss, max_drawdown_pct,
+            dollar_contribution_pct, verdict,
+          },
+          ...
+        },
+        "ranking": [{strategy, total_pnl, dollar_contribution_pct, verdict}, ...],
+        "verdict_counts": {carrying, neutral, dragging, preliminary},
+        "overall_realized_pnl": float,
+        "headline": str,
+      }
+    """
+    trades = list((journal or {}).get("trades") or [])
+    by_strategy = {}
+
+    # Pass 1: chronological accumulation per strategy.
+    sortable = []
+    for t in trades:
+        if not isinstance(t, dict):
+            continue
+        if (t.get("status") or "open").lower() != "closed":
+            continue
+        try:
+            pnl = float(t.get("pnl"))
+        except (TypeError, ValueError):
+            continue
+        sortable.append((t.get("exit_timestamp") or "",
+                          t.get("strategy") or "unknown", pnl))
+    sortable.sort(key=lambda r: r[0])
+
+    chrono = {}  # strategy → list[pnl] in time order
+    for _ts, strat, pnl in sortable:
+        slot = by_strategy.setdefault(strat, {
+            "count": 0, "wins": 0, "losses": 0,
+            "total_pnl": 0.0, "sum_wins": 0.0, "sum_losses": 0.0,
+            "win_pnls": [], "loss_pnls": [],
+        })
+        slot["count"] += 1
+        slot["total_pnl"] += pnl
+        if pnl > 0.005:
+            slot["wins"] += 1
+            slot["sum_wins"] += pnl
+            slot["win_pnls"].append(pnl)
+        elif pnl < -0.005:
+            slot["losses"] += 1
+            slot["sum_losses"] += pnl  # negative
+            slot["loss_pnls"].append(pnl)
+        chrono.setdefault(strat, []).append(pnl)
+
+    # Pass 2: derived stats + verdict.
+    overall_realized = sum(s["total_pnl"] for s in by_strategy.values())
+    for strat, slot in by_strategy.items():
+        cnt = slot["count"]
+        slot["win_rate"] = (slot["wins"] / cnt) if cnt else 0.0
+        slot["expectancy"] = (slot["total_pnl"] / cnt) if cnt else 0.0
+        slot["avg_win"] = (slot["sum_wins"] / slot["wins"]
+                            if slot["wins"] else 0.0)
+        slot["avg_loss"] = (slot["sum_losses"] / slot["losses"]
+                             if slot["losses"] else 0.0)
+        sum_losses_abs = abs(slot["sum_losses"])
+        if sum_losses_abs > 0.005:
+            slot["profit_factor"] = round(slot["sum_wins"]
+                                           / sum_losses_abs, 2)
+        elif slot["sum_wins"] > 0:
+            slot["profit_factor"] = float("inf")
+        else:
+            slot["profit_factor"] = 0.0
+        slot["max_drawdown_pct"] = _max_drawdown_pct_chronological(
+            chrono.get(strat) or [])
+        if abs(overall_realized) > 0.005:
+            slot["dollar_contribution_pct"] = round(
+                slot["total_pnl"] / overall_realized * 100, 2)
+        else:
+            slot["dollar_contribution_pct"] = 0.0
+        slot["verdict"] = _classify_strategy_verdict(slot)
+        # Round + drop the raw lists from the response shape.
+        for k in ("total_pnl", "sum_wins", "sum_losses",
+                   "win_rate", "expectancy", "avg_win", "avg_loss"):
+            slot[k] = round(slot[k], 4) if isinstance(slot[k], float) else slot[k]
+        slot.pop("win_pnls", None)
+        slot.pop("loss_pnls", None)
+
+    # Ranking sorted by dollar contribution desc.
+    ranking = sorted(
+        ({"strategy": s,
+          "total_pnl": d["total_pnl"],
+          "dollar_contribution_pct": d["dollar_contribution_pct"],
+          "verdict": d["verdict"]}
+         for s, d in by_strategy.items()),
+        key=lambda r: r["total_pnl"], reverse=True,
+    )
+
+    counts = {"carrying": 0, "neutral": 0,
+                "dragging": 0, "preliminary": 0}
+    for d in by_strategy.values():
+        counts[d["verdict"]] = counts.get(d["verdict"], 0) + 1
+
+    # Headline summary.
+    if not by_strategy:
+        headline = "No closed trades yet — attribution will populate once trades close."
+    elif counts["preliminary"] == len(by_strategy):
+        headline = (f"All {len(by_strategy)} strategies still in "
+                     f"preliminary (<{PT97_MIN_TRADES_FOR_VERDICT} trades) "
+                     "— verdict will sharpen with more data.")
+    else:
+        parts = []
+        if counts["carrying"]:
+            parts.append(f"{counts['carrying']} carrying")
+        if counts["neutral"]:
+            parts.append(f"{counts['neutral']} neutral")
+        if counts["dragging"]:
+            parts.append(f"{counts['dragging']} dragging")
+        if counts["preliminary"]:
+            parts.append(f"{counts['preliminary']} preliminary")
+        headline = ("Attribution: " + " · ".join(parts) +
+                     f" · overall ${overall_realized:+,.2f} realized")
+
+    return {
+        "strategies": by_strategy,
+        "ranking": ranking,
+        "verdict_counts": counts,
+        "overall_realized_pnl": round(overall_realized, 2),
+        "headline": headline,
+    }
+
+
+# ============================================================================
 # Round-61 pt.47: score-to-outcome correlation
 # ============================================================================
 
@@ -823,4 +1011,11 @@ def build_analytics_view(journal=None, scorecard=None, account=None,
         # so the user can see WHICH entry signals correlate with
         # winning trades. Foundation for future meta-learning.
         "rationale_breakdown": _safe_rationale_breakdown(journal),
+        # Round-61 pt.97: per-strategy attribution. Extends the
+        # pt.46 strategy_breakdown with profit factor, max
+        # drawdown, dollar-contribution share, and a verdict
+        # bucket (carrying / neutral / dragging / preliminary)
+        # so users can see which strategies are actually carrying
+        # the bot before flipping live.
+        "strategy_attribution": compute_strategy_attribution(journal),
     }

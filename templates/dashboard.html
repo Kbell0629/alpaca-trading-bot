@@ -5144,7 +5144,82 @@ function renderAnalyticsPanel(d) {
     // ---- Round-61 pt.88: Winners-vs-Losers entry rationale ----
     html += _analyticsRenderRationalePanel(d.rationale_breakdown);
 
+    // ---- Round-61 pt.97: Per-strategy attribution ----
+    html += _analyticsRenderAttributionPanel(d.strategy_attribution);
+
     panel.innerHTML = html;
+}
+
+// Round-61 pt.97: which strategies are actually carrying the bot vs
+// dragging? Renders a sortable table by dollar contribution + a
+// verdict pill per strategy.
+function _analyticsRenderAttributionPanel(view) {
+    if (!view || !view.strategies) return '';
+    var strategies = view.strategies || {};
+    var ranking = view.ranking || [];
+    var counts = view.verdict_counts || {};
+    var headline = view.headline || '';
+    var stratNames = Object.keys(strategies);
+    if (!stratNames.length) {
+        return '<div class="factor-card" style="margin-top:18px;padding:14px">' +
+            '<div class="factor-card-title">⚖ Strategy attribution</div>' +
+            '<div class="subtitle">Closes will populate this panel once trades settle.</div></div>';
+    }
+    var html = '<div class="factor-card" style="margin-top:18px;padding:14px">' +
+        '<div class="factor-card-title">⚖ Strategy attribution — who\'s carrying the bot?</div>' +
+        '<div style="margin:6px 0 12px;font-size:12px;color:var(--text-dim)">' + esc(headline) + '</div>';
+    // Verdict-counts pill row.
+    function pill(label, n, color) {
+        if (!n) return '';
+        return '<span style="display:inline-block;padding:2px 10px;border-radius:999px;background:' + color + ';color:#fff;font-size:11px;font-weight:700;margin-right:6px">' +
+            esc(label) + ' ' + esc(String(n)) + '</span>';
+    }
+    html += '<div style="margin-bottom:10px">' +
+        pill('Carrying', counts.carrying, 'rgba(34,197,94,0.55)') +
+        pill('Neutral', counts.neutral, 'rgba(148,163,184,0.55)') +
+        pill('Dragging', counts.dragging, 'rgba(239,68,68,0.55)') +
+        pill('Preliminary', counts.preliminary, 'rgba(59,130,246,0.45)') +
+        '</div>';
+    // Sortable table — ranking is already dollar-contrib desc.
+    html += '<table style="width:100%;border-collapse:collapse;font-size:12px">' +
+        '<thead><tr style="text-align:left;color:var(--text-dim);border-bottom:1px solid var(--border)">' +
+        '<th style="padding:6px 8px">Strategy</th>' +
+        '<th style="padding:6px 8px;text-align:right">Trades</th>' +
+        '<th style="padding:6px 8px;text-align:right">Win rate</th>' +
+        '<th style="padding:6px 8px;text-align:right">Expectancy</th>' +
+        '<th style="padding:6px 8px;text-align:right">Profit factor</th>' +
+        '<th style="padding:6px 8px;text-align:right">Max DD</th>' +
+        '<th style="padding:6px 8px;text-align:right">Total $</th>' +
+        '<th style="padding:6px 8px;text-align:right">Share</th>' +
+        '<th style="padding:6px 8px">Verdict</th>' +
+        '</tr></thead><tbody>';
+    var verdictColor = {
+        'carrying':    'rgba(34,197,94,0.55)',
+        'neutral':     'rgba(148,163,184,0.55)',
+        'dragging':    'rgba(239,68,68,0.55)',
+        'preliminary': 'rgba(59,130,246,0.45)',
+    };
+    ranking.forEach(function(r) {
+        var s = strategies[r.strategy] || {};
+        var pf = s.profit_factor;
+        var pfDisplay = (pf == null) ? '—'
+            : (pf === Infinity || pf > 999) ? '∞'
+            : pf.toFixed(2);
+        html += '<tr style="border-bottom:1px solid rgba(255,255,255,0.04)">' +
+            '<td style="padding:6px 8px;font-weight:600">' + esc(r.strategy) + '</td>' +
+            '<td style="padding:6px 8px;text-align:right">' + esc(String(s.count || 0)) + '</td>' +
+            '<td style="padding:6px 8px;text-align:right">' + ((s.win_rate || 0) * 100).toFixed(0) + '%</td>' +
+            '<td style="padding:6px 8px;text-align:right">$' + (s.expectancy || 0).toFixed(2) + '</td>' +
+            '<td style="padding:6px 8px;text-align:right">' + esc(pfDisplay) + '</td>' +
+            '<td style="padding:6px 8px;text-align:right">' + (s.max_drawdown_pct || 0).toFixed(1) + '%</td>' +
+            '<td style="padding:6px 8px;text-align:right;color:' + (s.total_pnl > 0 ? 'var(--green)' : (s.total_pnl < 0 ? 'var(--red)' : 'var(--text-dim)')) + '">$' + (s.total_pnl || 0).toFixed(2) + '</td>' +
+            '<td style="padding:6px 8px;text-align:right">' + (r.dollar_contribution_pct || 0).toFixed(0) + '%</td>' +
+            '<td style="padding:6px 8px"><span style="display:inline-block;padding:2px 8px;border-radius:999px;background:' + (verdictColor[s.verdict] || 'var(--card)') + ';color:#fff;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.4px">' + esc(s.verdict || '') + '</span></td>' +
+            '</tr>';
+    });
+    html += '</tbody></table>';
+    html += '</div>';
+    return html;
 }
 
 // Round-61 pt.88: realized slippage verdict + per-strategy break.

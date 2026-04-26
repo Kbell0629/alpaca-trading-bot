@@ -161,5 +161,6 @@ def test_analytics_view_keys_complete():
         "risk_parity_weights",   # pt.65
         "slippage_summary",      # pt.80
         "rationale_breakdown",   # pt.88
+        "strategy_attribution",  # pt.97
     }
     assert set(out.keys()) == expected
