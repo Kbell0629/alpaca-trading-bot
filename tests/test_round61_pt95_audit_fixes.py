@@ -134,12 +134,21 @@ def test_update_scorecard_reload_under_lock_preserves_concurrent_writes():
 # ============================================================================
 
 def test_pt88_panels_collapse_to_single_column_on_mobile():
+    """The pt.88 slippage panel grid must be targeted by SOME
+    @media (max-width: 600px) block so it collapses to single-
+    column on mobile. (Pt.99 added another @media block earlier
+    in the file for the user-dropdown anchor — so this test now
+    searches for the rule by content, not by file order.)"""
     src = (_HERE / "templates" / "dashboard.html").read_text()
-    media_block = src[src.find("@media (max-width: 600px) {"):]
-    media_block = media_block[:media_block.find("\n}\n") + 3]
-    assert "minmax(160px" in media_block, (
-        "pt.88 slippage panel grid must be targeted by the mobile "
-        "media query so it collapses to single-column on <600px.")
+    # Find any media block that targets the pt.88 minmax(160px grid.
+    needle = "minmax(160px"
+    rule_idx = src.find(needle)
+    assert rule_idx > 0
+    # The enclosing @media block must be a 600px breakpoint.
+    media_idx = src.rfind("@media (max-width: 600px) {", 0, rule_idx)
+    assert media_idx > 0, (
+        "pt.88 slippage panel rule found, but it isn't inside a "
+        "@media (max-width: 600px) block — collapse won't fire.")
 
 
 def test_admin_audit_select_has_label_association():
