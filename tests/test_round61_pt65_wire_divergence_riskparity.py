@@ -159,5 +159,6 @@ def test_analytics_view_keys_complete():
         "best_worst_trades", "filter_summary",
         "score_outcome", "score_health",
         "risk_parity_weights",   # pt.65
+        "slippage_summary",      # pt.80
     }
     assert set(out.keys()) == expected

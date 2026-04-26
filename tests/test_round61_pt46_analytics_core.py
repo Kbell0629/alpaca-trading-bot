@@ -559,6 +559,8 @@ def test_build_analytics_view_returns_all_keys():
         "score_health",
         # Round-61 pt.65 added risk_parity_weights.
         "risk_parity_weights",
+        # Round-61 pt.80 added slippage_summary.
+        "slippage_summary",
     }
     assert set(out.keys()) == expected_keys
 
