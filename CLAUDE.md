@@ -31,9 +31,9 @@ auto-deploys top picks across 6 strategies, manages exits, handles kill-switch
 1. `git checkout main && git pull --ff-only`
 2. `cat CLAUDE.md` (this file), `cat README.md`, `cat CHANGELOG.md`
 3. `MASTER_ENCRYPTION_KEY=$(python3 -c 'print("e"*64)') python3 -m pytest tests/ --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json -q`
-   — expect ~**3219+ passing, 1 deselected** after pt.95 (baseline grew from
+   — expect ~**3275+ passing, 1 deselected** after pt.97 (baseline grew from
    1802 at pt.32 through pt.46 +59, pt.47 +69, pt.48 +31, pt.49 +87, pt.50 +22,
-   pt.51 +39, pt.52-57 polish, pt.58-69 batches +280, pt.70-76 +160, pt.78-93 +140, pt.95 +regression-tests).
+   pt.51 +39, pt.52-57 polish, pt.58-69 batches +280, pt.70-76 +160, pt.78-93 +140, pt.95 +13 audit-fixes, pt.96 +25, pt.97 +18).
    Round-61 pt.95 (audit-sweep) dropped the two stale `--deselect`s for
    `test_password_strength_rejects_weak` + `test_ruff_clean_on_real_bug_rules` —
    both pass on current main and were holdovers from rounds where the
@@ -69,9 +69,93 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-26 — round 61 pt.10-93 SHIPPED)
+## Current session state (2026-04-26 — round 61 pt.10-97 SHIPPED)
 
-**Latest (pt.93) — live-mode promotion gate UI.**
+**Latest (pt.97) — per-strategy attribution sweep.**
+The Analytics Hub already rendered a per-strategy breakdown
+(count / wins / win rate / total / avg / best / worst) but
+didn't surface edge metrics or contribution share — so a user
+preparing to flip live couldn't easily see WHICH of their 6
+strategies were carrying the bot vs which were neutral /
+dragging. Pt.97 adds `analytics_core.compute_strategy_attribution`
+which extends the breakdown with profit factor, expectancy,
+max drawdown, dollar-contribution %, plus a verdict bucket
+(carrying / neutral / dragging / preliminary). Wired into
+`build_analytics_view → strategy_attribution`. New panel in the
+Analytics Hub renders a verdict-counts pill row + headline
+("2 carrying · 1 neutral · 1 dragging · overall +$1,243.50
+realized") + sortable 9-column table (PF of Infinity → ∞).
+Verdict thresholds: ≥10 trades for non-preliminary; carrying =
+win-rate ≥ 45% AND PF ≥ 1.2 AND total > 0; dragging = total <
+0 OR (win-rate < 35% AND PF < 0.8); neutral otherwise.
++18 tests in
+`tests/test_round61_pt97_strategy_attribution.py`.
+
+**Pt.96 (PR #222) — live-mode soft-launch wizard.**
+Pt.92 surfaced the shadow-mode log; pt.93 surfaced the auto-
+promotion gate. Both panels existed in Settings → Live Trading
+but nothing told the user what to DO with them. Pt.96 wraps
+both into a four-phase soft-launch flow:
+  1. preflight  — keys saved + email + ntfy
+  2. ready      — promotion gate (pt.72/pt.93) green
+  3. shadow     — shadow window running for ≥48h with ≥5 events
+  4. verify     — user explicitly clicks "I've reviewed the log"
+  5. live       — toggle flipped
+New pure module `live_launch.py` exposes
+`compute_launch_state` + `start_shadow_window` /
+`mark_shadow_reviewed` / `reset_launch` (idempotent mutators
+on the guardrails dict). Two new endpoints (one-line dispatch):
+  * `POST /api/live-launch-state` → read-only wizard state
+  * `POST /api/live-launch-step` body
+    `{action: start_shadow|mark_reviewed|reset}`. start_shadow
+    flips `live_shadow_mode` ON; reset turns it OFF.
+State persists in `users/<id>/guardrails.live_launch`.
+Dashboard adds a "🚀 Live launch checklist" panel with a phase
+pill, per-step ✓/○ icons + hints + inline action buttons,
+shadow-window progress meta, and a green next-action banner
+("Next: Enable Live Trading" once all four phases clear).
+Sibling pt.92 + pt.93 panels refresh after every wizard action
+so the three panels stay in sync.
++25 tests in
+`tests/test_round61_pt96_live_launch_wizard.py`.
+
+**Pt.95 (PR #221) — forensic audit-sweep fixes.**
+Five parallel Explore agents (security / DB / trading /
+UI/UX/mobile / tests-ops) audited the codebase post-pt.94.
+Trading logic returned clean (one LOW cosmetic finding —
+skipped). Eight high-confidence auto-fix wins shipped:
+  * **auth.py ZIP export hardening:** `os.walk(followlinks=False)`
+    + realpath-containment check + ``..``/absolute-path arcname
+    guard so a planted symlink can't make the export traverse
+    outside `users/<id>/`. Also added Round-45 dual-mode
+    encrypted columns (`alpaca_live_key_encrypted`,
+    `alpaca_live_secret_encrypted`) to the export sanitisation
+    list — they had been missed when pt.45 added them.
+  * **update_scorecard.py concurrency fix:** subprocess journal
+    write now wraps the RMW in a flock against
+    `<JOURNAL_PATH>.lock` matching cloud_scheduler's
+    `strategy_file_lock` naming. Inside the lock we reload the
+    on-disk journal so trades the scheduler appended during our
+    metrics computation aren't silently overwritten.
+  * **Mobile + a11y polish:** pt.88 slippage + rationale panels
+    collapse to single-column on <600px. Admin audit filter +
+    backtest selects gain `for=` / `aria-label`.
+  * **CI + ops hardening:** `concurrency:` cancellation group on
+    `.github/workflows/ci.yml` so force-pushes don't burn quota.
+    LOC ratchet bumped 3410 → 3450 (+40 cushion). CLAUDE.md
+    onboarding command no longer over-deselects two tests that
+    have passed on real CI for several rounds.
+Skipped (verified false positives or speculative): pt.12-
+deliberate exception surfacing, calibration-override missing
+auth (verified handler is gated), SQLite connection-pool /
+guardrails RMW races (all paths already use
+`strategy_file_lock`), pnl_pct cosmetic redundancy.
++13 source-pin + integration tests in
+`tests/test_round61_pt95_audit_fixes.py` including a threaded
+flock-contention test that exercises the scorecard race fix
+end-to-end.
+
+**Pt.93 (PR #219) — live-mode promotion gate UI.**
 Pt.72 shipped `live_mode_gate.check_live_mode_readiness` and
 wired it into `handle_toggle_live_mode`, but the only place a
 user found out which gate failed was the 400-response error
