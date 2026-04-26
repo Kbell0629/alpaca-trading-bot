@@ -922,7 +922,8 @@ def record_trade_open(user, symbol, strategy, price, qty, reason,
 # This helper finds the most recent OPEN journal entry for the symbol
 # and marks it closed with P&L + exit details.
 def record_trade_close(user, symbol, strategy, exit_price, pnl, exit_reason,
-                        qty=None, side="sell"):
+                        qty=None, side="sell",
+                        entry_filled_price=None, exit_filled_price=None):
     """Mark the matching open journal entry as closed. Idempotent:
     if the entry is already closed, does nothing.
 
@@ -937,6 +938,13 @@ def record_trade_close(user, symbol, strategy, exit_price, pnl, exit_reason,
     Round-51: on the sell side (side=='sell' long close), also record
     the proceeds in the settled-funds ledger so cash accounts respect
     the T+1 rule on their next deploy. Best-effort — never raises.
+
+    Round-61 pt.84: optional `entry_filled_price` and
+    `exit_filled_price` populate slippage_bps fields on the journal
+    entry. Caller passes the actual broker fill prices (Alpaca's
+    position `avg_entry_price` for entry, the close-order's
+    `filled_avg_price` for exit). Pt.80's slippage_tracker reads
+    these to compare realized vs assumed slippage.
     """
     # Round-51: per-sell settled-funds ledger entry (cash accounts only)
     # Short covers (side='buy') don't generate settled-funds proceeds.
@@ -1000,6 +1008,41 @@ def record_trade_close(user, symbol, strategy, exit_price, pnl, exit_reason,
                     except Exception as _pp_e:
                         log(f"[{user.get('username','?')}] {symbol} pnl_pct calc failed: {_pp_e}", "monitor")
                     t["exit_side"] = side
+                    # Round-61 pt.84: persist slippage fields when
+                    # caller supplied actual fill prices. Pt.80's
+                    # slippage_tracker.aggregate_realized_slippage
+                    # reads `entry_slippage_bps` / `exit_slippage_bps`
+                    # off these entries.
+                    try:
+                        import slippage_tracker as _st
+                        # Entry-side slippage: open entry has the
+                        # screener-time `entry_expected_price` (pt.84
+                        # auto-deployer change); caller passes the
+                        # real fill price.
+                        _entry_exp = t.get("entry_expected_price")
+                        if _entry_exp is None:
+                            _entry_exp = t.get("price")
+                        if entry_filled_price is not None and _entry_exp:
+                            t["entry_filled_price"] = float(entry_filled_price)
+                            _entry_side = "buy" if side == "sell" else "sell"
+                            _ebps = _st.compute_slippage_bps(
+                                _entry_exp, entry_filled_price,
+                                side=_entry_side)
+                            if _ebps is not None:
+                                t["entry_slippage_bps"] = _ebps
+                        # Exit-side slippage: caller passes both the
+                        # expected (target/stop/current) and filled
+                        # prices. Default expected = exit_price kwarg.
+                        if exit_filled_price is not None and exit_price:
+                            t["exit_expected_price"] = float(exit_price)
+                            t["exit_filled_price"] = float(exit_filled_price)
+                            _xbps = _st.compute_slippage_bps(
+                                exit_price, exit_filled_price,
+                                side=side)
+                            if _xbps is not None:
+                                t["exit_slippage_bps"] = _xbps
+                    except Exception:
+                        pass  # best-effort — never fail the close on this
                     save_json(journal_path, journal)
                     return True
             # Round-34: no matching open entry.  Before, this silently
@@ -2466,8 +2509,20 @@ def process_strategy_file(user, filepath, strat, extended_hours=False):
                 notify_rich(user,
                             f"Profit taken on {symbol}: sold at ${price:.2f} (+{pnl_pct:.1f}%)",
                             "exit", rich_subject=_subj, rich_body=_body)
+                # Round-61 pt.84: pass realized fill prices so
+                # slippage_tracker can compare expected (screener-time
+                # entry, current-price exit) vs actual broker fills.
+                _entry_fill_px = entry if entry else None
+                _exit_fill_px = None
+                try:
+                    _exit_fill_px = float(order.get("filled_avg_price")
+                                            or 0) or None
+                except (TypeError, ValueError):
+                    _exit_fill_px = None
                 record_trade_close(user, symbol, strategy_type, price, pnl,
-                                    "target_hit", qty=shares, side="sell")
+                                    "target_hit", qty=shares, side="sell",
+                                    entry_filled_price=_entry_fill_px,
+                                    exit_filled_price=_exit_fill_px)
 
     # Round-61 pt.71: news-exit close. The monitor sweep set
     # `news_exit_close_<user>_<sym>` in _last_runs when fresh
@@ -3797,6 +3852,13 @@ def run_auto_deployer(user):
                 # Round-61 pt.82: structured rationale (None if build
                 # failed; dict with score/rs/sector/news/etc. otherwise).
                 "entry_rationale": _entry_rationale,
+                # Round-61 pt.84: screener-time price recorded as
+                # the EXPECTED entry. The actual filled price (and
+                # the slippage_bps) is back-filled at close-time
+                # from the position's `avg_entry_price`.
+                "entry_expected_price": (float(pick.get("price"))
+                                            if pick.get("price")
+                                            else None),
             })
             save_json(journal_path, journal)
 
