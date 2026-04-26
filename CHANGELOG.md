@@ -8,6 +8,40 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.84 — wire slippage_tracker into the fill path (+8 tests)
+
+**Date:** 2026-04-26
+
+Pt.80 shipped the slippage_tracker module + the Analytics Hub
+`slippage_summary` key, but no call site populated the journal's
+slippage fields, so the panel returned an empty aggregate. Pt.84
+closes that loop.
+
+**Changes:**
+* Auto-deployer journal append now records
+  `entry_expected_price` (= the screener-time price) on every
+  new open entry so the close path has the "expected" anchor.
+* `record_trade_close` accepts new `entry_filled_price` and
+  `exit_filled_price` kwargs. When supplied alongside the
+  stored expected price, computes signed slippage_bps via
+  `slippage_tracker.compute_slippage_bps` and writes the four
+  slippage fields back onto the closed entry.
+* Target-hit close path passes the real broker fill prices
+  through (entry = position avg_entry_price; exit = close-
+  order's filled_avg_price).
+
+**Backwards-compat:** old call sites without the new kwargs still
+work — slippage fields are simply omitted from those entries
+(and the aggregator silently skips legacy entries).
+
+Once trades close through the wired path, pt.80's
+`slippage_summary` panel transitions from "preliminary, no data"
+to a real verdict.
+
++8 tests in `tests/test_round61_pt84_wire_slippage_fields.py`.
+
+---
+
 ## 🆕 Round-61 pt.82 — per-trade entry-rationale audit (+25 tests)
 
 **Date:** 2026-04-25
