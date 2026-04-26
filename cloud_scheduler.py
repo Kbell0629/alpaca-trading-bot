@@ -3758,6 +3758,28 @@ def run_auto_deployer(user):
             _rsi = pick.get("rsi", 50)
             _score_str = f"{_score:.0f}" if isinstance(_score, (int, float)) else "n/a"
             _rsi_str = f"{_rsi:.0f}" if isinstance(_rsi, (int, float)) else "n/a"
+            # Round-61 pt.82: structured entry rationale. Captures the
+            # WHY of the deploy in a queryable dict so post-mortems
+            # and the future meta-learning loop can correlate WHICH
+            # entry conditions predict winners vs losers. Best-effort
+            # — failures fall through to a None field.
+            _entry_rationale = None
+            try:
+                import entry_rationale as _er
+                _sr = locals().get("sector_returns") or {}
+                _entry_rationale = _er.build_entry_rationale(
+                    pick,
+                    sizing_info=locals().get("_size") or {},
+                    regime=locals().get("composite_regime") or
+                            locals().get("regime"),
+                    sector_returns=_sr,
+                )
+                log(f"[{user['username']}] {symbol}: entry rationale: "
+                    f"{_er.format_rationale(_entry_rationale)}",
+                    "deployer")
+            except Exception as _er_e:
+                log(f"[{user['username']}] {symbol}: entry rationale "
+                    f"build failed ({_er_e})", "deployer")
             journal["trades"].append({
                 "timestamp": now_et().isoformat(),
                 "symbol": symbol, "side": "buy", "qty": qty,
@@ -3772,6 +3794,9 @@ def run_auto_deployer(user):
                 "_screener_score": (float(_score)
                                       if isinstance(_score, (int, float))
                                       else None),
+                # Round-61 pt.82: structured rationale (None if build
+                # failed; dict with score/rs/sector/news/etc. otherwise).
+                "entry_rationale": _entry_rationale,
             })
             save_json(journal_path, journal)
 
