@@ -8,6 +8,78 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.88 — Analytics Hub UI for slippage + entry-rationale (+10 tests)
+
+**Date:** 2026-04-26
+
+Pt.80 + pt.82 + pt.84 produced the data; pt.88 surfaces it in
+the Analytics Hub.
+
+**New analytics_core key:**
+* `rationale_breakdown` — `entry_rationale.aggregate_winners_vs_losers(journal)`
+  bucketed mean signals (score, RS, confluence, kelly) per
+  win/loss group + signed deltas. Wrapped in
+  `_safe_rationale_breakdown` so an entry_rationale import
+  failure can't break the analytics fetch.
+
+**New dashboard render functions:**
+* `_analyticsRenderSlippagePanel(summary)` — verdict pill
+  (ok / warn / alert / preliminary, color-coded green / orange
+  / red / dim), headline + detail copy, per-strategy mean-bps
+  grid sorted worst-first.
+* `_analyticsRenderRationalePanel(breakdown)` — winners-vs-
+  losers signal-comparison table (4 rows: score, RS,
+  confluence, kelly-mult), with signed delta column colored
+  green when winners had MORE of that signal, red when fewer.
+  Empty-state message when no closed trades carry rationale.
+
+Both helpers are called from `renderAnalyticsPanel` after the
+score-outcome block, before `panel.innerHTML = html`. Pure-
+module discipline preserved (analytics_core uses lazy `_safe_*`
+imports, not top-level).
+
++10 tests in
+`tests/test_round61_pt88_analytics_ui_slippage_rationale.py`.
+
+---
+
+## 🆕 Round-61 pt.86 — live-mode dry-run / shadow mode (+18 tests)
+
+**Date:** 2026-04-26
+
+Paper validation ends ~May 15. After that the user can flip the
+live-mode toggle (with the pt.72 promotion gate as a check), and
+real money starts trading. Pt.86 adds an opt-in **shadow mode**
+that runs the auto-deployer through every gate but RECORDS the
+deploy intent into a per-user shadow log INSTEAD of POSTing the
+order — letting the user "watch what live would do" without
+committing capital.
+
+**New pure module `shadow_mode.py`:**
+* `is_shadow_mode_active(user, guardrails, env=os.environ)` —
+  resolution order: per-user `guardrails.live_shadow_mode` →
+  `LIVE_SHADOW_MODE` env var → False
+* `record_shadow_event(user, action, **fields)` — appends a
+  structured event (timestamp, action, symbol, strategy, qty,
+  price, score, sector) to `users/<id>/shadow_log.json`. Capped
+  at 500 entries (oldest-first prune)
+* `get_shadow_log(user, limit=50)` — newest-first
+* `summarize_shadow_log(events)` — counts by action / symbol /
+  strategy for the dashboard
+
+Wired into `cloud_scheduler.run_auto_deployer` just before the
+order POST: when shadow mode is active, records the
+`would_deploy` event and `continue`s the loop. Fail-safe: if the
+shadow check raises, falls through to the real POST so we don't
+accidentally suppress trading.
+
+Pure-module discipline: no top-level imports of
+`cloud_scheduler` / `auth` / `server`. Pinned by test.
+
++18 tests in `tests/test_round61_pt86_shadow_mode.py`.
+
+---
+
 ## 🆕 Round-61 pt.84 — wire slippage_tracker into the fill path (+8 tests)
 
 **Date:** 2026-04-26

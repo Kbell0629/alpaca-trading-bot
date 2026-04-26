@@ -31,10 +31,9 @@ auto-deploys top picks across 6 strategies, manages exits, handles kill-switch
 1. `git checkout main && git pull --ff-only`
 2. `cat CLAUDE.md` (this file), `cat README.md`, `cat CHANGELOG.md`
 3. `MASTER_ENCRYPTION_KEY=$(python3 -c 'print("e"*64)') python3 -m pytest tests/ --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json --deselect tests/test_auth.py::test_password_strength_rejects_weak --deselect tests/test_audit_round12_scheduler_latent.py::test_ruff_clean_on_real_bug_rules -q`
-   — expect ~**3140+ passing, 3 deselected** after pt.82 (baseline grew from
+   — expect ~**3180+ passing, 3 deselected** after pt.88 (baseline grew from
    1802 at pt.32 through pt.46 +59, pt.47 +69, pt.48 +31, pt.49 +87, pt.50 +22,
-   pt.51 +39, pt.52-57 polish, pt.58-69 batches +280, pt.70-76 +160 — incl.
-   pt.74 +60 UI tests, pt.75 +10, pt.76 +4, pt.78-82 +75).
+   pt.51 +39, pt.52-57 polish, pt.58-69 batches +280, pt.70-76 +160, pt.78-88 +103).
 4. `ruff check .` — clean.
 5. Validate dashboard JS: `awk '/^<script>/,/^<\/script>/' templates/dashboard.html | grep -v '^<script>' | grep -v '^</script>' > /tmp/dash.js && node --check /tmp/dash.js`
 6. `npm ci && npx vitest run` — expect **341 JS tests passing** (29 files).
@@ -64,7 +63,43 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-26 — round 61 pt.10-84 SHIPPED)
+## Current session state (2026-04-26 — round 61 pt.10-88 SHIPPED)
+
+**Latest (pt.88) — Analytics Hub UI for slippage + entry-rationale.**
+Pt.80 + pt.82 + pt.84 produced the data; pt.88 surfaces it in
+the Analytics Hub. New `analytics_core` key
+`rationale_breakdown` (lazily wraps
+`entry_rationale.aggregate_winners_vs_losers`). New dashboard
+render functions:
+  * `_analyticsRenderSlippagePanel(summary)` — verdict pill
+    (ok / warn / alert / preliminary, color-coded), headline +
+    detail copy, per-strategy mean-bps grid sorted worst-first
+  * `_analyticsRenderRationalePanel(breakdown)` — winners-vs-
+    losers comparison table (score, RS, confluence, kelly-mult)
+    with signed-delta colors (green when winners had MORE of
+    that signal, red when fewer). Empty-state message when no
+    rationale-carrying trades have closed yet.
+Both helpers are called from `renderAnalyticsPanel` after the
+score-outcome block. Pure-module discipline preserved
+(analytics_core uses lazy `_safe_*` imports).
++10 tests in
+`tests/test_round61_pt88_analytics_ui_slippage_rationale.py`.
+
+**Pt.86 — live-mode dry-run / shadow mode.**
+Paper validation ends ~May 15. After that the live toggle is
+binary. Pt.86 adds an opt-in "shadow mode" that runs the auto-
+deployer through every gate but RECORDS the deploy intent into a
+per-user shadow log INSTEAD of POSTing the order. Per-user
+opt-in via `guardrails.live_shadow_mode: true` (or deployment-
+wide via the `LIVE_SHADOW_MODE` env var). New pure module
+`shadow_mode.py` exposes `is_shadow_mode_active`,
+`record_shadow_event`, `get_shadow_log`, `summarize_shadow_log`.
+Persisted in `users/<id>/shadow_log.json`, capped at 500 entries
+(oldest-first prune). Wired into `run_auto_deployer` just before
+the order POST — short-circuits with `continue` after recording
+the event. Fail-safe: any shadow check error falls through to
+the real POST so trading isn't accidentally suppressed.
++18 tests in `tests/test_round61_pt86_shadow_mode.py`.
 
 **Latest (pt.84) — slippage_tracker wired into the fill path.**
 Pt.80 shipped the math + analytics surface; pt.84 closes the
