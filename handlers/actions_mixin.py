@@ -400,28 +400,90 @@ class ActionsHandlerMixin:
                     msg_label = "Market-On-Open (queued for 9:30 ET)"
                 queued = self.user_api_post(
                     f"{self.user_api_endpoint}/orders", body)
+                # Round-61 pt.81: same cancel+retry recovery as the
+                # RTH DELETE path. After-hours close POSTs a MOO/limit
+                # BUY-to-cover, but a pre-existing pending BUY-stop
+                # (e.g. pt.28's emergency cover) reserves the same
+                # buying power → Alpaca returns "insufficient qty".
+                # Without this, the user sees the bare error and the
+                # close stays broken until the cover-stop expires.
                 if isinstance(queued, dict) and "error" in queued:
-                    self.send_json({"error": queued["error"]}, 400)
-                else:
-                    # Pt.67: bridge the close into settled_funds so a
-                    # cash account can't re-deploy these proceeds same-
-                    # day and earn a Good Faith Violation.
-                    if side == "sell":
-                        _close_price = (
-                            float(body.get("limit_price"))
-                            if body.get("limit_price") else
-                            _latest_price(self, symbol))
-                        _record_close_to_settled_funds(
-                            self, symbol, qty, _close_price)
-                    self.send_json({
-                        "success": True, "symbol": symbol,
-                        "queued": True,
-                        "session": session,
-                        "message": (f"{side.upper()} {abs(qty)} "
-                                     f"{symbol} submitted as "
-                                     f"{msg_label}."),
-                        "order": queued,
-                    })
+                    _xh_err = (queued.get("error") or "").lower()
+                    if ("insufficient qty" in _xh_err
+                            or "available: 0" in _xh_err):
+                        cancelled, retry_err = _cancel_pending_sell_orders(
+                            self, symbol)
+                        if cancelled > 0:
+                            # Poll the POST up to 4 times with the
+                            # same backoff schedule pt.69 used for
+                            # the DELETE path.
+                            queued2 = None
+                            last_err2 = None
+                            for _attempt, _delay in enumerate(
+                                    (0.3, 0.6, 1.0, 1.5)):
+                                time.sleep(_delay)
+                                queued2 = self.user_api_post(
+                                    f"{self.user_api_endpoint}/orders",
+                                    body)
+                                if (isinstance(queued2, dict)
+                                        and "error" in queued2):
+                                    _e2 = (queued2.get("error")
+                                            or "").lower()
+                                    last_err2 = queued2["error"]
+                                    if ("insufficient qty" in _e2
+                                            or "available: 0" in _e2):
+                                        continue
+                                    # Different error → surface immediately.
+                                    return self.send_json({
+                                        "error": (queued2["error"]
+                                                   + f" (cancelled {cancelled} "
+                                                   "pending order(s) before retry)")
+                                    }, 400)
+                                last_err2 = None
+                                break
+                            if last_err2:
+                                return self.send_json({
+                                    "error": (last_err2
+                                               + f" (cancelled {cancelled} "
+                                               "pending order(s) but Alpaca is "
+                                               "still reporting qty unavailable "
+                                               "after ~3.5s — try again in a moment)")
+                                }, 400)
+                            queued = queued2
+                            # Fall through to the success branch
+                            # below so settled-funds + send_json fire.
+                        else:
+                            # No pending orders found → enrich error.
+                            err_msg = queued.get("error") or ""
+                            if retry_err:
+                                err_msg += f" (cancel scan: {retry_err})"
+                            err_msg += (" — check Open Orders for this symbol; "
+                                         "a pending order may be reserving the "
+                                         "qty.")
+                            return self.send_json({"error": err_msg}, 400)
+                    else:
+                        # Different error class — surface it as before.
+                        return self.send_json({"error": queued["error"]}, 400)
+                # Success path (either first try or recovered via retry).
+                # Pt.67: bridge the close into settled_funds so a
+                # cash account can't re-deploy these proceeds same-
+                # day and earn a Good Faith Violation.
+                if side == "sell":
+                    _close_price = (
+                        float(body.get("limit_price"))
+                        if body.get("limit_price") else
+                        _latest_price(self, symbol))
+                    _record_close_to_settled_funds(
+                        self, symbol, qty, _close_price)
+                self.send_json({
+                    "success": True, "symbol": symbol,
+                    "queued": True,
+                    "session": session,
+                    "message": (f"{side.upper()} {abs(qty)} "
+                                 f"{symbol} submitted as "
+                                 f"{msg_label}."),
+                    "order": queued,
+                })
                 return
 
         # Round-61 pt.53: cancel any pending sell-side orders for this
