@@ -3664,6 +3664,36 @@ def run_auto_deployer(user):
             log(f"[{user['username']}] {symbol}: pre-trade check "
                 f"failed ({_ptc_err}); allowing through.", "deployer")
 
+        # Round-61 pt.86: live shadow mode. When the user has
+        # `live_shadow_mode: true` in their guardrails (or the
+        # deployment-wide LIVE_SHADOW_MODE env var is on), the
+        # auto-deployer runs through every gate but RECORDS the
+        # deploy intent into a per-user shadow log INSTEAD of
+        # POSTing the order. Lets the user "watch what live would
+        # do" before committing real capital. Best-effort: if the
+        # shadow log write fails, fall through to the real POST so
+        # we don't accidentally suppress trading.
+        try:
+            import shadow_mode as _sm
+            _gr_for_shadow = locals().get("guardrails") or {}
+            if _sm.is_shadow_mode_active(user, _gr_for_shadow):
+                _sm.record_shadow_event(
+                    user, "would_deploy",
+                    symbol=symbol, strategy=best_strat,
+                    qty=qty, price=pick.get("price"),
+                    score=pick.get("best_score"),
+                    sector=pick.get("sector"),
+                )
+                log(f"[{user['username']}] {symbol}: shadow mode "
+                    f"ON — would have deployed {best_strat} x {qty} "
+                    f"@ ~${pick.get('price', 0):.2f} (no order POSTed)",
+                    "deployer")
+                continue
+        except Exception as _shadow_e:
+            log(f"[{user['username']}] {symbol}: shadow_mode check "
+                f"failed ({_shadow_e}); falling through to real POST",
+                "deployer")
+
         # Round-11: smart limit-at-mid order with 90s timeout + market
         # fallback. Saves 0.1-0.5% slippage per round-trip when going
         # live. Set SMART_ORDERS=0 in Railway env to disable (defaults
