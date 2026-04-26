@@ -31,9 +31,9 @@ auto-deploys top picks across 6 strategies, manages exits, handles kill-switch
 1. `git checkout main && git pull --ff-only`
 2. `cat CLAUDE.md` (this file), `cat README.md`, `cat CHANGELOG.md`
 3. `MASTER_ENCRYPTION_KEY=$(python3 -c 'print("e"*64)') python3 -m pytest tests/ --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json --deselect tests/test_auth.py::test_password_strength_rejects_weak --deselect tests/test_audit_round12_scheduler_latent.py::test_ruff_clean_on_real_bug_rules -q`
-   — expect ~**3180+ passing, 3 deselected** after pt.88 (baseline grew from
+   — expect ~**3217+ passing, 3 deselected** after pt.93 (baseline grew from
    1802 at pt.32 through pt.46 +59, pt.47 +69, pt.48 +31, pt.49 +87, pt.50 +22,
-   pt.51 +39, pt.52-57 polish, pt.58-69 batches +280, pt.70-76 +160, pt.78-88 +103).
+   pt.51 +39, pt.52-57 polish, pt.58-69 batches +280, pt.70-76 +160, pt.78-93 +140).
 4. `ruff check .` — clean.
 5. Validate dashboard JS: `awk '/^<script>/,/^<\/script>/' templates/dashboard.html | grep -v '^<script>' | grep -v '^</script>' > /tmp/dash.js && node --check /tmp/dash.js`
 6. `npm ci && npx vitest run` — expect **341 JS tests passing** (29 files).
@@ -63,9 +63,74 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-26 — round 61 pt.10-88 SHIPPED)
+## Current session state (2026-04-26 — round 61 pt.10-93 SHIPPED)
 
-**Latest (pt.88) — Analytics Hub UI for slippage + entry-rationale.**
+**Latest (pt.93) — live-mode promotion gate UI.**
+Pt.72 shipped `live_mode_gate.check_live_mode_readiness` and
+wired it into `handle_toggle_live_mode`, but the only place a
+user found out which gate failed was the 400-response error
+string AFTER they clicked Enable Live Trading. Pt.93 adds the
+read-only UI piece so users see which thresholds need to clear
+BEFORE clicking. New endpoint `POST /api/live-mode-readiness`
+returns `{ready, summary, blockers, warnings, metrics, thresholds,
+readiness_score}`. New panel in Settings → Live Trading shows a
+green READY / red NOT READY pill plus per-gate `✓`/`✗` rows for
+the 5 gates (closed trades / win rate / sharpe / drawdown / HIGH
+audit findings) with actual value + threshold. Lazy-loaded via
+`switchSettingsTab('live')`. Server-side enforcement unchanged;
+the UI just surfaces the status. Thresholds sourced from the
+gate module's `DEFAULT_*` constants so UI hints stay in lockstep
+with server enforcement.
++14 tests in
+`tests/test_round61_pt93_live_mode_readiness_ui.py`.
+
+**Pt.92 (PR #218) — shadow mode UI in Settings → Live Trading.**
+Pt.86 shipped the `shadow_mode` pure module + cloud_scheduler
+hook but no way for users to enable it from the dashboard.
+Pt.92 wires the missing UI piece. New endpoints (one-line
+dispatch in server.py, body in `actions_mixin`):
+  * `POST /api/set-shadow-mode {enabled}` → persists to
+    `guardrails.live_shadow_mode`
+  * `GET /api/shadow-log?limit=N` → `{events, summary, active,
+    source}` using `auth.user_data_dir(uid, mode=session_mode)`
+    so paper + live have separate logs.
+New section in `settingsPanel-live`: info box explaining the
+fail-safe, checkbox `setShadowMode`, recent-events panel with
+timestamp / action pill / symbol / strategy / qty / price.
+JS handlers `toggleShadowMode` / `refreshShadowLog` revert the
+checkbox on POST failure so the UI never lies about persisted
+state. Lazy-loaded via `switchSettingsTab('live')`. LOC ratchet
+bumped 3400 → 3410 to accommodate the two new dispatch
+one-liners.
++13 tests in `tests/test_round61_pt92_shadow_mode_ui.py`.
+
+**Pt.91 (PR #217) — daily_close catchup so missed days self-heal.**
+User reported `STALE_SCORECARD` finding firing repeatedly
+because `daily_close` runs only at 4:05 PM ET ±30 min — if the
+scheduler is down at that exact window, scorecard falls a day
+behind and never catches up until the next 4:05 PM ET. New
+`allow_catchup` kwarg to `should_run_daily_at`: if today's slot
+hasn't fired and we're past target, fire NOW (max_late_seconds
+bumped to 4h to accommodate restarts well after the original
+window). Wired into `daily_close` call site.
++10 tests in `tests/test_round61_pt91_daily_close_catchup.py`.
+
+**Pt.90 (PR #216) — audit close_pending detection + slippage
+wiring expansion.** Two follow-ups:
+  1. **Audit close_pending detection.** `audit_core.run_audit`
+     was firing `MISSING_STOP_LOSS` on positions that already
+     had a near-market LIMIT order pending close. New rule:
+     LIMIT counts as a pending close only when `limit_price >=
+     current` (short close) or `<= current` (long close) — so
+     profit-target LIMITs sitting far from market don't mask
+     missing stops.
+  2. **Slippage wiring expansion.** Pt.84 wired
+     `entry_filled_price` / `exit_filled_price` into
+     `record_trade_close` for the target-hit path. Pt.90
+     extends to `bearish_news` + `dead_money` close paths so
+     every close path now feeds the slippage tracker.
+
+**Pt.88 (PR #214) — Analytics Hub UI for slippage + entry-rationale.**
 Pt.80 + pt.82 + pt.84 produced the data; pt.88 surfaces it in
 the Analytics Hub. New `analytics_core` key
 `rationale_breakdown` (lazily wraps
