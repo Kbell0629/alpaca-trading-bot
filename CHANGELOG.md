@@ -8,6 +8,170 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.93 — live-mode promotion gate UI in Settings → Live Trading (+14 tests)
+
+**Date:** 2026-04-26
+
+Pt.72 shipped `live_mode_gate.check_live_mode_readiness` and
+wired it into `handle_toggle_live_mode` (auth_mixin.py). But the
+only place a user found out which gate failed was the 400-
+response error string AFTER they clicked **Enable Live
+Trading**. Pt.93 wires the missing read-only UI piece so users
+can see exactly which thresholds need to clear BEFORE clicking.
+
+**New endpoint:** `POST /api/live-mode-readiness` →
+`{ready, summary, blockers, warnings, metrics, thresholds,
+readiness_score}`. server.py keeps a one-line dispatch
+(LOC-ratchet pattern); body lives in
+`actions_mixin.handle_live_mode_readiness`. Pure read-only — no
+writes.
+
+**Settings → Live Trading panel additions:**
+* Promotion-gate panel between Current Mode and Max Position
+  Size.
+* Status pill at the top — green `READY` / red `NOT READY` +
+  the gate's plain-English summary.
+* Per-gate row for each of the 5 gates (closed trades / win
+  rate / sharpe ratio / max drawdown / HIGH audit findings)
+  with `✓` or `✗` icon, actual value, and `need ≥X` threshold
+  hint.
+* Legacy readiness-score chip (`≥80` is still enforced
+  separately via the existing pt.72 check).
+* Refresh button + lazy-load via `switchSettingsTab('live')`.
+
+Thresholds are sourced from the gate module's `DEFAULT_*`
+constants (`DEFAULT_MIN_CLOSED_TRADES`, `DEFAULT_MIN_WIN_RATE`,
+`DEFAULT_MIN_SHARPE`, `DEFAULT_MAX_DRAWDOWN_PCT`) so the UI's
+`need ≥X` hints stay in lockstep with the server's enforced
+values.
+
+The Enable Live Trading button is left clickable even when
+not ready — server-side still enforces the gate; when not
+ready it gets a tooltip hint pointing at the existing
+`override_readiness=true` escape hatch.
+
++14 source-pin tests in
+`tests/test_round61_pt93_live_mode_readiness_ui.py` covering
+UI markup, JS handler shape, server dispatch, mixin handler
+auth gate, response shape, threshold sourcing, and journal/
+scorecard load.
+
+---
+
+## 🆕 Round-61 pt.92 — shadow mode UI in Settings → Live Trading (+13 tests)
+
+**Date:** 2026-04-26
+
+Pt.86 shipped the `shadow_mode` pure module + cloud_scheduler
+hook but no way for users to enable it from the dashboard.
+Pt.92 wires the missing UI piece.
+
+**New endpoints (one-line dispatch in server.py, body in
+`actions_mixin`):**
+* `POST /api/set-shadow-mode {enabled}` — persists to
+  `users/<id>/guardrails.json` under `live_shadow_mode`.
+* `GET /api/shadow-log?limit=N` → `{events, summary, active,
+  source}`. Uses `auth.user_data_dir(uid, mode=session_mode)`
+  so paper + live have separate shadow logs (matches the
+  pt.45 dual-mode isolation).
+
+**Settings → Live Trading panel additions:**
+* Info box explaining what shadow mode does + the fail-safe
+  guarantee (any check error falls through to the real POST
+  so trading isn't accidentally suppressed).
+* Checkbox `setShadowMode` with
+  `onchange="toggleShadowMode(this.checked)"`.
+* Recent-events panel rendering up to 20 latest shadow events
+  (timestamp / action pill / symbol / strategy / qty / price).
+* Refresh button + lazy-load when the Live Trading tab opens.
+
+JS handlers `toggleShadowMode` / `refreshShadowLog` revert the
+checkbox on POST failure so the UI never lies about persisted
+state. Hint text resolves the active source ('user setting' /
+'deployment env' / 'off').
+
+LOC ratchet in `tests/test_round6.py` bumped 3400 → 3410 to
+accommodate the two new dispatch one-liners (matching the
+prior bump-pattern from pt.21 / pt.24 / pt.36 / pt.37 / pt.56).
+
++13 source-pin tests in
+`tests/test_round61_pt92_shadow_mode_ui.py`.
+
+---
+
+## 🆕 Round-61 pt.91 — daily_close catchup so missed days self-heal (+10 tests)
+
+**Date:** 2026-04-26
+
+Audit kept firing `STALE_SCORECARD` on the dashboard. Root
+cause: `daily_close` runs at 4:05 PM ET ±30 min via
+`should_run_daily_at`. If the scheduler is restarted or paused
+during that 30-minute window (Railway redeploys, scaling
+events), the slot never fires that day and scorecard falls a
+day behind — the next attempt isn't until 4:05 PM ET tomorrow,
+so the audit finding sticks for 24h+.
+
+**Fix:** new `allow_catchup` kwarg to
+`cloud_scheduler.should_run_daily_at`. When True and today's
+slot hasn't fired AND we're past the target time, fire NOW
+(instead of skipping). `max_late_seconds` bumped to 4h on the
+daily_close call site so a restart hours after the original
+window still triggers the catchup.
+
+```python
+should_run_daily_at(f"daily_close_{uid}", 16, 5,
+                     max_late_seconds=4*3600,
+                     allow_catchup=True)
+```
+
+Self-healing: a one-day miss now repairs itself on the next
+scheduler tick, instead of waiting for 4:05 PM ET tomorrow.
+
++10 tests in `tests/test_round61_pt91_daily_close_catchup.py`.
+
+---
+
+## 🆕 Round-61 pt.90 — audit close_pending detection + slippage wiring expansion (+8 tests)
+
+**Date:** 2026-04-26
+
+Two follow-ups closing accuracy gaps in the audit + slippage
+plumbing:
+
+**1. Audit close_pending detection.** `audit_core.run_audit`
+was firing `MISSING_STOP_LOSS` on positions that already had
+a near-market LIMIT order pending close — pt.21's stop-cover
+check looked only for STOP / STOP_LIMIT orders. Naive fix
+(treat ANY full-qty LIMIT as a pending close) would have
+mis-classified profit-target LIMITs sitting far from market as
+already-protected, masking real missing-stop findings. Pt.90's
+refined rule:
+
+* A LIMIT order counts as pending close only when:
+  * `side` matches the close direction (BUY for shorts,
+    SELL for longs), AND
+  * `qty >= position qty`, AND
+  * `limit_price >= current` (for shorts) or
+    `limit_price <= current` (for longs)
+* So profit-target LIMITs (long-side LIMIT priced above
+  current; short-side LIMIT priced below current) still
+  trigger the missing-stop finding because they don't
+  protect against further loss.
+
+**2. Slippage wiring expansion.** Pt.84 wired
+`entry_filled_price` / `exit_filled_price` into
+`record_trade_close` only on the target-hit close path. Pt.90
+extends to the `bearish_news` + `dead_money` close paths so
+every reason-driven close now feeds the slippage tracker —
+no more `slippage_bps: null` rows on news-exit / stale-position
+closes.
+
++8 tests across audit + slippage suites covering the limit-
+price proximity check (long & short cases) and the additional
+slippage-recording paths.
+
+---
+
 ## 🆕 Round-61 pt.88 — Analytics Hub UI for slippage + entry-rationale (+10 tests)
 
 **Date:** 2026-04-26

@@ -397,7 +397,7 @@ shows mean signal value for winners (green column), losers (red
 column), and a signed delta column (green when winners had MORE
 of that signal at entry, red when fewer).
 
-### Live shadow mode (pt.86)
+### Live shadow mode (pt.86 + UI in pt.92)
 
 Paper validation ends ~May 15. After that flipping the live
 toggle is binary — real money starts trading. Shadow mode is an
@@ -406,16 +406,25 @@ opt-in flag that runs the auto-deployer through every gate
 shadow log INSTEAD of POSTing the order. Lets you "watch what
 live would do" before committing capital.
 
-Enable per-user via `guardrails.live_shadow_mode: true` (Settings
-→ Live Trading) or deployment-wide via `LIVE_SHADOW_MODE=1` env
-var. The per-user override always wins over the env (so you can
-opt OUT of a global shadow mode if you're confident).
+**Dashboard UI (pt.92):** Settings → 🔴 Live Trading → "👻 Shadow
+Mode" section. Toggle the checkbox to enable, hit Refresh on the
+"Recent shadow events" panel to see what live *would* have done
+on each scheduler tick (timestamp / action / symbol / strategy /
+qty / price). The hint text resolves where the active state came
+from — `user setting` (per-user guardrail), `deployment env
+(LIVE_SHADOW_MODE)`, or `off`.
+
+Enable per-user via `guardrails.live_shadow_mode: true` (the
+checkbox writes this) or deployment-wide via `LIVE_SHADOW_MODE=1`
+env var. The per-user override always wins over the env (so you
+can opt OUT of a global shadow mode if you're confident).
 
 Shadow events land in `users/<id>/shadow_log.json` (capped at 500
-entries, oldest pruned). API for the dashboard:
-`shadow_mode.get_shadow_log(user, limit=50)` returns newest-
-first; `shadow_mode.summarize_shadow_log(events)` aggregates
-counts by action / symbol / strategy.
+entries, oldest pruned). Paper + live each get their own log
+(via `auth.user_data_dir(uid, mode=session_mode)`). API for the
+dashboard: `shadow_mode.get_shadow_log(user, limit=50)` returns
+newest-first; `shadow_mode.summarize_shadow_log(events)`
+aggregates counts by action / symbol / strategy.
 
 Fail-safe: if the shadow check raises for any reason, the bot
 falls through to the real POST so we never accidentally suppress
@@ -1204,13 +1213,13 @@ Trades that fire on the **live** account get a `[LIVE]` prefix in every ntfy pus
 - **Live entry in scheduler** requires BOTH live keys present AND the parallel flag on. Misconfigured sessions (e.g., switching view to live when no keys are saved) silently fall back to paper view.
 - **Per-mode circuit breaker** — if live Alpaca returns 401 three times in a row, only live's CB opens; paper keeps running.
 - **Per-mode per-day auth-failure alert** — a paper-keys-expired alert today doesn't silence a separate live-keys-expired alert on the same day.
-- **Auto-promotion gate (pt.72)** — flipping the live toggle is automatically blocked until the paper account proves out:
+- **Auto-promotion gate (pt.72, UI in pt.93)** — flipping the live toggle is automatically blocked until the paper account proves out:
   - **≥30 closed trades** (statistical sample)
   - **win rate ≥ 45%** (edge demonstration)
   - **sharpe ≥ 0.5** (positive risk-adjusted return)
   - **max drawdown ≤ 15%** (not currently in a meltdown)
   - **0 HIGH-severity audit findings** (state is clean)
-  Click "Enable Live" while any blocker fails and the bot returns a clear list of what's not yet met. Pass `override_readiness=true` (advanced) to force-enable. Stacks on top of the existing readiness ≥80 score requirement.
+  Settings → 🔴 Live Trading → "Promotion gate" panel surfaces the live status: a green `READY` / red `NOT READY` pill plus a `✓` / `✗` row per gate showing actual vs. threshold (so you can see exactly which one is blocking you). Click "Enable Live" while any blocker fails and the bot returns a clear list of what's not yet met. Pass `override_readiness=true` (advanced) to force-enable. Stacks on top of the existing readiness ≥80 score requirement.
 
 ### What's Different in Live Mode
 
