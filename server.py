@@ -3119,6 +3119,10 @@ class DashboardHandler(
             return self.handle_shadow_log(body)
         if path == "/api/live-mode-readiness":
             return self.handle_live_mode_readiness(body)
+        if path == "/api/live-launch-state":
+            return self.handle_live_launch_state(body)
+        if path == "/api/live-launch-step":
+            return self.handle_live_launch_step(body)
 
         if path == "/api/set-live-parallel":
             # Round-45: toggle the user's live_parallel_enabled flag.

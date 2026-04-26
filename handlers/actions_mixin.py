@@ -758,6 +758,82 @@ class ActionsHandlerMixin:
             return self.send_json(
                 {"error": f"Readiness check failed: {_e}"}, 500)
 
+    def handle_live_launch_state(self, body=None):
+        """Round-61 pt.96: read-only view of the live-launch wizard.
+        Wraps pt.93's promotion gate + pt.92's shadow log + the user
+        profile into a 4-phase launch flow.
+
+        Pure read-only — no writes. State that the wizard mutates
+        (shadow_started_at / shadow_reviewed_at) is updated via
+        ``handle_live_launch_step``.
+        """
+        if not self.current_user:
+            return self.send_json({"error": "Not authenticated"}, 401)
+        try:
+            import live_launch as _ll
+            import live_mode_gate as _lmg
+            import shadow_mode as _sm
+            user = self.current_user
+            journal = server.load_json(
+                self._user_file("trade_journal.json")) or {}
+            sc = server.load_json(
+                self._user_file("scorecard.json")) or {}
+            audit = sc.get("audit_findings") or []
+            gate = _lmg.check_live_mode_readiness(journal, sc, audit)
+            gpath = self._user_file("guardrails.json")
+            gr = server.load_json(gpath) or {}
+            user_dict = {
+                "_data_dir": auth.user_data_dir(
+                    user["id"],
+                    mode=getattr(self, "session_mode", "paper")),
+            }
+            events = _sm.get_shadow_log(user_dict, limit=200)
+            summary = _sm.summarize_shadow_log(events)
+            state = _ll.compute_launch_state(
+                user, gate, gr, summary)
+            return self.send_json({"success": True, **state})
+        except Exception as _e:
+            return self.send_json(
+                {"error": f"Launch-state check failed: {_e}"}, 500)
+
+    def handle_live_launch_step(self, body):
+        """Round-61 pt.96: mutate the wizard state. Action codes:
+
+          * ``start_shadow`` — stamp ``shadow_started_at`` + flip
+            ``live_shadow_mode`` ON if it isn't already.
+          * ``mark_reviewed`` — stamp ``shadow_reviewed_at``.
+          * ``reset`` — clear the wizard state (and turn shadow OFF
+            so the user opts back in deliberately).
+
+        Persisted in ``guardrails.live_launch``.
+        """
+        if not self.current_user:
+            return self.send_json({"error": "Not authenticated"}, 401)
+        action = (body or {}).get("action") or ""
+        if action not in ("start_shadow", "mark_reviewed", "reset"):
+            return self.send_json(
+                {"error": f"Unknown action: {action}"}, 400)
+        try:
+            import live_launch as _ll
+            gpath = self._user_file("guardrails.json")
+            gr = server.load_json(gpath) or {}
+            if action == "start_shadow":
+                gr = _ll.start_shadow_window(gr)
+                # Flip shadow mode on so the auto-deployer actually
+                # starts logging events. Pt.86 fail-safe still applies.
+                gr["live_shadow_mode"] = True
+            elif action == "mark_reviewed":
+                gr = _ll.mark_shadow_reviewed(gr)
+            elif action == "reset":
+                gr = _ll.reset_launch(gr)
+                gr["live_shadow_mode"] = False
+            server.save_json(gpath, gr)
+            return self.send_json({"success": True, "action": action,
+                                   "live_launch": gr.get("live_launch") or {}})
+        except Exception as _e:
+            return self.send_json(
+                {"error": f"Launch-step failed: {_e}"}, 500)
+
     def handle_auto_deployer(self, body):
         """Toggle the auto-deployer on/off by updating the current user's config file."""
         enabled = body.get("enabled", False)
