@@ -561,6 +561,8 @@ def test_build_analytics_view_returns_all_keys():
         "risk_parity_weights",
         # Round-61 pt.80 added slippage_summary.
         "slippage_summary",
+        # Round-61 pt.88 added rationale_breakdown.
+        "rationale_breakdown",
     }
     assert set(out.keys()) == expected_keys
 

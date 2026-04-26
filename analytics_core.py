@@ -775,6 +775,19 @@ def _safe_slippage_summary(journal):
         return {}
 
 
+def _safe_rationale_breakdown(journal):
+    """Round-61 pt.88: winners-vs-losers rationale aggregate for
+    the Analytics Hub. Reads the structured `entry_rationale` dict
+    pt.82 embedded into journal entries. Best-effort — empty
+    aggregate on error."""
+    try:
+        import entry_rationale as _er
+        return _er.aggregate_winners_vs_losers(journal)
+    except Exception:
+        return {"winners": {"count": 0}, "losers": {"count": 0},
+                "delta": {}}
+
+
 def build_analytics_view(journal=None, scorecard=None, account=None,
                           picks=None, now=None):
     """Single end-to-end call. Returns the full analytics payload
@@ -804,4 +817,10 @@ def build_analytics_view(journal=None, scorecard=None, account=None,
         # verdict: {state: ok|warn|alert|preliminary, headline,
         # detail, gap_bps}}.
         "slippage_summary": _safe_slippage_summary(journal),
+        # Round-61 pt.88: winners-vs-losers entry-rationale
+        # aggregate. Reads the per-trade entry_rationale dict
+        # pt.82 embeds at deploy time and surfaces signed deltas
+        # so the user can see WHICH entry signals correlate with
+        # winning trades. Foundation for future meta-learning.
+        "rationale_breakdown": _safe_rationale_breakdown(journal),
     }

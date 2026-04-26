@@ -4814,7 +4814,108 @@ function renderAnalyticsPanel(d) {
     }
     html += '</div>';
 
+    // ---- Round-61 pt.88: Realized vs Expected Slippage panel ----
+    html += _analyticsRenderSlippagePanel(d.slippage_summary);
+
+    // ---- Round-61 pt.88: Winners-vs-Losers entry rationale ----
+    html += _analyticsRenderRationalePanel(d.rationale_breakdown);
+
     panel.innerHTML = html;
+}
+
+// Round-61 pt.88: realized slippage verdict + per-strategy break.
+function _analyticsRenderSlippagePanel(summary) {
+    if (!summary || typeof summary !== 'object') return '';
+    var agg = summary.aggregate || {};
+    var v = summary.verdict || {};
+    var state = (v.state || 'preliminary').toLowerCase();
+    var pillBg, pillFg;
+    if (state === 'ok') {
+        pillBg = 'rgba(16,185,129,0.15)'; pillFg = 'var(--green)';
+    } else if (state === 'warn') {
+        pillBg = 'rgba(245,158,11,0.15)'; pillFg = 'var(--orange)';
+    } else if (state === 'alert') {
+        pillBg = 'rgba(239,68,68,0.15)'; pillFg = 'var(--red)';
+    } else {
+        pillBg = 'rgba(148,163,184,0.12)'; pillFg = 'var(--text-dim)';
+    }
+    var html = '<div class="factor-card" style="margin-top:14px">' +
+        '<div class="factor-card-title" style="margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px">' +
+            '<span>Realized vs expected slippage <span style="font-size:10px;color:var(--text-dim);font-weight:500">(pt.80 / pt.84)</span></span>' +
+            '<span style="font-size:11px;font-weight:700;letter-spacing:0.4px;text-transform:uppercase;background:' + pillBg + ';color:' + pillFg + ';padding:3px 10px;border-radius:999px">' + esc(state) + '</span>' +
+        '</div>' +
+        '<div style="font-size:12px;color:var(--text-dim);line-height:1.5;margin-bottom:10px">' + esc(v.headline || 'No slippage data yet.') + '</div>';
+    if (v.detail) {
+        html += '<div style="font-size:11px;color:var(--text-dim);line-height:1.5">' + esc(v.detail) + '</div>';
+    }
+    // Per-strategy mini-grid (entry side only — keeps the panel compact).
+    var byStrat = agg.by_strategy || {};
+    var strats = Object.keys(byStrat);
+    if (strats.length > 0) {
+        html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;margin-top:10px">';
+        strats.sort(function(a, b) {
+            return (byStrat[b].mean_bps || 0) - (byStrat[a].mean_bps || 0);
+        });
+        strats.forEach(function(s) {
+            var b = byStrat[s] || {};
+            var bps = b.mean_bps != null ? b.mean_bps : 0;
+            var stratColor = (bps > 15) ? 'var(--red)' :
+                                (bps > 10) ? 'var(--orange)' : 'var(--green)';
+            html += '<div style="background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:6px;padding:8px 10px">' +
+                '<div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.5px">' + esc(s) + '</div>' +
+                '<div style="font-size:14px;font-weight:700;color:' + stratColor + '">' + bps.toFixed(1) + ' bps</div>' +
+                '<div style="font-size:10px;color:var(--text-dim)">' + (b.count || 0) + ' trades</div>' +
+            '</div>';
+        });
+        html += '</div>';
+    }
+    html += '</div>';
+    return html;
+}
+
+// Round-61 pt.88: winners-vs-losers entry-rationale comparison.
+function _analyticsRenderRationalePanel(breakdown) {
+    if (!breakdown || typeof breakdown !== 'object') return '';
+    var w = breakdown.winners || {};
+    var l = breakdown.losers || {};
+    var d = breakdown.delta || {};
+    var winCount = w.count || 0;
+    var loseCount = l.count || 0;
+    if (winCount === 0 && loseCount === 0) {
+        return '<div class="factor-card" style="margin-top:14px">' +
+            '<div class="factor-card-title" style="margin-bottom:8px">Entry rationale: winners vs losers <span style="font-size:10px;color:var(--text-dim);font-weight:500">(pt.82 / pt.88)</span></div>' +
+            '<div style="font-size:12px;color:var(--text-dim);line-height:1.5">No closed trades with structured rationale yet. Each new auto-deployed trade (pt.82+) embeds rationale fields; pre-pt.82 trades are skipped.</div>' +
+            '</div>';
+    }
+    function _row(label, winVal, loseVal, delta, fmt) {
+        fmt = fmt || function(x) { return Number(x || 0).toFixed(2); };
+        var deltaColor = delta > 0 ? 'var(--green)' : delta < 0 ? 'var(--red)' : 'var(--text-dim)';
+        var sign = delta > 0 ? '+' : '';
+        return '<tr>' +
+            '<td style="padding:6px 8px;color:var(--text-dim);font-size:11px">' + esc(label) + '</td>' +
+            '<td style="padding:6px 8px;font-size:12px;text-align:right">' + fmt(winVal) + '</td>' +
+            '<td style="padding:6px 8px;font-size:12px;text-align:right;color:var(--text-dim)">' + fmt(loseVal) + '</td>' +
+            '<td style="padding:6px 8px;font-size:12px;text-align:right;color:' + deltaColor + ';font-weight:600">' + sign + fmt(delta) + '</td>' +
+        '</tr>';
+    }
+    return '<div class="factor-card" style="margin-top:14px">' +
+        '<div class="factor-card-title" style="margin-bottom:6px">Entry rationale: winners vs losers <span style="font-size:10px;color:var(--text-dim);font-weight:500">(pt.82 / pt.88)</span></div>' +
+        '<div style="font-size:11px;color:var(--text-dim);margin-bottom:10px;line-height:1.5">Mean entry-time signals across closed trades. Positive delta means winners had MORE of that signal at entry.</div>' +
+        '<table style="width:100%;border-collapse:collapse">' +
+            '<thead><tr style="border-bottom:1px solid var(--border)">' +
+                '<th style="padding:4px 8px;font-size:10px;color:var(--text-dim);text-align:left;text-transform:uppercase;letter-spacing:0.5px">Signal</th>' +
+                '<th style="padding:4px 8px;font-size:10px;color:var(--green);text-align:right;text-transform:uppercase;letter-spacing:0.5px">Winners (' + winCount + ')</th>' +
+                '<th style="padding:4px 8px;font-size:10px;color:var(--red);text-align:right;text-transform:uppercase;letter-spacing:0.5px">Losers (' + loseCount + ')</th>' +
+                '<th style="padding:4px 8px;font-size:10px;color:var(--text-dim);text-align:right;text-transform:uppercase;letter-spacing:0.5px">Δ</th>' +
+            '</tr></thead><tbody>' +
+            _row('Screener score', w.mean_score, l.mean_score, d.score, function(x) { return Number(x || 0).toFixed(0); }) +
+            _row('RS score', w.mean_rs, l.mean_rs, d.rs, function(x) {
+                var v = Number(x || 0); return (v >= 0 ? '+' : '') + v.toFixed(1);
+            }) +
+            _row('Confluence (0-5)', w.mean_confluence, l.mean_confluence, d.confluence) +
+            _row('Kelly multiplier', w.mean_kelly, l.mean_kelly, d.kelly) +
+        '</tbody></table>' +
+    '</div>';
 }
 
 async function refreshTradesPanel() {
