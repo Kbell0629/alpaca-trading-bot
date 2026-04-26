@@ -8,6 +8,197 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.97 — per-strategy attribution sweep (+18 tests)
+
+**Date:** 2026-04-26
+
+The Analytics Hub already rendered a per-strategy breakdown
+(count / wins / win rate / total / avg / best / worst) but
+didn't surface edge metrics or contribution share — so a user
+preparing to flip live couldn't easily see WHICH of their 6
+strategies were carrying the bot vs which were dragging.
+
+**New `analytics_core.compute_strategy_attribution(journal)`:**
+Walks closed trades chronologically, accumulating per-strategy
+stats with edge metrics:
+
+* `expectancy` — avg P&L per closed trade.
+* `profit_factor` — `sum_wins / abs(sum_losses)`. Returns
+  `float('inf')` for the all-wins case (rendered as `∞` in
+  the UI).
+* `max_drawdown_pct` — peak-to-trough on the strategy's
+  cumulative pnl curve, chronological.
+* `dollar_contribution_pct` — share of overall realized P&L.
+
+**Verdict bucket per strategy:**
+* `preliminary`: <10 closed trades — no judgement yet.
+* `dragging`: total $ < 0, OR (win rate < 35% AND PF < 0.8).
+* `carrying`: win rate ≥ 45% AND PF ≥ 1.2 AND total $ > 0.
+* `neutral`: everything else.
+
+Returns `{strategies, ranking (sorted by total_pnl desc),
+verdict_counts, overall_realized_pnl, headline}`. The headline
+is plain English: `"Attribution: 2 carrying · 1 neutral ·
+1 dragging · overall +$1,243.50 realized"`.
+
+Wired into `build_analytics_view → strategy_attribution`. Two
+existing pinned-key-set tests (pt.46, pt.65) updated to include
+the new key.
+
+**Dashboard panel `_analyticsRenderAttributionPanel`:**
+Rendered after pt.88's slippage + rationale panels in the
+Analytics Hub.
+* Verdict-counts pill row (Carrying / Neutral / Dragging /
+  Preliminary, color-coded).
+* Plain-English headline.
+* Sortable 9-column table: strategy / trades / win rate /
+  expectancy / profit factor / max DD / total $ / share /
+  verdict pill. Color-codes total $ green / red.
+* PF of Infinity renders as `∞` so the UI doesn't say
+  "Infinity" literally.
+* Empty-state message when no closes yet.
+
++18 source-pin + integration tests in
+`tests/test_round61_pt97_strategy_attribution.py` covering
+empty journal, preliminary verdict under 10 trades, carrying
+when thresholds clear, dragging by negative-total, dragging
+by combined low-winrate-low-PF, neutral middle case, infinite
+PF (no losses), max-drawdown chronological math, dollar-
+contribution share + ranking sort, headline copy,
+`build_analytics_view` integration, dashboard markup (helper
+defined, called from `renderAnalyticsPanel`, all 9 columns
+present, verdict pills present, ∞ rendering, empty state).
+
+---
+
+## 🆕 Round-61 pt.96 — live-mode soft-launch wizard (+25 tests)
+
+**Date:** 2026-04-26
+
+Pt.92 surfaced the shadow-mode log; pt.93 surfaced the auto-
+promotion gate. Both panels existed in Settings → Live Trading
+but nothing told the user what to DO with them. Pt.96 wraps
+both into a four-phase soft-launch flow:
+
+  1. **preflight** — keys saved + email + ntfy
+  2. **ready**     — promotion gate (pt.72 / pt.93) green
+  3. **shadow**    — shadow window running for ≥48h with ≥5 events
+  4. **verify**    — user explicitly clicks "I've reviewed the log"
+  5. **live**      — toggle flipped
+
+**New pure module `live_launch.py`:**
+* `compute_launch_state(user, gate_result, guardrails,
+  shadow_summary)` returns `{phase, phase_label, steps,
+  next_action, recommended_shadow_hours, shadow_started_at,
+  shadow_hours_elapsed, shadow_event_count,
+  shadow_reviewed_at}`.
+* `start_shadow_window` / `mark_shadow_reviewed` /
+  `reset_launch` are idempotent mutators on the guardrails
+  dict.
+* Conservative defaults: 48h shadow window + 5-event minimum
+  so an idle weekend doesn't count as "exercised".
+
+**Two new endpoints (one-line dispatch in server.py, body in
+`actions_mixin`):**
+* `POST /api/live-launch-state` — read-only wizard state.
+* `POST /api/live-launch-step` — body
+  `{action: "start_shadow"|"mark_reviewed"|"reset"}`.
+  `start_shadow` flips `guardrails.live_shadow_mode` ON;
+  `reset` turns it OFF.
+
+State persists in `users/<id>/guardrails.json` under
+`live_launch` so the wizard survives restarts.
+
+**Dashboard:** new "🚀 Live launch checklist" panel above the
+pt.93 promotion-gate readout in Settings → Live Trading.
+* Phase pill (color tracks position in the flow).
+* Step list with ✓/○ per item + per-step hints + inline
+  action buttons (Start window / Mark reviewed) where
+  relevant.
+* Next-action banner — green when ready to flip live.
+* Shadow-window progress meta when running (X.Xh of 48h, N
+  events).
+* Reset link for users who want to redo the window.
+* Lazy-load via `switchSettingsTab('live')`. Pt.92 + pt.93
+  panels also refresh after every wizard action so all three
+  panels stay in sync.
+
+The actual flip-to-live still goes through
+`handle_toggle_live_mode` (auth_mixin) — the wizard is purely
+informational guidance + state persistence.
+
++25 tests in `tests/test_round61_pt96_live_launch_wizard.py`.
+
+---
+
+## 🆕 Round-61 pt.95 — forensic audit-sweep fixes (+13 tests)
+
+**Date:** 2026-04-26
+
+Five parallel Explore agents (security / DB-concurrency /
+trading-logic / UI-UX-mobile / tests-ops) audited the codebase
+post-pt.94. Trading logic returned clean (one LOW cosmetic
+finding — skipped). Eight high-confidence auto-fix wins shipped
+in this PR. The four false-positives were verified against
+actual code and skipped with rationale.
+
+**Security (auth.py — ZIP export hardening):**
+* `os.walk(followlinks=False)` so a planted symlink can't make
+  the export traverse outside `users/<id>/`.
+* Each file's resolved real-path is verified to stay inside
+  the user dir (defense-in-depth for parent-dir symlinks).
+* Arcname is rejected if it starts with `..` or is absolute,
+  so a crafted relative path can't write outside the ZIP root.
+* Round-45 dual-mode encrypted credential columns
+  (`alpaca_live_key_encrypted`, `alpaca_live_secret_encrypted`)
+  added to the export sanitisation list — they had been missed
+  when pt.45 added the columns.
+
+**DB / concurrency (update_scorecard.py):**
+* Subprocess journal write now wraps the RMW in a flock against
+  `<JOURNAL_PATH>.lock` matching cloud_scheduler's
+  `strategy_file_lock` naming so both contenders serialise on
+  the same kernel-level lock.
+* Inside the lock we reload the on-disk journal so trades the
+  scheduler appended during our (~30s) metrics computation
+  aren't silently overwritten by our older in-memory copy.
+  Only `daily_snapshots` is carried over from our run.
+
+**UI / a11y (templates/dashboard.html):**
+* pt.88 slippage + rationale panels collapse to single-column
+  on <600px so the per-strategy mini-grid + winners-vs-losers
+  table read on mobile.
+* Admin audit filter selects gain `for=` + `aria-label`.
+* JS-injected backtest selects gain `aria-label`.
+
+**Ops:**
+* `.github/workflows/ci.yml` gains a `concurrency:`
+  cancellation group (cancel-in-progress on branch ref) so
+  force-pushes don't burn quota on stale builds.
+* `tests/test_round6.py` LOC ratchet bumped 3410 → 3450 (+40
+  cushion) so pt.96 / pt.97 dispatch one-liners didn't require
+  per-PR ratchet bumps.
+* `CLAUDE.md` onboarding command no longer over-deselects two
+  tests that pass on real CI for several rounds (CI deselected
+  only one; CLAUDE.md said three).
+
+**Skipped (verified false positives or speculative):**
+* pt.12-deliberate exception surfacing in alpaca-key handlers
+  (designed for user-debuggability — not a regression).
+* Calibration-override missing-auth (verified handler is
+  gated).
+* Speculative SQLite connection-pool / guardrails RMW races
+  (all paths already use `strategy_file_lock`).
+* `pnl_pct` cosmetic redundancy in long-monitor paths (zero
+  impact; journal source-of-truth is correct).
+
++13 source-pin + integration tests in
+`tests/test_round61_pt95_audit_fixes.py` covering each fix
+plus a threaded flock-contention test that exercises the
+scorecard race fix end-to-end.
+
+---
+
 ## 🆕 Round-61 pt.93 — live-mode promotion gate UI in Settings → Live Trading (+14 tests)
 
 **Date:** 2026-04-26

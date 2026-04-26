@@ -430,6 +430,57 @@ Fail-safe: if the shadow check raises for any reason, the bot
 falls through to the real POST so we never accidentally suppress
 trading.
 
+### Live-launch wizard (pt.96)
+
+Pt.92 surfaced the shadow-mode log; pt.93 surfaced the auto-
+promotion gate. Both panels existed in Settings → Live Trading
+but nothing told the user what to DO with them. Pt.96 wraps
+both into a four-phase soft-launch flow visible at the top of
+the Live Trading tab:
+
+1. **Preflight** — live API keys saved + notification email +
+   ntfy topic.
+2. **Ready** — promotion gate (≥30 closed trades / win rate
+   / sharpe / drawdown / 0 HIGH audit findings) clears.
+3. **Shadow** — opt-in shadow window of ≥48h with ≥5 recorded
+   events. Click "Start window" → flips
+   `guardrails.live_shadow_mode` ON automatically.
+4. **Verify** — click "Mark reviewed" on the shadow-log panel
+   below to confirm you've actually looked at what live *would*
+   have done.
+
+Once all four phases clear, the next-action banner turns green
+and reads "Next: Enable Live Trading". State persists in
+`guardrails.live_launch` so the wizard survives restarts.
+Reset link clears the timer + flips shadow mode back off if you
+want to redo the window.
+
+The actual flip-to-live still goes through the existing
+toggle-live-mode endpoint with the pt.72 gate; the wizard is
+purely informational guidance + state persistence.
+
+### Strategy attribution (pt.97)
+
+The Analytics Hub renders a new per-strategy attribution panel
+that goes beyond the breakdown grid (pt.46) by adding edge
+metrics + a verdict bucket per strategy:
+
+* **Profit factor** — `sum_wins / abs(sum_losses)`. A strategy
+  that wins $1.50 for every $1 it loses has PF=1.5. Renders as
+  `∞` when there are no losses.
+* **Expectancy** — average $ P&L per closed trade (positive =
+  edge).
+* **Max drawdown %** — peak-to-trough on the strategy's
+  cumulative pnl.
+* **Dollar contribution %** — share of overall realized P&L
+  (so "this one strategy is 80% of my profits" is visible at a
+  glance).
+* **Verdict pill** — `carrying` / `neutral` / `dragging` /
+  `preliminary` (under 10 trades). Color-coded.
+
+Use this before flipping live: if 3 of your 6 strategies are
+`dragging`, consider pausing them via the Strategies tab.
+
 ### Score-health monitoring
 
 The bot runs a daily 4:35 PM check on whether higher-scored screener
