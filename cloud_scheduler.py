@@ -5219,7 +5219,8 @@ def should_run_interval(task_name, interval_seconds):
         _save_last_runs()  # persist outside the lock (no re-entry risk)
     return fire
 
-def should_run_daily_at(task_name, hour_et, minute_et, max_late_seconds=1800):
+def should_run_daily_at(task_name, hour_et, minute_et, max_late_seconds=1800,
+                          allow_catchup=False):
     """Fire a daily task exactly once per day.
 
     `max_late_seconds` is the tolerance window after the target time
@@ -5232,6 +5233,15 @@ def should_run_daily_at(task_name, hour_et, minute_et, max_late_seconds=1800):
     late (daily_close, weekly_learning, monthly_rebalance) can pass a
     larger value. Auto-deployer/wheel-deploy keep the default because
     firing those hours late = trading on stale screener data.
+
+    Round-61 pt.91 — `allow_catchup=True` makes a missed day
+    self-heal. If `last_date` is from a prior calendar day AND
+    we're past today's target, fire the task and stamp TODAY.
+    Without this, a Railway redeploy past the `max_late_seconds`
+    window silently skips the task FOREVER until the user notices
+    via the audit. Use ONLY for tasks where firing late is
+    strictly better than not firing at all (daily_close,
+    update_scorecard) — never for trading actions.
     """
     # Round-9 fix: acquire lock BEFORE the read. See should_run_interval
     # comment — same TOCTOU bug applied here before.
@@ -5242,7 +5252,22 @@ def should_run_daily_at(task_name, hour_et, minute_et, max_late_seconds=1800):
     today_str = et_now.strftime("%Y-%m-%d")
     with _last_runs_lock:
         last_date = _last_runs.get(task_name, "")
-        if last_date != today_str and et_now >= target and (et_now - target).total_seconds() < max_late_seconds:
+        within_window = (
+            et_now >= target
+            and (et_now - target).total_seconds() < max_late_seconds
+        )
+        # Pt.91 catchup: if the last successful run was on an earlier
+        # CALENDAR day (and not first-ever run) AND we're past
+        # today's target, fire even if max_late_seconds expired.
+        # Lets a missed daily_close self-heal on the next scheduler
+        # tick instead of staying stuck for days.
+        catchup = (
+            allow_catchup
+            and last_date
+            and last_date < today_str
+            and et_now >= target
+        )
+        if last_date != today_str and (within_window or catchup):
             _last_runs[task_name] = today_str
             fire = True
         else:
@@ -5653,7 +5678,14 @@ def scheduler_loop():
                     # close. should_run_daily_at's max_late_seconds=4hr
                     # enforces the same bound with its time math.
                     if is_weekday and (now_et.hour == 16 or (now_et.hour >= 17 and now_et.hour < 20)):
-                        if should_run_daily_at(f"daily_close_{uid}", 16, 5, max_late_seconds=4*3600):
+                        # Round-61 pt.91: allow_catchup=True so a
+                        # Railway redeploy past 20:05 ET (the
+                        # max_late_seconds boundary) doesn't silently
+                        # skip daily_close for the rest of the day.
+                        # The task self-heals on the next tick.
+                        if should_run_daily_at(f"daily_close_{uid}", 16, 5,
+                                                  max_late_seconds=4*3600,
+                                                  allow_catchup=True):
                             try:
                                 run_daily_close(user)
                             except Exception as _e:
