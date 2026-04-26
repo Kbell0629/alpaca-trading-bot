@@ -25,6 +25,7 @@ import pathlib
 _HERE = pathlib.Path(__file__).resolve().parent.parent
 _DASH = (_HERE / "templates" / "dashboard.html").read_text()
 _SERVER = (_HERE / "server.py").read_text()
+_ACTIONS = (_HERE / "handlers" / "actions_mixin.py").read_text()
 
 
 # ============================================================================
@@ -104,47 +105,53 @@ def test_settings_tab_live_triggers_log_refresh():
 # Server endpoints
 # ============================================================================
 
-def test_set_shadow_mode_endpoint_persists_to_guardrails():
+def test_server_dispatches_set_shadow_mode_to_mixin():
+    """Pt.92: server.py keeps a one-line dispatch; the body lives
+    in actions_mixin.handle_set_shadow_mode (LOC-ratchet rule)."""
     idx = _SERVER.find('"/api/set-shadow-mode"')
     assert idx > 0
-    block = _SERVER[idx:idx + 1500]
-    assert 'live_shadow_mode' in block
-    assert 'guardrails.json' in block
-    assert 'save_json' in block
+    block = _SERVER[idx:idx + 400]
+    assert "handle_set_shadow_mode" in block
+    # The big body should NOT be inline.
+    assert "live_shadow_mode" not in block or "delegated" in block
 
 
-def test_set_shadow_mode_requires_auth():
-    idx = _SERVER.find('"/api/set-shadow-mode"')
-    block = _SERVER[idx:idx + 1500]
-    assert 'self.current_user' in block
-    assert '401' in block
-
-
-def test_shadow_log_endpoint_returns_events_summary_active():
-    idx = _SERVER.find('"/api/shadow-log"')
+def test_handle_set_shadow_mode_persists_to_guardrails():
+    idx = _ACTIONS.find("def handle_set_shadow_mode")
     assert idx > 0
-    block = _SERVER[idx:idx + 2500]
+    block = _ACTIONS[idx:idx + 1500]
+    assert "live_shadow_mode" in block
+    assert "guardrails.json" in block
+    assert "save_json" in block
+
+
+def test_handle_set_shadow_mode_requires_auth():
+    idx = _ACTIONS.find("def handle_set_shadow_mode")
+    block = _ACTIONS[idx:idx + 1500]
+    assert "self.current_user" in block
+    assert "401" in block
+
+
+def test_handle_shadow_log_returns_events_summary_active():
+    idx = _ACTIONS.find("def handle_shadow_log")
+    assert idx > 0
+    block = _ACTIONS[idx:idx + 2500]
     assert "get_shadow_log" in block
     assert "summarize_shadow_log" in block
     assert "is_shadow_mode_active" in block
-    # Response shape.
     for k in ("active", "source", "events", "summary"):
         assert f'"{k}"' in block
 
 
-def test_shadow_log_endpoint_uses_session_mode_data_dir():
-    """Per-user data dir resolves via session_mode so paper / live
-    have separate shadow logs."""
-    idx = _SERVER.find('"/api/shadow-log"')
-    block = _SERVER[idx:idx + 2500]
+def test_handle_shadow_log_uses_session_mode_data_dir():
+    idx = _ACTIONS.find("def handle_shadow_log")
+    block = _ACTIONS[idx:idx + 2500]
     assert "session_mode" in block
     assert "user_data_dir" in block
 
 
-def test_shadow_log_endpoint_surfaces_resolution_source():
-    """The hint shows whether shadow mode is on via user setting,
-    env var, or off."""
-    idx = _SERVER.find('"/api/shadow-log"')
-    block = _SERVER[idx:idx + 2500]
+def test_handle_shadow_log_surfaces_resolution_source():
+    idx = _ACTIONS.find("def handle_shadow_log")
+    block = _ACTIONS[idx:idx + 2500]
     assert "user setting" in block
     assert "LIVE_SHADOW_MODE" in block
