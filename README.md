@@ -346,6 +346,52 @@ API: `position_sizing.compute_full_size(base_qty=..., strategy=...,
 symbol=..., journal=..., existing_positions=..., price=...,
 adv_dollar=...)`.
 
+### Realized-vs-expected slippage (pt.80)
+
+Pt.47's backtest assumes 10 bps of slippage on entry + exit.
+Without measuring live fills, we can't tell whether that
+assumption matches reality. Pt.80 walks closed trades that have
+the slippage fields populated (`entry_expected_price` /
+`entry_filled_price` / `entry_slippage_bps`, plus the exit
+trio) and surfaces a verdict in the Analytics Hub:
+
+| Verdict | Meaning |
+|---|---|
+| **ok** | Realized ≤ assumed → backtest is realistic |
+| **warn** | Realized in [1.0×, 1.5×] of assumed → mild gap |
+| **alert** | Realized > 1.5× assumed → backtests overstate live performance |
+| **preliminary** | <20 trades — too few to draw conclusions |
+
+API: `slippage_tracker.aggregate_realized_slippage(journal)`,
+`slippage_tracker.compare_to_assumption(agg, assumed_bps=10.0)`.
+Read-only via `analytics_core.build_analytics_view["slippage_summary"]`.
+
+### Per-trade entry rationale (pt.82)
+
+Every auto-deployed trade now carries a structured `entry_rationale`
+dict in the journal entry, capturing the WHY at deploy time:
+
+```json
+{
+  "score": 485, "rs_score": 8,
+  "sector": "Technology", "sector_strength": "strong",
+  "news_sentiment": "bullish",
+  "vwap_offset_pct": 0.3, "atr_pct": 2.1,
+  "regime": "bull-strong",
+  "kelly_mult": 1.50, "correlation_mult": 1.0,
+  "drawdown_mult": 1.0, "adv_mult": 1.0,
+  "confluence_count": 4,
+  "filter_reasons": [],
+  "headline": "score=485 RS=+8 sector=Technology(strong) news=bullish vwap=+0.3% kelly=1.50x conf=4/5"
+}
+```
+
+This unlocks post-mortems ("why did we buy SOXL on Tuesday?")
+and the future weekly meta-learning loop. API:
+`entry_rationale.aggregate_winners_vs_losers(journal)` returns
+`{winners, losers, delta}` so you can ask "did the winners have
+higher mean RS than the losers?".
+
 ### Score-health monitoring
 
 The bot runs a daily 4:35 PM check on whether higher-scored screener

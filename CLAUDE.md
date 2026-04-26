@@ -31,10 +31,10 @@ auto-deploys top picks across 6 strategies, manages exits, handles kill-switch
 1. `git checkout main && git pull --ff-only`
 2. `cat CLAUDE.md` (this file), `cat README.md`, `cat CHANGELOG.md`
 3. `MASTER_ENCRYPTION_KEY=$(python3 -c 'print("e"*64)') python3 -m pytest tests/ --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json --deselect tests/test_auth.py::test_password_strength_rejects_weak --deselect tests/test_audit_round12_scheduler_latent.py::test_ruff_clean_on_real_bug_rules -q`
-   — expect ~**3060+ passing, 3 deselected** after pt.76 (baseline grew from
+   — expect ~**3140+ passing, 3 deselected** after pt.82 (baseline grew from
    1802 at pt.32 through pt.46 +59, pt.47 +69, pt.48 +31, pt.49 +87, pt.50 +22,
    pt.51 +39, pt.52-57 polish, pt.58-69 batches +280, pt.70-76 +160 — incl.
-   pt.74 +60 UI tests, pt.75 +10, pt.76 +4).
+   pt.74 +60 UI tests, pt.75 +10, pt.76 +4, pt.78-82 +75).
 4. `ruff check .` — clean.
 5. Validate dashboard JS: `awk '/^<script>/,/^<\/script>/' templates/dashboard.html | grep -v '^<script>' | grep -v '^</script>' > /tmp/dash.js && node --check /tmp/dash.js`
 6. `npm ci && npx vitest run` — expect **341 JS tests passing** (29 files).
@@ -64,12 +64,79 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-25 — round 61 pt.10-76 SHIPPED)
+## Current session state (2026-04-25 — round 61 pt.10-82 SHIPPED)
 
-**Latest merged batch (pt.65 → pt.76):** twelve accuracy + reliability +
-UX PRs. The 8-item production-readiness sprint, the SOXL short-cover
-bug (fixed three different ways: pt.50 → pt.53 → pt.69 → pt.75), and
-the round of UX polish + auth-form cleanup.
+**Latest merged batch (pt.78 → pt.82):** five follow-up PRs
+hardening the close path, validating backtest assumptions, and
+laying groundwork for future meta-learning.
+
+**Pt.82 (PR #209) — per-trade entry-rationale audit.** Every
+closed trade has `exit_reason` but not `entry_rationale`. Pt.82
+embeds a structured rationale dict at deploy time so post-mortems
+and future meta-learning can correlate entry conditions with
+outcomes. New pure module `entry_rationale.py`:
+  * `build_entry_rationale(pick, sizing_info, regime,
+    sector_returns)` returns 15-key dict (score, rs_score, sector,
+    sector_strength, news_sentiment, vwap_offset_pct, atr_pct,
+    regime, kelly_mult, correlation_mult, drawdown_mult, adv_mult,
+    confluence_count, filter_reasons, headline)
+  * `format_rationale(rat)` — single-line headline like
+    `"score=485 RS=+8 sector=Technology(strong) news=bullish
+    vwap=+0.3% conf=4/5"`
+  * `aggregate_winners_vs_losers(journal)` — buckets closed
+    trades by P&L sign and reports mean rationale fields per
+    bucket + signed deltas
+Wired into `cloud_scheduler.run_auto_deployer`'s journal append.
++25 tests in `tests/test_round61_pt82_entry_rationale.py`.
+
+**Pt.81 (PR #208) — xh_close / overnight POST gets cancel+retry.**
+User-reported (8:34 PM Saturday): SOXL close still failing despite
+pt.50/53/69/75. Root cause: pt.50 routes after-hours / overnight
+closes through a POST to `/orders` (xh_close limit or MOO BUY-
+to-cover for shorts), not DELETE `/positions`. Pt.69's recovery
+only covered the DELETE branch — the POST branch still surfaced
+the bare error. Pt.81 extends the same cancel-and-retry recovery
+to the POST branch (4-attempt backoff schedule 0.3/0.6/1.0/1.5s).
++7 tests in `tests/test_round61_pt81_xh_close_cancel_retry.py`.
+
+**Pt.80 (PR #207) — realized vs expected slippage tracking.**
+New `slippage_tracker.py` (pure module) with `compute_slippage_bps`
+(signed bps; positive = adverse), `aggregate_realized_slippage`
+(per-trade aggregate + per-strategy breakdown + dollar cost),
+`compare_to_assumption(agg, assumed_bps=10.0)` (verdict tiers ok /
+warn / alert / preliminary), and `annotate_close_with_slippage`
+helper for record_trade_close callers. New journal fields
+(additive — legacy entries skipped silently): `entry_expected_price`,
+`entry_filled_price`, `entry_slippage_bps`, exit equivalents.
+`build_analytics_view` returns a new `slippage_summary` key.
++30 tests in `tests/test_round61_pt80_realized_slippage.py`.
+
+**Pt.79 (PR #206) — nav-tab order: Tax Harvest position fix.**
+User-reported follow-up to pt.75: clicking "Tax Harvest" still
+scrolled BACKWARDS because `taxHtml` is rendered INSIDE the
+positions section (between orders table and `</section>`), so it
+lives BEFORE Analytics in DOM order — but pt.75 had it AFTER
+Screener. Pt.79 moves Tax Harvest nav button to between Positions
+and Analytics. New nav order matches actual DOM:
+```
+overview → picks → strategies → readiness → positions →
+[tax] → analytics → trades → screener → [shorts] →
+backtest → scheduler → heatmap → comparison → settings
+```
++4 source-pin tests including a strict full-order check.
+
+**Pt.78 (PR #205) — end-to-end close-flow integration test.**
+The SOXL "insufficient qty available" close bug got fixed three
+different ways (pt.50 → pt.53 → pt.69 → pt.75) and each round
+found another corner. Pt.78 ships a single integration test that
+exercises the full close path with a self-contained Alpaca mock —
+9 scenarios covering clean RTH close, full SOXL bug recovery
+(insufficient qty → cancel scan → retry-with-backoff → success),
+no-pending-orders enrichment, all-retries-exhausted message,
+different-error-mid-retry, pt.75 URL regression guard, pre-market
+xh_close routing, short-cover skipping settled-funds, and long-
+close populating settled-funds. Self-contained — no http_harness,
+no cryptography needed. Future-proofing: locks the contract.
 
 **Pt.76 (PR #203) — signup form cleanup.** User-reported that the
 Invite Code section showed the label twice (section header +
