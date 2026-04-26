@@ -2506,6 +2506,16 @@ body.focus-mode #section-perf-attribution {
         <div id="currentModeDisplay" style="font-size:16px;font-weight:700;padding:8px 12px;background:var(--bg);border-radius:6px">Loading…</div>
       </div>
 
+      <!-- Round-61 pt.96: live-mode soft-launch wizard -->
+      <div id="liveLaunchPanel" style="margin:16px 0;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--bg)">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+          <h3 style="margin:0;font-size:14px">🚀 Live launch checklist</h3>
+          <button type="button" class="btn-ghost btn-sm" onclick="refreshLiveLaunchState()" title="Re-check the launch wizard">↻ Refresh</button>
+        </div>
+        <div class="settings-hint" style="margin-bottom:10px">A four-phase soft-launch flow: preflight → promotion gate → 48h shadow window → final review → live. Each step is enforced server-side; this panel just shows where you are.</div>
+        <div id="liveLaunchContent" style="font-size:13px">Loading…</div>
+      </div>
+
       <!-- Round-61 pt.93: live-mode promotion gate readout -->
       <div id="liveReadinessPanel" style="margin:16px 0;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--bg)">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px">
@@ -4066,6 +4076,116 @@ async function refreshLiveModeReadiness() {
         box.innerHTML = html;
     } catch(e) {
         box.innerHTML = '<span style="color:var(--red)">Network error: ' + esc(e.message) + '</span>';
+    }
+}
+
+/* ---- Round-61 pt.96: live-launch wizard ---- */
+async function refreshLiveLaunchState() {
+    var box = document.getElementById('liveLaunchContent');
+    if (!box) return;
+    box.innerHTML = '<span style="color:var(--text-dim)">Loading…</span>';
+    try {
+        var resp = await fetch(API_BASE + '/api/live-launch-state', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: '{}'
+        });
+        var d = await resp.json();
+        if (!resp.ok) {
+            box.innerHTML = '<span style="color:var(--red)">' + esc(d.error || ('HTTP ' + resp.status)) + '</span>';
+            return;
+        }
+        var phase = d.phase || 'preflight';
+        var phaseLabel = d.phase_label || '';
+        var steps = d.steps || [];
+        var nextAction = d.next_action || {};
+        // Phase pill — color tracks where the user is.
+        var pillColor = (phase === 'live') ? 'var(--green)'
+                      : (phase === 'verify') ? '#f59e0b'
+                      : (phase === 'shadow') ? 'var(--accent)'
+                      : 'var(--text-dim)';
+        var html = '<div style="margin-bottom:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+            '<span style="display:inline-block;padding:3px 10px;border-radius:999px;background:rgba(59,130,246,0.10);color:' + pillColor + ';font-weight:700;font-size:12px;letter-spacing:0.4px">' +
+            esc(phaseLabel.toUpperCase()) + '</span>' +
+            '</div>';
+        // Step list.
+        html += '<div>';
+        steps.forEach(function(s) {
+            var icon = s.done
+                ? '<span style="color:var(--green);font-weight:700">✓</span>'
+                : '<span style="color:var(--text-dim);font-weight:700">○</span>';
+            html += '<div style="display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.04)">' +
+                '<span style="width:18px;text-align:center;padding-top:1px">' + icon + '</span>' +
+                '<div style="flex:1">' +
+                    '<div style="' + (s.done ? 'color:var(--text-dim);text-decoration:line-through' : 'color:var(--text)') + '">' + esc(s.label) + '</div>' +
+                    (s.hint ? '<div style="font-size:11px;color:var(--text-dim);margin-top:2px">' + esc(s.hint) + '</div>' : '') +
+                '</div>' +
+                (s.action === 'start_shadow'
+                    ? '<button type="button" class="btn-primary btn-sm" onclick="liveLaunchStep(\'start_shadow\')">Start window</button>'
+                    : (s.action === 'mark_reviewed'
+                        ? '<button type="button" class="btn-success btn-sm" onclick="liveLaunchStep(\'mark_reviewed\')">Mark reviewed</button>'
+                        : '')) +
+                '</div>';
+        });
+        html += '</div>';
+        // Shadow-window meta when running.
+        if (d.shadow_started_at && phase !== 'live') {
+            var elapsed = (typeof d.shadow_hours_elapsed === 'number')
+                ? d.shadow_hours_elapsed.toFixed(1) : '0';
+            var rec = d.recommended_shadow_hours || 48;
+            html += '<div style="font-size:11px;color:var(--text-dim);margin-top:10px">Shadow window: ' +
+                esc(elapsed) + 'h elapsed of ' + esc(String(rec)) + 'h · ' +
+                esc(String(d.shadow_event_count || 0)) + ' events recorded</div>';
+        }
+        // Next-action banner.
+        if (nextAction && nextAction.label) {
+            var bannerBg = (nextAction.kind === 'enable_live')
+                ? 'rgba(34,197,94,0.10)' : 'rgba(255,255,255,0.03)';
+            var bannerColor = (nextAction.kind === 'enable_live')
+                ? 'var(--green)' : 'var(--text)';
+            html += '<div style="margin-top:12px;padding:8px 12px;background:' + bannerBg + ';border-radius:6px;font-size:12px">' +
+                'Next: <strong style="color:' + bannerColor + '">' + esc(nextAction.label) + '</strong>' +
+                '</div>';
+        }
+        // Reset link (small).
+        if (d.shadow_started_at || d.shadow_reviewed_at) {
+            html += '<div style="margin-top:8px;font-size:11px;text-align:right">' +
+                '<a href="javascript:void(0)" onclick="liveLaunchStep(\'reset\')" style="color:var(--text-dim)">Reset wizard</a></div>';
+        }
+        box.innerHTML = html;
+    } catch(e) {
+        box.innerHTML = '<span style="color:var(--red)">Network error: ' + esc(e.message) + '</span>';
+    }
+}
+
+async function liveLaunchStep(action) {
+    if (action === 'reset' && !confirm('Reset the launch wizard? This clears the shadow-window timer + review flag and turns shadow mode OFF.')) {
+        return;
+    }
+    try {
+        var resp = await fetch(API_BASE + '/api/live-launch-step', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: JSON.stringify({action: action})
+        });
+        var d = await resp.json();
+        if (!resp.ok || d.error) {
+            toast(d.error || ('Action failed (HTTP ' + resp.status + ')'), 'error');
+            return;
+        }
+        var verb = (action === 'start_shadow') ? 'Shadow window started + shadow mode ON'
+                 : (action === 'mark_reviewed') ? 'Shadow log marked reviewed'
+                 : 'Wizard reset';
+        toast(verb, 'success');
+        refreshLiveLaunchState();
+        // Pt.92 panel reflects the shadow-mode flag flip.
+        try { refreshShadowLog(); } catch (_) {}
+        // Pt.93 panel may change too if review unlocked the next phase.
+        try { refreshLiveModeReadiness(); } catch (_) {}
+    } catch(e) {
+        toast('Error: ' + e.message, 'error');
     }
 }
 
@@ -8602,7 +8722,9 @@ function switchSettingsTab(name) {
     // Round-61 pt.92: lazy-load shadow events when the user opens
     // the Live Trading tab (saves a fetch when they're elsewhere).
     // Round-61 pt.93: same lazy-load for the promotion-gate readout.
+    // Round-61 pt.96: same lazy-load for the launch wizard.
     if (name === 'live') {
+        try { refreshLiveLaunchState(); } catch (_) {}
         try { refreshShadowLog(); } catch (_) {}
         try { refreshLiveModeReadiness(); } catch (_) {}
     }
