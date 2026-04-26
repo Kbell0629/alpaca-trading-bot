@@ -720,6 +720,44 @@ class ActionsHandlerMixin:
         except Exception as _e:
             return self.send_json({"error": f"Read failed: {_e}"}, 500)
 
+    def handle_live_mode_readiness(self, body=None):
+        """Round-61 pt.93: read-only view of the live-mode promotion
+        gate. Surfaces what handle_toggle_live_mode (auth_mixin.py)
+        would check, BEFORE the user clicks Enable Live Trading.
+        Lets the dashboard render a per-gate ✓/✗ panel so users see
+        exactly which thresholds they still need to clear.
+
+        The actual enforcement stays in handle_toggle_live_mode — this
+        endpoint is purely informational. Pure read-only; no I/O writes.
+        """
+        if not self.current_user:
+            return self.send_json({"error": "Not authenticated"}, 401)
+        try:
+            import live_mode_gate as _lmg
+            journal = server.load_json(
+                self._user_file("trade_journal.json")) or {}
+            sc = server.load_json(
+                self._user_file("scorecard.json")) or {}
+            audit = sc.get("audit_findings") or []
+            gate = _lmg.check_live_mode_readiness(journal, sc, audit)
+            return self.send_json({
+                "ready": bool(gate.get("ready")),
+                "summary": gate.get("summary") or "",
+                "blockers": gate.get("blockers") or [],
+                "warnings": gate.get("warnings") or [],
+                "metrics": gate.get("metrics") or {},
+                "thresholds": {
+                    "min_closed_trades": _lmg.DEFAULT_MIN_CLOSED_TRADES,
+                    "min_win_rate": _lmg.DEFAULT_MIN_WIN_RATE,
+                    "min_sharpe": _lmg.DEFAULT_MIN_SHARPE,
+                    "max_drawdown_pct": _lmg.DEFAULT_MAX_DRAWDOWN_PCT,
+                },
+                "readiness_score": int(sc.get("readiness_score") or 0),
+            })
+        except Exception as _e:
+            return self.send_json(
+                {"error": f"Readiness check failed: {_e}"}, 500)
+
     def handle_auto_deployer(self, body):
         """Toggle the auto-deployer on/off by updating the current user's config file."""
         enabled = body.get("enabled", False)

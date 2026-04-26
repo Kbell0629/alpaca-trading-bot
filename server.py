@@ -3117,6 +3117,8 @@ class DashboardHandler(
             return self.handle_set_shadow_mode(body)
         if path == "/api/shadow-log":
             return self.handle_shadow_log(body)
+        if path == "/api/live-mode-readiness":
+            return self.handle_live_mode_readiness(body)
 
         if path == "/api/set-live-parallel":
             # Round-45: toggle the user's live_parallel_enabled flag.
