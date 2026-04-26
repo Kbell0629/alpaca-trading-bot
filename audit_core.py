@@ -267,11 +267,16 @@ def run_audit(positions: Iterable[dict],
                        if (o.get("type") or "").lower() in ("stop", "stop_limit", "trailing_stop")
                        and (o.get("side") or "").lower() == expected_side]
         # Round-61 pt.90: detect a pending CLOSE order (full-qty
-        # market or limit-day on the position-closing side). If
-        # one is in flight, the position is on its way out — no
-        # stop needed. Downgrade the audit to MEDIUM "close_pending"
-        # so the user sees the situation accurately instead of a
-        # misleading HIGH "no stop" alert.
+        # market or near-market limit on the position-closing
+        # side). Downgrade the audit to MEDIUM "close_pending"
+        # only when the order will actually fill near-immediately.
+        #
+        # A profit-target LIMIT far from current price (e.g. SOXL
+        # short with BUY LIMIT @ $94 vs current $128, ~25% away) is
+        # NOT a pending close — it's an aspirational take-profit.
+        # Only count LIMITs that would fill at or through current:
+        #   short close (BUY LIMIT):  limit_price >= current
+        #   long close  (SELL LIMIT): limit_price <= current
         close_orders = []
         for o in sym_orders:
             if (o.get("side") or "").lower() != expected_side:
@@ -283,8 +288,20 @@ def run_audit(positions: Iterable[dict],
                 oqty = float(o.get("qty") or 0)
             except (TypeError, ValueError):
                 continue
-            if abs(oqty) >= abs(qty):
-                close_orders.append(o)
+            if abs(oqty) < abs(qty):
+                continue
+            if otype == "limit":
+                try:
+                    lp = float(o.get("limit_price") or 0)
+                except (TypeError, ValueError):
+                    lp = 0
+                if lp <= 0:
+                    continue
+                if is_short and lp < current:
+                    continue
+                if (not is_short) and lp > current:
+                    continue
+            close_orders.append(o)
         if not stop_orders:
             if close_orders:
                 # A pending market/limit order will close the

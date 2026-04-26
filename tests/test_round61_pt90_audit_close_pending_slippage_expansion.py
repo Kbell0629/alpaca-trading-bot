@@ -74,9 +74,10 @@ def test_audit_missing_stop_still_fires_when_no_close_pending():
     assert "missing_stop" in cats
 
 
-def test_audit_close_pending_recognizes_limit_orders_too():
-    """xh_close pre-market routing posts a LIMIT order, not market.
-    Pt.90 recognises both as 'pending close'."""
+def test_audit_close_pending_recognizes_near_market_limit_orders():
+    """xh_close pre-market routing posts a LIMIT order at-or-near
+    current price. Pt.90 recognises near-market LIMITs as
+    'pending close' (will fill on next tick)."""
     import audit_core
     positions = [{
         "symbol": "AAPL", "qty": "10",
@@ -86,7 +87,7 @@ def test_audit_close_pending_recognizes_limit_orders_too():
     orders = [{
         "symbol": "AAPL", "side": "sell", "type": "limit",
         "qty": "10", "status": "accepted",
-        "limit_price": "178.00",
+        "limit_price": "178.00",   # below current → fills now
     }]
     report = audit_core.run_audit(
         positions=positions, orders=orders,
@@ -95,6 +96,56 @@ def test_audit_close_pending_recognizes_limit_orders_too():
     findings = report["findings"]
     cats = [f["category"] for f in findings]
     assert "close_pending" in cats
+
+
+def test_audit_far_limit_is_NOT_close_pending():
+    """A profit-target LIMIT placed far from current price should
+    NOT be treated as a pending close. SOXL short with BUY LIMIT
+    @ $94 vs current $128 (~25% away) is an aspirational take-
+    profit; it won't fill until price drops, so the position is
+    still UNPROTECTED and HIGH missing_stop should fire."""
+    import audit_core
+    positions = [{
+        "symbol": "SOXL", "qty": "-29",
+        "current_price": "128.0",
+        "asset_class": "us_equity",
+    }]
+    orders = [{
+        "symbol": "SOXL", "side": "buy", "type": "limit",
+        "qty": "29", "status": "new",
+        "limit_price": "94.00",   # far below current → profit target
+    }]
+    report = audit_core.run_audit(
+        positions=positions, orders=orders,
+        strategy_files={}, journal={},
+        scorecard={"updated": "2026-04-26T00:00:00"})
+    findings = report["findings"]
+    cats = [f["category"] for f in findings]
+    assert "missing_stop" in cats
+    assert "close_pending" not in cats
+
+
+def test_audit_long_sell_limit_above_current_is_profit_target():
+    """Long with SELL LIMIT above current = profit target, not close."""
+    import audit_core
+    positions = [{
+        "symbol": "AAPL", "qty": "10",
+        "current_price": "180.0",
+        "asset_class": "us_equity",
+    }]
+    orders = [{
+        "symbol": "AAPL", "side": "sell", "type": "limit",
+        "qty": "10", "status": "new",
+        "limit_price": "200.00",   # above current → take-profit
+    }]
+    report = audit_core.run_audit(
+        positions=positions, orders=orders,
+        strategy_files={}, journal={},
+        scorecard={"updated": "2026-04-26T00:00:00"})
+    findings = report["findings"]
+    cats = [f["category"] for f in findings]
+    assert "missing_stop" in cats
+    assert "close_pending" not in cats
 
 
 def test_audit_partial_close_does_NOT_downgrade():
