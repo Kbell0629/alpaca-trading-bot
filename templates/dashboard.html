@@ -2494,6 +2494,16 @@ body.focus-mode #section-perf-attribution {
         <div id="currentModeDisplay" style="font-size:16px;font-weight:700;padding:8px 12px;background:var(--bg);border-radius:6px">Loading…</div>
       </div>
 
+      <!-- Round-61 pt.93: live-mode promotion gate readout -->
+      <div id="liveReadinessPanel" style="margin:16px 0;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--bg)">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+          <h3 style="margin:0;font-size:14px">Promotion gate</h3>
+          <button type="button" class="btn-ghost btn-sm" onclick="refreshLiveModeReadiness()" title="Re-check the live-mode promotion gate">↻ Refresh</button>
+        </div>
+        <div class="settings-hint" style="margin-bottom:10px">Each item must clear before live trading can be enabled. Override available with the existing <code>override_readiness=true</code> flag, but recommended only after a paper-validation period.</div>
+        <div id="liveReadinessContent" style="font-size:13px">Loading…</div>
+      </div>
+
       <div class="settings-row">
         <label>Max Position Size (live)</label>
         <input type="number" id="setLiveMaxPosition" min="100" max="50000" step="100" value="500">
@@ -3959,6 +3969,88 @@ async function refreshShadowLog() {
                 '</div>';
         });
         html += '</div>';
+        box.innerHTML = html;
+    } catch(e) {
+        box.innerHTML = '<span style="color:var(--red)">Network error: ' + esc(e.message) + '</span>';
+    }
+}
+
+/* ---- Round-61 pt.93: live-mode promotion gate readout ---- */
+async function refreshLiveModeReadiness() {
+    var box = document.getElementById('liveReadinessContent');
+    if (!box) return;
+    box.innerHTML = '<span style="color:var(--text-dim)">Loading…</span>';
+    try {
+        var resp = await fetch(API_BASE + '/api/live-mode-readiness', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: '{}'
+        });
+        var d = await resp.json();
+        if (!resp.ok) {
+            box.innerHTML = '<span style="color:var(--red)">' + esc(d.error || ('HTTP ' + resp.status)) + '</span>';
+            return;
+        }
+        var ready = !!d.ready;
+        var metrics = d.metrics || {};
+        var thresholds = d.thresholds || {};
+        var blockers = d.blockers || [];
+        var blockerKeys = {};
+        blockers.forEach(function(b) { if (b && b.key) blockerKeys[b.key] = true; });
+        // Status pill at the top.
+        var pill = ready
+            ? '<span style="display:inline-block;padding:3px 10px;border-radius:999px;background:rgba(34,197,94,0.15);color:var(--green);font-weight:700;font-size:12px;letter-spacing:0.4px">READY</span>'
+            : '<span style="display:inline-block;padding:3px 10px;border-radius:999px;background:rgba(239,68,68,0.15);color:var(--red);font-weight:700;font-size:12px;letter-spacing:0.4px">NOT READY</span>';
+        var html = '<div style="margin-bottom:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+            pill +
+            '<span style="font-size:12px;color:var(--text-dim)">' + esc(d.summary || '') + '</span>' +
+            '</div>';
+        // Per-gate rows.
+        function row(label, key, actual, requiredText, ok) {
+            var icon = ok
+                ? '<span style="color:var(--green);font-weight:700">✓</span>'
+                : '<span style="color:var(--red);font-weight:700">✗</span>';
+            return '<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04)">' +
+                '<span style="width:18px;text-align:center">' + icon + '</span>' +
+                '<span style="flex:1">' + esc(label) + '</span>' +
+                '<span style="font-family:monospace;font-size:12px;' + (ok ? '' : 'color:var(--red)') + '">' + esc(String(actual)) + '</span>' +
+                '<span style="font-size:11px;color:var(--text-dim)">need ' + esc(requiredText) + '</span>' +
+                '</div>';
+        }
+        var trades = metrics.closed_trades || 0;
+        var minTrades = thresholds.min_closed_trades || 30;
+        var winRate = metrics.win_rate || 0;
+        var minWin = thresholds.min_win_rate || 0.45;
+        var sharpe = metrics.sharpe_ratio || 0;
+        var minSharpe = thresholds.min_sharpe || 0.5;
+        var dd = metrics.max_drawdown_pct || 0;
+        var maxDd = thresholds.max_drawdown_pct || 15;
+        var highFindings = metrics.high_audit_findings || 0;
+        html += '<div>';
+        html += row('Closed trades', 'insufficient_trades', trades, '≥' + minTrades, !blockerKeys['insufficient_trades']);
+        html += row('Win rate', 'low_win_rate', (winRate * 100).toFixed(0) + '%', '≥' + (minWin * 100).toFixed(0) + '%', !blockerKeys['low_win_rate']);
+        html += row('Sharpe ratio', 'low_sharpe', sharpe.toFixed(2), '≥' + minSharpe.toFixed(2), !blockerKeys['low_sharpe']);
+        html += row('Max drawdown', 'high_drawdown', dd.toFixed(1) + '%', '≤' + maxDd.toFixed(1) + '%', !blockerKeys['high_drawdown']);
+        html += row('HIGH audit findings', 'high_audit_findings', highFindings, '0', !blockerKeys['high_audit_findings']);
+        html += '</div>';
+        // Readiness chip from the legacy scorecard for reference.
+        if (typeof d.readiness_score === 'number') {
+            html += '<div style="margin-top:10px;font-size:12px;color:var(--text-dim)">Legacy readiness score: <strong style="color:var(--text)">' + esc(String(d.readiness_score)) + '/100</strong> · need ≥80</div>';
+        }
+        // Disable the Enable button when not ready (toggle mirrors server gate).
+        var enableBtn = document.getElementById('enableLiveBtn');
+        if (enableBtn) {
+            if (ready) {
+                enableBtn.disabled = false;
+                enableBtn.style.opacity = '';
+                enableBtn.title = '';
+            } else {
+                enableBtn.disabled = false;  // server-side enforces; UI just hints
+                enableBtn.style.opacity = '0.85';
+                enableBtn.title = 'Promotion gate not satisfied — server will reject unless override_readiness=true is sent.';
+            }
+        }
         box.innerHTML = html;
     } catch(e) {
         box.innerHTML = '<span style="color:var(--red)">Network error: ' + esc(e.message) + '</span>';
@@ -8497,8 +8589,10 @@ function switchSettingsTab(name) {
     }
     // Round-61 pt.92: lazy-load shadow events when the user opens
     // the Live Trading tab (saves a fetch when they're elsewhere).
+    // Round-61 pt.93: same lazy-load for the promotion-gate readout.
     if (name === 'live') {
         try { refreshShadowLog(); } catch (_) {}
+        try { refreshLiveModeReadiness(); } catch (_) {}
     }
 }
 
