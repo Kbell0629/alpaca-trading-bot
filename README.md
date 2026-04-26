@@ -346,14 +346,15 @@ API: `position_sizing.compute_full_size(base_qty=..., strategy=...,
 symbol=..., journal=..., existing_positions=..., price=...,
 adv_dollar=...)`.
 
-### Realized-vs-expected slippage (pt.80)
+### Realized-vs-expected slippage (pt.80 / pt.84)
 
 Pt.47's backtest assumes 10 bps of slippage on entry + exit.
 Without measuring live fills, we can't tell whether that
-assumption matches reality. Pt.80 walks closed trades that have
-the slippage fields populated (`entry_expected_price` /
-`entry_filled_price` / `entry_slippage_bps`, plus the exit
-trio) and surfaces a verdict in the Analytics Hub:
+assumption matches reality. Pt.80 + pt.84 close the loop: every
+new auto-deployed trade records `entry_expected_price` at deploy
+time, and the target-hit close path captures `entry_filled_price`
++ `exit_filled_price` from the broker response. The bot computes
+signed slippage_bps and surfaces a verdict in the Analytics Hub:
 
 | Verdict | Meaning |
 |---|---|

@@ -64,7 +64,19 @@ https://github.com/Kbell0629/alpaca-trading-bot/actions before CI runs.
 
 ---
 
-## Current session state (2026-04-25 — round 61 pt.10-82 SHIPPED)
+## Current session state (2026-04-26 — round 61 pt.10-84 SHIPPED)
+
+**Latest (pt.84) — slippage_tracker wired into the fill path.**
+Pt.80 shipped the math + analytics surface; pt.84 closes the
+loop. Auto-deployer journal append now records
+`entry_expected_price` (= screener-time price). `record_trade_close`
+gains optional `entry_filled_price` + `exit_filled_price` kwargs;
+when supplied alongside the stored expected price, computes signed
+slippage_bps via `slippage_tracker.compute_slippage_bps` and writes
+the four slippage fields back onto the closed entry. Target-hit
+close path passes real Alpaca fill prices through (entry =
+position avg_entry_price; exit = close-order filled_avg_price).
++8 tests in `tests/test_round61_pt84_wire_slippage_fields.py`.
 
 **Latest merged batch (pt.78 → pt.82):** five follow-up PRs
 hardening the close path, validating backtest assumptions, and
