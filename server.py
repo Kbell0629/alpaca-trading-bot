@@ -3113,6 +3113,61 @@ class DashboardHandler(
                         "mode": self.session_mode or "paper"})
             return self.send_json({"success": True, "reset_to_tier": tier.get("name")})
 
+        if path == "/api/set-shadow-mode":
+            # Round-61 pt.92: persist the user's shadow-mode toggle
+            # in guardrails.json so the auto-deployer hook (pt.86)
+            # picks it up on the next scheduler tick.
+            if not self.current_user:
+                return self.send_json({"error": "Not authenticated"}, 401)
+            enabled = bool(body.get("enabled"))
+            try:
+                gpath = self._user_file("guardrails.json")
+                gr = load_json(gpath) or {}
+                gr["live_shadow_mode"] = enabled
+                save_json(gpath, gr)
+            except Exception as _e:
+                return self.send_json({"error": f"Persist failed: {_e}"}, 500)
+            return self.send_json({"success": True, "enabled": enabled})
+
+        if path == "/api/shadow-log":
+            # Round-61 pt.92: read recent shadow events for the
+            # dashboard panel. GET via query params.
+            if not self.current_user:
+                return self.send_json({"error": "Not authenticated"}, 401)
+            try:
+                limit = int(body.get("limit") or 50)
+            except (TypeError, ValueError):
+                limit = 50
+            try:
+                import shadow_mode as _sm
+                user_dict = {
+                    "_data_dir": auth.user_data_dir(
+                        self.current_user["id"],
+                        mode=getattr(self, "session_mode", "paper")),
+                }
+                gpath = self._user_file("guardrails.json")
+                gr = load_json(gpath) or {}
+                events = _sm.get_shadow_log(user_dict, limit=limit)
+                summary = _sm.summarize_shadow_log(events)
+                active = _sm.is_shadow_mode_active(user_dict, gr)
+                # Surface where the toggle resolution came from so
+                # the UI hint can be specific.
+                if gr.get("live_shadow_mode") is not None:
+                    source = "user setting"
+                elif (os.environ.get("LIVE_SHADOW_MODE") or "").strip().lower() \
+                        in ("1", "true", "yes", "on"):
+                    source = "deployment env (LIVE_SHADOW_MODE)"
+                else:
+                    source = "off"
+                return self.send_json({
+                    "active": active,
+                    "source": source,
+                    "events": events,
+                    "summary": summary,
+                })
+            except Exception as _e:
+                return self.send_json({"error": f"Read failed: {_e}"}, 500)
+
         if path == "/api/set-live-parallel":
             # Round-45: toggle the user's live_parallel_enabled flag.
             # When true + live keys present, the scheduler runs both
