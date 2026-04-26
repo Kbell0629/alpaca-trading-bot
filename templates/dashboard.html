@@ -7202,11 +7202,18 @@ function renderDashboard() {
         _navBtn('section-strategies', 'Strategies') +
         _navBtn('section-readiness', 'Readiness') +
         _navBtn('section-positions', 'Positions') +
+        // Round-61 pt.79: Tax Harvest renders INSIDE the positions
+        // section (between the orders table and the closing
+        // </section>) so it lives BEFORE Analytics in DOM order.
+        // Pt.75 had this after Screener which made clicking
+        // "Tax Harvest" scroll BACKWARDS up the page.
+        (losers.length > 0 ? _navBtn('section-tax', 'Tax Harvest') : '') +
         _navBtn('section-analytics', '📊 Analytics') +
         _navBtn('section-trades', 'Trades') +
         _navBtn('section-screener', 'Screener') +
+        // Short Sells renders AFTER the screener section close
+        // and BEFORE Backtest, so it stays here.
         (shortCands.length > 0 ? _navBtn('section-shorts', 'Short Sells') : '') +
-        (losers.length > 0 ? _navBtn('section-tax', 'Tax Harvest') : '') +
         _navBtn('section-backtest', 'Backtest') +
         _navBtn('section-scheduler', 'Scheduler') +
         _navBtn('section-heatmap', 'Heatmap') +
