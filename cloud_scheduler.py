@@ -2556,9 +2556,20 @@ def process_strategy_file(user, filepath, strat, extended_hours=False):
                         f"@ ${price:.2f} ({pnl_pct:+.1f}%) — bearish "
                         "news cleared the close threshold.",
                         "exit")
+                    # Round-61 pt.90: pass real fill prices so the
+                    # bearish-news close populates slippage_bps too.
+                    _entry_fill_px = entry if entry else None
+                    _exit_fill_px = None
+                    try:
+                        _exit_fill_px = float(order.get("filled_avg_price")
+                                                or 0) or None
+                    except (TypeError, ValueError):
+                        _exit_fill_px = None
                     record_trade_close(user, symbol, strategy_type,
                                          price, pnl, "bearish_news",
-                                         qty=shares, side="sell")
+                                         qty=shares, side="sell",
+                                         entry_filled_price=_entry_fill_px,
+                                         exit_filled_price=_exit_fill_px)
                     # Clear the flag so we don't try to close it again.
                     _last_runs.pop(_news_close_key, None)
                     save_json(filepath, strat)
@@ -2618,9 +2629,19 @@ def process_strategy_file(user, filepath, strat, extended_hours=False):
                         f"{shares} @ ${price:.2f} "
                         f"({pnl_pct:+.1f}% in {_dm_result.get('days_held')}d)",
                         "exit", rich_subject=_subj, rich_body=_body)
+                    # Round-61 pt.90: slippage wiring for dead_money close.
+                    _entry_fill_px_dm = entry if entry else None
+                    _exit_fill_px_dm = None
+                    try:
+                        _exit_fill_px_dm = float(order.get("filled_avg_price")
+                                                   or 0) or None
+                    except (TypeError, ValueError):
+                        _exit_fill_px_dm = None
                     record_trade_close(user, symbol, strategy_type,
                                          price, pnl, "dead_money",
-                                         qty=shares, side="sell")
+                                         qty=shares, side="sell",
+                                         entry_filled_price=_entry_fill_px_dm,
+                                         exit_filled_price=_exit_fill_px_dm)
                     save_json(filepath, strat)
                     return
         except Exception as _dm_e:

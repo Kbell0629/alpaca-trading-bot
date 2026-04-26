@@ -266,16 +266,53 @@ def run_audit(positions: Iterable[dict],
         stop_orders = [o for o in sym_orders
                        if (o.get("type") or "").lower() in ("stop", "stop_limit", "trailing_stop")
                        and (o.get("side") or "").lower() == expected_side]
+        # Round-61 pt.90: detect a pending CLOSE order (full-qty
+        # market or limit-day on the position-closing side). If
+        # one is in flight, the position is on its way out — no
+        # stop needed. Downgrade the audit to MEDIUM "close_pending"
+        # so the user sees the situation accurately instead of a
+        # misleading HIGH "no stop" alert.
+        close_orders = []
+        for o in sym_orders:
+            if (o.get("side") or "").lower() != expected_side:
+                continue
+            otype = (o.get("type") or "").lower()
+            if otype not in ("market", "limit"):
+                continue
+            try:
+                oqty = float(o.get("qty") or 0)
+            except (TypeError, ValueError):
+                continue
+            if abs(oqty) >= abs(qty):
+                close_orders.append(o)
         if not stop_orders:
-            findings.append({
-                "severity": "HIGH",
-                "category": "missing_stop",
-                "message": (f"Position {sym} (qty {int(qty)}) has NO "
-                            f"{expected_side.upper()} stop at Alpaca. "
-                            "Unprotected downside — next monitor tick "
-                            "should place one."),
-                "symbol": sym,
-            })
+            if close_orders:
+                # A pending market/limit order will close the
+                # position — no stop needed. Surface as informational.
+                _co = close_orders[0]
+                _co_type = (_co.get("type") or "?").lower()
+                _co_status = (_co.get("status") or "?").lower()
+                findings.append({
+                    "severity": "MEDIUM",
+                    "category": "close_pending",
+                    "message": (f"Position {sym} (qty {int(qty)}) has no "
+                                f"stop, but a pending {_co_type.upper()} "
+                                f"{expected_side.upper()} order ({_co_status}) "
+                                f"will close the position at next fill. "
+                                "If you didn't intend to close, cancel that "
+                                "order so the monitor places a stop."),
+                    "symbol": sym,
+                })
+            else:
+                findings.append({
+                    "severity": "HIGH",
+                    "category": "missing_stop",
+                    "message": (f"Position {sym} (qty {int(qty)}) has NO "
+                                f"{expected_side.upper()} stop at Alpaca. "
+                                "Unprotected downside — next monitor tick "
+                                "should place one."),
+                    "symbol": sym,
+                })
         else:
             for o in stop_orders:
                 try:
