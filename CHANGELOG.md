@@ -8,6 +8,148 @@ The project is currently in **paper-trading validation** (started 2026-04-15, ta
 
 ---
 
+## 🆕 Round-61 pt.82 — per-trade entry-rationale audit (+25 tests)
+
+**Date:** 2026-04-25
+
+Every closed trade has `exit_reason` but not `entry_rationale`.
+Pt.82 records a structured rationale dict at deploy time so
+post-mortems and the future meta-learning loop can correlate
+WHICH entry conditions actually predict winners.
+
+**New module `entry_rationale.py`:**
+* `build_entry_rationale(pick, sizing_info, regime,
+  sector_returns)` — 15-key dict (score, rs_score, sector,
+  sector_strength, news_sentiment, vwap_offset_pct, atr_pct,
+  regime, kelly_mult, correlation_mult, drawdown_mult, adv_mult,
+  confluence_count, filter_reasons, headline)
+* `format_rationale(rat)` — single-line headline like
+  `"score=485 RS=+8 sector=Technology(strong) news=bullish
+  vwap=+0.3% conf=4/5"`
+* `aggregate_winners_vs_losers(journal)` — buckets closed trades
+  by P&L sign and reports mean rationale fields per bucket +
+  signed deltas
+
+Wired into `cloud_scheduler.run_auto_deployer`'s journal append.
+Best-effort — failures fall through to `None`; legacy pre-pt.82
+journal entries silently skipped by the aggregator. Pure-module
+discipline pinned by test (no top-level imports of
+cloud_scheduler / auth / server).
+
++25 tests in `tests/test_round61_pt82_entry_rationale.py`.
+
+---
+
+## 🆕 Round-61 pt.81 — xh_close / overnight POST gets cancel+retry too (+7 tests)
+
+**Date:** 2026-04-25
+
+User-reported with screenshot at 8:34 PM ET on a Saturday: SOXL
+"insufficient qty available" close kept failing despite pt.50 →
+pt.53 → pt.69 → pt.75. Root cause: pt.50 routes after-hours and
+overnight closes through a POST to `/orders` (xh_close limit or
+MOO BUY-to-cover for shorts), NOT through DELETE `/positions`.
+Pt.69's cancel-and-retry recovery only covered the DELETE branch
+— the POST branch surfaced the bare error.
+
+**Fix:** extend the same recovery to the POST branch:
+1. POST → "insufficient qty"
+2. `_cancel_pending_sell_orders` (drops the pending BUY-stop)
+3. Retry POST up to 4 times with backoff (0.3 / 0.6 / 1.0 / 1.5s)
+4. Success → fall through to settled-funds bridge + success
+5. Exhausted → "try again in a moment"
+6. Different error mid-retry → surface immediately
+
+Now both paths have the same robust cancel-and-retry recovery.
+
++7 tests in `tests/test_round61_pt81_xh_close_cancel_retry.py`.
+
+---
+
+## 🆕 Round-61 pt.80 — realized vs expected slippage tracking (+30 tests)
+
+**Date:** 2026-04-25
+
+Pt.47's backtest harness assumes 10 bps of slippage on entry +
+exit. Without measuring live fills we can't tell whether the
+backtest expectancy matches reality. Pt.80 closes the loop.
+
+**New pure module `slippage_tracker.py`:**
+* `compute_slippage_bps(expected, filled, side)` — signed bps
+  where POSITIVE = adverse. Buy: filled > expected → positive.
+  Sell: filled < expected → positive (received less).
+* `aggregate_realized_slippage(journal)` — walks closed trades
+  with the four slippage fields populated, returns aggregate +
+  per-strategy breakdown + dollar cost.
+* `compare_to_assumption(agg, assumed_bps=10.0)` — verdict
+  state: `ok` (≤ assumption) / `warn` (≤1.5×) / `alert` (>1.5×) /
+  `preliminary` (<20 trades).
+* `annotate_close_with_slippage(close_kwargs, ...)` — helper
+  for record_trade_close callers. Writes 4 fields onto
+  `extra` dict + computes signed bps.
+
+**New trade-journal fields** (additive — legacy entries skipped
+silently): `entry_expected_price`, `entry_filled_price`,
+`entry_slippage_bps`; same trio for exit side.
+
+`analytics_core.build_analytics_view` returns a new
+`slippage_summary` key: `{aggregate, verdict}`.
+
++30 tests in `tests/test_round61_pt80_realized_slippage.py`.
+
+---
+
+## 🆕 Round-61 pt.79 — nav-tab order: Tax Harvest position fix (+4 tests)
+
+**Date:** 2026-04-25
+
+User-reported after pt.75: clicking "Tax Harvest" still scrolled
+BACKWARDS up the page. Root cause: `taxHtml` is rendered INSIDE
+the positions section (between the orders table and `</section>`)
+so it lives BEFORE Analytics in DOM order — but pt.75's nav had
+it AFTER Screener.
+
+**Fix:** move the Tax Harvest nav button to between Positions and
+Analytics. Short Sells stays where it was (its `shortHtml` is
+rendered after the screener section close, before Backtest).
+
+New nav order matches actual DOM:
+```
+overview → picks → strategies → readiness → positions →
+[tax] → analytics → trades → screener → [shorts] →
+backtest → scheduler → heatmap → comparison → settings
+```
+
++4 source-pin tests including a strict full-order check.
+
+---
+
+## 🆕 Round-61 pt.78 — end-to-end close-flow integration test (+9 tests)
+
+**Date:** 2026-04-25
+
+The SOXL "insufficient qty available" close bug got fixed three
+different ways (pt.50 → pt.53 → pt.69 → pt.75) and each round
+found another corner. Pt.78 ships a single integration test that
+exercises the full close path — POST `/api/close-position` →
+cancel scan → retry-with-backoff → settled-funds ledger write —
+with a self-contained Alpaca mock. If a future PR re-introduces
+the `?symbols=` URL filter, removes the cancel-after-failure
+step, or shortens the retry-backoff schedule below what Alpaca
+needs, the test fails immediately.
+
+9 scenarios: clean RTH close, full SOXL bug recovery, no-pending-
+orders enrichment, all-retries-exhausted, different-error-mid-
+retry, pt.75 URL pin, pre-market xh_close routing, short-cover
+skipping settled-funds, long-close populating settled-funds.
+
+Self-contained `_AlpacaStub` — no http_harness fixture, no
+cryptography needed. <0.5s for all 9 tests.
+
++9 tests in `tests/test_round61_pt78_close_flow_integration.py`.
+
+---
+
 ## 🆕 Round-61 pt.76 — signup form: dedupe Invite Code label + tighten help text (+4 tests)
 
 **Date:** 2026-04-25
