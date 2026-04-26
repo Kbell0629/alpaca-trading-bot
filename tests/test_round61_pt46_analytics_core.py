@@ -563,6 +563,8 @@ def test_build_analytics_view_returns_all_keys():
         "slippage_summary",
         # Round-61 pt.88 added rationale_breakdown.
         "rationale_breakdown",
+        # Round-61 pt.97 added strategy_attribution.
+        "strategy_attribution",
     }
     assert set(out.keys()) == expected_keys
 
