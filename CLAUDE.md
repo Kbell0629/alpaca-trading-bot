@@ -30,10 +30,16 @@ auto-deploys top picks across 6 strategies, manages exits, handles kill-switch
 
 1. `git checkout main && git pull --ff-only`
 2. `cat CLAUDE.md` (this file), `cat README.md`, `cat CHANGELOG.md`
-3. `MASTER_ENCRYPTION_KEY=$(python3 -c 'print("e"*64)') python3 -m pytest tests/ --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json --deselect tests/test_auth.py::test_password_strength_rejects_weak --deselect tests/test_audit_round12_scheduler_latent.py::test_ruff_clean_on_real_bug_rules -q`
-   — expect ~**3217+ passing, 3 deselected** after pt.93 (baseline grew from
+3. `MASTER_ENCRYPTION_KEY=$(python3 -c 'print("e"*64)') python3 -m pytest tests/ --deselect tests/test_dashboard_data.py::test_trading_session_is_computed_live_not_from_stale_json -q`
+   — expect ~**3219+ passing, 1 deselected** after pt.95 (baseline grew from
    1802 at pt.32 through pt.46 +59, pt.47 +69, pt.48 +31, pt.49 +87, pt.50 +22,
-   pt.51 +39, pt.52-57 polish, pt.58-69 batches +280, pt.70-76 +160, pt.78-93 +140).
+   pt.51 +39, pt.52-57 polish, pt.58-69 batches +280, pt.70-76 +160, pt.78-93 +140, pt.95 +regression-tests).
+   Round-61 pt.95 (audit-sweep) dropped the two stale `--deselect`s for
+   `test_password_strength_rejects_weak` + `test_ruff_clean_on_real_bug_rules` —
+   both pass on current main and were holdovers from rounds where the
+   underlying issues had been fixed but the developer instructions
+   never caught up (CI was already only deselecting the one
+   trading_session test).
 4. `ruff check .` — clean.
 5. Validate dashboard JS: `awk '/^<script>/,/^<\/script>/' templates/dashboard.html | grep -v '^<script>' | grep -v '^</script>' > /tmp/dash.js && node --check /tmp/dash.js`
 6. `npm ci && npx vitest run` — expect **341 JS tests passing** (29 files).

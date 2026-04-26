@@ -8,6 +8,7 @@ Also takes a daily snapshot and appends it to trade_journal.json.
 Run: python3 "/Users/kevinbell/Alpaca Trading/update_scorecard.py"
 """
 
+import contextlib
 import json
 import os
 import tempfile
@@ -15,6 +16,46 @@ import time
 import urllib.request
 import urllib.error
 from et_time import now_et
+
+# Round-61 pt.95 (audit-sweep): replicate cloud_scheduler.strategy_file_lock
+# locally so the journal RMW here contends on the SAME flock the
+# scheduler thread + dashboard handler already use. Without this lock,
+# a record_trade_close() that fires mid-run can be silently clobbered
+# when this subprocess writes the older in-memory journal back at the
+# end of the run.
+try:
+    import fcntl as _fcntl
+    _HAS_FCNTL = True
+except ImportError:  # Windows / restricted images
+    _fcntl = None
+    _HAS_FCNTL = False
+
+
+@contextlib.contextmanager
+def _journal_lock(path):
+    """Exclusive flock against ``<path>.lock`` matching the lock-file
+    naming used in cloud_scheduler._StrategyFileLock so both contenders
+    serialise on the same kernel-level lock. No-op on platforms without
+    fcntl (best-effort)."""
+    fh = None
+    if _HAS_FCNTL and path:
+        try:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            fh = open(path + ".lock", "w")
+            _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX)
+        except Exception:
+            if fh:
+                try: fh.close()
+                except Exception: pass
+            fh = None
+    try:
+        yield
+    finally:
+        if fh:
+            try: _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN)
+            except Exception: pass
+            try: fh.close()
+            except Exception: pass
 
 # Round-61 pt.7: pure scorecard math extracted to scorecard_core.py so
 # pytest-cov can see it. This file still lives in coverage's `omit` list
@@ -241,11 +282,24 @@ def main():
     print(f"  Daily P&L: ${snapshot['daily_pnl']:,.2f} ({snapshot['daily_pnl_pct']:+.2f}%)")
     print(f"  Total P&L: ${snapshot['total_pnl']:,.2f} ({snapshot['total_pnl_pct']:+.2f}%)")
 
-    # Save everything
+    # Save everything.
+    # Round-61 pt.95 (audit-sweep): wrap the journal write in
+    # ``_journal_lock`` so a concurrent ``record_trade_close()`` in
+    # the scheduler thread can't be silently clobbered. The snapshot
+    # we just took is the ONLY mutation we make to the journal — to
+    # avoid losing trade rows that landed during our metrics run, we
+    # reload the on-disk journal under the lock and merge our new
+    # snapshot into THAT version's daily_snapshots before saving.
     print("\nSaving updated files...")
     safe_save_json(SCORECARD_PATH, updated_scorecard)
     print(f"  Saved: {SCORECARD_PATH}")
-    safe_save_json(JOURNAL_PATH, journal)
+    with _journal_lock(JOURNAL_PATH):
+        latest = load_json(JOURNAL_PATH) or {"trades": [], "daily_snapshots": []}
+        # Carry over our snapshot list (which already includes the new
+        # row + retention trim) but keep whatever trades the scheduler
+        # wrote while we were computing metrics.
+        latest["daily_snapshots"] = list(journal.get("daily_snapshots") or [])
+        safe_save_json(JOURNAL_PATH, latest)
     print(f"  Saved: {JOURNAL_PATH}")
 
     # Print summary
