@@ -2521,6 +2521,31 @@ body.focus-mode #section-perf-attribution {
         <button type="button" class="btn-ghost" onclick="enableLiveParallel(false)" id="disableParallelBtn" style="display:none">Disable Parallel Mode (paper only)</button>
         <span id="parallelResult" style="font-size:12px;text-align:center"></span>
       </div>
+
+      <!-- Round-61 pt.86 / pt.92: shadow mode (live dry-run) -->
+      <hr style="margin:20px 0;border:none;border-top:1px solid var(--border)">
+      <div class="modal-info-box" style="margin-bottom:12px;background:rgba(59,130,246,0.05);border-color:rgba(59,130,246,0.30)">
+        <strong>👻 Shadow Mode</strong> — runs the auto-deployer through every gate but does NOT POST orders. Records what live <em>would</em> have done into a per-user shadow log.
+        <ul style="margin:8px 0 0 20px;font-size:13px">
+          <li>Use this for 24-48h before flipping live to verify the bot's decisions match what you'd do manually.</li>
+          <li>Existing positions keep being managed normally (monitor, stops, exits) — only NEW deploys are suppressed.</li>
+          <li>Fail-safe: any check-error falls through to the real POST so trading isn't accidentally suppressed.</li>
+        </ul>
+      </div>
+      <div class="settings-row">
+        <label style="display:flex;align-items:center;gap:10px">
+          <input type="checkbox" id="setShadowMode" onchange="toggleShadowMode(this.checked)">
+          <span>Enable shadow mode (no real orders)</span>
+        </label>
+        <div class="settings-hint" id="shadowModeHint">Off by default. Persists in <code>guardrails.live_shadow_mode</code>.</div>
+      </div>
+      <div id="shadowLogPanel" style="margin-top:14px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <h3 style="margin:0;font-size:14px">Recent shadow events</h3>
+          <button type="button" class="btn-ghost btn-sm" onclick="refreshShadowLog()" title="Re-fetch the latest shadow events">↻ Refresh</button>
+        </div>
+        <div id="shadowLogContent" style="font-size:12px;color:var(--text-dim)">Loading…</div>
+      </div>
     </div>
 
     <!-- Sharing tab -->
@@ -3862,6 +3887,81 @@ async function enableLiveParallel(enable) {
         document.getElementById('disableParallelBtn').style.display = enable ? '' : 'none';
     } catch(e) {
         toast('Error: ' + e.message, 'error');
+    }
+}
+
+/* ---- Round-61 pt.92: shadow mode toggle + log render ---- */
+async function toggleShadowMode(enabled) {
+    try {
+        var resp = await fetch(API_BASE + '/api/set-shadow-mode', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: JSON.stringify({enabled: !!enabled})
+        });
+        var d = await resp.json();
+        if (!resp.ok || d.error) {
+            toast(d.error || 'Shadow-mode toggle failed', 'error');
+            // Revert checkbox so the UI reflects actual state.
+            var cb = document.getElementById('setShadowMode');
+            if (cb) cb.checked = !enabled;
+            return;
+        }
+        toast('Shadow mode ' + (enabled ? 'ENABLED — auto-deploys are now logged, not POSTed' : 'DISABLED — auto-deployer resumes real orders'), enabled ? 'info' : 'success');
+        // Refresh the log panel after toggling.
+        refreshShadowLog();
+    } catch(e) {
+        toast('Error: ' + e.message, 'error');
+    }
+}
+
+async function refreshShadowLog() {
+    var box = document.getElementById('shadowLogContent');
+    if (!box) return;
+    box.innerHTML = '<span style="color:var(--text-dim)">Loading…</span>';
+    try {
+        var resp = await fetch(API_BASE + '/api/shadow-log?limit=20', {
+            credentials: 'same-origin'
+        });
+        var d = await resp.json();
+        if (!resp.ok) {
+            box.innerHTML = '<span style="color:var(--red)">' + esc(d.error || ('HTTP ' + resp.status)) + '</span>';
+            return;
+        }
+        var events = d.events || [];
+        var summary = d.summary || {};
+        var cb = document.getElementById('setShadowMode');
+        if (cb) cb.checked = !!d.active;
+        var hint = document.getElementById('shadowModeHint');
+        if (hint) {
+            hint.textContent = d.active
+                ? 'Shadow mode is ON via ' + (d.source || 'guardrails') + '. New auto-deploys are recorded, not POSTed.'
+                : 'Off by default. Persists in guardrails.live_shadow_mode.';
+        }
+        if (!events.length) {
+            box.innerHTML = '<div style="padding:8px 12px;background:rgba(255,255,255,0.03);border-radius:6px;color:var(--text-dim)">No shadow events yet. Toggle shadow mode ON above; the next auto-deployer run will populate this list.</div>';
+            return;
+        }
+        var html = '<div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">' +
+            (summary.total || events.length) + ' events · ' +
+            ((summary.by_action && summary.by_action.would_deploy) || 0) + ' would_deploy' +
+            '</div>';
+        html += '<div style="max-height:280px;overflow-y:auto;border:1px solid var(--border);border-radius:6px">';
+        events.forEach(function(e) {
+            var ts = (e.ts || '').replace('T', ' ').slice(0, 19);
+            html += '<div style="padding:6px 10px;border-bottom:1px solid rgba(255,255,255,0.04);display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+                '<span style="font-size:10px;color:var(--text-dim);font-family:monospace">' + esc(ts) + '</span>' +
+                '<span style="font-size:11px;font-weight:700;letter-spacing:0.4px;text-transform:uppercase;background:rgba(59,130,246,0.12);color:var(--accent);padding:2px 8px;border-radius:999px">' + esc(e.action || '?') + '</span>' +
+                (e.symbol ? '<strong style="font-size:13px">' + esc(e.symbol) + '</strong>' : '') +
+                (e.strategy ? '<span style="font-size:11px;color:var(--text-dim)">' + esc(e.strategy) + '</span>' : '') +
+                (e.qty ? '<span style="font-size:11px">qty ' + esc(String(e.qty)) + '</span>' : '') +
+                (e.price ? '<span style="font-size:11px;color:var(--text-dim)">@$' + esc(String(e.price)) + '</span>' : '') +
+                '</div>';
+        });
+        html += '</div>';
+        box.innerHTML = html;
+    } catch(e) {
+        box.innerHTML = '<span style="color:var(--red)">Network error: ' + esc(e.message) + '</span>';
     }
 }
 
@@ -8394,6 +8494,11 @@ function switchSettingsTab(name) {
     // Round-50: load calibration data when the tab is opened
     if (name === 'calibration') {
         try { loadCalibration(); } catch (_) {}
+    }
+    // Round-61 pt.92: lazy-load shadow events when the user opens
+    // the Live Trading tab (saves a fetch when they're elsewhere).
+    if (name === 'live') {
+        try { refreshShadowLog(); } catch (_) {}
     }
 }
 

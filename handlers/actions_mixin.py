@@ -663,6 +663,63 @@ class ActionsHandlerMixin:
                              f"{queued_label}.") if queued_label else None,
                 "order": result,
             })
+
+    def handle_set_shadow_mode(self, body):
+        """Round-61 pt.92: persist the user's shadow-mode toggle
+        in guardrails.json. Pt.86's auto-deployer hook reads
+        `live_shadow_mode` on the next scheduler tick and skips
+        the order POST when True (records a shadow event instead).
+        """
+        if not self.current_user:
+            return self.send_json({"error": "Not authenticated"}, 401)
+        enabled = bool(body.get("enabled"))
+        try:
+            gpath = self._user_file("guardrails.json")
+            gr = server.load_json(gpath) or {}
+            gr["live_shadow_mode"] = enabled
+            server.save_json(gpath, gr)
+        except Exception as _e:
+            return self.send_json(
+                {"error": f"Persist failed: {_e}"}, 500)
+        return self.send_json({"success": True, "enabled": enabled})
+
+    def handle_shadow_log(self, body):
+        """Round-61 pt.92: read recent shadow events + active state
+        for the Settings → Live Trading panel."""
+        if not self.current_user:
+            return self.send_json({"error": "Not authenticated"}, 401)
+        try:
+            limit = int(body.get("limit") or 50)
+        except (TypeError, ValueError):
+            limit = 50
+        try:
+            import shadow_mode as _sm
+            user_dict = {
+                "_data_dir": auth.user_data_dir(
+                    self.current_user["id"],
+                    mode=getattr(self, "session_mode", "paper")),
+            }
+            gpath = self._user_file("guardrails.json")
+            gr = server.load_json(gpath) or {}
+            events = _sm.get_shadow_log(user_dict, limit=limit)
+            summary = _sm.summarize_shadow_log(events)
+            active = _sm.is_shadow_mode_active(user_dict, gr)
+            if gr.get("live_shadow_mode") is not None:
+                source = "user setting"
+            elif (os.environ.get("LIVE_SHADOW_MODE") or "").strip().lower() \
+                    in ("1", "true", "yes", "on"):
+                source = "deployment env (LIVE_SHADOW_MODE)"
+            else:
+                source = "off"
+            return self.send_json({
+                "active": active,
+                "source": source,
+                "events": events,
+                "summary": summary,
+            })
+        except Exception as _e:
+            return self.send_json({"error": f"Read failed: {_e}"}, 500)
+
     def handle_auto_deployer(self, body):
         """Toggle the auto-deployer on/off by updating the current user's config file."""
         enabled = body.get("enabled", False)

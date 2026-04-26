@@ -3113,6 +3113,11 @@ class DashboardHandler(
                         "mode": self.session_mode or "paper"})
             return self.send_json({"success": True, "reset_to_tier": tier.get("name")})
 
+        if path == "/api/set-shadow-mode":
+            return self.handle_set_shadow_mode(body)
+        if path == "/api/shadow-log":
+            return self.handle_shadow_log(body)
+
         if path == "/api/set-live-parallel":
             # Round-45: toggle the user's live_parallel_enabled flag.
             # When true + live keys present, the scheduler runs both
