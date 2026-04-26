@@ -912,6 +912,15 @@ input[type="range"]:focus {
     min-width: 180px; box-shadow: 0 10px 30px rgba(0,0,0,0.4);
     overflow: hidden; z-index: 1000;
 }
+/* Round-61 pt.99: on mobile the user-menu button often wraps to a
+   new line with the cluster on the LEFT side of the row. Anchoring
+   the dropdown to right:0 then made it extend off the LEFT edge of
+   the viewport, hiding "Hide Sections" / "Users" under the page.
+   Flip to left:0 on narrow screens so the dropdown extends right of
+   the button instead. */
+@media (max-width: 600px) {
+    .user-dropdown { right: auto; left: 0; }
+}
 .user-dropdown a {
     display: block; padding: 10px 14px; color: var(--text);
     text-decoration: none; font-size: 13px; transition: background 0.15s;
@@ -2350,6 +2359,7 @@ body.focus-mode #section-perf-attribution {
     <div class="modal-actions">
       <button class="btn-ghost" onclick="runStateAudit()">Re-run Audit</button>
       <button class="btn-ghost" onclick="closeGhostStrategies()" title="Mark active strategy files that have no matching Alpaca position as closed. Same grace-period + pending-sell filters as the scheduled cleanup.">🧹 Clean Up Ghosts</button>
+      <button class="btn-ghost" onclick="forceDailyClose()" title="Manually fire run_daily_close for this user. Updates scorecard + clears the STALE_SCORECARD audit finding. Safe to click anytime.">🛠 Force Daily Close</button>
       <button class="btn-primary" onclick="closeModal('auditModal')">Close</button>
     </div>
   </div>
@@ -3146,9 +3156,22 @@ function scrollToSection(id) {
         window.scrollTo({top: Math.max(0, targetY), behavior: 'smooth'});
         // Highlight active tab
         document.querySelectorAll('.nav-tab').forEach(function(t) { t.classList.remove('active'); });
+        var activeTab = null;
         document.querySelectorAll('.nav-tab').forEach(function(t) {
-            if (t.getAttribute('onclick') && t.getAttribute('onclick').indexOf(id) >= 0) t.classList.add('active');
+            if (t.getAttribute('onclick') && t.getAttribute('onclick').indexOf(id) >= 0) {
+                t.classList.add('active');
+                activeTab = t;
+            }
         });
+        // Round-61 pt.99: on narrow screens the active tab was getting
+        // partially hidden under the .nav-tabs-wrap::after scroll-hint
+        // gradient (mobile screenshot: "Positions" pill cut off by
+        // chevron). Scroll the active tab to center horizontally so
+        // it's always fully visible in the scroller.
+        if (activeTab && activeTab.scrollIntoView) {
+            try { activeTab.scrollIntoView({inline: 'center', block: 'nearest'}); }
+            catch (_) {}
+        }
         // Round-53 fix: remember which section the user navigated to so
         // the nav-bar rebuild in renderDashboard() (fires every 10s via
         // auto-refresh) restores the correct highlight instead of
@@ -4310,6 +4333,33 @@ async function closeGhostStrategies() {
         setTimeout(runStateAudit, 800);
     } catch(e) {
         toast('Ghost cleanup error: ' + e.message, 'error');
+    }
+}
+
+// Round-61 pt.99: surface the existing /api/force-daily-close endpoint
+// in the audit modal so users can clear STALE_SCORECARD findings
+// directly. Pt.91 added scheduler catchup; this button is for the
+// transitional case where pt.91 hasn't fired yet.
+async function forceDailyClose() {
+    toast('Running daily close...', 'info');
+    try {
+        var resp = await fetch(API_BASE + '/api/force-daily-close', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {'Content-Type': 'application/json', 'X-CSRF-Token': getCSRFToken()},
+            body: '{}'
+        });
+        var data = await resp.json();
+        if (!resp.ok) {
+            toast('Force close failed: ' + (data.error || ('HTTP ' + resp.status)), 'error');
+            return;
+        }
+        toast('Daily close complete — scorecard updated', 'success');
+        addLog('Manual daily close fired', 'success');
+        // Re-run audit so the user sees STALE_SCORECARD clear immediately.
+        setTimeout(runStateAudit, 800);
+    } catch(e) {
+        toast('Force close error: ' + e.message, 'error');
     }
 }
 
